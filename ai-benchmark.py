@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Benchmark v3 — Harder tasks, ALL models, retry logic on streaming failures.
+AI Benchmark — Harder tasks, ALL models, retry logic on streaming failures.
 Code: Concurrent Rate Limiter (0-20)
 General: MoE vs Dense Architecture deep-dive (0-15)
 Outputs: Markdown, HTML, CSV, PDF
@@ -407,7 +407,7 @@ def is_repeating(text, min_seq=80, repeats=3):
 def gen_markdown(results):
     ok = [r for r in results if r["status"] == "ok"]
     lines = [
-        "# 🏁 NAS Server Benchmark v3 — Complex Tasks + Retry",
+        "# AI Benchmark — Complex Tasks + Retry",
         f"**Date:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
         f"**Server:** nas.server:11434 → gaming.pc (16GB VRAM)",
         f"**Code Task:** Concurrent Rate Limiter (0-20) | **General Task:** MoE vs Dense (0-15)",
@@ -564,7 +564,7 @@ def gen_html(results):
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>NAS Benchmark v3</title>
+<title>AI Benchmark</title>
 <style>
 body {{ font-family: -apple-system,'Segoe UI',sans-serif; max-width: 1200px; margin:20px auto; padding:0 20px; background:#0d1117; color:#c9d1d9; }}
 h1,h2,h3 {{ color:#58a6ff; }}
@@ -581,7 +581,7 @@ tr.fail {{ color:#8b949e; }}
 </style>
 </head>
 <body>
-<h1>🏁 NAS Server Benchmark v3</h1>
+<h1>AI Benchmark</h1>
 <p class="subtitle">Code: Rate Limiter | General: MoE vs Dense Architecture</p>
 <p><strong>Date:</strong> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | <strong>Total:</strong> {len(results)} | <strong>Successful:</strong> {len(ok)} | <strong>Failed:</strong> {len(results)-len(ok)}</p>
 
@@ -635,7 +635,7 @@ def gen_pdf(results):
     pdf.add_page()
     pdf.set_auto_page_break(auto=True, margin=15)
     pdf.set_font("Helvetica", "B", 16)
-    pdf.cell(0, 10, "NAS Server Benchmark v3", align="C", new_x="LMARGIN", new_y="NEXT")
+    pdf.cell(0, 10, "AI Benchmark", align="C", new_x="LMARGIN", new_y="NEXT")
     pdf.set_font("Helvetica", "", 9)
     pdf.cell(0, 6, f"Rate Limiter Code (0-20) + MoE vs Dense (0-15)  |  {datetime.now().strftime('%Y-%m-%d %H:%M')}", align="C", new_x="LMARGIN", new_y="NEXT")
     ok = [r for r in results if r["status"] == "ok"]
@@ -686,7 +686,7 @@ def gen_pdf(results):
             tot = r.get('code_score',0)+r.get('gen_score',0)
             pdf.cell(0, 4, f"  {i}. {r['model'][:50]}  --  {tot}/35", new_x="LMARGIN", new_y="NEXT")
 
-    path = os.path.join(OUTPUT_DIR, "benchmark-v3-results.pdf")
+    path = os.path.join(OUTPUT_DIR, "results.pdf")
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     pdf.output(path)
     return path
@@ -1032,7 +1032,7 @@ def tui_main(state, stop_event):
 
             # ── Header ──
             ts = datetime.now().strftime('%H:%M:%S')
-            hdr = f"NAS Benchmark v3 — Parallel  |  {ts}"
+            hdr = f"AI Benchmark — Parallel  |  {ts}"
             if max_x > len(hdr):
                 stdscr.addstr(0, 0, hdr, curses.A_BOLD)
             summary = (f"Total: {total}  |  "
@@ -1247,7 +1247,7 @@ def main():
     if args.restart:
         if os.path.exists(STATE_FILE):
             os.remove(STATE_FILE)
-        for f in glob.glob(os.path.join(OUTPUT_DIR, "benchmark-v3-results.*")):
+        for f in glob.glob(os.path.join(OUTPUT_DIR, "results.*")):
             try:
                 os.remove(f)
             except OSError:
@@ -1361,17 +1361,17 @@ def main():
     csv_txt = gen_csv(results)
     html = gen_html(results)
 
-    with open(os.path.join(OUTPUT_DIR, "benchmark-v3-results.md"), "w") as f:
+    with open(os.path.join(OUTPUT_DIR, "results.md"), "w") as f:
         f.write(md)
-    with open(os.path.join(OUTPUT_DIR, "benchmark-v3-results.csv"), "w") as f:
+    with open(os.path.join(OUTPUT_DIR, "results.csv"), "w") as f:
         f.write(csv_txt)
-    with open(os.path.join(OUTPUT_DIR, "benchmark-v3-results.html"), "w") as f:
+    with open(os.path.join(OUTPUT_DIR, "results.html"), "w") as f:
         f.write(html)
 
     pdf_path = gen_pdf(results)
     ok_count = len([r for r in results if r["status"] == "ok"])
     print(f"\n{'='*70}")
-    print(f"BENCHMARK v3 COMPLETE — {ok_count}/{total} successful "
+    print(f"AI BENCHMARK COMPLETE — {ok_count}/{total} successful "
           f"({worker_errors} worker errors)")
     print(f"Outputs: {OUTPUT_DIR}/")
     for fname in sorted(os.listdir(OUTPUT_DIR)):

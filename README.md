@@ -72,10 +72,10 @@ After completion the output directory contains:
 
 | File | Format |
 |---|---|
-| `benchmark-v3-results.md` | Markdown report |
-| `benchmark-v3-results.csv` | CSV data |
-| `benchmark-v3-results.html` | HTML report |
-| `benchmark-v3-results.pdf` | PDF report (requires `fpdf2`) |
+| `results.md` | Markdown report |
+| `results.csv` | CSV data |
+| `results.html` | HTML report |
+| `results.pdf` | PDF report (requires `fpdf2`) |
 | `logs/*.log` | Per-model request/response logs |
 
 ## Reports
