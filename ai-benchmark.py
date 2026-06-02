@@ -1205,10 +1205,11 @@ def tui_main(state, stop_event, num_sources=0):
                 if live_row >= FOOTER_LINE:
                     break
                 s = snap[nm]
+                src_ab = source_abbrevs.get(s["source"], s["source"][:3])
                 elapsed = (time.time() - s["attempt_start"]) if s["attempt_start"] else 0
                 err = s.get("last_error", "")
                 phase_ch = "\U0001f537" if s["status"] == "running_code" else "\U0001f7e2"
-                msg = (f" {phase_ch} {nm[:50]}: "
+                msg = (f" {phase_ch} [{src_ab}] {nm[:42]}: "
                        f"Att {s['attempt']}/3  Tok {s['max_tok']}  "
                        f"{elapsed:5.0f}s"
                        f"{'  '+err if err else ''}")
