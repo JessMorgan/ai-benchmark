@@ -1132,7 +1132,7 @@ def tui_main(state, stop_event, num_sources=0):
                 scroll_offset = min(max_offset, scroll_offset + 1)
             elif key == curses.KEY_PPAGE:
                 scroll_offset = max(0, scroll_offset - VISIBLE_ROWS)
-            elif key == curses.KEY_NPAGE:
+            elif key == ord(' ') or key == curses.KEY_NPAGE:
                 scroll_offset = min(max_offset, scroll_offset + VISIBLE_ROWS)
             elif key == curses.KEY_HOME:
                 scroll_offset = 0
