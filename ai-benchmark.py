@@ -328,22 +328,35 @@ def stream_request(model, source, prompt, max_tokens=2048, api_url=None, headers
                 log_request_entry(log_path, curl_cmd,
                                   f"HTTP {resp.status_code}: {resp.text[:500]}", log_label)
             return text, first_tok, time.time(), f"HTTP {resp.status_code}: {resp.text[:150]}", finish_reason, usage
-        for line in resp.iter_lines(decode_unicode=True):
-            if not line: continue
-            if line.startswith("data: "):
-                payload = line[6:]
-                if payload.strip() == "[DONE]": break
-                try:
-                    data = json.loads(payload)
-                    if first_tok is None: first_tok = time.time()
-                    for ch in data.get("choices", []):
-                        text += ch.get("delta", {}).get("content", "")
-                        fr = ch.get("finish_reason")
-                        if fr:
-                            finish_reason = fr
-                    if "usage" in data:
-                        usage = data["usage"]
-                except json.JSONDecodeError: continue
+        # ── Total-duration watchdog ────────────────────────────────────
+        # The per-recv socket timeout (TIMEOUT) can be defeated by TCP
+        # keep-alives or empty chunks from the proxy.  A daemon timer
+        # that closes the response after TIMEOUT seconds guarantees the
+        # iter_lines() loop terminates.
+        watchdog = threading.Timer(TIMEOUT, resp.close)
+        watchdog.daemon = True
+        watchdog.start()
+        try:
+            for line in resp.iter_lines(decode_unicode=True):
+                if not line: continue
+                if line.startswith("data: "):
+                    payload = line[6:]
+                    if payload.strip() == "[DONE]": break
+                    try:
+                        data = json.loads(payload)
+                        if first_tok is None: first_tok = time.time()
+                        for ch in data.get("choices", []):
+                            text += ch.get("delta", {}).get("content", "")
+                            fr = ch.get("finish_reason")
+                            if fr:
+                                finish_reason = fr
+                        if "usage" in data:
+                            usage = data["usage"]
+                    except json.JSONDecodeError: continue
+        finally:
+            watchdog.cancel()
+        if not finish_reason and time.time() - start > TIMEOUT:
+            error = f"Total timeout ({TIMEOUT}s) exceeded"
         if log_path and curl_cmd:
             log_request_entry(log_path, curl_cmd, text or "(empty response)", log_label)
     except Exception as e:
@@ -368,19 +381,30 @@ def nonstream_request(model, source, prompt, max_tokens=2048, api_url=None, head
             body["seed"] = session_seed
         resp = requests.post(
             api_url, headers=headers, json=body, timeout=TIMEOUT)
-        if resp.status_code != 200:
-            raw_resp_text = resp.text[:500]
+        # ── Total-duration watchdog ────────────────────────────────────
+        # Same issue as streaming: TCP keep-alives from the proxy can
+        # defeat the per-recv timeout when reading the response body.
+        watchdog = threading.Timer(TIMEOUT, resp.close)
+        watchdog.daemon = True
+        watchdog.start()
+        try:
+            if resp.status_code != 200:
+                raw_resp_text = resp.text[:500]
+                if log_path and curl_cmd:
+                    log_request_entry(log_path, curl_cmd,
+                                      f"HTTP {resp.status_code}: {raw_resp_text}", log_label)
+                return text, usage, time.time()-start, f"HTTP {resp.status_code}: {resp.text[:150]}", finish_reason
+            raw_resp_text = resp.text
+            data = resp.json()
+            text = data["choices"][0]["message"]["content"]
+            usage = data.get("usage", {})
+            finish_reason = data.get("choices", [{}])[0].get("finish_reason")
             if log_path and curl_cmd:
-                log_request_entry(log_path, curl_cmd,
-                                  f"HTTP {resp.status_code}: {raw_resp_text}", log_label)
-            return text, usage, time.time()-start, f"HTTP {resp.status_code}: {resp.text[:150]}", finish_reason
-        raw_resp_text = resp.text
-        data = resp.json()
-        text = data["choices"][0]["message"]["content"]
-        usage = data.get("usage", {})
-        finish_reason = data.get("choices", [{}])[0].get("finish_reason")
-        if log_path and curl_cmd:
-            log_request_entry(log_path, curl_cmd, raw_resp_text, log_label)
+                log_request_entry(log_path, curl_cmd, raw_resp_text, log_label)
+        finally:
+            watchdog.cancel()
+        if not error and time.time() - start > TIMEOUT:
+            error = f"Total timeout ({TIMEOUT}s) exceeded"
     except Exception as e:
         error = f"{type(e).__name__}: {e}"
         if log_path and curl_cmd:
@@ -835,6 +859,18 @@ def run_model(model_name, source, state, session_seed=0):
             session_seed=session_seed)
 
         if serr or first_tok is None:
+            # If streaming timed out, non-streaming will hit the same
+            # keep-alive wall — fail fast instead of hanging again.
+            if serr and "ReadTimeout" in serr:
+                r["status"] = "error"
+                r["error"] = serr
+                r["total_time"] = round(time.time() - start, 1)
+                state.add_result(r)
+                state.update(model_name, status="failed",
+                             error=r["error"], elapsed=r["total_time"],
+                             last_error=r["error"])
+                return
+
             text, nsusage, ns_time, nserr, nsfr = nonstream_request(
                 model_name, source, CODE_TASK, max_tok,
                 api_url=cfg["api_url"], headers=cfg["headers"],
@@ -858,6 +894,16 @@ def run_model(model_name, source, state, session_seed=0):
                         log_label=f"Code Task (Streaming, no-seed retry)",
                         session_seed=0)
                     if serr_r or ft_r is None:
+                        # Also skip nonstream if the seed-retry stream timed out
+                        if serr_r and "ReadTimeout" in serr_r:
+                            r["status"] = "error"
+                            r["error"] = serr_r
+                            r["total_time"] = round(time.time() - start, 1)
+                            state.add_result(r)
+                            state.update(model_name, status="failed",
+                                         error=r["error"], elapsed=r["total_time"],
+                                         last_error=r["error"])
+                            return
                         text, _, ns_t_r, nserr_r, nsfr_r = nonstream_request(
                             model_name, source, CODE_TASK, max_tok,
                             api_url=cfg["api_url"], headers=cfg["headers"],
