@@ -983,6 +983,26 @@ def run_model(model_name, source, state, session_seed=0):
                  gen_output_tokens=r["gen_output_tokens"])
 
 
+def _source_abbrev(name):
+    """Generate a short acronym from a source name using capital letters.
+
+    Splits on whitespace and internal capitals (PascalCase), then takes the
+    first letter of each resulting token.  All-caps short words (e.g. AI, PC)
+    are kept whole.  Returns at least 2 characters.
+    """
+    tokens = []
+    for w in name.split():
+        if w.isupper() and 1 < len(w) <= 3:
+            tokens.append(w)               # keep all-caps words like "AI", "PC" whole
+        else:
+            sub = re.findall(r'[A-Z]?[a-z]+|[A-Z]+', w)
+            tokens.extend(sub) if sub else tokens.append(w)
+    if not tokens:
+        return name[:2].upper()
+    ab = ''.join(t[0].upper() for t in tokens if t)
+    return ab if len(ab) >= 2 else (name * 2)[:2].upper()
+
+
 def tui_main(state, stop_event, num_sources=0):
     """Run ncurses TUI in a daemon thread. Updates every 200ms."""
     import curses
@@ -1026,6 +1046,32 @@ def tui_main(state, stop_event, num_sources=0):
     try:
         LIVE_HEIGHT = max(3, num_sources + 1)  # header line + one line per possible parallel worker
         scroll_offset = 0
+
+        # Build unique source abbreviations (from snapshot to handle dynamic sources)
+        src_snap = {s["source"] for s in state.snapshot().values()}
+        source_abbrevs = {}
+        _used = set()
+        for src in sorted(src_snap):
+            # First try the heuristic, then disambiguate if needed
+            ab = _source_abbrev(src)
+            if ab in _used:
+                tokens = []
+                for w in src.split():
+                    if w.isupper() and 1 < len(w) <= 3:
+                        tokens.append(w)
+                    else:
+                        sub = re.findall(r'[A-Z]?[a-z]+|[A-Z]+', w)
+                        tokens.extend(sub) if sub else tokens.append(w)
+                ab = ''.join(t[:2].upper() for t in tokens if t)
+                if ab in _used or len(ab) < 2:
+                    ab = (src * 2)[:2].upper()
+                    if ab in _used:
+                        for i in range(2, min(len(src), 6)):
+                            ab = src[:i].upper()
+                            if ab not in _used:
+                                break
+            source_abbrevs[src] = ab
+            _used.add(ab)
 
         while not stop_event.is_set():
             stdscr.erase()
@@ -1121,7 +1167,7 @@ def tui_main(state, stop_event, num_sources=0):
                 ctps = fmt_val(s.get("code_tps"))
                 gtps = fmt_val(s.get("gen_tps"))
                 model_disp = name[:16]
-                line = (f"{display_idx:>3}  {s['source'][:2]:<3} {model_disp:<18}  "
+                line = (f"{display_idx:>3}  {source_abbrevs.get(s['source'], s['source'][:2]):<3} {model_disp:<18}  "
                         f"{status_ch:<3}"
                         f" {csc:>4} {ctok:>5} {ctime:>5} {ctps:>5}"
                         f" {gsc:>4} {gtok:>5} {gtime:>5} {gtps:>5}")
