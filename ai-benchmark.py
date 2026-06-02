@@ -830,8 +830,54 @@ def run_model(model_name, source, state, session_seed=0):
                 log_path=log_file,
                 log_label=f"Code Task (Non-Streaming, attempt {attempt + 1})",
                 session_seed=session_seed)
+
+            seed_retried = False
+
             if nserr:
-                if attempt == 0:
+                if session_seed and re.search(
+                        r"(?i)not support.*seed|unsupported.*seed|unknown.*param.*seed",
+                        (serr or '') + ' ' + (nserr or '')):
+                    print(f"\n⚠️  {model_name}: seed parameter rejected, "
+                          f"retrying without seed", file=sys.stderr)
+                    session_seed = 0
+                    seed_retried = True
+                    text, ft_r, se_r, serr_r, sfr_r, _ = stream_request(
+                        model_name, source, CODE_TASK, max_tok,
+                        api_url=cfg["api_url"], headers=cfg["headers"],
+                        log_path=log_file,
+                        log_label=f"Code Task (Streaming, no-seed retry)",
+                        session_seed=0)
+                    if serr_r or ft_r is None:
+                        text, _, ns_t_r, nserr_r, nsfr_r = nonstream_request(
+                            model_name, source, CODE_TASK, max_tok,
+                            api_url=cfg["api_url"], headers=cfg["headers"],
+                            log_path=log_file,
+                            log_label=f"Code Task (Non-Streaming, no-seed retry)",
+                            session_seed=0)
+                        if nserr_r:
+                            r["status"] = "error"
+                            r["error"] = (f"Stream: {serr_r or 'no tokens'}. "
+                                          f"Nostream: {nserr_r}")
+                            r["total_time"] = round(time.time() - start, 1)
+                            state.add_result(r)
+                            state.update(model_name, status="failed",
+                                         error=r["error"], elapsed=r["total_time"],
+                                         last_error=r["error"])
+                            return
+                        r["stream_ok"] = False
+                        r["ttft"] = "N/A (non-streaming)"
+                        r["code_response_time"] = round(ns_t_r, 1)
+                        code_gen_time = ns_t_r
+                        code_text = text
+                        code_truncated = (nsfr_r == "length")
+                    else:
+                        r["stream_ok"] = True
+                        r["ttft"] = round(ft_r - attempt_start, 3)
+                        r["code_response_time"] = round(se_r - attempt_start, 1)
+                        code_gen_time = se_r - ft_r
+                        code_text = text
+                        code_truncated = (sfr_r == "length")
+                elif attempt == 0:
                     r["status"] = "error"
                     r["error"] = (f"Stream: {serr or 'no tokens'}. "
                                   f"Nostream: {nserr}")
@@ -841,18 +887,21 @@ def run_model(model_name, source, state, session_seed=0):
                                  error=r["error"], elapsed=r["total_time"],
                                  last_error=r["error"])
                     return
-                state.update(model_name, last_error=nserr)
-                continue
+                else:
+                    state.update(model_name, last_error=nserr)
+                    continue
 
-            # Non-streaming succeeded
-            r["stream_ok"] = False
-            r["ttft"] = "N/A (non-streaming)"
-            r["code_response_time"] = round(ns_time, 1)
-            code_gen_time = ns_time
-            code_text = text
-            code_truncated = (nsfr == "length")
+            if not seed_retried:
+                # Non-streaming succeeded
+                r["stream_ok"] = False
+                r["ttft"] = "N/A (non-streaming)"
+                r["code_response_time"] = round(ns_time, 1)
+                code_gen_time = ns_time
+                code_text = text
+                code_truncated = (nsfr == "length")
         else:
             # Streaming succeeded
+            r["stream_ok"] = True
             r["ttft"] = round(first_tok - attempt_start, 3)
             r["code_response_time"] = round(stream_end - attempt_start, 1)
             code_gen_time = stream_end - first_tok
@@ -924,12 +973,32 @@ def run_model(model_name, source, state, session_seed=0):
             session_seed=session_seed)
 
         if gen_err:
+            seed_retried_gen = False
             if attempt == 0:
-                r["gen_response_time"] = round(gen_time, 1)
-                # Continue with empty text — score_gen handles it
-                break
-            state.update(model_name, last_error=gen_err)
-            continue
+                if session_seed and re.search(
+                        r"(?i)not support.*seed|unsupported.*seed|unknown.*param.*seed",
+                        gen_err):
+                    print(f"\n⚠️  {model_name}: seed parameter rejected in gen task, "
+                          f"retrying without seed", file=sys.stderr)
+                    session_seed = 0
+                    seed_retried_gen = True
+                    text, usage, gen_time, gen_err, gen_fr = nonstream_request(
+                        model_name, source, GENERAL_TASK, max_tok,
+                        api_url=cfg["api_url"], headers=cfg["headers"],
+                        log_path=log_file,
+                        log_label=f"General Task (no-seed retry)",
+                        session_seed=0)
+                    if not gen_err:
+                        pass
+                    else:
+                        r["gen_response_time"] = round(gen_time, 1)
+                        break
+                else:
+                    r["gen_response_time"] = round(gen_time, 1)
+                    break
+            if not seed_retried_gen:
+                state.update(model_name, last_error=gen_err)
+                continue
 
         gen_text = text
         r["gen_response_time"] = round(gen_time, 1)
