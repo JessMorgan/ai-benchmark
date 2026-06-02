@@ -700,6 +700,7 @@ class BenchmarkState:
         self._lock = threading.Lock()
         self.results = []
         self._model_info = {}
+        self._log = []
         for name, source in models.items():
             self._model_info[name] = {
                 "source": source,
@@ -737,6 +738,16 @@ class BenchmarkState:
     @property
     def total(self):
         return len(self._model_info)
+
+    def log(self, model_name, msg):
+        with self._lock:
+            self._log.append((time.time(), model_name, msg))
+            if len(self._log) > 100:
+                self._log = self._log[-100:]
+
+    def recent_log(self, n=5):
+        with self._lock:
+            return self._log[-n:]
 
     def save_state(self, path):
         with self._lock:
@@ -799,7 +810,7 @@ def run_model(model_name, source, state, session_seed=0):
         r["total_time"] = round(time.time() - start, 1)
         state.add_result(r)
         state.update(model_name, status="failed", error=r["error"], elapsed=r["total_time"])
-        print(f"\n❌ {model_name}: {r['error']}", file=sys.stderr)
+        state.log(model_name, r['error'])
         return
 
     # ── Phase 1: Code task with truncation retry ──
@@ -813,7 +824,7 @@ def run_model(model_name, source, state, session_seed=0):
     for attempt, max_tok in enumerate(TOKEN_LEVELS):
         attempt_start = time.time()
         state.update(model_name, attempt=attempt + 1, max_tok=max_tok,
-                     attempt_start=attempt_start, last_error="",
+                     attempt_start=attempt_start,
                      phase_detail="Code", status="running_code")
 
         text, first_tok, stream_end, serr, sfr, susage = stream_request(
@@ -837,8 +848,7 @@ def run_model(model_name, source, state, session_seed=0):
                 if session_seed and re.search(
                         r"(?i)not support.*seed|unsupported.*seed|unknown.*param.*seed",
                         (serr or '') + ' ' + (nserr or '')):
-                    print(f"\n⚠️  {model_name}: seed parameter rejected, "
-                          f"retrying without seed", file=sys.stderr)
+                    state.log(model_name, "seed parameter rejected, retrying without seed")
                     session_seed = 0
                     seed_retried = True
                     text, ft_r, se_r, serr_r, sfr_r, _ = stream_request(
@@ -928,18 +938,13 @@ def run_model(model_name, source, state, session_seed=0):
         if len(code_text.strip()) < 50:
             state.update(model_name,
                          last_error=f"Thinking exhausted at {max_tok}")
-            print(f"\n⚠️  {model_name}: Code task exhausted tokens on thinking "
-                  f"(max_tok={max_tok}, output={len(code_text.strip())} chars). "
-                  f"Retrying with {TOKEN_LEVELS[min(attempt + 1, len(TOKEN_LEVELS) - 1)]}...",
-                  file=sys.stderr)
+            state.log(model_name, f"Code task exhausted thinking (tok={max_tok}, out={len(code_text.strip())}c)")
 
         # Retry with larger token limit
         if attempt < len(TOKEN_LEVELS) - 1:
             state.update(model_name,
                          last_error=f"Truncated at {max_tok}, retrying")
-            print(f"\n⚠️  {model_name}: Code task truncated at {max_tok} tokens, "
-                  f"retrying with {TOKEN_LEVELS[attempt + 1]}...",
-                  file=sys.stderr)
+            state.log(model_name, f"Code task truncated at {max_tok}, retrying {TOKEN_LEVELS[attempt + 1]}")
 
     if code_truncated:
         if code_repeating:
@@ -962,7 +967,7 @@ def run_model(model_name, source, state, session_seed=0):
     for attempt, max_tok in enumerate(TOKEN_LEVELS):
         attempt_start = time.time()
         state.update(model_name, attempt=attempt + 1, max_tok=max_tok,
-                     attempt_start=attempt_start, last_error="",
+                     attempt_start=attempt_start,
                      phase_detail="Gen", status="running_gen")
 
         text, usage, gen_time, gen_err, gen_fr = nonstream_request(
@@ -978,8 +983,7 @@ def run_model(model_name, source, state, session_seed=0):
                 if session_seed and re.search(
                         r"(?i)not support.*seed|unsupported.*seed|unknown.*param.*seed",
                         gen_err):
-                    print(f"\n⚠️  {model_name}: seed parameter rejected in gen task, "
-                          f"retrying without seed", file=sys.stderr)
+                    state.log(model_name, "seed parameter rejected (gen), retrying without seed")
                     session_seed = 0
                     seed_retried_gen = True
                     text, usage, gen_time, gen_err, gen_fr = nonstream_request(
@@ -1024,17 +1028,12 @@ def run_model(model_name, source, state, session_seed=0):
         if len(gen_text.strip()) < 50:
             state.update(model_name,
                          last_error=f"Thinking exhausted at {max_tok}")
-            print(f"\n⚠️  {model_name}: General task exhausted tokens on thinking "
-                  f"(max_tok={max_tok}, output={len(gen_text.strip())} chars). "
-                  f"Retrying with {TOKEN_LEVELS[min(attempt + 1, len(TOKEN_LEVELS) - 1)]}...",
-                  file=sys.stderr)
+            state.log(model_name, f"Gen task exhausted thinking (tok={max_tok}, out={len(gen_text.strip())}c)")
 
         if attempt < len(TOKEN_LEVELS) - 1:
             state.update(model_name,
                          last_error=f"Truncated at {max_tok}, retrying")
-            print(f"\n⚠️  {model_name}: General task truncated at {max_tok} tokens, "
-                  f"retrying with {TOKEN_LEVELS[attempt + 1]}...",
-                  file=sys.stderr)
+            state.log(model_name, f"Gen task truncated at {max_tok}, retrying {TOKEN_LEVELS[attempt + 1]}")
 
     if gen_truncated:
         if gen_repeating:
@@ -1143,7 +1142,7 @@ def tui_main(state, stop_event, num_sources=0):
             _used.add(ab)
 
         while not stop_event.is_set():
-            stdscr.erase()
+            stdscr.clear()
             max_y, max_x = stdscr.getmaxyx()
             snap = state.snapshot()
             done = state.completed
@@ -1153,14 +1152,14 @@ def tui_main(state, stop_event, num_sources=0):
             queued = [n for n, s in snap.items() if s["status"] == "queued"]
             pending = [n for n, s in snap.items() if s["status"] == "pending"]
 
-            # ── Layout geometry ──
+            # ── Layout geometry (fixed: never shifts) ──
             FOOTER_LINE = max_y - 1
-            LIVE_TOP = FOOTER_LINE - LIVE_HEIGHT          # first line of live section
-            MODEL_BOTTOM = LIVE_TOP - 1                    # last line for model list (separator drawn here)
-            MODEL_TOP = 4                                   # first line after column headers
-            VISIBLE_ROWS = MODEL_BOTTOM - MODEL_TOP         # number of model rows that fit
-            if VISIBLE_ROWS < 0:
-                VISIBLE_ROWS = 0
+            MAX_LOG_ROWS = 3
+            LOG_TOP = FOOTER_LINE - MAX_LOG_ROWS
+            LIVE_TOP = LOG_TOP - LIVE_HEIGHT
+            MODEL_BOTTOM = LIVE_TOP - 1
+            MODEL_TOP = 4
+            VISIBLE_ROWS = max(0, MODEL_BOTTOM - MODEL_TOP)
 
             # ── Header ──
             ts = datetime.now().strftime('%H:%M:%S')
@@ -1168,10 +1167,13 @@ def tui_main(state, stop_event, num_sources=0):
             if max_x > len(hdr):
                 stdscr.addstr(0, 0, hdr, curses.A_BOLD)
             total_models = len(snap)
+            failed_count = sum(1 for s in snap.values() if s["status"] == "failed")
+            err_indicator = f"  |  \u26a0 {failed_count} failed" if failed_count else ""
             summary = (f"Total: {total}  |  "
                        f"Done: {done}  |  "
                        f"Active: {len(running_code + running_gen)}  |  "
                        f"Queued: {len(queued + pending)}"
+                       f"{err_indicator}"
                        f"  |  \u2191\u2195 scroll {scroll_offset + 1}-{min(total_models, scroll_offset + VISIBLE_ROWS)}/{total_models}")
             if max_y > 1 and max_x > len(summary):
                 stdscr.addstr(1, 0, summary)
@@ -1207,7 +1209,6 @@ def tui_main(state, stop_event, num_sources=0):
                 scroll_offset = 0
             elif key == curses.KEY_END:
                 scroll_offset = max_offset
-            # Clamp after key handling
             scroll_offset = max(0, min(max_offset, scroll_offset))
 
             # ── Model rows (scrollable) ──
@@ -1236,10 +1237,15 @@ def tui_main(state, stop_event, num_sources=0):
                 ctps = fmt_val(s.get("code_tps"))
                 gtps = fmt_val(s.get("gen_tps"))
                 model_disp = name[:16]
-                line = (f"{display_idx:>3}  {source_abbrevs.get(s['source'], s['source'][:2]):<3} {model_disp:<18}  "
+                src_ab = source_abbrevs.get(s["source"], s["source"][:3])
+                line = (f"{display_idx:>3}  {src_ab:<3} {model_disp:<18}  "
                         f"{status_ch:<3}"
                         f" {csc:>4} {ctok:>5} {ctime:>5} {ctps:>5}"
                         f" {gsc:>4} {gtok:>5} {gtime:>5} {gtps:>5}")
+                if sv == "failed":
+                    err_text = (s.get("error") or s.get("last_error", "") or "")
+                    if err_text:
+                        line += "  " + err_text
                 attr = 0
                 if sv == "completed":
                     try: attr = curses.color_pair(1)
@@ -1262,7 +1268,7 @@ def tui_main(state, stop_event, num_sources=0):
                 except:
                     pass
 
-            # ── Live status section (fixed at bottom, no shifting) ──
+            # ── Live status section (fixed height, never shifts) ──
             live_models = running_code + running_gen
             live_row = LIVE_TOP
             try:
@@ -1271,7 +1277,7 @@ def tui_main(state, stop_event, num_sources=0):
                 pass
             live_row += 1
             for nm in live_models[:LIVE_HEIGHT - 1]:
-                if live_row >= FOOTER_LINE:
+                if live_row >= LOG_TOP:
                     break
                 s = snap[nm]
                 src_ab = source_abbrevs.get(s["source"], s["source"][:3])
@@ -1287,6 +1293,29 @@ def tui_main(state, stop_event, num_sources=0):
                 except:
                     pass
                 live_row += 1
+
+            # ── Error log section (fixed 3 lines, no shifting) ──
+            log_row = LOG_TOP
+            recent_errors = state.recent_log(2)
+            if recent_errors:
+                try:
+                    stdscr.addstr(log_row, 0, "Errors:", curses.A_BOLD)
+                except:
+                    pass
+                log_row += 1
+                for ts_entry, model_entry, msg_entry in recent_errors:
+                    if log_row >= FOOTER_LINE:
+                        break
+                    t_str = datetime.fromtimestamp(ts_entry).strftime('%H:%M:%S')
+                    err_msg = f"  {t_str} [{model_entry[:20]}]: {msg_entry}"
+                    try:
+                        stdscr.addstr(log_row, 0, err_msg[:max_x], curses.color_pair(3))
+                    except:
+                        try:
+                            stdscr.addstr(log_row, 0, err_msg[:max_x])
+                        except:
+                            pass
+                    log_row += 1
 
             # ── Bottom status line ──
             queuing = queued + pending
