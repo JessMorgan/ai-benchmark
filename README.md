@@ -64,7 +64,7 @@ python ai-benchmark.py [options]
 
 ## Resume / Continue
 
-By default, re-running resumes from where you left off — completed models are skipped. Saved state is stored in `benchmark_state.json` inside the output directory and deleted automatically on full completion. Use `--restart` to force a clean run.
+By default, re-running resumes from where you left off — completed models are skipped, and failed models are retried. Saved state is stored in `benchmark_state.json` inside the output directory and is preserved after completion so you can re-run to retry any failures. New models added to the config between runs are picked up automatically. Use `--restart` to force a clean run.
 
 ## Outputs
 

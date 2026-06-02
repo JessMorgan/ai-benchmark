@@ -758,7 +758,12 @@ class BenchmarkState:
         with open(path) as f:
             data = json.load(f)
         state = cls(models)
-        state._model_info = data.get("model_info", state._model_info)
+        # Merge saved state into fresh model_info — models in both use saved status,
+        # while models newly added to config keep their fresh "pending" status.
+        saved_info = data.get("model_info", {})
+        for name, info in saved_info.items():
+            if name in state._model_info:
+                state._model_info[name] = info
         state.results = data.get("results", [])
         for name, info in state._model_info.items():
             if info.get("status") not in ("completed", "failed"):
@@ -978,7 +983,7 @@ def run_model(model_name, source, state, session_seed=0):
                  gen_output_tokens=r["gen_output_tokens"])
 
 
-def tui_main(state, stop_event):
+def tui_main(state, stop_event, num_sources=0):
     """Run ncurses TUI in a daemon thread. Updates every 200ms."""
     import curses
 
@@ -1019,6 +1024,9 @@ def tui_main(state, stop_event):
         return
 
     try:
+        LIVE_HEIGHT = max(3, num_sources + 1)  # header line + one line per possible parallel worker
+        scroll_offset = 0
+
         while not stop_event.is_set():
             stdscr.erase()
             max_y, max_x = stdscr.getmaxyx()
@@ -1030,21 +1038,32 @@ def tui_main(state, stop_event):
             queued = [n for n, s in snap.items() if s["status"] == "queued"]
             pending = [n for n, s in snap.items() if s["status"] == "pending"]
 
+            # ── Layout geometry ──
+            FOOTER_LINE = max_y - 1
+            LIVE_TOP = FOOTER_LINE - LIVE_HEIGHT          # first line of live section
+            MODEL_BOTTOM = LIVE_TOP - 1                    # last line for model list (separator drawn here)
+            MODEL_TOP = 4                                   # first line after column headers
+            VISIBLE_ROWS = MODEL_BOTTOM - MODEL_TOP         # number of model rows that fit
+            if VISIBLE_ROWS < 0:
+                VISIBLE_ROWS = 0
+
             # ── Header ──
             ts = datetime.now().strftime('%H:%M:%S')
             hdr = f"AI Benchmark — Parallel  |  {ts}"
             if max_x > len(hdr):
                 stdscr.addstr(0, 0, hdr, curses.A_BOLD)
+            total_models = len(snap)
             summary = (f"Total: {total}  |  "
                        f"Done: {done}  |  "
                        f"Active: {len(running_code + running_gen)}  |  "
-                       f"Queued: {len(queued + pending)}")
+                       f"Queued: {len(queued + pending)}"
+                       f"  |  \u2191\u2195 scroll {scroll_offset + 1}-{min(total_models, scroll_offset + VISIBLE_ROWS)}/{total_models}")
             if max_y > 1 and max_x > len(summary):
                 stdscr.addstr(1, 0, summary)
 
             # ── Separator ──
             if max_y > 2:
-                sep = "─" * min(max_x, 80)
+                sep = "\u2500" * min(max_x, 80)
                 stdscr.addstr(2, 0, sep)
 
             # ── Column headers ──
@@ -1058,19 +1077,41 @@ def tui_main(state, stop_event):
                 except:
                     stdscr.addstr(3, 0, col_hdr[:max_x])
 
-            # ── Model rows — compact, grouped by phase ──
-            row = 4
-            for idx, (name, s) in enumerate(snap.items(), 1):
-                if row >= max_y - 6:
+            # ── Handle scroll keys ──
+            key = stdscr.getch()
+            max_offset = max(0, total_models - VISIBLE_ROWS)
+            if key == curses.KEY_UP:
+                scroll_offset = max(0, scroll_offset - 1)
+            elif key == curses.KEY_DOWN:
+                scroll_offset = min(max_offset, scroll_offset + 1)
+            elif key == curses.KEY_PPAGE:
+                scroll_offset = max(0, scroll_offset - VISIBLE_ROWS)
+            elif key == curses.KEY_NPAGE:
+                scroll_offset = min(max_offset, scroll_offset + VISIBLE_ROWS)
+            elif key == curses.KEY_HOME:
+                scroll_offset = 0
+            elif key == curses.KEY_END:
+                scroll_offset = max_offset
+            # Clamp after key handling
+            scroll_offset = max(0, min(max_offset, scroll_offset))
+
+            # ── Model rows (scrollable) ──
+            snap_items = list(snap.items())
+            def fmt_val(v, fmt=".1f"):
+                if v is None: return "-"
+                try: return f"{v:{fmt}}"
+                except: return str(v)
+
+            for row_idx in range(VISIBLE_ROWS):
+                abs_idx = scroll_offset + row_idx
+                if abs_idx >= total_models:
                     break
+                name, s = snap_items[abs_idx]
+                display_idx = abs_idx + 1
                 sv = s["status"]
-                status_ch = {"pending": "⏳", "queued": "⏳",
-                             "running_code": "🔷", "running_gen": "🟢",
-                             "completed": "✅", "failed": "❌"}.get(sv, "?")
-                def fmt_val(v, fmt=".1f"):
-                    if v is None: return "-"
-                    try: return f"{v:{fmt}}"
-                    except: return str(v)
+                status_ch = {"pending": "\u23f3", "queued": "\u23f3",
+                             "running_code": "\U0001f537", "running_gen": "\U0001f7e2",
+                             "completed": "\u2705", "failed": "\u274c"}.get(sv, "?")
                 csc = fmt_val(s.get("code_score"))
                 gsc = fmt_val(s.get("gen_score"))
                 ctok = fmt_val(s.get("code_output_tokens"), "d")
@@ -1080,7 +1121,7 @@ def tui_main(state, stop_event):
                 ctps = fmt_val(s.get("code_tps"))
                 gtps = fmt_val(s.get("gen_tps"))
                 model_disp = name[:16]
-                line = (f"{idx:>3}  {s['source'][:2]:<3} {model_disp:<18}  "
+                line = (f"{display_idx:>3}  {s['source'][:2]:<3} {model_disp:<18}  "
                         f"{status_ch:<3}"
                         f" {csc:>4} {ctok:>5} {ctime:>5} {ctps:>5}"
                         f" {gsc:>4} {gtok:>5} {gtime:>5} {gtps:>5}")
@@ -1095,59 +1136,53 @@ def tui_main(state, stop_event):
                     try: attr = curses.color_pair(2)
                     except: pass
                 try:
-                    stdscr.addstr(row, 0, line[:max_x], attr)
+                    stdscr.addstr(MODEL_TOP + row_idx, 0, line[:max_x], attr)
                 except:
                     pass
-                row += 1
 
-            # ── Live status section (below model list) ──
+            # ── Separator before live section ──
+            if MODEL_BOTTOM >= 0:
+                try:
+                    stdscr.addstr(MODEL_BOTTOM, 0, ("\u2500" * min(max_x, 60))[:max_x])
+                except:
+                    pass
+
+            # ── Live status section (fixed at bottom, no shifting) ──
             live_models = running_code + running_gen
-            avail = max_y - row - 1  # lines from current row to footer line
-            if avail >= 2 and live_models:
-                # Draw a thin separator
-                sep_live = "─" * min(max_x, 60)
+            live_row = LIVE_TOP
+            try:
+                stdscr.addstr(live_row, 0, "Live:", curses.A_BOLD)
+            except:
+                pass
+            live_row += 1
+            for nm in live_models[:LIVE_HEIGHT - 1]:
+                if live_row >= FOOTER_LINE:
+                    break
+                s = snap[nm]
+                elapsed = (time.time() - s["attempt_start"]) if s["attempt_start"] else 0
+                err = s.get("last_error", "")
+                phase_ch = "\U0001f537" if s["status"] == "running_code" else "\U0001f7e2"
+                msg = (f" {phase_ch} {nm[:50]}: "
+                       f"Att {s['attempt']}/3  Tok {s['max_tok']}  "
+                       f"{elapsed:5.0f}s"
+                       f"{'  '+err if err else ''}")
                 try:
-                    stdscr.addstr(row, 0, sep_live[:max_x])
+                    stdscr.addstr(live_row, 0, msg[:max_x])
                 except:
                     pass
-                row += 1
-
-                # "Live:" header
-                try:
-                    stdscr.addstr(row, 0, "Live:", curses.A_BOLD)
-                except:
-                    pass
-                row += 1
-
-                for nm in live_models:
-                    if row >= max_y - 1:
-                        break
-                    s = snap[nm]
-                    elapsed = (time.time() - s["attempt_start"]) if s["attempt_start"] else 0
-                    err = s.get("last_error", "")
-                    phase_ch = "🔷" if s["status"] == "running_code" else "🟢"
-                    msg = (f" {phase_ch} {nm[:40]}: "
-                           f"Att {s['attempt']}/3  Tok {s['max_tok']}  "
-                           f"{elapsed:5.0f}s"
-                           f"{'  '+err if err else ''}")
-                    try:
-                        stdscr.addstr(row, 0, msg[:max_x])
-                    except:
-                        pass
-                    row += 1
+                live_row += 1
 
             # ── Bottom status line ──
-            footer = max_y - 1
             queuing = queued + pending
             if not live_models and not queuing:
                 msg = " All models complete — generating outputs..."
             else:
                 q = f"{len(queuing)} queued" if queuing else ""
                 a = f"{len(live_models)} active" if live_models else ""
-                sep = "  |  " if q and a else ""
-                msg = f" {a}{sep}{q}"
+                sep2 = "  |  " if q and a else ""
+                msg = f" {a}{sep2}{q}"
             try:
-                stdscr.addstr(footer, 0, msg[:max_x])
+                stdscr.addstr(FOOTER_LINE, 0, msg[:max_x])
             except:
                 pass
 
@@ -1281,7 +1316,7 @@ def main():
     stop_event = threading.Event()
 
     # Start ncurses TUI in background
-    tui_thread = threading.Thread(target=tui_main, args=(state, stop_event))
+    tui_thread = threading.Thread(target=tui_main, args=(state, stop_event, len(SOURCE_CONFIG)))
     tui_thread.start()
 
     # Small delay for TUI to initialize
@@ -1379,14 +1414,6 @@ def main():
     if pdf_path:
         print(f"  - {os.path.basename(pdf_path)}")
     print(f"{'='*70}")
-
-    # Cleanup state file on successful completion
-    try:
-        if os.path.exists(STATE_FILE):
-            os.remove(STATE_FILE)
-    except OSError:
-        pass
-
 
 if __name__ == "__main__":
     main()
