@@ -524,21 +524,28 @@ def gen_markdown(results):
 def gen_csv(results):
     out = io.StringIO()
     w = csv.writer(out)
-    w.writerow(["Model","VRAM","TTFT_s","Code_Response_s","Gen_Response_s",
-                 "Output_TPS_Code","Output_TPS_Gen",
-                 "Code_Output_Tokens","Gen_Output_Tokens",
-                 "Code_Score_20","Gen_Score_15","Total_35","Time_s","Mode","Status","Error"])
+    w.writerow(["Model","Source","VRAM","TTFT_s",
+                 "Code_Response_s","Code_Output_Tokens","Output_TPS_Code","Code_Score_20",
+                 "Gen_Response_s","Gen_Output_Tokens","Output_TPS_Gen","Gen_Score_15",
+                 "Total_35","Time_s","Mode","Status","Error"])
     for r in results:
         if r["status"] == "ok":
             tot = r.get('code_score',0) + r.get('gen_score',0)
             m = "stream" if r.get('stream_ok') else "non-streaming"
-            w.writerow([r['model'], extract_vram(r['model']), r['ttft'] or '',
-                        r.get('code_response_time',''), r.get('gen_response_time',''),
-                        r.get('output_tps_code',''), r.get('output_tps_gen',''),
-                        r.get('code_output_tokens',''), r.get('gen_output_tokens',''),
-                        r['code_score'], r['gen_score'], tot, r['total_time'], m, "OK", ""])
+            w.writerow([r['model'], r.get('source',''), extract_vram(r['model']), r['ttft'] or '',
+                        r.get('code_response_time',''), r.get('code_output_tokens',''),
+                        r.get('output_tps_code',''), r['code_score'],
+                        r.get('gen_response_time',''), r.get('gen_output_tokens',''),
+                        r.get('output_tps_gen',''), r['gen_score'],
+                        tot, r['total_time'], m, "OK", ""])
         else:
-            w.writerow([r['model'], "", "", "", "", "", "", "", "", "", "", "", "", "", "FAIL", r.get('error','')])
+            cols = 17
+            row = [""] * cols
+            row[0] = r['model']
+            row[1] = r.get('source','')
+            row[-3] = "FAIL"
+            row[-2] = r.get('error','')
+            w.writerow(row)
     return out.getvalue()
 
 
@@ -839,7 +846,7 @@ def run_model(model_name, source, state, session_seed=0):
     start = time.time()
 
     r = {
-        "model": model_name, "status": "ok", "stream_ok": True,
+        "model": model_name, "source": source, "status": "ok", "stream_ok": True,
         "ttft": None, "output_tps_code": None, "output_tps_gen": None,
         "code_output_tokens": 0, "gen_output_tokens": 0,
         "code_score": 0, "gen_score": 0, "prompt_tokens": 0, "completion_tokens": 0,
