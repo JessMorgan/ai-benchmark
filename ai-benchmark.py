@@ -1188,7 +1188,6 @@ def tui_main(state, stop_event, num_sources=0):
             _used.add(ab)
 
         while not stop_event.is_set():
-            stdscr.clear()
             max_y, max_x = stdscr.getmaxyx()
             snap = state.snapshot()
             done = state.completed
@@ -1197,6 +1196,19 @@ def tui_main(state, stop_event, num_sources=0):
             running_gen = [n for n, s in snap.items() if s["status"] == "running_gen"]
             queued = [n for n, s in snap.items() if s["status"] == "queued"]
             pending = [n for n, s in snap.items() if s["status"] == "pending"]
+
+            # ── Line writer (clrtoeol avoids leftover chars without flash) ──
+            def _wr(y, x, text, attr=0):
+                """Clear line then write — no full-screen escape."""
+                stdscr.move(y, x)
+                stdscr.clrtoeol()
+                try:
+                    stdscr.addstr(y, x, text[:max_x], attr)
+                except:
+                    try:
+                        stdscr.addstr(y, x, text[:max_x])
+                    except:
+                        pass
 
             # ── Layout geometry (fixed: never shifts) ──
             FOOTER_LINE = max_y - 1
@@ -1211,7 +1223,7 @@ def tui_main(state, stop_event, num_sources=0):
             ts = datetime.now().strftime('%H:%M:%S')
             hdr = f"AI Benchmark — Parallel  |  {ts}"
             if max_x > len(hdr):
-                stdscr.addstr(0, 0, hdr, curses.A_BOLD)
+                _wr(0, 0, hdr, curses.A_BOLD)
             total_models = len(snap)
             failed_count = sum(1 for s in snap.values() if s["status"] == "failed")
             err_indicator = f"  |  \u26a0 {failed_count} failed" if failed_count else ""
@@ -1222,12 +1234,11 @@ def tui_main(state, stop_event, num_sources=0):
                        f"{err_indicator}"
                        f"  |  \u2191\u2195 scroll {scroll_offset + 1}-{min(total_models, scroll_offset + VISIBLE_ROWS)}/{total_models}")
             if max_y > 1 and max_x > len(summary):
-                stdscr.addstr(1, 0, summary)
+                _wr(1, 0, summary)
 
             # ── Separator ──
             if max_y > 2:
-                sep = "\u2500" * min(max_x, 80)
-                stdscr.addstr(2, 0, sep)
+                _wr(2, 0, "\u2500" * min(max_x, 80))
 
             # ── Column headers ──
             col_hdr = (f"{'#':>3}  {'S':<3} {'Model':<18}  "
@@ -1235,10 +1246,7 @@ def tui_main(state, stop_event, num_sources=0):
                        f" {'CSc':>4} {'CTok':>5} {'CTm':>5} {'CTPS':>5}"
                        f" {'GSc':>4} {'GTok':>5} {'GTm':>5} {'GTPS':>5}")
             if max_y > 3:
-                try:
-                    stdscr.addstr(3, 0, col_hdr[:max_x], curses.A_UNDERLINE)
-                except:
-                    stdscr.addstr(3, 0, col_hdr[:max_x])
+                _wr(3, 0, col_hdr, curses.A_UNDERLINE)
 
             # ── Handle scroll keys ──
             key = stdscr.getch()
@@ -1302,25 +1310,26 @@ def tui_main(state, stop_event, num_sources=0):
                 elif sv in ("running_code", "running_gen"):
                     try: attr = curses.color_pair(2)
                     except: pass
+                _wr(MODEL_TOP + row_idx, 0, line, attr)
+
+            # Clear any leftover model rows below the last written one
+            # (handles terminal resize or scroll-offset clamp)
+            model_end = MODEL_TOP + min(VISIBLE_ROWS, max(0, total_models - scroll_offset))
+            for r in range(model_end, MODEL_BOTTOM + 1):
                 try:
-                    stdscr.addstr(MODEL_TOP + row_idx, 0, line[:max_x], attr)
+                    stdscr.move(r, 0)
+                    stdscr.clrtoeol()
                 except:
                     pass
 
             # ── Separator before live section ──
             if MODEL_BOTTOM >= 0:
-                try:
-                    stdscr.addstr(MODEL_BOTTOM, 0, ("\u2500" * min(max_x, 60))[:max_x])
-                except:
-                    pass
+                _wr(MODEL_BOTTOM, 0, "\u2500" * min(max_x, 60))
 
             # ── Live status section (fixed height, never shifts) ──
             live_models = running_code + running_gen
             live_row = LIVE_TOP
-            try:
-                stdscr.addstr(live_row, 0, "Live:", curses.A_BOLD)
-            except:
-                pass
+            _wr(live_row, 0, "Live:", curses.A_BOLD)
             live_row += 1
             for nm in live_models[:LIVE_HEIGHT - 1]:
                 if live_row >= LOG_TOP:
@@ -1334,34 +1343,36 @@ def tui_main(state, stop_event, num_sources=0):
                        f"Att {s['attempt']}/3  Tok {s['max_tok']}  "
                        f"{elapsed:5.0f}s"
                        f"{'  '+err if err else ''}")
+                _wr(live_row, 0, msg)
+                live_row += 1
+            # Clear unused live-section rows
+            for r in range(live_row, LOG_TOP):
                 try:
-                    stdscr.addstr(live_row, 0, msg[:max_x])
+                    stdscr.move(r, 0)
+                    stdscr.clrtoeol()
                 except:
                     pass
-                live_row += 1
 
             # ── Error log section (fixed 3 lines, no shifting) ──
             log_row = LOG_TOP
             recent_errors = state.recent_log(2)
             if recent_errors:
-                try:
-                    stdscr.addstr(log_row, 0, "Errors:", curses.A_BOLD)
-                except:
-                    pass
+                _wr(log_row, 0, "Errors:", curses.A_BOLD)
                 log_row += 1
                 for ts_entry, model_entry, msg_entry in recent_errors:
                     if log_row >= FOOTER_LINE:
                         break
                     t_str = datetime.fromtimestamp(ts_entry).strftime('%H:%M:%S')
                     err_msg = f"  {t_str} [{model_entry[:20]}]: {msg_entry}"
-                    try:
-                        stdscr.addstr(log_row, 0, err_msg[:max_x], curses.color_pair(3))
-                    except:
-                        try:
-                            stdscr.addstr(log_row, 0, err_msg[:max_x])
-                        except:
-                            pass
+                    _wr(log_row, 0, err_msg, curses.color_pair(3))
                     log_row += 1
+            # Clear unused error-section rows
+            for r in range(log_row, FOOTER_LINE):
+                try:
+                    stdscr.move(r, 0)
+                    stdscr.clrtoeol()
+                except:
+                    pass
 
             # ── Bottom status line ──
             queuing = queued + pending
@@ -1372,10 +1383,7 @@ def tui_main(state, stop_event, num_sources=0):
                 a = f"{len(live_models)} active" if live_models else ""
                 sep2 = "  |  " if q and a else ""
                 msg = f" {a}{sep2}{q}"
-            try:
-                stdscr.addstr(FOOTER_LINE, 0, msg[:max_x])
-            except:
-                pass
+            _wr(FOOTER_LINE, 0, msg)
 
             stdscr.refresh()
             time.sleep(0.2)
