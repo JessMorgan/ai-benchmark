@@ -1623,8 +1623,9 @@ def main():
 
     # Final output refresh (worker threads already keep them current)
     _save_outputs(state, OUTPUT_DIR)
-    pdf_path = gen_pdf(state.latest_results())
-    ok_count = len([r for r in results if r["status"] == "ok"])
+    final_results = state.latest_results()
+    pdf_path = gen_pdf(final_results)
+    ok_count = len([r for r in final_results if r["status"] == "ok"])
     print(f"\n{'='*70}")
     print(f"AI BENCHMARK COMPLETE — {ok_count}/{total} successful "
           f"({worker_errors} worker errors)")
