@@ -788,6 +788,14 @@ class BenchmarkState:
             except OSError:
                 pass
 
+    def latest_results(self):
+        """Return only the most recent result per model (deduplicates across runs)."""
+        with self._lock:
+            seen = {}
+            for r in self.results:
+                seen[r["model"]] = r
+            return list(seen.values())
+
     @classmethod
     def load_state(cls, path, models):
         with open(path) as f:
@@ -806,6 +814,21 @@ class BenchmarkState:
                 info["last_error"] = ""
             info.pop("attempt_start", None)
         return state
+
+
+def _save_outputs(state, output_dir):
+    """Regenerate CSV/markdown/HTML from latest deduplicated results."""
+    results = state.latest_results()
+    md = gen_markdown(results)
+    csv_txt = gen_csv(results)
+    html = gen_html(results)
+    for fname, content in [("results.md", md), ("results.csv", csv_txt), ("results.html", html)]:
+        path = os.path.join(output_dir, fname)
+        try:
+            with open(path, "w") as f:
+                f.write(content)
+        except OSError:
+            pass
 
 
 def run_model(model_name, source, state, session_seed=0):
@@ -1546,6 +1569,8 @@ def main():
             try:
                 run_model(model_name, source, state, session_seed=session_seed)
                 state.save_state(STATE_FILE)
+                # Keep output files current as models finish
+                _save_outputs(state, OUTPUT_DIR)
             except Exception as e:
                 with errors_lock:
                     worker_errors += 1
@@ -1589,20 +1614,9 @@ def main():
               file=sys.stderr)
         return
 
-    # All models done — generate output files (only on a complete run)
-    results = state.results
-    md = gen_markdown(results)
-    csv_txt = gen_csv(results)
-    html = gen_html(results)
-
-    with open(os.path.join(OUTPUT_DIR, "results.md"), "w") as f:
-        f.write(md)
-    with open(os.path.join(OUTPUT_DIR, "results.csv"), "w") as f:
-        f.write(csv_txt)
-    with open(os.path.join(OUTPUT_DIR, "results.html"), "w") as f:
-        f.write(html)
-
-    pdf_path = gen_pdf(results)
+    # Final output refresh (worker threads already keep them current)
+    _save_outputs(state, OUTPUT_DIR)
+    pdf_path = gen_pdf(state.latest_results())
     ok_count = len([r for r in results if r["status"] == "ok"])
     print(f"\n{'='*70}")
     print(f"AI BENCHMARK COMPLETE — {ok_count}/{total} successful "
