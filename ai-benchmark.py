@@ -176,6 +176,12 @@ GENERAL_TASK = (
     "Be precise and technical — this is for an ML engineering audience. 4-5 paragraphs."
 )
 
+# Temperature constants — set to None to omit temperature from API requests.
+# When None, the API helper functions (stream_request, nonstream_request)
+# will not include a "temperature" field in the request body at all.
+CODE_TEMPERATURE = 0.5      # used for code generation tasks
+GENERAL_TEMPERATURE = 0.9   # used for general reasoning tasks
+
 OUTPUT_DIR = None       # set from config in main()
 STATE_FILE = None       # set from config in main()
 SOURCE_CONFIG = None    # loaded from config file
@@ -305,7 +311,7 @@ def log_request_entry(log_path, curl_cmd, response_body, request_label=None):
 
 # ─── API helpers ────────────────────────────────────────────────────────────
 
-def stream_request(model, source, prompt, max_tokens=2048, api_url=None, headers=None, log_path=None, log_label=None, session_seed=0):
+def stream_request(model, source, prompt, max_tokens=2048, api_url=None, headers=None, log_path=None, log_label=None, session_seed=0, temperature=None):
     start = time.time()
     first_tok = None
     text = ""
@@ -319,6 +325,8 @@ def stream_request(model, source, prompt, max_tokens=2048, api_url=None, headers
     try:
         body = {"model": model, "messages": [{"role": "user", "content": prompt}],
                 "max_tokens": max_tokens, "stream": True}
+        if temperature is not None:
+            body["temperature"] = temperature
         if session_seed:
             body["seed"] = session_seed
         resp = requests.post(
@@ -366,7 +374,7 @@ def stream_request(model, source, prompt, max_tokens=2048, api_url=None, headers
     return text, first_tok, time.time(), error, finish_reason, usage
 
 
-def nonstream_request(model, source, prompt, max_tokens=2048, api_url=None, headers=None, log_path=None, log_label=None, session_seed=0):
+def nonstream_request(model, source, prompt, max_tokens=2048, api_url=None, headers=None, log_path=None, log_label=None, session_seed=0, temperature=None):
     start = time.time()
     error = None; text = ""; usage = {}; finish_reason = None
     cfg = SOURCE_CONFIG.get(source, {})
@@ -377,6 +385,8 @@ def nonstream_request(model, source, prompt, max_tokens=2048, api_url=None, head
     try:
         body = {"model": model, "messages": [{"role": "user", "content": prompt}],
                 "max_tokens": max_tokens, "stream": False}
+        if temperature is not None:
+            body["temperature"] = temperature
         if session_seed:
             body["seed"] = session_seed
         resp = requests.post(
@@ -886,7 +896,7 @@ def run_model(model_name, source, state, session_seed=0):
             api_url=cfg["api_url"], headers=cfg["headers"],
             log_path=log_file,
             log_label=f"Code Task (Streaming, attempt {attempt + 1})",
-            session_seed=session_seed)
+            session_seed=session_seed, temperature=CODE_TEMPERATURE)
 
         if serr or first_tok is None:
             # If streaming timed out, non-streaming will hit the same
@@ -906,7 +916,7 @@ def run_model(model_name, source, state, session_seed=0):
                 api_url=cfg["api_url"], headers=cfg["headers"],
                 log_path=log_file,
                 log_label=f"Code Task (Non-Streaming, attempt {attempt + 1})",
-                session_seed=session_seed)
+                session_seed=session_seed, temperature=CODE_TEMPERATURE)
 
             seed_retried = False
 
@@ -922,7 +932,7 @@ def run_model(model_name, source, state, session_seed=0):
                         api_url=cfg["api_url"], headers=cfg["headers"],
                         log_path=log_file,
                         log_label=f"Code Task (Streaming, no-seed retry)",
-                        session_seed=0)
+                        session_seed=0, temperature=CODE_TEMPERATURE)
                     if serr_r or ft_r is None:
                         # Also skip nonstream if the seed-retry stream timed out
                         if serr_r and "ReadTimeout" in serr_r:
@@ -939,7 +949,7 @@ def run_model(model_name, source, state, session_seed=0):
                             api_url=cfg["api_url"], headers=cfg["headers"],
                             log_path=log_file,
                             log_label=f"Code Task (Non-Streaming, no-seed retry)",
-                            session_seed=0)
+                            session_seed=0, temperature=CODE_TEMPERATURE)
                         if nserr_r:
                             r["status"] = "error"
                             r["error"] = (f"Stream: {serr_r or 'no tokens'}. "
@@ -1051,7 +1061,7 @@ def run_model(model_name, source, state, session_seed=0):
             api_url=cfg["api_url"], headers=cfg["headers"],
             log_path=log_file,
             log_label=f"General Task (attempt {attempt + 1})",
-            session_seed=session_seed)
+            session_seed=session_seed, temperature=GENERAL_TEMPERATURE)
 
         if gen_err:
             seed_retried_gen = False
@@ -1067,7 +1077,7 @@ def run_model(model_name, source, state, session_seed=0):
                         api_url=cfg["api_url"], headers=cfg["headers"],
                         log_path=log_file,
                         log_label=f"General Task (no-seed retry)",
-                        session_seed=0)
+                        session_seed=0, temperature=GENERAL_TEMPERATURE)
                     if not gen_err:
                         pass
                     else:
