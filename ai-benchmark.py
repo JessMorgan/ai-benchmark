@@ -1230,7 +1230,21 @@ def tui_main(state, stop_event, num_sources=0):
             # ── Line writer (clrtoeol avoids leftover chars without flash) ──
             def _wr(y, x, text, attr=0):
                 """Clear line then write — no full-screen escape."""
-                stdscr.move(y, x)
+                # print(f"Moving cursor to y={y}, x={x}")
+                # Get terminal size here before moving
+                max_y, max_x = stdscr.getmaxyx()
+                # print(f"Terminal size: max_y={max_y}, max_x={max_x}")
+                # Ensure coordinates are within bounds before moving
+                if 0 <= y < max_y and 0 <= x < max_x:
+                    stdscr.move(y, x)
+                else:
+                    # Handle out-of-bounds error, perhaps by logging or moving to a safe position
+                    # For now, let's print an error message and move to the last valid position if possible
+                    print(f"Error: Attempted cursor move to invalid coordinates y={y}, x={x} for terminal size max_y={max_y}, max_x={max_x}")
+                    # Optionally move to a safe position like 0,0 or the last valid known position
+                    # stdscr.move(max_y - 1, 0) # Example: move to bottom-left corner
+                    pass # Or simply do nothing if out of bounds, to avoid crashing the TUI
+
                 stdscr.clrtoeol()
                 try:
                     stdscr.addstr(y, x, text[:max_x], attr)
