@@ -1,13 +1,11 @@
 """Shared utilities for tests."""
-import importlib.util
 
 
 def load_benchmark_module():
-    """Load ai-benchmark.py as a module using importlib.
+    """Load benchmark_core.py as a module.
 
-    The file has a hyphen in its name, so it cannot be imported directly.
+    benchmark_core.py is importable directly, so this just imports it.
+    Kept as a helper in case the import path ever changes.
     """
-    spec = importlib.util.spec_from_file_location("ai_benchmark", "ai-benchmark.py")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    import benchmark_core
+    return benchmark_core
