@@ -9,6 +9,9 @@ from datetime import datetime
 import requests
 
 
+_log_lock = threading.Lock()
+
+
 # ─── Config loading ──────────────────────────────────────────────────────────
 
 def _expand_env(val):
@@ -57,8 +60,9 @@ def dump_default_config():
         "output_dir": "benchmark-output-dir",
         "timeout": 1200,
         "token_levels": [16384],
-        "code_temperature": 0.2,
-        "general_temperature": 0.7,
+        "plugin_execution_mode": "sequential",
+        "rate-limiter_temperature": 0.2,
+        "moe-dense_temperature": 0.7,
         "plugins_whitelist": [],
         "plugins_blacklist": [],
         "sources": {
@@ -194,12 +198,13 @@ def build_curl_cmd(model, prompt, max_tokens, stream, api_url, headers):
 def log_request_entry(log_path, curl_cmd, response_body, request_label=None):
     """Append a curl command and response body to the log file."""
     os.makedirs(os.path.dirname(log_path), exist_ok=True)
-    with open(log_path, 'a') as f:
-        if request_label:
-            f.write(f"\n# === {request_label} ===\n")
-        f.write(f"{curl_cmd}\n\n")
-        f.write(f"{response_body}\n")
-        f.write("\n" + "-" * 60 + "\n")
+    with _log_lock:
+        with open(log_path, 'a') as f:
+            if request_label:
+                f.write(f"\n# === {request_label} ===\n")
+            f.write(f"{curl_cmd}\n\n")
+            f.write(f"{response_body}\n")
+            f.write("\n" + "-" * 60 + "\n")
 
 
 # ─── API helpers ────────────────────────────────────────────────────────────
@@ -832,8 +837,6 @@ def _run_plugin_task(model_name, source, plugin, source_config, timeout, token_l
 def run_model(model_name, source, state, active_plugins, source_config, timeout,
               token_levels, output_dir, session_seed=0, global_cfg=None):
     """Run active plugins for one model."""
-    logs_dir = os.path.join(output_dir, "logs")
-    log_file = os.path.join(logs_dir, f"{sanitize_filename(model_name)}.log")
     start = time.time()
 
     r = {
@@ -879,6 +882,24 @@ def run_model(model_name, source, state, active_plugins, source_config, timeout,
         state.update(model_name, status="completed", elapsed=r["total_time"])
         return
 
+    plugin_execution_mode = (global_cfg or {}).get("plugin_execution_mode", "sequential")
+
+    if plugin_execution_mode == "parallel":
+        _run_plugins_parallel(model_name, source, state, active_plugins, plugins_to_run,
+                              source_config, timeout, token_levels, output_dir,
+                              session_seed, global_cfg, r, start)
+    else:
+        _run_plugins_sequential(model_name, source, state, active_plugins, plugins_to_run,
+                                source_config, timeout, token_levels, output_dir,
+                                session_seed, global_cfg, r, start)
+
+
+def _run_plugins_sequential(model_name, source, state, active_plugins, plugins_to_run,
+                            source_config, timeout, token_levels, output_dir,
+                            session_seed, global_cfg, r, start):
+    """Run plugins sequentially for one model."""
+    logs_dir = os.path.join(output_dir, "logs")
+    log_file = os.path.join(logs_dir, f"{sanitize_filename(model_name)}.log")
     first_tok_time = None
     any_stream_ok = False
 
@@ -907,6 +928,69 @@ def run_model(model_name, source, state, active_plugins, source_config, timeout,
                         f"{pid}_tps": result[f"{pid}_tps"],
                         f"{pid}_response_time": result[f"{pid}_response_time"],
                         f"{pid}_output_tokens": result[f"{pid}_output_tokens"]})
+
+    r["stream_ok"] = any_stream_ok
+    if first_tok_time is not None:
+        r["ttft"] = round(first_tok_time, 3)
+    r["total_time"] = round(time.time() - start, 1)
+    state.add_result(r)
+    state.update(model_name, status="completed", elapsed=r["total_time"])
+
+
+def _run_plugins_parallel(model_name, source, state, active_plugins, plugins_to_run,
+                            source_config, timeout, token_levels, output_dir,
+                            session_seed, global_cfg, r, start):
+    """Run plugins in parallel for one model."""
+    results = {}
+    errors = {}
+    lock = threading.Lock()
+
+    def run_one(plugin):
+        pid = plugin.id
+        log_file = os.path.join(output_dir, "logs", f"{sanitize_filename(model_name)}.log")
+        state.update(model_name, status=f"running_{pid}")
+        result, err = _run_plugin_task(model_name, source, plugin, source_config,
+                                       timeout, token_levels, session_seed, log_file,
+                                       global_cfg or {})
+        with lock:
+            results[pid] = result
+            if err:
+                errors[pid] = err
+        if err:
+            return
+        state.update(model_name,
+                     **{f"{pid}_score": result[f"{pid}_score"],
+                        f"{pid}_tps": result[f"{pid}_tps"],
+                        f"{pid}_response_time": result[f"{pid}_response_time"],
+                        f"{pid}_output_tokens": result[f"{pid}_output_tokens"]})
+
+    threads = []
+    for plugin in plugins_to_run:
+        t = threading.Thread(target=run_one, args=(plugin,), daemon=True)
+        t.start()
+        threads.append(t)
+
+    for t in threads:
+        t.join()
+
+    if errors:
+        r["status"] = "error"
+        r["error"] = "; ".join(f"{pid}: {err}" for pid, err in errors.items())
+        r["total_time"] = round(time.time() - start, 1)
+        state.add_result(r)
+        state.update(model_name, status="failed", error=r["error"], elapsed=r["total_time"], last_error=r["error"])
+        return
+
+    first_tok_time = None
+    any_stream_ok = False
+    for plugin in plugins_to_run:
+        pid = plugin.id
+        result = results[pid]
+        r.update(result)
+        if plugin.supports_streaming:
+            any_stream_ok = True
+            if first_tok_time is None and result.get(f"{pid}_stream_ok"):
+                first_tok_time = result[f"{pid}_response_time"]
 
     r["stream_ok"] = any_stream_ok
     if first_tok_time is not None:

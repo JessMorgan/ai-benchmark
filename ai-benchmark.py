@@ -376,10 +376,11 @@ def main():
                         help='Override request timeout in seconds from config')
     parser.add_argument('--token-levels', type=int, nargs='+', default=None,
                         help='Override token levels (e.g. --token-levels 4096 8192 16384)')
-    parser.add_argument('--code-temperature', type=float, default=None,
-                        help='Temperature for rate-limiter task (overrides config)')
-    parser.add_argument('--general-temperature', type=float, default=None,
-                        help='Temperature for moe-dense task (overrides config)')
+    parser.add_argument('--plugin-temperature', type=str, nargs='+', default=None,
+                        help='Per-plugin temperatures as id=value (e.g. --plugin-temperature rate-limiter=0.2 moe-dense=0.7)')
+    parser.add_argument('--plugin-execution-mode', type=str, default=None,
+                        choices=['sequential', 'parallel'],
+                        help='Run plugins sequentially or in parallel for each model (default: sequential)')
     parser.add_argument('--plugins-whitelist', type=str, nargs='+', default=None,
                         help='Run only these plugins (e.g. --plugins-whitelist rate-limiter moe-dense)')
     parser.add_argument('--plugins-blacklist', type=str, nargs='+', default=None,
@@ -422,14 +423,35 @@ def main():
     if args.token_levels is not None:
         token_levels = args.token_levels
 
-    if args.code_temperature is not None:
-        cfg["rate_limiter_temperature"] = args.code_temperature
-    elif "code_temperature" in cfg:
-        cfg["rate_limiter_temperature"] = cfg["code_temperature"]
-    if args.general_temperature is not None:
-        cfg["moe_dense_temperature"] = args.general_temperature
-    elif "general_temperature" in cfg:
-        cfg["moe_dense_temperature"] = cfg["general_temperature"]
+    # Per-plugin temperatures: CLI overrides config. Config keys may use either
+    # hyphen or underscore, e.g. "rate-limiter_temperature" or "rate_servererature".
+    plugin_temperatures = {}
+    for key, value in cfg.items():
+        if key.endswith("_temperature"):
+            plugin_id = key[:-len("_temperature")].replace("_", "-")
+            plugin_temperatures[plugin_id] = value
+    # Backward compatibility for legacy config keys
+    if "code_temperature" in cfg and "rate-limiter" not in plugin_temperatures:
+        plugin_temperatures["rate-limiter"] = cfg["code_temperature"]
+    if "general_temperature" in cfg and "moe-dense" not in plugin_temperatures:
+        plugin_temperatures["moe-dense"] = cfg["general_temperature"]
+    if args.plugin_temperature:
+        for item in args.plugin_temperature:
+            if "=" not in item:
+                print(f"❌ Invalid --plugin-temperature value: {item}. Expected id=value.", file=sys.stderr)
+                sys.exit(1)
+            pid, temp_str = item.split("=", 1)
+            try:
+                plugin_temperatures[pid] = float(temp_str)
+            except ValueError:
+                print(f"❌ Invalid temperature for {pid}: {temp_str}", file=sys.stderr)
+                sys.exit(1)
+    cfg["plugin_temperatures"] = plugin_temperatures
+
+    plugin_execution_mode = cfg.get("plugin_execution_mode", "sequential")
+    if args.plugin_execution_mode:
+        plugin_execution_mode = args.plugin_execution_mode
+    cfg["plugin_execution_mode"] = plugin_execution_mode
 
     whitelist = args.plugins_whitelist or cfg.get("plugins_whitelist") or None
     blacklist = args.plugins_blacklist or cfg.get("plugins_blacklist") or None
