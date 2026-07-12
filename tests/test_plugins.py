@@ -10,6 +10,10 @@ class TestPluginDiscovery(unittest.TestCase):
         ids = [p.id for p in plugins]
         self.assertIn("rate-limiter", ids)
         self.assertIn("moe-dense", ids)
+        self.assertIn("tool-calling", ids)
+        self.assertIn("orchestration", ids)
+        self.assertIn("code-review", ids)
+        self.assertIn("structured-output", ids)
 
     def test_plugins_have_required_metadata(self):
         plugins = discover_plugins()
@@ -25,7 +29,7 @@ class TestPluginDiscovery(unittest.TestCase):
 
     def test_blacklist_filters_plugins(self):
         plugins = discover_plugins(blacklist=["moe-dense"])
-        self.assertEqual([p.id for p in plugins], ["rate-limiter"])
+        self.assertEqual([p.id for p in plugins], ["code-review", "orchestration", "rate-limiter", "structured-output", "tool-calling"])
 
     def test_whitelist_and_blacklist_mutually_exclusive(self):
         with self.assertRaises(ValueError):
