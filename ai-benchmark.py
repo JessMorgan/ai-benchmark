@@ -69,6 +69,8 @@ def dump_default_config():
         "output_dir": "benchmark-output-dir",
         "timeout": 1200,
         "token_levels": [16384],
+        "code_temperature": 0.2,
+        "general_temperature": 0.7,
         "sources": {
             "Local Server 1": {
                 "api_url": "http://local.server:11434/chat/completions",
@@ -1465,6 +1467,7 @@ def main():
     sys.stderr.flush()
 
     global SOURCE_CONFIG, MODELS, OUTPUT_DIR, STATE_FILE, TIMEOUT, TOKEN_LEVELS
+    global CODE_TEMPERATURE, GENERAL_TEMPERATURE
 
     parser = argparse.ArgumentParser(
         description="AI Model Benchmark — Run code and general reasoning benchmarks across multiple API sources.",
@@ -1486,6 +1489,10 @@ def main():
                         help='Override request timeout in seconds from config')
     parser.add_argument('--token-levels', type=int, nargs='+', default=None,
                         help='Override token levels (e.g. --token-levels 4096 8192 16384)')
+    parser.add_argument('--code-temperature', type=float, default=None,
+                        help='Temperature for code generation task (overrides config)')
+    parser.add_argument('--general-temperature', type=float, default=None,
+                        help='Temperature for general reasoning task (overrides config)')
     parser.add_argument('--dump-default-config', action='store_true',
                         help='Print a default config file to stdout and exit')
     parser.add_argument('--base-url', default=None,
@@ -1524,6 +1531,16 @@ def main():
     TOKEN_LEVELS = cfg.get("token_levels", [16384])
     if args.token_levels is not None:
         TOKEN_LEVELS = args.token_levels
+
+    # Temperature: CLI > config > code default (None)
+    if "code_temperature" in cfg:
+        CODE_TEMPERATURE = cfg["code_temperature"]
+    if args.code_temperature is not None:
+        CODE_TEMPERATURE = args.code_temperature
+    if "general_temperature" in cfg:
+        GENERAL_TEMPERATURE = cfg["general_temperature"]
+    if args.general_temperature is not None:
+        GENERAL_TEMPERATURE = args.general_temperature
 
     print(f"📋 Loaded {len(MODELS)} models across {len(SOURCE_CONFIG)} sources "
           f"from {config_path}", file=sys.stderr)
