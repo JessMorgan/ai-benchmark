@@ -179,8 +179,8 @@ GENERAL_TASK = (
 # Temperature constants — set to None to omit temperature from API requests.
 # When None, the API helper functions (stream_request, nonstream_request)
 # will not include a "temperature" field in the request body at all.
-CODE_TEMPERATURE = 0.5      # used for code generation tasks
-GENERAL_TEMPERATURE = 0.9   # used for general reasoning tasks
+CODE_TEMPERATURE = None      # used for code generation tasks
+GENERAL_TEMPERATURE = None   # used for general reasoning tasks
 
 OUTPUT_DIR = None       # set from config in main()
 STATE_FILE = None       # set from config in main()
