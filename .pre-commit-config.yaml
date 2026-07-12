@@ -1,0 +1,37 @@
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.4.0
+    hooks:
+      - id: ruff
+        args: ["--fix"]
+        name: ruff check
+
+  - repo: local
+    hooks:
+      - id: python-syntax-check
+        name: Python syntax check
+        entry: python -m py_compile ai-benchmark.py benchmark_core.py benchmark_plugin.py plugins/__init__.py plugins/rate_limiter.py plugins/moe_dense.py
+        language: system
+        pass_filenames: false
+        always_run: true
+
+      - id: mypy
+        name: mypy type check
+        entry: mypy ai-benchmark.py benchmark_core.py benchmark_plugin.py plugins
+        language: system
+        pass_filenames: false
+        always_run: true
+
+      - id: cli-smoke-test
+        name: CLI smoke test
+        entry: python ai-benchmark.py --dump-default-config
+        language: system
+        pass_filenames: false
+        always_run: true
+
+      - id: unit-tests
+        name: Run unit tests
+        entry: python -m unittest discover -s tests -v
+        language: system
+        pass_filenames: false
+        always_run: true

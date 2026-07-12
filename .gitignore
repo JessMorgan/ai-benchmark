@@ -1,0 +1,4 @@
+# Local config with API keys
+benchmark-config.json
+benchmark-results/
+__pycache__/
