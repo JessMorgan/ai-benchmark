@@ -1559,6 +1559,19 @@ def main():
             print(f"📂 Resuming — {completed}/{total} models already completed.\n"
                   f"   Remove {STATE_FILE} or use --restart to start fresh.",
                   file=sys.stderr)
+
+            # If ALL models are in a terminal state (completed or failed),
+            # the prior run finished. Don't restart — just print and exit.
+            if completed == total and total > 0:
+                snap = state.snapshot()
+                ok_count = sum(1 for info in snap.values() if info["status"] == "completed")
+                fail_count = total - ok_count
+                print(f"\n{'='*70}")
+                print(f"✅ PRIOR RUN COMPLETE — {ok_count}/{total} successful"
+                      f" ({fail_count} failed)")
+                print(f"   Results: {OUTPUT_DIR}/")
+                print(f"{'='*70}")
+                sys.exit(0)
         except Exception as e:
             print(f"⚠️  Could not load state file ({e}), starting fresh.",
                   file=sys.stderr)
