@@ -19,6 +19,7 @@ import time
 from benchmark_core import (
     BenchmarkState,
     _source_abbrev,
+    close_active_requests,
     dump_default_config,
     generate_config_from_api,
     load_config,
@@ -378,9 +379,8 @@ def main():
                         help='Override token levels (e.g. --token-levels 4096 8192 16384)')
     parser.add_argument('--plugin-temperature', type=str, nargs='+', default=None,
                         help='Per-plugin temperatures as id=value (e.g. --plugin-temperature rate-limiter=0.2 moe-dense=0.7)')
-    parser.add_argument('--plugin-execution-mode', type=str, default=None,
-                        choices=['sequential', 'parallel'],
-                        help='Run plugins sequentially or in parallel for each model (default: sequential)')
+    parser.add_argument('--plugin-thread-limit', type=int, default=None,
+                        help='Max threads per model for plugin execution. 0 means one thread per plugin (default: 1)')
     parser.add_argument('--plugins-whitelist', type=str, nargs='+', default=None,
                         help='Run only these plugins (e.g. --plugins-whitelist rate-limiter moe-dense)')
     parser.add_argument('--plugins-blacklist', type=str, nargs='+', default=None,
@@ -454,10 +454,10 @@ def main():
                 sys.exit(1)
     cfg["plugin_temperatures"] = plugin_temperatures
 
-    plugin_execution_mode = cfg.get("plugin_execution_mode", "sequential")
-    if args.plugin_execution_mode:
-        plugin_execution_mode = args.plugin_execution_mode
-    cfg["plugin_execution_mode"] = plugin_execution_mode
+    plugin_thread_limit = cfg.get("plugin_thread_limit", 1)
+    if args.plugin_thread_limit is not None:
+        plugin_thread_limit = args.plugin_thread_limit
+    cfg["plugin_thread_limit"] = plugin_thread_limit
 
     whitelist = args.plugins_whitelist or cfg.get("plugins_whitelist") or None
     blacklist = args.plugins_blacklist or cfg.get("plugins_blacklist") or None
@@ -580,7 +580,7 @@ def main():
             try:
                 run_model(model_name, source, state, active_plugins, source_config,
                           timeout, token_levels, output_dir, session_seed=session_seed,
-                          global_cfg=cfg)
+                          global_cfg=cfg, stop_event=stop_event)
                 state.save_state(state_file, plugin_versions=plugin_versions)
                 _save_outputs(state, output_dir, active_plugins)
             except Exception as e:
@@ -607,6 +607,7 @@ def main():
             stop_event.set()
             print("\n\n⚠️  Ctrl+C — saving state and shutting down...", file=sys.stderr)
             print("   (Press Ctrl+C again to force exit)", file=sys.stderr)
+            close_active_requests()
             for t in source_threads.values():
                 t.join(timeout=3)
 

@@ -4,12 +4,27 @@ import os
 import re
 import threading
 import time
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from datetime import datetime
 
 import requests
 
 
 _log_lock = threading.Lock()
+
+# Active HTTP responses so Ctrl+C can close them and unblock plugin threads.
+_active_requests_lock = threading.Lock()
+_active_requests: set = set()
+
+
+def close_active_requests():
+    """Close all in-flight HTTP responses to unblock worker threads."""
+    with _active_requests_lock:
+        for resp in list(_active_requests):
+            try:
+                resp.close()
+            except Exception:
+                pass
 
 
 # ─── Config loading ──────────────────────────────────────────────────────────
@@ -60,7 +75,7 @@ def dump_default_config():
         "output_dir": "benchmark-output-dir",
         "timeout": 1200,
         "token_levels": [16384],
-        "plugin_execution_mode": "sequential",
+        "plugin_thread_limit": 1,
         "rate-limiter_temperature": 0.2,
         "moe-dense_temperature": 0.7,
         "plugins_whitelist": [],
@@ -230,15 +245,17 @@ def stream_request(source_config, timeout, model, source, prompt, max_tokens=204
             body["seed"] = session_seed
         resp = requests.post(
             api_url, headers=headers, json=body, stream=True, timeout=timeout)
-        if resp.status_code != 200:
-            if log_path and curl_cmd:
-                log_request_entry(log_path, curl_cmd,
-                                  f"HTTP {resp.status_code}: {resp.text[:500]}", log_label)
-            return text, first_tok, time.time(), f"HTTP {resp.status_code}: {resp.text[:150]}", finish_reason, usage
+        with _active_requests_lock:
+            _active_requests.add(resp)
         watchdog = threading.Timer(timeout, resp.close)
         watchdog.daemon = True
         watchdog.start()
         try:
+            if resp.status_code != 200:
+                if log_path and curl_cmd:
+                    log_request_entry(log_path, curl_cmd,
+                                      f"HTTP {resp.status_code}: {resp.text[:500]}", log_label)
+                return text, first_tok, time.time(), f"HTTP {resp.status_code}: {resp.text[:150]}", finish_reason, usage
             for line in resp.iter_lines(decode_unicode=True):
                 if not line:
                     continue
@@ -261,6 +278,9 @@ def stream_request(source_config, timeout, model, source, prompt, max_tokens=204
                         continue
         finally:
             watchdog.cancel()
+            with _active_requests_lock:
+                _active_requests.discard(resp)
+            resp.close()
         if not finish_reason and time.time() - start > timeout:
             error = f"Total timeout ({timeout}s) exceeded"
         if log_path and curl_cmd:
@@ -291,8 +311,12 @@ def nonstream_request(source_config, timeout, model, source, prompt, max_tokens=
             body["temperature"] = temperature
         if session_seed:
             body["seed"] = session_seed
+        # Use stream=True at the transport layer so the response can be closed
+        # early on Ctrl+C, while the server still returns a single JSON object.
         resp = requests.post(
-            api_url, headers=headers, json=body, timeout=timeout)
+            api_url, headers=headers, json=body, stream=True, timeout=timeout)
+        with _active_requests_lock:
+            _active_requests.add(resp)
         watchdog = threading.Timer(timeout, resp.close)
         watchdog.daemon = True
         watchdog.start()
@@ -303,8 +327,9 @@ def nonstream_request(source_config, timeout, model, source, prompt, max_tokens=
                     log_request_entry(log_path, curl_cmd,
                                       f"HTTP {resp.status_code}: {raw_resp_text}", log_label)
                 return text, usage, time.time()-start, f"HTTP {resp.status_code}: {resp.text[:150]}", finish_reason
-            raw_resp_text = resp.text
-            data = resp.json()
+            # Use resp.content so requests handles decompression/encoding.
+            raw_resp_text = resp.content.decode("utf-8", errors="replace")
+            data = json.loads(raw_resp_text)
             text = data["choices"][0]["message"]["content"]
             usage = data.get("usage", {})
             finish_reason = data.get("choices", [{}])[0].get("finish_reason")
@@ -312,6 +337,9 @@ def nonstream_request(source_config, timeout, model, source, prompt, max_tokens=
                 log_request_entry(log_path, curl_cmd, raw_resp_text, log_label)
         finally:
             watchdog.cancel()
+            with _active_requests_lock:
+                _active_requests.discard(resp)
+            resp.close()
         if not error and time.time() - start > timeout:
             error = f"Total timeout ({timeout}s) exceeded"
     except Exception as e:
@@ -741,16 +769,15 @@ class BenchmarkState:
 # ─── Model execution ─────────────────────────────────────────────────────────
 
 def _run_plugin_task(model_name, source, plugin, source_config, timeout, token_levels,
-                     session_seed, log_file, global_cfg):
+                     session_seed, log_file, global_cfg, stop_event=None):
     """Run a single plugin task for a model. Returns (result_dict, error)."""
     pid = plugin.id
     cfg = source_config.get(source)
     if cfg is None:
         return None, f"Unknown source '{source}' — not in SOURCE_CONFIG"
 
-    # These state updates are best-effort; the caller may not have a state object.
-    # We keep them for compatibility with the TUI.
-    # (state is not used here to keep the function pure)
+    if stop_event and stop_event.is_set():
+        return None, "Cancelled"
 
     prompt = plugin.get_prompt()
     temperature = plugin.get_temperature(global_cfg or {})
@@ -765,6 +792,8 @@ def _run_plugin_task(model_name, source, plugin, source_config, timeout, token_l
     gen_time = 0
 
     for attempt, max_tok in enumerate(token_levels):
+        if stop_event and stop_event.is_set():
+            return None, "Cancelled"
         attempt_start = time.time()
 
         if plugin.supports_streaming:
@@ -835,7 +864,8 @@ def _run_plugin_task(model_name, source, plugin, source_config, timeout, token_l
 
 
 def run_model(model_name, source, state, active_plugins, source_config, timeout,
-              token_levels, output_dir, session_seed=0, global_cfg=None):
+              token_levels, output_dir, session_seed=0, global_cfg=None,
+              stop_event=None):
     """Run active plugins for one model."""
     start = time.time()
 
@@ -882,83 +912,50 @@ def run_model(model_name, source, state, active_plugins, source_config, timeout,
         state.update(model_name, status="completed", elapsed=r["total_time"])
         return
 
-    plugin_execution_mode = (global_cfg or {}).get("plugin_execution_mode", "sequential")
+    plugin_thread_limit = (global_cfg or {}).get("plugin_thread_limit", 1)
+    try:
+        plugin_thread_limit = int(plugin_thread_limit)
+    except (TypeError, ValueError):
+        plugin_thread_limit = 1
+    if plugin_thread_limit <= 0:
+        plugin_thread_limit = len(plugins_to_run)
 
     state.update(model_name, attempt_start=time.time())
 
-    if plugin_execution_mode == "parallel":
-        _run_plugins_parallel(model_name, source, state, active_plugins, plugins_to_run,
-                              source_config, timeout, token_levels, output_dir,
-                              session_seed, global_cfg, r, start)
-    else:
-        _run_plugins_sequential(model_name, source, state, active_plugins, plugins_to_run,
-                                source_config, timeout, token_levels, output_dir,
-                                session_seed, global_cfg, r, start)
+    _run_plugins(model_name, source, state, active_plugins, plugins_to_run,
+                 source_config, timeout, token_levels, output_dir,
+                 session_seed, global_cfg, r, start,
+                 max_workers=plugin_thread_limit,
+                 stop_event=stop_event)
 
 
-def _run_plugins_sequential(model_name, source, state, active_plugins, plugins_to_run,
-                            source_config, timeout, token_levels, output_dir,
-                            session_seed, global_cfg, r, start):
-    """Run plugins sequentially for one model."""
-    logs_dir = os.path.join(output_dir, "logs")
-    log_file = os.path.join(logs_dir, f"{sanitize_filename(model_name)}.log")
-    first_tok_time = None
-    any_stream_ok = False
+def _run_plugins(model_name, source, state, active_plugins, plugins_to_run,
+                 source_config, timeout, token_levels, output_dir,
+                 session_seed, global_cfg, r, start, max_workers,
+                 stop_event=None):
+    """Run plugins for one model using a thread pool of bounded size.
 
-    for plugin in plugins_to_run:
-        pid = plugin.id
-        result, err = _run_plugin_task(model_name, source, plugin, source_config,
-                                       timeout, token_levels, session_seed, log_file,
-                                       global_cfg or {})
-        if err:
-            r["status"] = "error"
-            r["error"] = err
-            r["total_time"] = round(time.time() - start, 1)
-            state.add_result(r)
-            state.update(model_name, status="failed", error=err, elapsed=r["total_time"], last_error=err)
-            return
-
-        r.update(result)
-        if plugin.supports_streaming:
-            any_stream_ok = True
-            if first_tok_time is None and result.get(f"{pid}_stream_ok"):
-                first_tok_time = result[f"{pid}_response_time"]
-
-        state.update(model_name,
-                     status=f"running_{pid}",
-                     **{f"{pid}_score": result[f"{pid}_score"],
-                        f"{pid}_tps": result[f"{pid}_tps"],
-                        f"{pid}_response_time": result[f"{pid}_response_time"],
-                        f"{pid}_output_tokens": result[f"{pid}_output_tokens"]})
-
-    r["stream_ok"] = any_stream_ok
-    if first_tok_time is not None:
-        r["ttft"] = round(first_tok_time, 3)
-    r["total_time"] = round(time.time() - start, 1)
-    state.add_result(r)
-    state.update(model_name, status="completed", elapsed=r["total_time"])
-
-
-def _run_plugins_parallel(model_name, source, state, active_plugins, plugins_to_run,
-                            source_config, timeout, token_levels, output_dir,
-                            session_seed, global_cfg, r, start):
-    """Run plugins in parallel for one model."""
-    results = {}
+    A single-worker pool (``max_workers=1``) is equivalent to sequential
+    execution, so this helper is used for both sequential and parallel
+    plugin execution.
+    """
+    results = {plugin.id: None for plugin in plugins_to_run}
     errors = {}
     lock = threading.Lock()
+    logs_dir = os.path.join(output_dir, "logs")
+    log_file = os.path.join(logs_dir, f"{sanitize_filename(model_name)}.log")
 
     def run_one(plugin):
         pid = plugin.id
-        log_file = os.path.join(output_dir, "logs", f"{sanitize_filename(model_name)}.log")
         state.update(model_name, status=f"running_{pid}")
         result, err = _run_plugin_task(model_name, source, plugin, source_config,
                                        timeout, token_levels, session_seed, log_file,
-                                       global_cfg or {})
+                                       global_cfg or {}, stop_event=stop_event)
         with lock:
             results[pid] = result
             if err:
                 errors[pid] = err
-        if err:
+        if err or result is None:
             return
         state.update(model_name,
                      **{f"{pid}_score": result[f"{pid}_score"],
@@ -966,14 +963,31 @@ def _run_plugins_parallel(model_name, source, state, active_plugins, plugins_to_
                         f"{pid}_response_time": result[f"{pid}_response_time"],
                         f"{pid}_output_tokens": result[f"{pid}_output_tokens"]})
 
-    threads = []
-    for plugin in plugins_to_run:
-        t = threading.Thread(target=run_one, args=(plugin,), daemon=True)
-        t.start()
-        threads.append(t)
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {executor.submit(run_one, plugin): plugin for plugin in plugins_to_run}
+        pending = set(futures.keys())
+        while pending:
+            if stop_event and stop_event.is_set():
+                for f in pending:
+                    f.cancel()
+                break
+            done, pending = wait(
+                pending, timeout=0.2, return_when=FIRST_COMPLETED)
+            for fut in done:
+                try:
+                    fut.result()
+                except Exception as exc:
+                    plugin = futures[fut]
+                    with lock:
+                        errors[plugin.id] = f"{type(exc).__name__}: {exc}"
 
-    for t in threads:
-        t.join()
+    if stop_event and stop_event.is_set():
+        r["status"] = "error"
+        r["error"] = "Cancelled"
+        r["total_time"] = round(time.time() - start, 1)
+        state.add_result(r)
+        state.update(model_name, status="failed", error=r["error"], elapsed=r["total_time"], last_error=r["error"])
+        return
 
     if errors:
         r["status"] = "error"
@@ -988,6 +1002,8 @@ def _run_plugins_parallel(model_name, source, state, active_plugins, plugins_to_
     for plugin in plugins_to_run:
         pid = plugin.id
         result = results[pid]
+        if result is None:
+            continue
         r.update(result)
         if plugin.supports_streaming:
             any_stream_ok = True
