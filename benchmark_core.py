@@ -154,11 +154,6 @@ def generate_config_from_api(base_url, api_key=None):
 
 # ─── Utility helpers ─────────────────────────────────────────────────────────
 
-def extract_vram(model_name):
-    m = re.search(r'(\d+\.?\d*)\s*G(?:B)?', model_name)
-    return m.group(1) + 'G' if m else '?'
-
-
 def sanitize_filename(name):
     """Sanitize a model name for use as a filename."""
     s = re.sub(r'[^\w\-\.\(\) ]', '_', name)
@@ -376,7 +371,7 @@ def gen_markdown(results, active_plugins, output_dir=None):
         "",
     ]
 
-    header = "| # | Model | VRAM | Load (s) |"
+    header = "| # | Model | Load (s) |"
     for p in active_plugins:
         header += f" {p.name} Resp (s) | {p.name} TPS | {p.name} Tok | {p.name} Score |"
         if output_dir:
@@ -384,7 +379,7 @@ def gen_markdown(results, active_plugins, output_dir=None):
     header += " Total | Time | Mode |"
     lines.append(header)
 
-    sep = "|---|---|---|---|"
+    sep = "|---|---|---|"
     for _p in active_plugins:
         sep += "---|---|---|---|"
         if output_dir:
@@ -395,7 +390,7 @@ def gen_markdown(results, active_plugins, output_dir=None):
     for idx, r in enumerate(results, 1):
         tot = _plugin_total_score(r, active_plugins)
         m = "stream" if r.get('stream_ok') else "nostream"
-        row = f"| {idx} | {r['model']} | {extract_vram(r['model'])} | {r.get('ttft') or '-'} |"
+        row = f"| {idx} | {r['model']} | {r.get('ttft') or '-'} |"
         for p in active_plugins:
             row += (f" {r.get(f'{p.id}_response_time','-')} | "
                     f"{r.get(f'{p.id}_tps','-')} | "
@@ -472,7 +467,7 @@ def gen_csv(results, active_plugins):
     out = io.StringIO()
     import csv
     w = csv.writer(out)
-    headers = ["Model", "Source", "VRAM", "TTFT_s"]
+    headers = ["Model", "Source", "TTFT_s"]
     for p in active_plugins:
         headers.extend([f"{p.id}_Response_s", f"{p.id}_Output_Tokens", f"{p.id}_TPS", f"{p.id}_Score_{int(p.max_score)}"])
     headers.extend(["Total", "Time_s", "Mode", "Status", "Error"])
@@ -481,7 +476,7 @@ def gen_csv(results, active_plugins):
     for r in results:
         tot = _plugin_total_score(r, active_plugins)
         m = "stream" if r.get('stream_ok') else "non-streaming"
-        row = [r['model'], r.get('source', ''), extract_vram(r['model']), r.get('ttft') or '']
+        row = [r['model'], r.get('source', ''), r.get('ttft') or '']
         for p in active_plugins:
             row.extend([
                 r.get(f"{p.id}_response_time", ''),
@@ -504,7 +499,7 @@ def gen_html(results, active_plugins, output_dir=None):
         cls = "ok" if r["status"] == "ok" else "fail"
         tot = _plugin_total_score(r, active_plugins)
         m = "str" if r.get('stream_ok') else "ns"
-        cells = (f'<td>{r["model"]}</td><td>{extract_vram(r["model"])}</td>'
+        cells = (f'<td>{r["model"]}</td>'
                  f'<td>{r.get("ttft") or "-"}</td>')
         for p in active_plugins:
             score_val = r.get(f"{p.id}_score", "-")
@@ -545,7 +540,7 @@ def gen_html(results, active_plugins, output_dir=None):
 {lb_for_plugin(p)}
 </table></div>"""
 
-    header_cells = "<th>Model</th><th>VRAM</th><th>Load(s)</th>"
+    header_cells = "<th>Model</th><th>Load(s)</th>"
     for p in active_plugins:
         header_cells += f"<th>{p.name} Resp(s)</th><th>{p.name} TPS</th><th>{p.name} Tok</th><th>{p.name} Score</th>"
     header_cells += "<th>Total</th><th>Time</th><th>Mode</th><th>Status</th>"
@@ -608,8 +603,8 @@ def gen_pdf(results, active_plugins, output_dir):
     pdf.cell(0, 6, f"Total: {len(results)}  |  OK: {len(ok)}  |  Failed: {len(results)-len(ok)}", align="C", new_x="LMARGIN", new_y="NEXT")
     pdf.ln(4)
 
-    col_w = [38, 7, 9]
-    headers = ["Model", "V", "Load"]
+    col_w = [38, 9]
+    headers = ["Model", "Load"]
     for p in active_plugins:
         col_w.extend([9, 9, 9, 9])
         headers.extend([f"{p.id[:3].upper()}Rsp", f"{p.id[:3].upper()}TPS", f"{p.id[:3].upper()}Tok", f"{p.id[:3].upper()}Sc"])
@@ -623,7 +618,7 @@ def gen_pdf(results, active_plugins, output_dir):
     for r in results:
         tot = _plugin_total_score(r, active_plugins)
         m = "str" if r.get('stream_ok') else "ns"
-        vals = [r['model'][:30], extract_vram(r['model']), str(r.get('ttft') or '-')]
+        vals = [r['model'][:30], str(r.get('ttft') or '-')]
         for p in active_plugins:
             vals.extend([
                 str(r.get(f'{p.id}_response_time', '-')),
