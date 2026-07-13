@@ -10,6 +10,19 @@ from benchmark_plugin import BenchmarkTaskPlugin
 PLUGIN_DIR = os.path.dirname(os.path.abspath(__file__))
 
 
+def format_plugin_list(plugins):
+    """Return a formatted table of plugin IDs, names, and versions."""
+    if not plugins:
+        return "No plugins discovered."
+    id_width = max(len(p.id) for p in plugins)
+    name_width = max(len(p.name) for p in plugins)
+    lines = [f"{'ID':<{id_width}}  {'Name':<{name_width}}  Version"]
+    for p in plugins:
+        lines.append(f"{p.id:<{id_width}}  {p.name:<{name_width}}  {p.version}")
+    lines.append("\nUse these IDs with --plugins-whitelist or --plugins-blacklist.")
+    return "\n".join(lines)
+
+
 def discover_plugins(whitelist=None, blacklist=None):
     """Discover and instantiate plugins from the plugins/ directory.
 

@@ -25,7 +25,7 @@ from benchmark_core import (
     run_model,
     _save_outputs,
 )
-from plugins import discover_plugins
+from plugins import discover_plugins, format_plugin_list
 
 DEFAULT_CONFIG_PATH = "benchmark-config.json"
 
@@ -385,6 +385,8 @@ def main():
                         help='Run only these plugins (e.g. --plugins-whitelist rate-limiter moe-dense)')
     parser.add_argument('--plugins-blacklist', type=str, nargs='+', default=None,
                         help='Run all plugins except these (e.g. --plugins-blacklist moe-dense)')
+    parser.add_argument('--list-plugins', action='store_true',
+                        help='List discovered plugins with their IDs, names, and versions, then exit')
     parser.add_argument('--dump-default-config', action='store_true',
                         help='Print a default config file to stdout and exit')
     parser.add_argument('--base-url', default=None,
@@ -392,6 +394,10 @@ def main():
     parser.add_argument('--api-key', default=None,
                         help='API key for model discovery (used with --dump-default-config --base-url)')
     args = parser.parse_args()
+
+    if args.list_plugins:
+        print(format_plugin_list(discover_plugins()))
+        sys.exit(0)
 
     if args.dump_default_config:
         if args.base_url:

@@ -10,6 +10,35 @@ from tests.utils import load_benchmark_module
 
 
 class TestCLIArgs(unittest.TestCase):
+    def test_list_plugins_shows_id_name_version(self):
+        result = subprocess.run(
+            [sys.executable, "ai-benchmark.py", "--list-plugins"],
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 0)
+        output = result.stdout
+        self.assertIn("ID", output)
+        self.assertIn("Name", output)
+        self.assertIn("Version", output)
+        self.assertIn("rate-limiter", output)
+        self.assertIn("Rate Limiter", output)
+        self.assertIn("moe-dense", output)
+        self.assertIn("MoE vs Dense", output)
+        self.assertIn("tool-calling", output)
+        self.assertIn("Tool Calling Agent", output)
+        self.assertIn("structured-output", output)
+        self.assertIn("Structured Output", output)
+        # Check a specific ID/name/version line
+        self.assertRegex(output, r"structured-output\s+Structured Output\s+0\.1\.0")
+        # Footer hint helps users use the IDs
+        self.assertIn("--plugins-whitelist", output)
+        self.assertIn("--plugins-blacklist", output)
+
+    def test_format_plugin_list_empty(self):
+        from plugins import format_plugin_list
+        self.assertEqual(format_plugin_list([]), "No plugins discovered.")
+
     def test_dump_default_config_has_plugin_execution_mode(self):
         result = subprocess.run(
             [sys.executable, "ai-benchmark.py", "--dump-default-config"],
