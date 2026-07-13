@@ -1,7 +1,9 @@
 """Tests for CLI argument handling and plugin execution modes."""
 import json
+import os
 import subprocess
 import sys
+import tempfile
 import unittest
 from unittest import mock
 
@@ -169,6 +171,86 @@ class TestPartialPluginFailure(unittest.TestCase):
         self.assertEqual(result["moe-dense_response_time"], "fail")
         self.assertEqual(result["moe-dense_output_tokens"], "fail")
         self.assertEqual(result["moe-dense_tps"], "fail")
+
+
+class TestSaveResponses(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.module = load_benchmark_module()
+        cls.plugins = discover_plugins()
+
+    def test_save_responses_writes_prompt_and_response_files(self):
+        plugins = [p for p in self.plugins if p.id == "rate-limiter"]
+        models = {"dummy-model": "Local"}
+        state = self.module.BenchmarkState(models, [p.id for p in plugins])
+        source_config = {"Local": {"api_url": "http://localhost:11434/chat/completions", "headers": {}}}
+
+        expected_response = "This is the model response for rate limiter."
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with mock.patch.object(
+                self.module, "stream_request", return_value=(expected_response, 1.0, 1.5, None, "stop", {})
+            ):
+                with mock.patch.object(
+                    self.module, "nonstream_request", return_value=(expected_response, {}, 0.1, None, "stop")
+                ):
+                    self.module.run_model(
+                        "dummy-model", "Local", state, plugins, source_config,
+                        timeout=1, token_levels=[100], output_dir=tmpdir,
+                        session_seed=0, global_cfg={"plugin_thread_limit": 1},
+                        save_responses=True,
+                    )
+
+            responses_dir = os.path.join(tmpdir, "responses", "dummy-model")
+            prompt_path = os.path.join(responses_dir, "rate-limiter.prompt.txt")
+            response_path = os.path.join(responses_dir, "rate-limiter.txt")
+
+            self.assertTrue(os.path.isfile(prompt_path))
+            self.assertTrue(os.path.isfile(response_path))
+
+            with open(prompt_path, "r", encoding="utf-8") as f:
+                prompt_content = f.read()
+            with open(response_path, "r", encoding="utf-8") as f:
+                response_content = f.read()
+
+            self.assertEqual(prompt_content, plugins[0].get_prompt())
+            self.assertEqual(response_content, expected_response)
+
+            meta_path = os.path.join(responses_dir, "rate-limiter.meta.json")
+            self.assertTrue(os.path.isfile(meta_path))
+            with open(meta_path, "r", encoding="utf-8") as f:
+                meta = json.load(f)
+            self.assertEqual(meta["plugin"], "rate-limiter")
+            self.assertEqual(meta["plugin_version"], plugins[0].version)
+            self.assertEqual(meta["model"], "dummy-model")
+            self.assertIn("score", meta)
+            self.assertIn("response_time", meta)
+            self.assertIn("output_tokens", meta)
+            self.assertIn("tps", meta)
+            self.assertIn("timestamp", meta)
+
+    def test_save_responses_disabled_does_not_write_files(self):
+        plugins = [p for p in self.plugins if p.id == "rate-limiter"]
+        models = {"dummy-model": "Local"}
+        state = self.module.BenchmarkState(models, [p.id for p in plugins])
+        source_config = {"Local": {"api_url": "http://localhost:11434/chat/completions", "headers": {}}}
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with mock.patch.object(
+                self.module, "stream_request", return_value=("response", 1.0, 1.5, None, "stop", {})
+            ):
+                with mock.patch.object(
+                    self.module, "nonstream_request", return_value=("response", {}, 0.1, None, "stop")
+                ):
+                    self.module.run_model(
+                        "dummy-model", "Local", state, plugins, source_config,
+                        timeout=1, token_levels=[100], output_dir=tmpdir,
+                        session_seed=0, global_cfg={"plugin_thread_limit": 1},
+                        save_responses=False,
+                    )
+
+            responses_dir = os.path.join(tmpdir, "responses")
+            self.assertFalse(os.path.exists(responses_dir))
 
 
 class TestPerPluginTemperature(unittest.TestCase):

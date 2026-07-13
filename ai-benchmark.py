@@ -401,6 +401,8 @@ def main():
                         help='Base URL for model discovery via /v1/models API (used with --dump-default-config)')
     parser.add_argument('--api-key', default=None,
                         help='API key for model discovery (used with --dump-default-config --base-url)')
+    parser.add_argument('--save-responses', action='store_true',
+                        help='Save each model\'s plugin response text to <output_dir>/responses/')
     args = parser.parse_args()
 
     if args.list_plugins:
@@ -592,7 +594,8 @@ def main():
             try:
                 run_model(model_name, source, state, active_plugins, source_config,
                           timeout, token_levels, output_dir, session_seed=session_seed,
-                          global_cfg=cfg, stop_event=stop_event)
+                          global_cfg=cfg, stop_event=stop_event,
+                          save_responses=args.save_responses)
                 state.save_state(state_file, plugin_versions=plugin_versions)
                 _save_outputs(state, output_dir, active_plugins)
             except Exception as e:

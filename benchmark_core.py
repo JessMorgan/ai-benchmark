@@ -363,7 +363,7 @@ def _plugin_total_score(result, active_plugins):
     return total
 
 
-def gen_markdown(results, active_plugins):
+def gen_markdown(results, active_plugins, output_dir=None):
     ok = [r for r in results if r["status"] == "ok"]
     plugin_names = " | ".join(f"**{p.name}** ({int(p.max_score)} pts)" for p in active_plugins)
     lines = [
@@ -379,12 +379,16 @@ def gen_markdown(results, active_plugins):
     header = "| # | Model | VRAM | Load (s) |"
     for p in active_plugins:
         header += f" {p.name} Resp (s) | {p.name} TPS | {p.name} Tok | {p.name} Score |"
+        if output_dir:
+            header += f" {p.name} Response |"
     header += " Total | Time | Mode |"
     lines.append(header)
 
     sep = "|---|---|---|---|"
     for _p in active_plugins:
         sep += "---|---|---|---|"
+        if output_dir:
+            sep += "---|"
     sep += "---|---|---|"
     lines.append(sep)
 
@@ -397,6 +401,9 @@ def gen_markdown(results, active_plugins):
                     f"{r.get(f'{p.id}_tps','-')} | "
                     f"{r.get(f'{p.id}_output_tokens','-')} | "
                     f"{r.get(f'{p.id}_score','-')} |")
+            if output_dir:
+                rel_path = f"responses/{sanitize_filename(r['model'])}/{p.id}.txt"
+                row += f" [view]({rel_path}) |"
         row += f" {tot} | {r['total_time']}s | {m} |"
         lines.append(row)
 
@@ -490,7 +497,7 @@ def gen_csv(results, active_plugins):
     return out.getvalue()
 
 
-def gen_html(results, active_plugins):
+def gen_html(results, active_plugins, output_dir=None):
     ok = [r for r in results if r["status"] == "ok"]
     rows = ""
     for r in results:
@@ -500,10 +507,16 @@ def gen_html(results, active_plugins):
         cells = (f'<td>{r["model"]}</td><td>{extract_vram(r["model"])}</td>'
                  f'<td>{r.get("ttft") or "-"}</td>')
         for p in active_plugins:
+            score_val = r.get(f"{p.id}_score", "-")
+            if output_dir:
+                rel_path = f"responses/{sanitize_filename(r['model'])}/{p.id}.txt"
+                score_cell = f'<a href="{rel_path}">{score_val}</a>'
+            else:
+                score_cell = f"{score_val}"
             cells += (f'<td>{r.get(f"{p.id}_response_time","-")}</td>'
                       f'<td>{r.get(f"{p.id}_tps","-")}</td>'
                       f'<td>{r.get(f"{p.id}_output_tokens","-")}</td>'
-                      f'<td><strong>{r.get(f"{p.id}_score","-")}</strong></td>')
+                      f'<td><strong>{score_cell}</strong></td>')
         cells += (f'<td><strong>{tot}</strong></td>'
                   f'<td>{r["total_time"]}s</td><td>{m}</td>')
         if r["status"] == "ok":
@@ -652,9 +665,9 @@ def gen_pdf(results, active_plugins, output_dir):
 def _save_outputs(state, output_dir, active_plugins):
     """Regenerate CSV/markdown/HTML from latest deduplicated results."""
     results = state.latest_results()
-    md = gen_markdown(results, active_plugins)
+    md = gen_markdown(results, active_plugins, output_dir=output_dir)
     csv_txt = gen_csv(results, active_plugins)
-    html = gen_html(results, active_plugins)
+    html = gen_html(results, active_plugins, output_dir=output_dir)
     for fname, content in [("results.md", md), ("results.csv", csv_txt), ("results.html", html)]:
         path = os.path.join(output_dir, fname)
         try:
@@ -772,7 +785,8 @@ class BenchmarkState:
 # ─── Model execution ─────────────────────────────────────────────────────────
 
 def _run_plugin_task(model_name, source, plugin, source_config, timeout, token_levels,
-                     session_seed, log_file, global_cfg, stop_event=None):
+                     session_seed, log_file, global_cfg, stop_event=None,
+                     save_responses=False, output_dir=None):
     """Run a single plugin task for a model. Returns (result_dict, error)."""
     pid = plugin.id
     cfg = source_config.get(source)
@@ -853,7 +867,42 @@ def _run_plugin_task(model_name, source, plugin, source_config, timeout, token_l
         if attempt < len(token_levels) - 1:
             pass
 
+    if save_responses and output_dir:
+        responses_dir = os.path.join(output_dir, "responses", sanitize_filename(model_name))
+        os.makedirs(responses_dir, exist_ok=True)
+        prompt_path = os.path.join(responses_dir, f"{plugin.id}.prompt.txt")
+        response_path = os.path.join(responses_dir, f"{plugin.id}.txt")
+        try:
+            with open(prompt_path, "w", encoding="utf-8") as f:
+                f.write(prompt)
+        except OSError:
+            pass
+        try:
+            with open(response_path, "w", encoding="utf-8") as f:
+                f.write(text)
+        except OSError:
+            pass
+
     score = plugin.score(text)
+
+    if save_responses and output_dir:
+        meta_path = os.path.join(responses_dir, f"{plugin.id}.meta.json")
+        meta = {
+            "plugin": plugin.id,
+            "plugin_version": plugin.version,
+            "model": model_name,
+            "score": score,
+            "response_time": response_time,
+            "output_tokens": output_tokens,
+            "tps": tps,
+            "timestamp": datetime.now().isoformat(),
+        }
+        try:
+            with open(meta_path, "w", encoding="utf-8") as f:
+                json.dump(meta, f, indent=2, default=str)
+        except OSError:
+            pass
+
     result = {
         f"{pid}_score": score,
         f"{pid}_response_time": response_time,
@@ -868,7 +917,7 @@ def _run_plugin_task(model_name, source, plugin, source_config, timeout, token_l
 
 def run_model(model_name, source, state, active_plugins, source_config, timeout,
               token_levels, output_dir, session_seed=0, global_cfg=None,
-              stop_event=None):
+              stop_event=None, save_responses=False):
     """Run active plugins for one model."""
     start = time.time()
 
@@ -929,13 +978,14 @@ def run_model(model_name, source, state, active_plugins, source_config, timeout,
                  source_config, timeout, token_levels, output_dir,
                  session_seed, global_cfg, r, start,
                  max_workers=plugin_thread_limit,
-                 stop_event=stop_event)
+                 stop_event=stop_event,
+                 save_responses=save_responses)
 
 
 def _run_plugins(model_name, source, state, active_plugins, plugins_to_run,
                  source_config, timeout, token_levels, output_dir,
                  session_seed, global_cfg, r, start, max_workers,
-                 stop_event=None):
+                 stop_event=None, save_responses=False):
     """Run plugins for one model using a thread pool of bounded size.
 
     A single-worker pool (``max_workers=1``) is equivalent to sequential
@@ -953,7 +1003,9 @@ def _run_plugins(model_name, source, state, active_plugins, plugins_to_run,
         state.update(model_name, status=f"running_{pid}")
         result, err = _run_plugin_task(model_name, source, plugin, source_config,
                                        timeout, token_levels, session_seed, log_file,
-                                       global_cfg or {}, stop_event=stop_event)
+                                       global_cfg or {}, stop_event=stop_event,
+                                       save_responses=save_responses,
+                                       output_dir=output_dir)
         with lock:
             results[pid] = result
             if err:

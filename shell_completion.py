@@ -20,6 +20,7 @@ def generate_shell_completion(shell, plugins):
         "--dump-default-config",
         "--base-url",
         "--api-key",
+        "--save-responses",
     ]
     flag_list = " ".join(flags)
 
@@ -75,6 +76,7 @@ _arguments \\
     '--dump-default-config[Print a default config file to stdout and exit]' \\
     '--base-url[Base URL for model discovery via /v1/models API]:url:' \\
     '--api-key[API key for model discovery]:key:' \\
+    '--save-responses[Save each model\'s plugin response text to <output_dir>/responses/]' \\
     '*:file:_files'
 
 case \"$state\" in
@@ -100,6 +102,7 @@ esac
             "complete -c ai-benchmark.py -l dump-default-config -d 'Print a default config file to stdout and exit'",
             "complete -c ai-benchmark.py -l base-url -F -d 'Base URL for model discovery via /v1/models API'",
             "complete -c ai-benchmark.py -l api-key -F -d 'API key for model discovery'",
+            "complete -c ai-benchmark.py -l save-responses -d 'Save each model\\'s plugin response text to <output_dir>/responses/'",
         ]
         return "\n".join(lines) + "\n"
 

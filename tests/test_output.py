@@ -60,6 +60,24 @@ class TestOutputGenerators(unittest.TestCase):
         self.assertIn("test-model", html)
         self.assertIn("<table>", html)
 
+    def test_gen_markdown_includes_response_links_with_output_dir(self):
+        md = self.module.gen_markdown(self.sample_results, self.plugins, output_dir="/tmp/benchmark-results")
+        self.assertIn("responses/test-model/rate-limiter.txt", md)
+        self.assertIn("responses/test-model/moe-dense.txt", md)
+
+    def test_gen_markdown_no_response_links_without_output_dir(self):
+        md = self.module.gen_markdown(self.sample_results, self.plugins)
+        self.assertNotIn("responses/", md)
+
+    def test_gen_html_includes_response_links_with_output_dir(self):
+        html = self.module.gen_html(self.sample_results, self.plugins, output_dir="/tmp/benchmark-results")
+        self.assertIn('href="responses/test-model/rate-limiter.txt"', html)
+        self.assertIn('href="responses/test-model/moe-dense.txt"', html)
+
+    def test_gen_html_no_response_links_without_output_dir(self):
+        html = self.module.gen_html(self.sample_results, self.plugins)
+        self.assertNotIn("responses/", html)
+
     def test_output_generators_render_partial_failure(self):
         """Failed plugin metrics are rendered as 'fail' while successful ones remain."""
         results = [
