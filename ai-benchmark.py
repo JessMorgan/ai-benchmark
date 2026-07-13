@@ -57,7 +57,7 @@ def tui_main(state, stop_event, num_sources, active_plugins):
             parts = [f"🔄 {active} active  |  ✅ {done}/{total} completed"]
             for name, s in snap.items():
                 if s["status"].startswith("running_"):
-                    elapsed = (time.time() - s["attempt_start"]) if s["attempt_start"] else 0
+                    elapsed = (time.time() - s.get("attempt_start", 0)) if s.get("attempt_start") else 0
                     err = s.get("last_error", "")
                     parts.append(f"  {name[:30]}: {s['phase_detail']} "
                                  f"att {s['attempt']}/3 tok {s['max_tok']} "
@@ -268,7 +268,7 @@ def tui_main(state, stop_event, num_sources, active_plugins):
                     break
                 s = snap[nm]
                 src_ab = source_abbrevs.get(s["source"], s["source"][:3])
-                elapsed = (time.time() - s["attempt_start"]) if s["attempt_start"] else 0
+                elapsed = (time.time() - s.get("attempt_start", 0)) if s.get("attempt_start") else 0
                 err = s.get("last_error", "")
                 phase_ch = "\U0001f537"
                 msg = (f" {phase_ch} [{src_ab}] {nm[:42]}: {s['phase_detail']} "

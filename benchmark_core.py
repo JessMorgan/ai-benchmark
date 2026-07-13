@@ -734,7 +734,7 @@ class BenchmarkState:
             if info.get("status") not in ("completed", "failed"):
                 info["status"] = "pending"
                 info["last_error"] = ""
-            info.pop("attempt_start", None)
+            info.setdefault("attempt_start", 0)
         return state
 
 
@@ -883,6 +883,8 @@ def run_model(model_name, source, state, active_plugins, source_config, timeout,
         return
 
     plugin_execution_mode = (global_cfg or {}).get("plugin_execution_mode", "sequential")
+
+    state.update(model_name, attempt_start=time.time())
 
     if plugin_execution_mode == "parallel":
         _run_plugins_parallel(model_name, source, state, active_plugins, plugins_to_run,

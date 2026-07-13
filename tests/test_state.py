@@ -46,6 +46,18 @@ class TestBenchmarkState(unittest.TestCase):
         self.assertEqual(len(results), 1)
         self.assertEqual(results[0]["rate-limiter_score"], 10.0)
 
+    def test_load_state_preserves_attempt_start(self):
+        """Regression test: attempt_start must survive load_state for TUI."""
+        models = {"model-a": "Source1"}
+        state = self.module.BenchmarkState(models, self.plugin_ids)
+        state.update("model-a", status="completed")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, "state.json")
+            state.save_state(path)
+            loaded = self.module.BenchmarkState.load_state(path, models, self.plugin_ids)
+            snap = loaded.snapshot()
+            self.assertIn("attempt_start", snap["model-a"])
+
 
 if __name__ == "__main__":
     unittest.main()
