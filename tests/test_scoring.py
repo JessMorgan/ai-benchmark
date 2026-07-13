@@ -80,13 +80,46 @@ class TestToolCallingScoring(unittest.TestCase):
 
     def test_full_response_scores_high(self):
         text = (
-            "<tool_call>{\"name\": \"get_weather\", \"args\": {\"location\": \"Tokyo\"}}</tool_call>\n"
+            "<plan>First check the weather, then search flights, book the hotel, "
+            "check the stock price, convert currency, and finally send the email.</plan>\n"
+            "<tool_call>{\"name\": \"get_weather\", \"args\": {\"location\": \"Tokyo\", \"unit\": \"celsius\"}}</tool_call>\n"
+            "<tool_call>{\"name\": \"search_flights\", \"args\": {\"origin\": \"JFK\", \"destination\": \"Tokyo\", \"date\": \"2024-08-15\"}}</tool_call>\n"
+            "<tool_call>{\"name\": \"book_hotel\", \"args\": {\"city\": \"Tokyo\", \"check_in\": \"2024-08-16\", \"check_out\": \"2024-08-20\", \"guests\": 2}}</tool_call>\n"
             "<tool_call>{\"name\": \"get_stock_price\", \"args\": {\"ticker\": \"SONY\"}}</tool_call>\n"
             "<tool_call>{\"name\": \"convert_currency\", \"args\": {\"amount\": 1000, \"from_curr\": \"USD\", \"to_curr\": \"JPY\"}}</tool_call>\n"
-            "The weather in Tokyo is sunny, SONY stock price is $100, and 1000 USD is 150000 JPY."
+            "<tool_call>{\"name\": \"send_email\", \"args\": {\"to\": \"alice@example.com\", \"subject\": \"Tokyo Trip Itinerary\", \"body\": \"Here is your itinerary...\"}}</tool_call>\n"
+            "The weather in Tokyo is sunny, the flight from JFK to Tokyo is booked, "
+            "the hotel in Tokyo is reserved for 2 guests, SONY stock price is $100, "
+            "1000 USD is 150000 JPY, and the itinerary has been emailed to alice@example.com."
         )
         score = self.plugin.score(text)
-        self.assertGreater(score, 5.0)
+        self.assertGreater(score, 10.0)
+
+    def test_partial_tool_calls_score_less_than_full(self):
+        text = (
+            "<plan>Check the weather and stock price.</plan>\n"
+            "<tool_call>{\"name\": \"get_weather\", \"args\": {\"location\": \"Tokyo\", \"unit\": \"celsius\"}}</tool_call>\n"
+            "<tool_call>{\"name\": \"get_stock_price\", \"args\": {\"ticker\": \"SONY\"}}</tool_call>\n"
+            "The weather in Tokyo is sunny and SONY stock price is $100."
+        )
+        score = self.plugin.score(text)
+        self.assertGreater(score, 0.0)
+        self.assertLess(score, self.plugin.max_score)
+
+    def test_wrong_arguments_score_less_than_full(self):
+        text = (
+            "<plan>Call all tools with wrong arguments.</plan>\n"
+            "<tool_call>{\"name\": \"get_weather\", \"args\": {\"location\": \"London\"}}</tool_call>\n"
+            "<tool_call>{\"name\": \"search_flights\", \"args\": {\"origin\": \"LAX\", \"destination\": \"Paris\", \"date\": \"tomorrow\"}}</tool_call>\n"
+            "<tool_call>{\"name\": \"book_hotel\", \"args\": {\"city\": \"Paris\", \"check_in\": \"2024-08-16\", \"check_out\": \"2024-08-20\", \"guests\": 1}}</tool_call>\n"
+            "<tool_call>{\"name\": \"get_stock_price\", \"args\": {\"ticker\": \"AAPL\"}}</tool_call>\n"
+            "<tool_call>{\"name\": \"convert_currency\", \"args\": {\"amount\": 500, \"from_curr\": \"EUR\", \"to_curr\": \"USD\"}}</tool_call>\n"
+            "<tool_call>{\"name\": \"send_email\", \"args\": {\"to\": \"bob@example.com\", \"subject\": \"Hello\", \"body\": \"Hi\"}}</tool_call>\n"
+            "Done."
+        )
+        score = self.plugin.score(text)
+        self.assertGreater(score, 0.0)
+        self.assertLess(score, self.plugin.max_score)
 
 
 class TestOrchestrationScoring(unittest.TestCase):
@@ -167,41 +200,126 @@ class TestStructuredOutputScoring(unittest.TestCase):
         self.assertEqual(self.plugin.score(""), 0.0)
 
     def test_valid_json_scores(self):
-        text = '{"name": "Alice", "age": 30, "email": "alice@example.com", "roles": ["admin"], "settings": {"theme": "dark", "notifications": true}}'
+        text = (
+            '{"id": "550e8400-e29b-41d4-a716-446655440000", "name": "Alice", "age": 30, '
+            '"email": "alice@example.com", "department": "Engineering", '
+            '"roles": ["admin"], '
+            '"address": {"street": "123 Main St", "city": "Springfield", "state": "IL", "zip": "62701"}, '
+            '"settings": {"theme": "dark", "notifications": {"email": true, "sms": false, "push": true}, "language": "en"}, '
+            '"tags": [{"name": "full-time", "priority": 1}], '
+            '"metadata": {"created_at": "2024-01-15T09:30:00Z", "active": true, "score": 0.95}}'
+        )
         score = self.plugin.score(text)
         self.assertGreater(score, 0.0)
 
     def test_full_response_scores_high(self):
         text = (
             '```json\n'
-            '{"name": "Alice", "age": 30, "email": "alice@example.com", '
-            '"roles": ["admin", "editor"], "settings": {"theme": \"dark\", "notifications": true}}\n'
+            '{\n'
+            '  "id": "550e8400-e29b-41d4-a716-446655440000",\n'
+            '  "name": "Alice",\n'
+            '  "age": 30,\n'
+            '  "email": "alice@example.com",\n'
+            '  "department": "Engineering",\n'
+            '  "roles": ["admin", "editor"],\n'
+            '  "address": {\n'
+            '    "street": "123 Main St",\n'
+            '    "city": "Springfield",\n'
+            '    "state": "IL",\n'
+            '    "zip": "62701"\n'
+            '  },\n'
+            '  "settings": {\n'
+            '    "theme": "dark",\n'
+            '    "notifications": {"email": true, "sms": false, "push": true},\n'
+            '    "language": "en"\n'
+            '  },\n'
+            '  "tags": [{"name": "full-time", "priority": 1}, {"name": "remote", "priority": 3}],\n'
+            '  "metadata": {\n'
+            '    "created_at": "2024-01-15T09:30:00Z",\n'
+            '    "active": true,\n'
+            '    "score": 0.95\n'
+            '  }\n'
+            '}\n'
             '```'
         )
         score = self.plugin.score(text)
-        self.assertGreater(score, 5.0)
+        self.assertGreater(score, 10.0)
 
     def test_yaml_response_scores_high(self):
         text = (
             '```yaml\n'
+            'id: 550e8400-e29b-41d4-a716-446655440000\n'
             'name: Alice\n'
             'age: 30\n'
             'email: alice@example.com\n'
+            'department: Engineering\n'
             'roles:\n'
             '  - admin\n'
             '  - editor\n'
+            'address:\n'
+            '  street: 123 Main St\n'
+            '  city: Springfield\n'
+            '  state: IL\n'
+            '  zip: "62701"\n'
             'settings:\n'
             '  theme: dark\n'
-            '  notifications: true\n'
+            '  notifications:\n'
+            '    email: true\n'
+            '    sms: false\n'
+            '    push: true\n'
+            '  language: en\n'
+            'tags:\n'
+            '  - name: full-time\n'
+            '    priority: 1\n'
+            '  - name: remote\n'
+            '    priority: 3\n'
+            'metadata:\n'
+            '  created_at: 2024-01-15T09:30:00Z\n'
+            '  active: true\n'
+            '  score: 0.95\n'
             '```'
         )
         score = self.plugin.score(text)
-        self.assertGreater(score, 5.0)
+        self.assertGreater(score, 10.0)
 
     def test_invalid_json_scores_zero(self):
         text = '{"name": "Alice", "age":}'
         score = self.plugin.score(text)
         self.assertEqual(score, 0.0)
+
+    def test_partial_response_scores_less_than_full(self):
+        text = (
+            '{"id": "not-a-uuid", "name": "Alice", "age": "thirty", '
+            '"email": "not-an-email", "department": "Engineering", '
+            '"roles": ["admin"], '
+            '"address": {"street": "123 Main St", "city": "Springfield"}, '
+            '"settings": {"theme": "dark"}, '
+            '"tags": [{"name": "full-time", "priority": 1}], '
+            '"metadata": {"created_at": "2024-01-15", "active": true, "score": 0.95}}'
+        )
+        score = self.plugin.score(text)
+        self.assertGreater(score, 0.0)
+        self.assertLess(score, self.plugin.max_score)
+
+    def test_missing_required_keys_scores_less_than_full(self):
+        text = '{"name": "Alice", "age": 30}'
+        score = self.plugin.score(text)
+        self.assertGreater(score, 0.0)
+        self.assertLess(score, self.plugin.max_score)
+
+    def test_wrong_types_scores_less_than_full(self):
+        text = (
+            '{"id": "550e8400-e29b-41d4-a716-446655440000", "name": "Alice", "age": 30, '
+            '"email": "alice@example.com", "department": "Engineering", '
+            '"roles": "admin", '
+            '"address": {"street": "123 Main St", "city": "Springfield", "state": "IL", "zip": "62701"}, '
+            '"settings": {"theme": "dark", "notifications": {"email": true, "sms": false, "push": true}, "language": "en"}, '
+            '"tags": [{"name": "full-time", "priority": 1}], '
+            '"metadata": {"created_at": "2024-01-15T09:30:00Z", "active": true, "score": 0.95}}'
+        )
+        score = self.plugin.score(text)
+        self.assertGreater(score, 0.0)
+        self.assertLess(score, self.plugin.max_score)
 
 
 if __name__ == "__main__":
