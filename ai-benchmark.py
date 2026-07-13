@@ -27,6 +27,7 @@ from benchmark_core import (
     _save_outputs,
 )
 from plugins import discover_plugins, format_plugin_list
+from shell_completion import generate_shell_completion
 
 DEFAULT_CONFIG_PATH = "benchmark-config.json"
 
@@ -364,7 +365,11 @@ def main():
                "  python ai-benchmark.py --out /tmp/bench-run --timeout 300\n"
                "  python ai-benchmark.py --plugins-whitelist rate-limiter\n"
                "  python ai-benchmark.py --dump-default-config --base-url http://localhost:11434 > config.json\n"
-               "  python ai-benchmark.py --dump-default-config > benchmark-config.json",
+               "  python ai-benchmark.py --dump-default-config > benchmark-config.json\n\n"
+               "Shell completions:\n"
+               "  eval \"$(python ai-benchmark.py --generate-shell-completion bash)\"\n"
+               "  python ai-benchmark.py --generate-shell-completion zsh > ~/.zsh/completions/_ai-benchmark.py\n"
+               "  python ai-benchmark.py --generate-shell-completion fish > ~/.config/fish/completions/ai-benchmark.py.fish",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument('--restart', action='store_true',
@@ -387,6 +392,9 @@ def main():
                         help='Run all plugins except these (e.g. --plugins-blacklist moe-dense)')
     parser.add_argument('--list-plugins', action='store_true',
                         help='List discovered plugins with their IDs, names, and versions, then exit')
+    parser.add_argument('--generate-shell-completion', type=str, default=None,
+                        choices=['bash', 'zsh', 'fish'],
+                        help='Generate shell completion script for the specified shell and exit')
     parser.add_argument('--dump-default-config', action='store_true',
                         help='Print a default config file to stdout and exit')
     parser.add_argument('--base-url', default=None,
@@ -397,6 +405,10 @@ def main():
 
     if args.list_plugins:
         print(format_plugin_list(discover_plugins()))
+        sys.exit(0)
+
+    if args.generate_shell_completion:
+        print(generate_shell_completion(args.generate_shell_completion, discover_plugins()))
         sys.exit(0)
 
     if args.dump_default_config:
