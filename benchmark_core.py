@@ -1,4 +1,5 @@
 """Core benchmark logic shared by the CLI and tests."""
+import html
 import json
 import os
 import re
@@ -352,6 +353,16 @@ def nonstream_request(source_config, timeout, model, source, prompt, max_tokens=
 
 # ─── Output generators ────────────────────────────────────────────────────────
 
+def _plugin_total_score(result, active_plugins):
+    """Sum numeric plugin scores, ignoring non-numeric/failed values."""
+    total = 0
+    for plugin in active_plugins:
+        score = result.get(f"{plugin.id}_score", 0)
+        if isinstance(score, (int, float)):
+            total += score
+    return total
+
+
 def gen_markdown(results, active_plugins):
     ok = [r for r in results if r["status"] == "ok"]
     plugin_names = " | ".join(f"**{p.name}** ({int(p.max_score)} pts)" for p in active_plugins)
@@ -378,20 +389,16 @@ def gen_markdown(results, active_plugins):
     lines.append(sep)
 
     for idx, r in enumerate(results, 1):
-        if r["status"] == "ok":
-            tot = sum(r.get(f"{p.id}_score", 0) for p in active_plugins)
-            m = "stream" if r.get('stream_ok') else "nostream"
-            row = f"| {idx} | {r['model']} | {extract_vram(r['model'])} | {r['ttft'] or '-'} |"
-            for p in active_plugins:
-                row += (f" {r.get(f'{p.id}_response_time','-')} | "
-                        f"{r.get(f'{p.id}_tps','-')} | "
-                        f"{r.get(f'{p.id}_output_tokens','-')} | "
-                        f"{r.get(f'{p.id}_score','-')} |")
-            row += f" {tot} | {r['total_time']}s | {m} |"
-            lines.append(row)
-        else:
-            err = (r.get('error') or '?')[:60]
-            lines.append(f"| {idx} | {r['model']} | - | - |" + " - |" * (len(active_plugins) * 4 + 3) + f" ❌ {err} |")
+        tot = _plugin_total_score(r, active_plugins)
+        m = "stream" if r.get('stream_ok') else "nostream"
+        row = f"| {idx} | {r['model']} | {extract_vram(r['model'])} | {r.get('ttft') or '-'} |"
+        for p in active_plugins:
+            row += (f" {r.get(f'{p.id}_response_time','-')} | "
+                    f"{r.get(f'{p.id}_tps','-')} | "
+                    f"{r.get(f'{p.id}_output_tokens','-')} | "
+                    f"{r.get(f'{p.id}_score','-')} |")
+        row += f" {tot} | {r['total_time']}s | {m} |"
+        lines.append(row)
 
     if ok:
         lines.extend(["", "---", "## 🏆 Leaderboards", ""])
@@ -465,26 +472,21 @@ def gen_csv(results, active_plugins):
     w.writerow(headers)
 
     for r in results:
+        tot = _plugin_total_score(r, active_plugins)
+        m = "stream" if r.get('stream_ok') else "non-streaming"
+        row = [r['model'], r.get('source', ''), extract_vram(r['model']), r.get('ttft') or '']
+        for p in active_plugins:
+            row.extend([
+                r.get(f"{p.id}_response_time", ''),
+                r.get(f"{p.id}_output_tokens", ''),
+                r.get(f"{p.id}_tps", ''),
+                r.get(f"{p.id}_score", ''),
+            ])
         if r["status"] == "ok":
-            tot = sum(r.get(f"{p.id}_score", 0) for p in active_plugins)
-            m = "stream" if r.get('stream_ok') else "non-streaming"
-            row = [r['model'], r.get('source', ''), extract_vram(r['model']), r['ttft'] or '']
-            for p in active_plugins:
-                row.extend([
-                    r.get(f"{p.id}_response_time", ''),
-                    r.get(f"{p.id}_output_tokens", ''),
-                    r.get(f"{p.id}_tps", ''),
-                    r.get(f"{p.id}_score", ''),
-                ])
             row.extend([tot, r['total_time'], m, "OK", ""])
-            w.writerow(row)
         else:
-            row = [""] * len(headers)
-            row[0] = r['model']
-            row[1] = r.get('source', '')
-            row[-3] = "FAIL"
-            row[-2] = r.get('error', '')
-            w.writerow(row)
+            row.extend([tot, r['total_time'], m, "FAIL", r.get('error', '')])
+        w.writerow(row)
     return out.getvalue()
 
 
@@ -493,23 +495,23 @@ def gen_html(results, active_plugins):
     rows = ""
     for r in results:
         cls = "ok" if r["status"] == "ok" else "fail"
+        tot = _plugin_total_score(r, active_plugins)
+        m = "str" if r.get('stream_ok') else "ns"
+        cells = (f'<td>{r["model"]}</td><td>{extract_vram(r["model"])}</td>'
+                 f'<td>{r.get("ttft") or "-"}</td>')
+        for p in active_plugins:
+            cells += (f'<td>{r.get(f"{p.id}_response_time","-")}</td>'
+                      f'<td>{r.get(f"{p.id}_tps","-")}</td>'
+                      f'<td>{r.get(f"{p.id}_output_tokens","-")}</td>'
+                      f'<td><strong>{r.get(f"{p.id}_score","-")}</strong></td>')
+        cells += (f'<td><strong>{tot}</strong></td>'
+                  f'<td>{r["total_time"]}s</td><td>{m}</td>')
         if r["status"] == "ok":
-            tot = sum(r.get(f"{p.id}_score", 0) for p in active_plugins)
-            m = "str" if r.get('stream_ok') else "ns"
-            cells = (f'<td>{r["model"]}</td><td>{extract_vram(r["model"])}</td>'
-                     f'<td>{r["ttft"] or "-"}</td>')
-            for p in active_plugins:
-                cells += (f'<td>{r.get(f"{p.id}_response_time","-")}</td>'
-                          f'<td>{r.get(f"{p.id}_tps","-")}</td>'
-                          f'<td>{r.get(f"{p.id}_output_tokens","-")}</td>'
-                          f'<td><strong>{r.get(f"{p.id}_score","-")}</strong></td>')
-            cells += (f'<td><strong>{tot}</strong></td>'
-                      f'<td>{r["total_time"]}s</td><td>{m}</td>'
-                      f'<td class="ok-badge">✅</td>')
-            rows += f'<tr class="{cls}">{cells}</tr>\n'
+            cells += '<td class="ok-badge">✅</td>'
         else:
-            err = (r.get('error') or '?')[:50]
-            rows += f'<tr class="fail"><td>{r["model"]}</td>' + "<td>-</td>" * (3 + len(active_plugins) * 4 + 3) + f'<td class="fail-badge">❌ {err}</td></tr>\n'
+            err = html.escape(str(r.get('error') or '?'))[:50]
+            cells += f'<td class="fail-badge" title="{err}">❌ {err}</td>'
+        rows += f'<tr class="{cls}">{cells}</tr>\n'
 
     def lb_ttft():
         out = ""
@@ -606,19 +608,20 @@ def gen_pdf(results, active_plugins, output_dir):
     pdf.ln()
     pdf.set_font("Helvetica", "", 6.5)
     for r in results:
+        tot = _plugin_total_score(r, active_plugins)
+        m = "str" if r.get('stream_ok') else "ns"
+        vals = [r['model'][:30], extract_vram(r['model']), str(r.get('ttft') or '-')]
+        for p in active_plugins:
+            vals.extend([
+                str(r.get(f'{p.id}_response_time', '-')),
+                str(r.get(f'{p.id}_tps', '-')),
+                str(r.get(f'{p.id}_output_tokens', '-')),
+                str(r.get(f'{p.id}_score', '-')),
+            ])
         if r["status"] == "ok":
-            tot = sum(r.get(f"{p.id}_score", 0) for p in active_plugins)
-            vals = [r['model'][:30], extract_vram(r['model']), str(r['ttft'] or '-')]
-            for p in active_plugins:
-                vals.extend([
-                    str(r.get(f'{p.id}_response_time', '-')),
-                    str(r.get(f'{p.id}_tps', '-')),
-                    str(r.get(f'{p.id}_output_tokens', '-')),
-                    str(r.get(f'{p.id}_score', '-')),
-                ])
-            vals.extend([str(tot), "str" if r.get('stream_ok') else "ns"])
+            vals.extend([str(tot), m])
         else:
-            vals = [r['model'][:30], '-', '-'] + ['-'] * (len(active_plugins) * 4) + ['-', 'FAIL']
+            vals.extend([str(tot), "FAIL"])
         for i, v in enumerate(vals):
             pdf.cell(col_w[i], 4, v, border=1, align="C")
         pdf.ln()
@@ -981,6 +984,37 @@ def _run_plugins(model_name, source, state, active_plugins, plugins_to_run,
                     with lock:
                         errors[plugin.id] = f"{type(exc).__name__}: {exc}"
 
+    first_tok_time = None
+    any_stream_ok = False
+
+    for plugin in plugins_to_run:
+        pid = plugin.id
+        if pid in errors or results.get(pid) is None:
+            fail_values = {
+                f"{pid}_score": "fail",
+                f"{pid}_response_time": "fail",
+                f"{pid}_output_tokens": "fail",
+                f"{pid}_tps": "fail",
+                f"{pid}_stream_ok": False,
+            }
+            r.update(fail_values)
+            state.update(model_name, **fail_values)
+        else:
+            result = results[pid]
+            r.update(result)
+            if plugin.supports_streaming:
+                any_stream_ok = True
+                if (
+                    first_tok_time is None
+                    and result.get(f"{pid}_stream_ok")
+                    and isinstance(result.get(f"{pid}_response_time"), (int, float))
+                ):
+                    first_tok_time = result[f"{pid}_response_time"]
+
+    r["stream_ok"] = any_stream_ok
+    if first_tok_time is not None:
+        r["ttft"] = round(first_tok_time, 3)
+
     if stop_event and stop_event.is_set():
         r["status"] = "error"
         r["error"] = "Cancelled"
@@ -997,22 +1031,6 @@ def _run_plugins(model_name, source, state, active_plugins, plugins_to_run,
         state.update(model_name, status="failed", error=r["error"], elapsed=r["total_time"], last_error=r["error"])
         return
 
-    first_tok_time = None
-    any_stream_ok = False
-    for plugin in plugins_to_run:
-        pid = plugin.id
-        result = results[pid]
-        if result is None:
-            continue
-        r.update(result)
-        if plugin.supports_streaming:
-            any_stream_ok = True
-            if first_tok_time is None and result.get(f"{pid}_stream_ok"):
-                first_tok_time = result[f"{pid}_response_time"]
-
-    r["stream_ok"] = any_stream_ok
-    if first_tok_time is not None:
-        r["ttft"] = round(first_tok_time, 3)
     r["total_time"] = round(time.time() - start, 1)
     state.add_result(r)
     state.update(model_name, status="completed", elapsed=r["total_time"])

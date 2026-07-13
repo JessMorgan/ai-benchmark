@@ -1,4 +1,6 @@
 """Tests for output generators."""
+import os
+import tempfile
 import unittest
 
 from plugins import discover_plugins
@@ -32,6 +34,7 @@ class TestOutputGenerators(unittest.TestCase):
                 "source": "Local",
                 "status": "error",
                 "error": "timeout",
+                "total_time": 5.0,
             },
         ]
 
@@ -56,6 +59,46 @@ class TestOutputGenerators(unittest.TestCase):
         html = self.module.gen_html(self.sample_results, self.plugins)
         self.assertIn("test-model", html)
         self.assertIn("<table>", html)
+
+    def test_output_generators_render_partial_failure(self):
+        """Failed plugin metrics are rendered as 'fail' while successful ones remain."""
+        results = [
+            {
+                "model": "partial-model",
+                "source": "Local",
+                "status": "error",
+                "error": "rate-limiter failed",
+                "total_time": 5.0,
+                "stream_ok": False,
+                "rate-limiter_score": "fail",
+                "rate-limiter_response_time": "fail",
+                "rate-limiter_output_tokens": "fail",
+                "rate-limiter_tps": "fail",
+                "moe-dense_score": 10.0,
+                "moe-dense_response_time": 3.0,
+                "moe-dense_output_tokens": 50,
+                "moe-dense_tps": 16.7,
+            },
+        ]
+        csv_text = self.module.gen_csv(results, self.plugins)
+        self.assertIn("partial-model", csv_text)
+        self.assertIn("fail", csv_text)
+        self.assertIn("10.0", csv_text)
+
+        md = self.module.gen_markdown(results, self.plugins)
+        self.assertIn("partial-model", md)
+        self.assertIn("fail", md)
+        self.assertIn("10.0", md)
+
+        html = self.module.gen_html(results, self.plugins)
+        self.assertIn("partial-model", html)
+        self.assertIn("fail", html)
+        self.assertIn("10.0", html)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            pdf_path = self.module.gen_pdf(results, self.plugins, tmpdir)
+            if pdf_path:
+                self.assertTrue(os.path.exists(pdf_path))
 
 
 if __name__ == "__main__":

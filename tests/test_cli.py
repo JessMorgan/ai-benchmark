@@ -125,6 +125,52 @@ class TestPluginExecutionMode(unittest.TestCase):
         self.assertIn(snap["status"], ("completed", "failed"))
 
 
+class TestPartialPluginFailure(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.module = load_benchmark_module()
+        cls.plugins = discover_plugins()
+
+    def test_partial_failure_records_success_and_fail_values(self):
+        """When one plugin fails and another succeeds, both results are recorded."""
+        plugins = [p for p in self.plugins if p.id in ("rate-limiter", "moe-dense")]
+        models = {"dummy-model": "Local"}
+        state = self.module.BenchmarkState(models, [p.id for p in plugins])
+        source_config = {"Local": {"api_url": "http://localhost:11434/chat/completions", "headers": {}}}
+
+        def fake_run_plugin_task(model_name, source, plugin, *args, **kwargs):
+            if plugin.id == "rate-limiter":
+                return {
+                    "rate-limiter_score": 5,
+                    "rate-limiter_response_time": 1.2,
+                    "rate-limiter_output_tokens": 100,
+                    "rate-limiter_tps": 50.0,
+                    "rate-limiter_stream_ok": True,
+                }, None
+            return None, "connection refused"
+
+        with mock.patch.object(self.module, "_run_plugin_task", side_effect=fake_run_plugin_task):
+            self.module.run_model(
+                "dummy-model", "Local", state, plugins, source_config,
+                timeout=1, token_levels=[100], output_dir="/tmp/benchmark-test",
+                session_seed=0, global_cfg={"plugin_thread_limit": 1},
+            )
+
+        snap = state.snapshot()["dummy-model"]
+        self.assertEqual(snap["status"], "failed")
+
+        result = state.latest_results()[0]
+        self.assertEqual(result["status"], "error")
+        self.assertEqual(result["rate-limiter_score"], 5)
+        self.assertEqual(result["rate-limiter_response_time"], 1.2)
+        self.assertEqual(result["rate-limiter_output_tokens"], 100)
+        self.assertEqual(result["rate-limiter_tps"], 50.0)
+        self.assertEqual(result["moe-dense_score"], "fail")
+        self.assertEqual(result["moe-dense_response_time"], "fail")
+        self.assertEqual(result["moe-dense_output_tokens"], "fail")
+        self.assertEqual(result["moe-dense_tps"], "fail")
+
+
 class TestPerPluginTemperature(unittest.TestCase):
     def test_plugin_temperature_from_config(self):
         cfg = {
