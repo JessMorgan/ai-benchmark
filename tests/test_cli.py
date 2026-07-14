@@ -358,6 +358,48 @@ class TestDropParams(unittest.TestCase):
         self.assertNotIn("seed", captured["body"])
 
 
+class TestSeedCLI(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.module = load_benchmark_module()
+        cls.plugins = discover_plugins()
+
+    def _make_response(self, status_code=200, text=""):
+        class _Resp:
+            status_code = status_code
+            def __init__(self, text):
+                self._text = text
+            def iter_lines(self, decode_unicode=False):
+                return []
+            def close(self):
+                pass
+            @property
+            def text(self):
+                return self._text
+        return _Resp(text)
+
+    def test_fixed_seed_passed_to_request_body(self):
+        """A fixed session_seed appears in the API request body."""
+        plugins = [p for p in self.plugins if p.id == "rate-limiter"]
+        source_config = {"Local": {"api_url": "http://localhost:11434/chat/completions", "headers": {}}}
+
+        captured = {}
+
+        def fake_post(url, **kwargs):
+            captured["body"] = kwargs.get("json")
+            return self._make_response()
+
+        with mock.patch("requests.post", side_effect=fake_post):
+            self.module._run_plugin_task(
+                "dummy-model", "Local", plugins[0], source_config,
+                timeout=1, token_levels=[100], session_seed=42,
+                log_file=None, global_cfg={},
+            )
+
+        self.assertIn("body", captured)
+        self.assertEqual(captured["body"]["seed"], 42)
+
+
 class TestPerPluginTemperature(unittest.TestCase):
     def test_plugin_temperature_from_config(self):
         cfg = {

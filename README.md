@@ -23,6 +23,9 @@ python ai-benchmark.py --plugins-whitelist rate-limiter
 
 # Exclude a plugin
 python ai-benchmark.py --plugins-blacklist moe-dense
+
+# Use a fixed seed for reproducibility
+python ai-benchmark.py --seed 42
 ```
 
 ## Configuration
@@ -101,6 +104,7 @@ python ai-benchmark.py [options]
 | `--api-key KEY` | (with `--base-url`) API key for model discovery |
 | `--plugins-whitelist ID [ID ...]` | Run only these plugins |
 | `--plugins-blacklist ID [ID ...]` | Run all plugins except these |
+| `--seed INT` | Fixed random seed for all API requests |
 | `-h, --help` | Show this help message |
 
 ## Resume / Continue

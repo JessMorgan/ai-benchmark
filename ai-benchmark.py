@@ -403,6 +403,8 @@ def main():
                         help='API key for model discovery (used with --dump-default-config --base-url)')
     parser.add_argument('--save-responses', action='store_true',
                         help='Save each model\'s plugin response text to <output_dir>/responses/')
+    parser.add_argument('--seed', type=int, default=None,
+                        help='Fixed random seed for all API requests (default: random)')
     args = parser.parse_args()
 
     if args.list_plugins:
@@ -578,7 +580,7 @@ def main():
     worker_errors = 0
     interrupted = False
 
-    session_seed = random.randint(0, 2**31 - 1)
+    session_seed = args.seed if args.seed is not None else random.randint(0, 2**31 - 1)
 
     source_queues = {src: [] for src in set(models_source_map.values())}
     for name, src in models_source_map.items():
