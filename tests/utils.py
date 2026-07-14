@@ -1,4 +1,5 @@
 """Shared utilities for tests."""
+import json
 
 
 class MockResponse:
@@ -6,7 +7,13 @@ class MockResponse:
 
     def __init__(self, text="", status_code=200):
         self.status_code = status_code
-        self._text = text
+        if text:
+            self._text = text
+        else:
+            self._text = json.dumps({
+                "choices": [{"message": {"content": ""}, "finish_reason": "stop"}],
+                "usage": {},
+            })
 
     def iter_lines(self, decode_unicode=False):
         return []
@@ -17,6 +24,10 @@ class MockResponse:
     @property
     def text(self):
         return self._text
+
+    @property
+    def content(self):
+        return self._text.encode("utf-8")
 
 
 def load_benchmark_module():

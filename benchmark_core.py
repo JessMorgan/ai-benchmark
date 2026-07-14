@@ -6,6 +6,7 @@ import re
 import threading
 import time
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+from contextlib import contextmanager
 from datetime import datetime
 
 import requests
@@ -283,6 +284,71 @@ def log_request_entry(log_path, curl_cmd, response_body, request_label=None):
 
 # ─── API helpers ────────────────────────────────────────────────────────────
 
+def _build_request_body(model, prompt, max_tokens, session_seed, temperature, drop_params, stream):
+    """Build the JSON body for an API request."""
+    body = {
+        "model": model,
+        "messages": [{"role": "user", "content": prompt}],
+        "max_tokens": max_tokens,
+        "stream": stream,
+    }
+    if temperature is not None:
+        body["temperature"] = temperature
+    if session_seed:
+        body["seed"] = session_seed
+    for p in drop_params or []:
+        body.pop(p, None)
+    return body
+
+
+@contextmanager
+def _post_request_context(source_config, source, body, timeout, stream, log_path, log_label):
+    """Make a POST request and yield the response, handling cleanup.
+
+    Yields a tuple of ``(response, error, curl_cmd)``. ``response`` is the
+    requests Response object on success, or ``None`` if an error occurred
+    before or during the request. Cleanup (watchdog cancellation, active
+    request tracking removal, response close) is performed automatically.
+    """
+    cfg = source_config.get(source, {})
+    api_url = cfg.get("api_url", "http://localhost:11434/chat/completions")
+    headers = cfg.get("headers", {"Content-Type": "application/json"})
+    model = body.get("model", "")
+    prompt = body["messages"][0]["content"] if body.get("messages") else ""
+    max_tokens = body.get("max_tokens", 2048)
+    curl_cmd = build_curl_cmd(model, prompt, max_tokens, stream, api_url, headers) if log_path else None
+    resp = None
+    try:
+        resp = requests.post(
+            api_url, headers=headers, json=body, stream=True, timeout=timeout)
+    except Exception as e:
+        error = f"{type(e).__name__}: {e}"
+        if log_path and curl_cmd:
+            log_request_entry(log_path, curl_cmd, f"ERROR: {error}", log_label)
+        yield None, error, curl_cmd
+        return
+
+    with _active_requests_lock:
+        _active_requests.add(resp)
+    watchdog = threading.Timer(timeout, resp.close)
+    watchdog.daemon = True
+    watchdog.start()
+    try:
+        if resp.status_code != 200:
+            error = f"HTTP {resp.status_code}: {resp.text[:150]}"
+            if log_path and curl_cmd:
+                log_request_entry(log_path, curl_cmd,
+                                  f"HTTP {resp.status_code}: {resp.text[:500]}", log_label)
+            yield None, error, curl_cmd
+        else:
+            yield resp, None, curl_cmd
+    finally:
+        watchdog.cancel()
+        with _active_requests_lock:
+            _active_requests.discard(resp)
+        resp.close()
+
+
 def stream_request(source_config, timeout, model, source, prompt, max_tokens=2048,
                    log_path=None, log_label=None, session_seed=0, temperature=None,
                    drop_params=None):
@@ -292,65 +358,34 @@ def stream_request(source_config, timeout, model, source, prompt, max_tokens=204
     error = None
     finish_reason = None
     usage = {}
-    cfg = source_config.get(source, {})
-    api_url = cfg.get("api_url", "http://localhost:11434/chat/completions")
-    headers = cfg.get("headers", {"Content-Type": "application/json"})
-    curl_cmd = build_curl_cmd(model, prompt, max_tokens, True, api_url, headers) if log_path else None
-    try:
-        body = {"model": model, "messages": [{"role": "user", "content": prompt}],
-                "max_tokens": max_tokens, "stream": True}
-        if temperature is not None:
-            body["temperature"] = temperature
-        if session_seed:
-            body["seed"] = session_seed
-        for p in drop_params or []:
-            body.pop(p, None)
-        resp = requests.post(
-            api_url, headers=headers, json=body, stream=True, timeout=timeout)
-        with _active_requests_lock:
-            _active_requests.add(resp)
-        watchdog = threading.Timer(timeout, resp.close)
-        watchdog.daemon = True
-        watchdog.start()
-        try:
-            if resp.status_code != 200:
-                if log_path and curl_cmd:
-                    log_request_entry(log_path, curl_cmd,
-                                      f"HTTP {resp.status_code}: {resp.text[:500]}", log_label)
-                return text, first_tok, time.time(), f"HTTP {resp.status_code}: {resp.text[:150]}", finish_reason, usage
-            for line in resp.iter_lines(decode_unicode=True):
-                if not line:
+    body = _build_request_body(model, prompt, max_tokens, session_seed, temperature, drop_params, stream=True)
+    with _post_request_context(source_config, source, body, timeout, True, log_path, log_label) as (resp, err, curl_cmd):
+        if err:
+            return text, first_tok, time.time(), err, finish_reason, usage
+        for line in resp.iter_lines(decode_unicode=True):
+            if not line:
+                continue
+            if line.startswith("data: "):
+                payload = line[6:]
+                if payload.strip() == "[DONE]":
+                    break
+                try:
+                    data = json.loads(payload)
+                    if first_tok is None:
+                        first_tok = time.time()
+                    for ch in data.get("choices", []):
+                        text += ch.get("delta", {}).get("content", "")
+                        fr = ch.get("finish_reason")
+                        if fr:
+                            finish_reason = fr
+                    if "usage" in data:
+                        usage = data["usage"]
+                except json.JSONDecodeError:
                     continue
-                if line.startswith("data: "):
-                    payload = line[6:]
-                    if payload.strip() == "[DONE]":
-                        break
-                    try:
-                        data = json.loads(payload)
-                        if first_tok is None:
-                            first_tok = time.time()
-                        for ch in data.get("choices", []):
-                            text += ch.get("delta", {}).get("content", "")
-                            fr = ch.get("finish_reason")
-                            if fr:
-                                finish_reason = fr
-                        if "usage" in data:
-                            usage = data["usage"]
-                    except json.JSONDecodeError:
-                        continue
-        finally:
-            watchdog.cancel()
-            with _active_requests_lock:
-                _active_requests.discard(resp)
-            resp.close()
         if not finish_reason and time.time() - start > timeout:
             error = f"Total timeout ({timeout}s) exceeded"
         if log_path and curl_cmd:
             log_request_entry(log_path, curl_cmd, text or "(empty response)", log_label)
-    except Exception as e:
-        error = f"{type(e).__name__}: {e}"
-        if log_path and curl_cmd:
-            log_request_entry(log_path, curl_cmd, f"ERROR: {error}", log_label)
     return text, first_tok, time.time(), error, finish_reason, usage
 
 
@@ -362,57 +397,22 @@ def nonstream_request(source_config, timeout, model, source, prompt, max_tokens=
     text = ""
     usage = {}
     finish_reason = None
-    cfg = source_config.get(source, {})
-    api_url = cfg.get("api_url", "http://localhost:11434/chat/completions")
-    headers = cfg.get("headers", {"Content-Type": "application/json"})
-    curl_cmd = build_curl_cmd(model, prompt, max_tokens, False, api_url, headers) if log_path else None
+    body = _build_request_body(model, prompt, max_tokens, session_seed, temperature, drop_params, stream=False)
     raw_resp_text = None
-    try:
-        body = {"model": model, "messages": [{"role": "user", "content": prompt}],
-                "max_tokens": max_tokens, "stream": False}
-        if temperature is not None:
-            body["temperature"] = temperature
-        if session_seed:
-            body["seed"] = session_seed
-        for p in drop_params or []:
-            body.pop(p, None)
-        # Use stream=True at the transport layer so the response can be closed
-        # early on Ctrl+C, while the server still returns a single JSON object.
-        resp = requests.post(
-            api_url, headers=headers, json=body, stream=True, timeout=timeout)
-        with _active_requests_lock:
-            _active_requests.add(resp)
-        watchdog = threading.Timer(timeout, resp.close)
-        watchdog.daemon = True
-        watchdog.start()
-        try:
-            if resp.status_code != 200:
-                raw_resp_text = resp.text[:500]
-                if log_path and curl_cmd:
-                    log_request_entry(log_path, curl_cmd,
-                                      f"HTTP {resp.status_code}: {raw_resp_text}", log_label)
-                return text, usage, time.time()-start, f"HTTP {resp.status_code}: {resp.text[:150]}", finish_reason
-            # Use resp.content so requests handles decompression/encoding.
-            raw_resp_text = resp.content.decode("utf-8", errors="replace")
-            data = json.loads(raw_resp_text)
-            text = data["choices"][0]["message"]["content"]
-            usage = data.get("usage", {})
-            finish_reason = data.get("choices", [{}])[0].get("finish_reason")
-            if log_path and curl_cmd:
-                log_request_entry(log_path, curl_cmd, raw_resp_text, log_label)
-        finally:
-            watchdog.cancel()
-            with _active_requests_lock:
-                _active_requests.discard(resp)
-            resp.close()
-        if not error and time.time() - start > timeout:
-            error = f"Total timeout ({timeout}s) exceeded"
-    except Exception as e:
-        error = f"{type(e).__name__}: {e}"
+    with _post_request_context(source_config, source, body, timeout, False, log_path, log_label) as (resp, err, curl_cmd):
+        if err:
+            return text, usage, time.time() - start, err, finish_reason
+        # Use resp.content so requests handles decompression/encoding.
+        raw_resp_text = resp.content.decode("utf-8", errors="replace")
+        data = json.loads(raw_resp_text)
+        text = data["choices"][0]["message"]["content"]
+        usage = data.get("usage", {})
+        finish_reason = data.get("choices", [{}])[0].get("finish_reason")
         if log_path and curl_cmd:
-            body = raw_resp_text or f"EXCEPTION: {error}"
-            log_request_entry(log_path, curl_cmd, body, log_label)
-    return text, usage, time.time()-start, error, finish_reason
+            log_request_entry(log_path, curl_cmd, raw_resp_text, log_label)
+    if not error and time.time() - start > timeout:
+        error = f"Total timeout ({timeout}s) exceeded"
+    return text, usage, time.time() - start, error, finish_reason
 
 
 # ─── Output generators ────────────────────────────────────────────────────────
