@@ -430,12 +430,12 @@ class TestPerPluginTemperature(unittest.TestCase):
         self.assertEqual(plugin_temperatures["rate-limiter"], 0.1)
         self.assertEqual(plugin_temperatures["moe-dense"], 0.9)
 
-    def test_legacy_temperature_keys_map_correctly(self):
+    def test_legacy_temperature_keys_are_ignored(self):
         from benchmark_core import parse_plugin_temperatures
         cfg = {"code_temperature": 0.2, "general_temperature": 0.7}
         plugin_temperatures = parse_plugin_temperatures(cfg)
-        self.assertEqual(plugin_temperatures["rate-limiter"], 0.2)
-        self.assertEqual(plugin_temperatures["moe-dense"], 0.7)
+        self.assertNotIn("rate-limiter", plugin_temperatures)
+        self.assertNotIn("moe-dense", plugin_temperatures)
 
     def test_default_temperature_overrides_config_for_all_plugins(self):
         """--temperature applies to every active plugin, overriding config."""

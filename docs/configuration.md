@@ -110,8 +110,6 @@ You can set the temperature for each plugin using either of these config keys:
 }
 ```
 
-Legacy keys `code_temperature` and `general_temperature` are also supported for backward compatibility.
-
 ## Complete Example
 
 ```json

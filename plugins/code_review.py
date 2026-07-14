@@ -55,8 +55,6 @@ class CodeReviewPlugin(BenchmarkTaskPlugin):
     def get_temperature(self, global_config):
         if "code_review_temperature" in global_config:
             return global_config["code_review_temperature"]
-        if "general_temperature" in global_config:
-            return global_config["general_temperature"]
         return None
 
     def _extract_descriptions(self, response_text):

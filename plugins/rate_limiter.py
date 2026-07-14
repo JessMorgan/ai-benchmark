@@ -49,9 +49,6 @@ class RateLimiterPlugin(BenchmarkTaskPlugin):
     def get_temperature(self, global_config):
         if "rate_limiter_temperature" in global_config:
             return global_config["rate_limiter_temperature"]
-        # Backward-compatible legacy key
-        if "code_temperature" in global_config:
-            return global_config["code_temperature"]
         return None
 
     def score(self, response_text):

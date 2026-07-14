@@ -52,8 +52,6 @@ class ToolCallingPlugin(BenchmarkTaskPlugin):
     def get_temperature(self, global_config):
         if "tool_calling_temperature" in global_config:
             return global_config["tool_calling_temperature"]
-        if "general_temperature" in global_config:
-            return global_config["general_temperature"]
         return None
 
     @staticmethod

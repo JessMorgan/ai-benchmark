@@ -110,8 +110,6 @@ class StructuredOutputPlugin(BenchmarkTaskPlugin):
     def get_temperature(self, global_config):
         if "structured_output_temperature" in global_config:
             return global_config["structured_output_temperature"]
-        if "general_temperature" in global_config:
-            return global_config["general_temperature"]
         return None
 
     def _extract_candidate(self, response_text):

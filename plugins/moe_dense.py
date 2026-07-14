@@ -45,9 +45,6 @@ class MoEDensePlugin(BenchmarkTaskPlugin):
     def get_temperature(self, global_config):
         if "moe_dense_temperature" in global_config:
             return global_config["moe_dense_temperature"]
-        # Backward-compatible legacy key
-        if "general_temperature" in global_config:
-            return global_config["general_temperature"]
         return None
 
     def score(self, response_text):

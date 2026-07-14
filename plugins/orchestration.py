@@ -42,8 +42,6 @@ class OrchestrationPlugin(BenchmarkTaskPlugin):
     def get_temperature(self, global_config):
         if "orchestration_temperature" in global_config:
             return global_config["orchestration_temperature"]
-        if "general_temperature" in global_config:
-            return global_config["general_temperature"]
         return None
 
     def score(self, response_text):
