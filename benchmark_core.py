@@ -358,6 +358,14 @@ def _plugin_total_score(result, active_plugins):
     return total
 
 
+def _numeric_score(result, plugin_id, default=0):
+    """Return a numeric score for sorting, falling back to default for non-numeric values."""
+    score = result.get(f"{plugin_id}_score", default)
+    if isinstance(score, (int, float)):
+        return score
+    return default
+
+
 def gen_markdown(results, active_plugins, output_dir=None):
     ok = [r for r in results if r["status"] == "ok"]
     plugin_names = " | ".join(f"**{p.name}** ({int(p.max_score)} pts)" for p in active_plugins)
@@ -415,14 +423,14 @@ def gen_markdown(results, active_plugins, output_dir=None):
             lines.extend(["", f"### 🧠 Best {p.name} Score (/{int(p.max_score)})"])
             lines.append("| # | Model | Score |")
             lines.append("|---|---|---|")
-            for i, r in enumerate(sorted(ok, key=lambda x: x.get(f'{p.id}_score', 0), reverse=True)[:10], 1):
+            for i, r in enumerate(sorted(ok, key=lambda x: _numeric_score(x, p.id), reverse=True)[:10], 1):
                 lines.append(f"| {i} | {r['model']} | {r.get(f'{p.id}_score', '-')} |")
 
         lines.extend(["", "### ⭐ Best Combined"])
         lines.append("| # | Model | Total |")
         lines.append("|---|---|---|")
-        for i, r in enumerate(sorted(ok, key=lambda x: sum(x.get(f'{p.id}_score', 0) for p in active_plugins), reverse=True)[:10], 1):
-            tot = sum(r.get(f"{p.id}_score", 0) for p in active_plugins)
+        for i, r in enumerate(sorted(ok, key=lambda x: _plugin_total_score(x, active_plugins), reverse=True)[:10], 1):
+            tot = _plugin_total_score(r, active_plugins)
             lines.append(f"| {i} | {r['model']} | {tot} |")
 
     lines.extend(["", "---", "## 📐 Scoring Rubric", ""])
@@ -531,7 +539,7 @@ def gen_html(results, active_plugins, output_dir=None):
     for p in active_plugins:
         def lb_for_plugin(plugin):
             out = ""
-            for i, r in enumerate(sorted(ok, key=lambda x: x.get(f'{plugin.id}_score', 0), reverse=True)[:10], 1):
+            for i, r in enumerate(sorted(ok, key=lambda x: _numeric_score(x, plugin.id), reverse=True)[:10], 1):
                 out += f'<tr><td>{i}</td><td>{r["model"]}</td><td><strong>{r.get(f"{plugin.id}_score", "-")}/{int(plugin.max_score)}</strong></td></tr>\n'
             return out
         leaderboard_html += f"""<div class="leaderboard">
@@ -648,7 +656,7 @@ def gen_pdf(results, active_plugins, output_dir):
             pdf.set_font("Helvetica", "B", 8)
             pdf.cell(0, 5, f"Best {p.name}:", new_x="LMARGIN", new_y="NEXT")
             pdf.set_font("Helvetica", "", 7)
-            for i, r in enumerate(sorted(ok, key=lambda x: x.get(f'{p.id}_score', 0), reverse=True)[:5], 1):
+            for i, r in enumerate(sorted(ok, key=lambda x: _numeric_score(x, p.id), reverse=True)[:5], 1):
                 pdf.cell(0, 4, f"  {i}. {r['model'][:50]}  --  {r.get(f'{p.id}_score', '-')}/{int(p.max_score)}", new_x="LMARGIN", new_y="NEXT")
 
     os.makedirs(output_dir, exist_ok=True)
@@ -938,11 +946,12 @@ def run_model(model_name, source, state, active_plugins, source_config, timeout,
 
     latest = {res["model"]: res for res in state.latest_results()}
     existing = latest.get(model_name)
+    existing_ok = existing is not None and existing.get("status") == "ok"
 
     plugins_to_run = []
     for plugin in active_plugins:
         pid = plugin.id
-        if existing and f"{pid}_score" in existing:
+        if existing_ok and f"{pid}_score" in existing:
             r[f"{pid}_score"] = existing[f"{pid}_score"]
             r[f"{pid}_response_time"] = existing[f"{pid}_response_time"]
             r[f"{pid}_output_tokens"] = existing[f"{pid}_output_tokens"]
