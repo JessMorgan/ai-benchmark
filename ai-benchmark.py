@@ -7,6 +7,7 @@ Configuration: edit benchmark-config.json (or pass --config <path>).
 API keys can use ${VAR} or ${VAR:default} syntax for env-var expansion.
 """
 import argparse
+import curses
 import glob
 import json
 import os
@@ -34,11 +35,240 @@ from shell_completion import generate_shell_completion
 DEFAULT_CONFIG_PATH = "benchmark-config.json"
 
 
+def _wr(stdscr, max_x, max_y, y, x, text, attr=0):
+    """Write text to the curses screen, bounded by the terminal size."""
+    if not (0 <= y < max_y and 0 <= x < max_x):
+        return
+    stdscr.move(y, x)
+    stdscr.clrtoeol()
+    try:
+        stdscr.addstr(y, x, text[:max_x - x], attr)
+    except Exception:
+        try:
+            stdscr.addstr(y, x, text[:max_x - x])
+        except Exception:
+            pass
+
+
+def _fallback_tui_loop(state, stop_event):
+    """Fallback terminal UI when curses is unavailable."""
+    while not stop_event.is_set():
+        snap = state.snapshot()
+        active = sum(1 for s in snap.values() if s["status"].startswith("running_") or s["status"] == "queued")
+        done = state.completed
+        total = state.total
+        parts = [f"🔄 {active} active  |  ✅ {done}/{total} completed"]
+        for name, s in snap.items():
+            if s["status"].startswith("running_"):
+                elapsed = (time.time() - s.get("attempt_start", 0)) if s.get("attempt_start") else 0
+                err = s.get("last_error", "")
+                parts.append(f"  {name[:30]}: {s['phase_detail']} "
+                             f"att {s['attempt']}/3 tok {s['max_tok']} "
+                             f"{elapsed:.0f}s{' '+err if err else ''}")
+        sys.stdout.write(f"\r{' ' * 80}\r")
+        sys.stdout.write(" | ".join(parts))
+        sys.stdout.flush()
+        time.sleep(1)
+    print()
+
+
+def _handle_tui_input(stdscr, scroll_y, scroll_x, max_row_offset, visible_rows, max_x, frozen_width, plugin_hdr_len):
+    """Handle keyboard navigation and return updated scroll offsets."""
+    key = stdscr.getch()
+    if key == curses.KEY_UP:
+        scroll_y = max(0, scroll_y - 1)
+    elif key == curses.KEY_DOWN:
+        scroll_y = min(max_row_offset, scroll_y + 1)
+    elif key == curses.KEY_PPAGE:
+        scroll_y = max(0, scroll_y - visible_rows)
+    elif key == ord(' ') or key == curses.KEY_NPAGE:
+        scroll_y = min(max_row_offset, scroll_y + visible_rows)
+    elif key == curses.KEY_HOME:
+        scroll_y = 0
+    elif key == curses.KEY_END:
+        scroll_y = max_row_offset
+    elif key == curses.KEY_LEFT:
+        scroll_x = max(0, scroll_x - 8)
+    elif key == curses.KEY_RIGHT:
+        scroll_x = min(max(0, plugin_hdr_len - (max_x - frozen_width)), scroll_x + 8)
+    scroll_y = max(0, min(max_row_offset, scroll_y))
+    return scroll_y, scroll_x
+
+
+def _render_header_and_summary(stdscr, max_x, max_y, snap, done, total, running, queued, pending,
+                                scroll_y, visible_rows, total_models):
+    """Render the top header and summary statistics."""
+    from datetime import datetime
+    ts = datetime.now().strftime('%H:%M:%S')
+    hdr = f"AI Benchmark — Parallel  |  {ts}"
+    if max_x > len(hdr):
+        _wr(stdscr, max_x, max_y, 0, 0, hdr, curses.A_BOLD)
+
+    failed_count = sum(1 for s in snap.values() if s["status"] == "failed")
+    err_indicator = f"  |  \u26a0 {failed_count} failed" if failed_count else ""
+    summary = (f"Total: {total}  |  "
+               f"Done: {done}  |  "
+               f"Active: {len(running)}  |  "
+               f"Queued: {len(queued + pending)}"
+               f"{err_indicator}"
+               f"  |  \u2191\u2193 rows {scroll_y + 1}-{min(total_models, scroll_y + visible_rows)}/{total_models}"
+               f"  |  \u2190\u2192 cols")
+    if max_y > 1 and max_x > len(summary):
+        _wr(stdscr, max_x, max_y, 1, 0, summary)
+
+    if max_y > 2:
+        _wr(stdscr, max_x, max_y, 2, 0, "\u2500" * min(max_x, 80))
+
+
+def _render_table_headings(stdscr, max_x, max_y, scroll_x, frozen_cols, plugin_cols, frozen_width):
+    """Render the frozen and plugin column headings."""
+    frozen_hdr = " ".join(f"{h:>{w}}" for h, w in frozen_cols)
+    plugin_hdr_parts = [f"{h:>{w}}" for h, w in plugin_cols]
+    plugin_hdr = " ".join(plugin_hdr_parts)
+    if max_y > 3:
+        visible_plugin_hdr = plugin_hdr[scroll_x:scroll_x + max(0, max_x - frozen_width)]
+        _wr(stdscr, max_x, max_y, 3, 0, frozen_hdr + " " + visible_plugin_hdr, curses.A_UNDERLINE)
+    return plugin_hdr
+
+
+def _format_model_row(name, s, display_idx, active_plugins, source_abbrevs):
+    """Format a single model row into frozen and plugin strings."""
+    sv = s["status"]
+    status_ch = {"pending": "\u23f3", "queued": "\u23f3",
+                 "completed": "\u2705", "failed": "\u274c"}.get(sv, "?")
+    if sv.startswith("running_"):
+        status_ch = "\U0001f537"
+
+    def fmt_val(v, fmt=".1f"):
+        if v is None:
+            return "-"
+        try:
+            return f"{v:{fmt}}"
+        except Exception:
+            return str(v)
+
+    src_ab = source_abbrevs.get(s["source"], s["source"][:3])
+    model_disp = name[:16]
+    frozen = f"{display_idx:>3}  {src_ab:<3} {model_disp:<18}  {status_ch:<3}"
+
+    plugin_parts = []
+    for p in active_plugins:
+        pid = p.id
+        sc = fmt_val(s.get(f"{pid}_score"))
+        tok = fmt_val(s.get(f"{pid}_output_tokens"), "d")
+        tm = fmt_val(s.get(f"{pid}_response_time"))
+        tps = fmt_val(s.get(f"{pid}_tps"))
+        plugin_parts.extend([sc, tok, tm, tps])
+    plugin_str = " ".join(f"{v:>{6 if i % 4 != 0 else 5}}" for i, v in enumerate(plugin_parts))
+    return frozen, plugin_str
+
+
+def _render_model_rows(stdscr, max_x, max_y, snap_items, active_plugins, source_abbrevs,
+                       scroll_y, scroll_x, visible_rows, frozen_width, model_top):
+    """Render the scrollable model status table."""
+    total_models = len(snap_items)
+    for row_idx in range(visible_rows):
+        abs_idx = scroll_y + row_idx
+        if abs_idx >= total_models:
+            break
+        name, s = snap_items[abs_idx]
+        display_idx = abs_idx + 1
+        frozen, plugin_str = _format_model_row(name, s, display_idx, active_plugins, source_abbrevs)
+        visible_plugin = plugin_str[scroll_x:scroll_x + max(0, max_x - frozen_width - 1)]
+        line = frozen + " " + visible_plugin
+
+        attr = 0
+        sv = s["status"]
+        if sv == "completed":
+            try:
+                attr = curses.color_pair(1)
+            except Exception:
+                pass
+        elif sv == "failed":
+            try:
+                attr = curses.color_pair(3)
+            except Exception:
+                pass
+        elif sv.startswith("running_"):
+            try:
+                attr = curses.color_pair(2)
+            except Exception:
+                pass
+        _wr(stdscr, max_x, max_y, model_top + row_idx, 0, line, attr)
+
+    for r in range(model_top + min(visible_rows, max(0, total_models - scroll_y)), model_top + visible_rows):
+        try:
+            stdscr.move(r, 0)
+            stdscr.clrtoeol()
+        except Exception:
+            pass
+
+
+def _render_live_activity(stdscr, max_x, max_y, snap, source_abbrevs, live_models,
+                          live_top, live_height, log_top):
+    """Render the live activity section for currently running models."""
+    live_row = live_top
+    _wr(stdscr, max_x, max_y, live_row, 0, "Live:", curses.A_BOLD)
+    live_row += 1
+    for nm in live_models[:live_height - 1]:
+        if live_row >= log_top:
+            break
+        s = snap[nm]
+        src_ab = source_abbrevs.get(s["source"], s["source"][:3])
+        elapsed = (time.time() - s.get("attempt_start", 0)) if s.get("attempt_start") else 0
+        err = s.get("last_error", "")
+        phase_ch = "\U0001f537"
+        msg = (f" {phase_ch} [{src_ab}] {nm[:42]}: {s['phase_detail']} "
+               f"Att {s['attempt']}/3  Tok {s['max_tok']}  "
+               f"{elapsed:5.0f}s"
+               f"{'  '+err if err else ''}")
+        _wr(stdscr, max_x, max_y, live_row, 0, msg)
+        live_row += 1
+    for r in range(live_row, log_top):
+        try:
+            stdscr.move(r, 0)
+            stdscr.clrtoeol()
+        except Exception:
+            pass
+
+
+def _render_recent_errors(stdscr, max_x, max_y, state, log_top, footer_line):
+    """Render the recent errors section."""
+    from datetime import datetime
+    log_row = log_top
+    recent_errors = state.recent_log(2)
+    if recent_errors:
+        _wr(stdscr, max_x, max_y, log_row, 0, "Errors:", curses.A_BOLD)
+        log_row += 1
+        for ts_entry, model_entry, msg_entry in recent_errors:
+            if log_row >= footer_line:
+                break
+            t_str = datetime.fromtimestamp(ts_entry).strftime('%H:%M:%S')
+            err_msg = f"  {t_str} [{model_entry[:20]}]: {msg_entry}"
+            _wr(stdscr, max_x, max_y, log_row, 0, err_msg, curses.color_pair(3))
+            log_row += 1
+    for r in range(log_row, footer_line):
+        try:
+            stdscr.move(r, 0)
+            stdscr.clrtoeol()
+        except Exception:
+            pass
+
+
+def _render_footer(stdscr, max_x, max_y, live_models, queuing, footer_line):
+    """Render the bottom status line."""
+    if not live_models and not queuing:
+        msg = " All models complete — generating outputs..."
+    else:
+        q = f"{len(queuing)} queued" if queuing else ""
+        a = f"{len(live_models)} active" if live_models else ""
+        sep2 = "  |  " if q and a else ""
+        msg = f" {a}{sep2}{q}"
+    _wr(stdscr, max_x, max_y, footer_line, 0, msg)
+
+
 def tui_main(state, stop_event, num_sources, active_plugins):
     """Run ncurses TUI in a daemon thread. Updates every 200ms."""
-    from datetime import datetime
-    import curses
-
     try:
         stdscr = curses.initscr()
         curses.noecho()
@@ -53,24 +283,7 @@ def tui_main(state, stop_event, num_sources, active_plugins):
             curses.init_pair(2, curses.COLOR_YELLOW, -1)
             curses.init_pair(3, curses.COLOR_RED, -1)
     except Exception:
-        while not stop_event.is_set():
-            snap = state.snapshot()
-            active = sum(1 for s in snap.values() if s["status"].startswith("running_") or s["status"] == "queued")
-            done = state.completed
-            total = state.total
-            parts = [f"🔄 {active} active  |  ✅ {done}/{total} completed"]
-            for name, s in snap.items():
-                if s["status"].startswith("running_"):
-                    elapsed = (time.time() - s.get("attempt_start", 0)) if s.get("attempt_start") else 0
-                    err = s.get("last_error", "")
-                    parts.append(f"  {name[:30]}: {s['phase_detail']} "
-                                 f"att {s['attempt']}/3 tok {s['max_tok']} "
-                                 f"{elapsed:.0f}s{' '+err if err else ''}")
-            sys.stdout.write(f"\r{' ' * 80}\r")
-            sys.stdout.write(" | ".join(parts))
-            sys.stdout.flush()
-            time.sleep(1)
-        print()
+        _fallback_tui_loop(state, stop_event)
         return
 
     try:
@@ -93,36 +306,6 @@ def tui_main(state, stop_event, num_sources, active_plugins):
                 (f"{p.id[:3]}TPS", 6),
             ])
 
-        def render_row(name, s, display_idx):
-            sv = s["status"]
-            status_ch = {"pending": "\u23f3", "queued": "\u23f3",
-                         "completed": "\u2705", "failed": "\u274c"}.get(sv, "?")
-            if sv.startswith("running_"):
-                status_ch = "\U0001f537"
-
-            def fmt_val(v, fmt=".1f"):
-                if v is None:
-                    return "-"
-                try:
-                    return f"{v:{fmt}}"
-                except Exception:
-                    return str(v)
-
-            src_ab = source_abbrevs.get(s["source"], s["source"][:3])
-            model_disp = name[:16]
-            frozen = f"{display_idx:>3}  {src_ab:<3} {model_disp:<18}  {status_ch:<3}"
-
-            plugin_parts = []
-            for p in active_plugins:
-                pid = p.id
-                sc = fmt_val(s.get(f"{pid}_score"))
-                tok = fmt_val(s.get(f"{pid}_output_tokens"), "d")
-                tm = fmt_val(s.get(f"{pid}_response_time"))
-                tps = fmt_val(s.get(f"{pid}_tps"))
-                plugin_parts.extend([sc, tok, tm, tps])
-            plugin_str = " ".join(f"{v:>{6 if i % 4 != 0 else 5}}" for i, v in enumerate(plugin_parts))
-            return frozen, plugin_str
-
         while not stop_event.is_set():
             max_y, max_x = stdscr.getmaxyx()
             snap = state.snapshot()
@@ -133,19 +316,6 @@ def tui_main(state, stop_event, num_sources, active_plugins):
             queued = [n for n, s in snap.items() if s["status"] == "queued"]
             pending = [n for n, s in snap.items() if s["status"] == "pending"]
 
-            def _wr(y, x, text, attr=0):
-                if not (0 <= y < max_y and 0 <= x < max_x):
-                    return
-                stdscr.move(y, x)
-                stdscr.clrtoeol()
-                try:
-                    stdscr.addstr(y, x, text[:max_x - x], attr)
-                except Exception:
-                    try:
-                        stdscr.addstr(y, x, text[:max_x - x])
-                    except Exception:
-                        pass
-
             FOOTER_LINE = max_y - 1
             MAX_LOG_ROWS = 3
             LOG_TOP = FOOTER_LINE - MAX_LOG_ROWS
@@ -154,148 +324,38 @@ def tui_main(state, stop_event, num_sources, active_plugins):
             MODEL_TOP = 4
             VISIBLE_ROWS = max(0, MODEL_BOTTOM - MODEL_TOP)
 
-            ts = datetime.now().strftime('%H:%M:%S')
-            hdr = f"AI Benchmark — Parallel  |  {ts}"
-            if max_x > len(hdr):
-                _wr(0, 0, hdr, curses.A_BOLD)
+            _render_header_and_summary(
+                stdscr, max_x, max_y, snap, done, total, running, queued, pending,
+                scroll_y, VISIBLE_ROWS, len(snap)
+            )
 
-            total_models = len(snap)
-            failed_count = sum(1 for s in snap.values() if s["status"] == "failed")
-            err_indicator = f"  |  \u26a0 {failed_count} failed" if failed_count else ""
-            summary = (f"Total: {total}  |  "
-                       f"Done: {done}  |  "
-                       f"Active: {len(running)}  |  "
-                       f"Queued: {len(queued + pending)}"
-                       f"{err_indicator}"
-                       f"  |  \u2191\u2193 rows {scroll_y + 1}-{min(total_models, scroll_y + VISIBLE_ROWS)}/{total_models}"
-                       f"  |  \u2190\u2192 cols")
-            if max_y > 1 and max_x > len(summary):
-                _wr(1, 0, summary)
+            plugin_hdr = _render_table_headings(
+                stdscr, max_x, max_y, scroll_x, frozen_cols, plugin_cols, frozen_width
+            )
 
-            if max_y > 2:
-                _wr(2, 0, "\u2500" * min(max_x, 80))
+            max_row_offset = max(0, len(snap_items) - VISIBLE_ROWS)
+            scroll_y, scroll_x = _handle_tui_input(
+                stdscr, scroll_y, scroll_x, max_row_offset, VISIBLE_ROWS, max_x,
+                frozen_width, len(plugin_hdr)
+            )
 
-            frozen_hdr = " ".join(f"{h:>{w}}" for h, w in frozen_cols)
-            plugin_hdr_parts = [f"{h:>{w}}" for h, w in plugin_cols]
-            plugin_hdr = " ".join(plugin_hdr_parts)
-            if max_y > 3:
-                visible_plugin_hdr = plugin_hdr[scroll_x:scroll_x + max(0, max_x - frozen_width)]
-                _wr(3, 0, frozen_hdr + " " + visible_plugin_hdr, curses.A_UNDERLINE)
-
-            key = stdscr.getch()
-            max_row_offset = max(0, total_models - VISIBLE_ROWS)
-            if key == curses.KEY_UP:
-                scroll_y = max(0, scroll_y - 1)
-            elif key == curses.KEY_DOWN:
-                scroll_y = min(max_row_offset, scroll_y + 1)
-            elif key == curses.KEY_PPAGE:
-                scroll_y = max(0, scroll_y - VISIBLE_ROWS)
-            elif key == ord(' ') or key == curses.KEY_NPAGE:
-                scroll_y = min(max_row_offset, scroll_y + VISIBLE_ROWS)
-            elif key == curses.KEY_HOME:
-                scroll_y = 0
-            elif key == curses.KEY_END:
-                scroll_y = max_row_offset
-            elif key == curses.KEY_LEFT:
-                scroll_x = max(0, scroll_x - 8)
-            elif key == curses.KEY_RIGHT:
-                scroll_x = min(max(0, len(plugin_hdr) - (max_x - frozen_width)), scroll_x + 8)
-            scroll_y = max(0, min(max_row_offset, scroll_y))
-
-            for row_idx in range(VISIBLE_ROWS):
-                abs_idx = scroll_y + row_idx
-                if abs_idx >= total_models:
-                    break
-                name, s = snap_items[abs_idx]
-                display_idx = abs_idx + 1
-                frozen, plugin_str = render_row(name, s, display_idx)
-                visible_plugin = plugin_str[scroll_x:scroll_x + max(0, max_x - frozen_width - 1)]
-                line = frozen + " " + visible_plugin
-
-                attr = 0
-                sv = s["status"]
-                if sv == "completed":
-                    try:
-                        attr = curses.color_pair(1)
-                    except Exception:
-                        pass
-                elif sv == "failed":
-                    try:
-                        attr = curses.color_pair(3)
-                    except Exception:
-                        pass
-                elif sv.startswith("running_"):
-                    try:
-                        attr = curses.color_pair(2)
-                    except Exception:
-                        pass
-                _wr(MODEL_TOP + row_idx, 0, line, attr)
-
-            model_end = MODEL_TOP + min(VISIBLE_ROWS, max(0, total_models - scroll_y))
-            for r in range(model_end, MODEL_BOTTOM + 1):
-                try:
-                    stdscr.move(r, 0)
-                    stdscr.clrtoeol()
-                except Exception:
-                    pass
+            _render_model_rows(
+                stdscr, max_x, max_y, snap_items, active_plugins, source_abbrevs,
+                scroll_y, scroll_x, VISIBLE_ROWS, frozen_width, MODEL_TOP
+            )
 
             if MODEL_BOTTOM >= 0:
-                _wr(MODEL_BOTTOM, 0, "\u2500" * min(max_x, 60))
+                _wr(stdscr, max_x, max_y, MODEL_BOTTOM, 0, "\u2500" * min(max_x, 60))
 
-            live_models = running
-            live_row = LIVE_TOP
-            _wr(live_row, 0, "Live:", curses.A_BOLD)
-            live_row += 1
-            for nm in live_models[:LIVE_HEIGHT - 1]:
-                if live_row >= LOG_TOP:
-                    break
-                s = snap[nm]
-                src_ab = source_abbrevs.get(s["source"], s["source"][:3])
-                elapsed = (time.time() - s.get("attempt_start", 0)) if s.get("attempt_start") else 0
-                err = s.get("last_error", "")
-                phase_ch = "\U0001f537"
-                msg = (f" {phase_ch} [{src_ab}] {nm[:42]}: {s['phase_detail']} "
-                       f"Att {s['attempt']}/3  Tok {s['max_tok']}  "
-                       f"{elapsed:5.0f}s"
-                       f"{'  '+err if err else ''}")
-                _wr(live_row, 0, msg)
-                live_row += 1
-            for r in range(live_row, LOG_TOP):
-                try:
-                    stdscr.move(r, 0)
-                    stdscr.clrtoeol()
-                except Exception:
-                    pass
+            _render_live_activity(
+                stdscr, max_x, max_y, snap, source_abbrevs, running,
+                LIVE_TOP, LIVE_HEIGHT, LOG_TOP
+            )
 
-            log_row = LOG_TOP
-            recent_errors = state.recent_log(2)
-            if recent_errors:
-                _wr(log_row, 0, "Errors:", curses.A_BOLD)
-                log_row += 1
-                for ts_entry, model_entry, msg_entry in recent_errors:
-                    if log_row >= FOOTER_LINE:
-                        break
-                    from datetime import datetime
-                    t_str = datetime.fromtimestamp(ts_entry).strftime('%H:%M:%S')
-                    err_msg = f"  {t_str} [{model_entry[:20]}]: {msg_entry}"
-                    _wr(log_row, 0, err_msg, curses.color_pair(3))
-                    log_row += 1
-            for r in range(log_row, FOOTER_LINE):
-                try:
-                    stdscr.move(r, 0)
-                    stdscr.clrtoeol()
-                except Exception:
-                    pass
+            _render_recent_errors(stdscr, max_x, max_y, state, LOG_TOP, FOOTER_LINE)
 
             queuing = queued + pending
-            if not live_models and not queuing:
-                msg = " All models complete — generating outputs..."
-            else:
-                q = f"{len(queuing)} queued" if queuing else ""
-                a = f"{len(live_models)} active" if live_models else ""
-                sep2 = "  |  " if q and a else ""
-                msg = f" {a}{sep2}{q}"
-            _wr(FOOTER_LINE, 0, msg)
+            _render_footer(stdscr, max_x, max_y, running, queuing, FOOTER_LINE)
 
             stdscr.refresh()
             time.sleep(0.2)
