@@ -58,6 +58,29 @@ class TestBenchmarkState(unittest.TestCase):
             snap = loaded.snapshot()
             self.assertIn("attempt_start", snap["model-a"])
 
+    def test_load_state_with_dict_model_config(self):
+        """Regression test: dict-valued model entries resolve to source strings."""
+        raw_models = {
+            "model-a": "Source1",
+            "model-b": {"source": "Source2", "drop_params": ["seed"]},
+        }
+        models_source_map = {
+            name: (val.get("source", "Default") if isinstance(val, dict) else val)
+            for name, val in raw_models.items()
+        }
+        state = self.module.BenchmarkState(models_source_map, self.plugin_ids)
+        state.update("model-a", status="completed")
+        state.update("model-b", status="completed")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, "state.json")
+            state.save_state(path)
+            loaded = self.module.BenchmarkState.load_state(path, models_source_map, self.plugin_ids)
+            snap = loaded.snapshot()
+            self.assertEqual(snap["model-a"]["source"], "Source1")
+            self.assertEqual(snap["model-b"]["source"], "Source2")
+            # The TUI builds a set of source strings; ensure sources are hashable.
+            self.assertEqual({s["source"] for s in snap.values()}, {"Source1", "Source2"})
+
 
 if __name__ == "__main__":
     unittest.main()

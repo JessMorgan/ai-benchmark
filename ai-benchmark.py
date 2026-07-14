@@ -537,12 +537,12 @@ def main():
                     os.remove(state_file)
                     state = BenchmarkState(models_source_map, plugin_ids)
                 elif choice == "continue":
-                    state = BenchmarkState.load_state(state_file, models, plugin_ids)
+                    state = BenchmarkState.load_state(state_file, models_source_map, plugin_ids)
                     resumed = True
                 else:
                     sys.exit(0)
             else:
-                state = BenchmarkState.load_state(state_file, models, plugin_ids)
+                state = BenchmarkState.load_state(state_file, models_source_map, plugin_ids)
                 resumed = True
 
             if resumed:
