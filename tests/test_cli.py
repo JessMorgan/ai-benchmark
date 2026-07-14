@@ -437,6 +437,35 @@ class TestPerPluginTemperature(unittest.TestCase):
         self.assertEqual(plugin_temperatures["rate-limiter"], 0.2)
         self.assertEqual(plugin_temperatures["moe-dense"], 0.7)
 
+    def test_default_temperature_overrides_config_for_all_plugins(self):
+        """--temperature applies to every active plugin, overriding config."""
+        from benchmark_core import parse_plugin_temperatures
+        cfg = {
+            "rate-limiter_temperature": 0.1,
+            "moe-dense_temperature": 0.9,
+        }
+        plugin_temperatures = parse_plugin_temperatures(cfg)
+        active_plugins = [
+            type("P", (), {"id": "rate-limiter"}),
+            type("P", (), {"id": "moe-dense"}),
+        ]
+        default_temp = 0.5
+        for plugin in active_plugins:
+            plugin_temperatures[plugin.id] = default_temp
+        self.assertEqual(plugin_temperatures["rate-limiter"], 0.5)
+        self.assertEqual(plugin_temperatures["moe-dense"], 0.5)
+
+    def test_per_plugin_temperature_overrides_default_temperature(self):
+        """--plugin-temperature takes priority over --temperature."""
+        from benchmark_core import parse_plugin_temperatures
+        cfg = {"rate-limiter_temperature": 0.1}
+        plugin_temperatures = parse_plugin_temperatures(cfg)
+        active_plugins = [type("P", (), {"id": "rate-limiter"})]
+        for plugin in active_plugins:
+            plugin_temperatures[plugin.id] = 0.5
+        plugin_temperatures["rate-limiter"] = 0.3
+        self.assertEqual(plugin_temperatures["rate-limiter"], 0.3)
+
 
 
 if __name__ == "__main__":

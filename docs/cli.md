@@ -17,7 +17,8 @@ python ai-benchmark.py [options]
 | `--out DIR` | Override the output directory from config |
 | `--timeout SEC` | Override API request timeout |
 | `--token-levels N [N ...]` | Override token levels (e.g. `--token-levels 4096 8192 16384`) |
-| `--plugin-temperature ID=VAL [ID=VAL ...]` | Override per-plugin temperatures |
+| `--temperature VAL` | Default temperature for all plugins (overrides config) |
+| `--plugin-temperature ID=VAL [ID=VAL ...]` | Override per-plugin temperatures (highest priority) |
 | `--plugin-thread-limit N` | Max concurrent plugins per model (`0` = one per plugin) |
 | `--plugins-whitelist ID [ID ...]` | Run only these plugins |
 | `--plugins-blacklist ID [ID ...]` | Run all plugins except these |
@@ -74,10 +75,24 @@ python ai-benchmark.py --seed 42
 python ai-benchmark.py --token-levels 4096 8192 16384
 ```
 
-### Override a plugin temperature
+### Override all plugin temperatures
+
+```sh
+python ai-benchmark.py --temperature 0.5
+```
+
+### Override a specific plugin temperature
 
 ```sh
 python ai-benchmark.py --plugin-temperature rate-limiter=0.3
+```
+
+### Combine default and per-plugin temperatures
+
+Per-plugin settings take priority over the default, and both override config file values.
+
+```sh
+python ai-benchmark.py --temperature 0.5 --plugin-temperature moe-dense=0.7
 ```
 
 ### Generate and install shell completions

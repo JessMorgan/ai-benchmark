@@ -423,6 +423,8 @@ def main():
                         help='Override request timeout in seconds from config')
     parser.add_argument('--token-levels', type=int, nargs='+', default=None,
                         help='Override token levels (e.g. --token-levels 4096 8192 16384)')
+    parser.add_argument('--temperature', type=float, default=None,
+                        help='Default temperature for all plugins (overrides config; individual --plugin-temperature takes priority)')
     parser.add_argument('--plugin-temperature', type=str, nargs='+', default=None,
                         help='Per-plugin temperatures as id=value (e.g. --plugin-temperature rate-limiter=0.2 moe-dense=0.7)')
     parser.add_argument('--plugin-thread-limit', type=int, default=None,
@@ -489,9 +491,27 @@ def main():
     if args.token_levels is not None:
         token_levels = args.token_levels
 
+    whitelist = args.plugins_whitelist or cfg.get("plugins_whitelist") or None
+    blacklist = args.plugins_blacklist or cfg.get("plugins_blacklist") or None
+    if whitelist and blacklist:
+        print("❌ Cannot specify both --plugins-whitelist and --plugins-blacklist.", file=sys.stderr)
+        sys.exit(1)
+    try:
+        active_plugins = discover_plugins(whitelist=whitelist, blacklist=blacklist)
+    except Exception as e:
+        print(f"❌ Failed to discover plugins: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    if not active_plugins:
+        print("❌ No plugins selected. Check your whitelist/blacklist.", file=sys.stderr)
+        sys.exit(1)
+
     # Per-plugin temperatures: CLI overrides config. Config keys may use either
     # hyphen or underscore, e.g. "rate-limiter_temperature" or "rate_servererature".
     plugin_temperatures = parse_plugin_temperatures(cfg)
+    if args.temperature is not None:
+        for plugin in active_plugins:
+            plugin_temperatures[plugin.id] = args.temperature
     if args.plugin_temperature:
         for item in args.plugin_temperature:
             if "=" not in item:
@@ -515,21 +535,6 @@ def main():
     if args.plugin_thread_limit is not None:
         for src_cfg in source_config.values():
             src_cfg["plugin_thread_limit"] = args.plugin_thread_limit
-
-    whitelist = args.plugins_whitelist or cfg.get("plugins_whitelist") or None
-    blacklist = args.plugins_blacklist or cfg.get("plugins_blacklist") or None
-    if whitelist and blacklist:
-        print("❌ Cannot specify both --plugins-whitelist and --plugins-blacklist.", file=sys.stderr)
-        sys.exit(1)
-    try:
-        active_plugins = discover_plugins(whitelist=whitelist, blacklist=blacklist)
-    except Exception as e:
-        print(f"❌ Failed to discover plugins: {e}", file=sys.stderr)
-        sys.exit(1)
-
-    if not active_plugins:
-        print("❌ No plugins selected. Check your whitelist/blacklist.", file=sys.stderr)
-        sys.exit(1)
 
     print(f"📋 Loaded {len(models)} models across {len(source_config)} sources "
           f"from {config_path}", file=sys.stderr)
