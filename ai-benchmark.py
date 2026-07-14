@@ -33,6 +33,23 @@ from shell_completion import generate_shell_completion
 DEFAULT_CONFIG_PATH = "benchmark-config.json"
 
 
+def _unique_source_abbrevs(sources):
+    """Return a mapping from source names to short, unique abbreviations."""
+    abbrevs = {}
+    used = set()
+    for src in sources:
+        ab = _source_abbrev(src)
+        if ab in used:
+            for i in range(1, 100):
+                candidate = f"{ab}{i}"
+                if candidate not in used:
+                    ab = candidate
+                    break
+        abbrevs[src] = ab
+        used.add(ab)
+    return abbrevs
+
+
 def tui_main(state, stop_event, num_sources, active_plugins):
     """Run ncurses TUI in a daemon thread. Updates every 200ms."""
     from datetime import datetime
@@ -78,28 +95,7 @@ def tui_main(state, stop_event, num_sources, active_plugins):
         scroll_x = 0
 
         src_snap = {s["source"] for s in state.snapshot().values()}
-        source_abbrevs = {}
-        _used = set()
-        for src in sorted(src_snap):
-            ab = _source_abbrev(src)
-            if ab in _used:
-                tokens = []
-                for w in src.split():
-                    if w.isupper() and 1 < len(w) <= 3:
-                        tokens.append(w)
-                    else:
-                        sub = __import__('re').findall(r'[A-Z]?[a-z]+|[A-Z]+', w)
-                        tokens.extend(sub) if sub else tokens.append(w)
-                ab = ''.join(t[:2].upper() for t in tokens if t)
-                if ab in _used or len(ab) < 2:
-                    ab = (src * 2)[:2].upper()
-                    if ab in _used:
-                        for i in range(2, min(len(src), 6)):
-                            ab = src[:i].upper()
-                            if ab not in _used:
-                                break
-            source_abbrevs[src] = ab
-            _used.add(ab)
+        source_abbrevs = _unique_source_abbrevs(src_snap)
 
         frozen_cols = [("#", 4), ("S", 4), ("Model", 18), ("St", 4)]
         frozen_width = sum(w for _h, w in frozen_cols) + len(frozen_cols)

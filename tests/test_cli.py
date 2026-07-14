@@ -8,7 +8,7 @@ import unittest
 from unittest import mock
 
 from plugins import discover_plugins
-from tests.utils import load_benchmark_module
+from tests.utils import load_benchmark_module, MockResponse
 
 
 class TestCLIArgs(unittest.TestCase):
@@ -320,20 +320,6 @@ class TestDropParams(unittest.TestCase):
         cls.module = load_benchmark_module()
         cls.plugins = discover_plugins()
 
-    def _make_response(self, status_code=200, text=""):
-        class _Resp:
-            status_code = status_code
-            def __init__(self, text):
-                self._text = text
-            def iter_lines(self, decode_unicode=False):
-                return []
-            def close(self):
-                pass
-            @property
-            def text(self):
-                return self._text
-        return _Resp(text)
-
     def test_stream_request_drop_params_omits_seed(self):
         """stream_request omits seed when drop_params contains 'seed'."""
         captured = {}
@@ -341,7 +327,7 @@ class TestDropParams(unittest.TestCase):
 
         def fake_post(url, **kwargs):
             captured["body"] = kwargs.get("json")
-            return self._make_response()
+            return MockResponse()
 
         with mock.patch("requests.post", side_effect=fake_post):
             self.module.stream_request(
@@ -361,7 +347,7 @@ class TestDropParams(unittest.TestCase):
 
         def fake_post(url, **kwargs):
             captured["body"] = kwargs.get("json")
-            return self._make_response()
+            return MockResponse()
 
         with mock.patch("requests.post", side_effect=fake_post):
             self.module.nonstream_request(
@@ -383,10 +369,9 @@ class TestDropParams(unittest.TestCase):
 
         def fake_post(url, **kwargs):
             captured["body"] = kwargs.get("json")
-            return self._make_response()
+            return MockResponse()
 
         global_cfg = {
-            "plugin_thread_limit": 1,
             "models": {
                 "dummy-model": {
                     "source": "Local",
@@ -412,20 +397,6 @@ class TestSeedCLI(unittest.TestCase):
         cls.module = load_benchmark_module()
         cls.plugins = discover_plugins()
 
-    def _make_response(self, status_code=200, text=""):
-        class _Resp:
-            status_code = status_code
-            def __init__(self, text):
-                self._text = text
-            def iter_lines(self, decode_unicode=False):
-                return []
-            def close(self):
-                pass
-            @property
-            def text(self):
-                return self._text
-        return _Resp(text)
-
     def test_fixed_seed_passed_to_request_body(self):
         """A fixed session_seed appears in the API request body."""
         plugins = [p for p in self.plugins if p.id == "rate-limiter"]
@@ -435,7 +406,7 @@ class TestSeedCLI(unittest.TestCase):
 
         def fake_post(url, **kwargs):
             captured["body"] = kwargs.get("json")
-            return self._make_response()
+            return MockResponse()
 
         with mock.patch("requests.post", side_effect=fake_post):
             self.module._run_plugin_task(
