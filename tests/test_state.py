@@ -81,6 +81,33 @@ class TestBenchmarkState(unittest.TestCase):
             # The TUI builds a set of source strings; ensure sources are hashable.
             self.assertEqual({s["source"] for s in snap.values()}, {"Source1", "Source2"})
 
+    def test_completed_counts_only_successful_models(self):
+        """completed should not treat failed models as finished."""
+        models = {"model-a": "Source1", "model-b": "Source2", "model-c": "Source1"}
+        state = self.module.BenchmarkState(models, self.plugin_ids)
+        state.update("model-a", status="completed")
+        state.update("model-b", status="failed")
+        state.update("model-c", status="pending")
+        self.assertEqual(state.completed, 1)
+
+    def test_load_state_resets_failed_models_to_pending(self):
+        """Failed models are queued for rerun when a saved state is resumed."""
+        models = {"model-a": "Source1", "model-b": "Source2"}
+        state = self.module.BenchmarkState(models, self.plugin_ids)
+        state.update("model-a", status="completed")
+        state.update("model-b", status="failed", error="boom", last_error="boom")
+        state.add_result({"model": "model-b", "status": "error", "error": "boom"})
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, "state.json")
+            state.save_state(path)
+            loaded = self.module.BenchmarkState.load_state(path, models, self.plugin_ids)
+            snap = loaded.snapshot()
+            self.assertEqual(snap["model-a"]["status"], "completed")
+            self.assertEqual(snap["model-b"]["status"], "pending")
+            self.assertEqual(snap["model-b"]["error"], None)
+            self.assertEqual(snap["model-b"]["last_error"], "")
+
 
 if __name__ == "__main__":
     unittest.main()

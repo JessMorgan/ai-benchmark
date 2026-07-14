@@ -751,7 +751,7 @@ class BenchmarkState:
     @property
     def completed(self):
         with self._lock:
-            return sum(1 for s in self._model_info.values() if s["status"] in ("completed", "failed"))
+            return sum(1 for s in self._model_info.values() if s["status"] == "completed")
 
     @property
     def total(self):
@@ -806,9 +806,13 @@ class BenchmarkState:
                 state._model_info[name] = info
         state.results = data.get("results", [])
         for name, info in state._model_info.items():
-            if info.get("status") not in ("completed", "failed"):
-                info["status"] = "pending"
-                info["last_error"] = ""
+            if info.get("status") == "completed":
+                continue
+            # Reset failed (and any other non-completed) models so they are
+            # re-run when the benchmark restarts.
+            info["status"] = "pending"
+            info["last_error"] = ""
+            info["error"] = None
             info.setdefault("attempt_start", 0)
         return state
 
@@ -982,13 +986,15 @@ def run_model(model_name, source, state, active_plugins, source_config, timeout,
 
     latest = {res["model"]: res for res in state.latest_results()}
     existing = latest.get(model_name)
-    existing_ok = existing is not None and existing.get("status") == "ok"
 
     plugins_to_run = []
     for plugin in active_plugins:
         pid = plugin.id
-        if existing_ok and f"{pid}_score" in existing:
-            r[f"{pid}_score"] = existing[f"{pid}_score"]
+        score_key = f"{pid}_score"
+        # Re-use successful plugin results from a previous run; re-run any
+        # plugin that failed or was missing.
+        if existing is not None and score_key in existing and existing[score_key] != "fail":
+            r[f"{pid}_score"] = existing[score_key]
             r[f"{pid}_response_time"] = existing[f"{pid}_response_time"]
             r[f"{pid}_output_tokens"] = existing[f"{pid}_output_tokens"]
             r[f"{pid}_tps"] = existing[f"{pid}_tps"]
@@ -1076,9 +1082,6 @@ def _run_plugins(model_name, source, state, active_plugins, plugins_to_run,
                     with lock:
                         errors[plugin.id] = f"{type(exc).__name__}: {exc}"
 
-    first_tok_time = None
-    any_stream_ok = False
-
     for plugin in plugins_to_run:
         pid = plugin.id
         if pid in errors or results.get(pid) is None:
@@ -1094,14 +1097,16 @@ def _run_plugins(model_name, source, state, active_plugins, plugins_to_run,
         else:
             result = results[pid]
             r.update(result)
-            if plugin.supports_streaming:
-                any_stream_ok = True
-                if (
-                    first_tok_time is None
-                    and result.get(f"{pid}_stream_ok")
-                    and isinstance(result.get(f"{pid}_response_time"), (int, float))
-                ):
-                    first_tok_time = result[f"{pid}_response_time"]
+
+    first_tok_time = None
+    any_stream_ok = False
+    for plugin in active_plugins:
+        pid = plugin.id
+        if plugin.supports_streaming and r.get(f"{pid}_stream_ok"):
+            any_stream_ok = True
+            response_time = r.get(f"{pid}_response_time")
+            if isinstance(response_time, (int, float)) and (first_tok_time is None or response_time < first_tok_time):
+                first_tok_time = response_time
 
     r["stream_ok"] = any_stream_ok
     if first_tok_time is not None:

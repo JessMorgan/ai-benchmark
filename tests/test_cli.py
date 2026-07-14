@@ -185,6 +185,56 @@ class TestPartialPluginFailure(unittest.TestCase):
         self.assertEqual(result["moe-dense_output_tokens"], "fail")
         self.assertEqual(result["moe-dense_tps"], "fail")
 
+    def test_partial_failure_rerun_only_runs_failed_plugins(self):
+        """On restart, only plugins that previously failed are re-run."""
+        plugins = [p for p in self.plugins if p.id in ("rate-limiter", "moe-dense")]
+        models = {"dummy-model": "Local"}
+        state = self.module.BenchmarkState(models, [p.id for p in plugins])
+        source_config = {"Local": {"api_url": "http://localhost:11434/chat/completions", "headers": {}}}
+
+        # Seed a previous partial result: rate-limiter succeeded, moe-dense failed.
+        state.add_result({
+            "model": "dummy-model",
+            "status": "error",
+            "rate-limiter_score": 5,
+            "rate-limiter_response_time": 1.2,
+            "rate-limiter_output_tokens": 100,
+            "rate-limiter_tps": 50.0,
+            "rate-limiter_stream_ok": True,
+            "moe-dense_score": "fail",
+            "moe-dense_response_time": "fail",
+            "moe-dense_output_tokens": "fail",
+            "moe-dense_tps": "fail",
+            "moe-dense_stream_ok": False,
+        })
+
+        calls = []
+
+        def fake_run_plugin_task(model_name, source, plugin, *args, **kwargs):
+            calls.append(plugin.id)
+            if plugin.id == "moe-dense":
+                return {
+                    "moe-dense_score": 7,
+                    "moe-dense_response_time": 2.0,
+                    "moe-dense_output_tokens": 200,
+                    "moe-dense_tps": 100.0,
+                    "moe-dense_stream_ok": True,
+                }, None
+            return None, "should not be called"
+
+        with mock.patch.object(self.module, "_run_plugin_task", side_effect=fake_run_plugin_task):
+            self.module.run_model(
+                "dummy-model", "Local", state, plugins, source_config,
+                timeout=1, token_levels=[100], output_dir="/tmp/benchmark-test",
+                session_seed=0, global_cfg={"plugin_thread_limit": 1},
+            )
+
+        self.assertEqual(calls, ["moe-dense"])
+        result = state.latest_results()[0]
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["rate-limiter_score"], 5)
+        self.assertEqual(result["moe-dense_score"], 7)
+
 
 class TestSaveResponses(unittest.TestCase):
     @classmethod

@@ -546,17 +546,14 @@ def main():
             if resumed:
                 completed = state.completed
                 total = state.total
-                print(f"📂 Resuming — {completed}/{total} models already completed.\n"
+                print(f"📂 Resuming — {completed}/{total} models already completed. "
+                      f"Failed models/plugins will be re-run.\n"
                       f"   Remove {state_file} or use --restart to start fresh.",
                       file=sys.stderr)
 
                 if completed == total and total > 0:
-                    snap = state.snapshot()
-                    ok_count = sum(1 for info in snap.values() if info["status"] == "completed")
-                    fail_count = total - ok_count
                     print(f"\n{'='*70}")
-                    print(f"✅ PRIOR RUN COMPLETE — {ok_count}/{total} successful"
-                          f" ({fail_count} failed)")
+                    print(f"✅ PRIOR RUN COMPLETE — {completed}/{total} successful")
                     print(f"   Results: {output_dir}/")
                     print(f"{'='*70}")
                     sys.exit(0)
