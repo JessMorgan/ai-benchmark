@@ -41,7 +41,7 @@ class TestCLIArgs(unittest.TestCase):
         from plugins import format_plugin_list
         self.assertEqual(format_plugin_list([]), "No plugins discovered.")
 
-    def test_dump_default_config_has_plugin_thread_limit(self):
+    def test_dump_default_config_has_per_source_plugin_thread_limit(self):
         result = subprocess.run(
             [sys.executable, "ai-benchmark.py", "--dump-default-config"],
             capture_output=True,
@@ -49,8 +49,9 @@ class TestCLIArgs(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0)
         cfg = json.loads(result.stdout)
-        self.assertIn("plugin_thread_limit", cfg)
-        self.assertEqual(cfg["plugin_thread_limit"], 1)
+        for src_cfg in cfg["sources"].values():
+            self.assertIn("plugin_thread_limit", src_cfg)
+            self.assertEqual(src_cfg["plugin_thread_limit"], 1)
 
     def test_dump_default_config_has_per_plugin_temperatures(self):
         result = subprocess.run(
@@ -89,15 +90,14 @@ class TestPluginExecutionMode(unittest.TestCase):
         plugins = [p for p in self.plugins if p.id in ("rate-limiter", "moe-dense")]
         models = {"dummy-model": "Local"}
         state = self.module.BenchmarkState(models, [p.id for p in plugins])
-        source_config = {"Local": {"api_url": "http://localhost:11434/chat/completions", "headers": {}}}
-        global_cfg = {"plugin_thread_limit": 1}
+        source_config = {"Local": {"api_url": "http://localhost:11434/chat/completions", "headers": {}, "plugin_thread_limit": 1}}
 
         with mock.patch.object(self.module, "stream_request", return_value=("", None, 0, "connection refused", None, {})):
             with mock.patch.object(self.module, "nonstream_request", return_value=("", {}, 0.1, "connection refused", None)):
                 self.module.run_model(
                     "dummy-model", "Local", state, plugins, source_config,
                     timeout=1, token_levels=[100], output_dir="/tmp/benchmark-test",
-                    session_seed=0, global_cfg=global_cfg,
+                    session_seed=0, global_cfg={},
                 )
 
         snap = state.snapshot()["dummy-model"]
@@ -107,15 +107,14 @@ class TestPluginExecutionMode(unittest.TestCase):
         plugins = [p for p in self.plugins if p.id in ("rate-limiter", "moe-dense")]
         models = {"dummy-model": "Local"}
         state = self.module.BenchmarkState(models, [p.id for p in plugins])
-        source_config = {"Local": {"api_url": "http://localhost:11434/chat/completions", "headers": {}}}
-        global_cfg = {"plugin_thread_limit": 0}
+        source_config = {"Local": {"api_url": "http://localhost:11434/chat/completions", "headers": {}, "plugin_thread_limit": 0}}
 
         with mock.patch.object(self.module, "stream_request", return_value=("", None, 0, "connection refused", None, {})):
             with mock.patch.object(self.module, "nonstream_request", return_value=("", {}, 0.1, "connection refused", None)):
                 self.module.run_model(
                     "dummy-model", "Local", state, plugins, source_config,
                     timeout=1, token_levels=[100], output_dir="/tmp/benchmark-test",
-                    session_seed=0, global_cfg=global_cfg,
+                    session_seed=0, global_cfg={},
                 )
 
         snap = state.snapshot()["dummy-model"]
@@ -125,15 +124,14 @@ class TestPluginExecutionMode(unittest.TestCase):
         plugins = [p for p in self.plugins if p.id in ("rate-limiter", "moe-dense")]
         models = {"dummy-model": "Local"}
         state = self.module.BenchmarkState(models, [p.id for p in plugins])
-        source_config = {"Local": {"api_url": "http://localhost:11434/chat/completions", "headers": {}}}
-        global_cfg = {"plugin_thread_limit": 2}
+        source_config = {"Local": {"api_url": "http://localhost:11434/chat/completions", "headers": {}, "plugin_thread_limit": 2}}
 
         with mock.patch.object(self.module, "stream_request", return_value=("", None, 0, "connection refused", None, {})):
             with mock.patch.object(self.module, "nonstream_request", return_value=("", {}, 0.1, "connection refused", None)):
                 self.module.run_model(
                     "dummy-model", "Local", state, plugins, source_config,
                     timeout=1, token_levels=[100], output_dir="/tmp/benchmark-test",
-                    session_seed=0, global_cfg=global_cfg,
+                    session_seed=0, global_cfg={},
                 )
 
         snap = state.snapshot()["dummy-model"]
@@ -151,7 +149,7 @@ class TestPartialPluginFailure(unittest.TestCase):
         plugins = [p for p in self.plugins if p.id in ("rate-limiter", "moe-dense")]
         models = {"dummy-model": "Local"}
         state = self.module.BenchmarkState(models, [p.id for p in plugins])
-        source_config = {"Local": {"api_url": "http://localhost:11434/chat/completions", "headers": {}}}
+        source_config = {"Local": {"api_url": "http://localhost:11434/chat/completions", "headers": {}, "plugin_thread_limit": 1}}
 
         def fake_run_plugin_task(model_name, source, plugin, *args, **kwargs):
             if plugin.id == "rate-limiter":
@@ -168,7 +166,7 @@ class TestPartialPluginFailure(unittest.TestCase):
             self.module.run_model(
                 "dummy-model", "Local", state, plugins, source_config,
                 timeout=1, token_levels=[100], output_dir="/tmp/benchmark-test",
-                session_seed=0, global_cfg={"plugin_thread_limit": 1},
+                session_seed=0, global_cfg={},
             )
 
         snap = state.snapshot()["dummy-model"]
@@ -190,7 +188,7 @@ class TestPartialPluginFailure(unittest.TestCase):
         plugins = [p for p in self.plugins if p.id in ("rate-limiter", "moe-dense")]
         models = {"dummy-model": "Local"}
         state = self.module.BenchmarkState(models, [p.id for p in plugins])
-        source_config = {"Local": {"api_url": "http://localhost:11434/chat/completions", "headers": {}}}
+        source_config = {"Local": {"api_url": "http://localhost:11434/chat/completions", "headers": {}, "plugin_thread_limit": 1}}
 
         # Seed a previous partial result: rate-limiter succeeded, moe-dense failed.
         state.add_result({
@@ -226,7 +224,7 @@ class TestPartialPluginFailure(unittest.TestCase):
             self.module.run_model(
                 "dummy-model", "Local", state, plugins, source_config,
                 timeout=1, token_levels=[100], output_dir="/tmp/benchmark-test",
-                session_seed=0, global_cfg={"plugin_thread_limit": 1},
+                session_seed=0, global_cfg={},
             )
 
         self.assertEqual(calls, ["moe-dense"])
@@ -246,7 +244,7 @@ class TestSaveResponses(unittest.TestCase):
         plugins = [p for p in self.plugins if p.id == "rate-limiter"]
         models = {"dummy-model": "Local"}
         state = self.module.BenchmarkState(models, [p.id for p in plugins])
-        source_config = {"Local": {"api_url": "http://localhost:11434/chat/completions", "headers": {}}}
+        source_config = {"Local": {"api_url": "http://localhost:11434/chat/completions", "headers": {}, "plugin_thread_limit": 1}}
 
         expected_response = "This is the model response for rate limiter."
 
@@ -260,7 +258,7 @@ class TestSaveResponses(unittest.TestCase):
                     self.module.run_model(
                         "dummy-model", "Local", state, plugins, source_config,
                         timeout=1, token_levels=[100], output_dir=tmpdir,
-                        session_seed=0, global_cfg={"plugin_thread_limit": 1},
+                        session_seed=0, global_cfg={},
                         save_responses=True,
                     )
 
@@ -296,7 +294,7 @@ class TestSaveResponses(unittest.TestCase):
         plugins = [p for p in self.plugins if p.id == "rate-limiter"]
         models = {"dummy-model": "Local"}
         state = self.module.BenchmarkState(models, [p.id for p in plugins])
-        source_config = {"Local": {"api_url": "http://localhost:11434/chat/completions", "headers": {}}}
+        source_config = {"Local": {"api_url": "http://localhost:11434/chat/completions", "headers": {}, "plugin_thread_limit": 1}}
 
         with tempfile.TemporaryDirectory() as tmpdir:
             with mock.patch.object(
@@ -308,7 +306,7 @@ class TestSaveResponses(unittest.TestCase):
                     self.module.run_model(
                         "dummy-model", "Local", state, plugins, source_config,
                         timeout=1, token_levels=[100], output_dir=tmpdir,
-                        session_seed=0, global_cfg={"plugin_thread_limit": 1},
+                        session_seed=0, global_cfg={},
                         save_responses=False,
                     )
 

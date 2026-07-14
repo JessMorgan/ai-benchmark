@@ -474,10 +474,16 @@ def main():
                 sys.exit(1)
     cfg["plugin_temperatures"] = plugin_temperatures
 
-    plugin_thread_limit = cfg.get("plugin_thread_limit", 1)
+    # Apply per-source plugin_thread_limit defaults and CLI override.
+    # Top-level plugin_thread_limit is used as a fallback for sources that
+    # do not define their own value.
+    for src_cfg in source_config.values():
+        src_cfg["plugin_thread_limit"] = src_cfg.get(
+            "plugin_thread_limit", cfg.get("plugin_thread_limit", 1)
+        )
     if args.plugin_thread_limit is not None:
-        plugin_thread_limit = args.plugin_thread_limit
-    cfg["plugin_thread_limit"] = plugin_thread_limit
+        for src_cfg in source_config.values():
+            src_cfg["plugin_thread_limit"] = args.plugin_thread_limit
 
     whitelist = args.plugins_whitelist or cfg.get("plugins_whitelist") or None
     blacklist = args.plugins_blacklist or cfg.get("plugins_blacklist") or None

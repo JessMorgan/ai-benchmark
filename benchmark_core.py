@@ -94,7 +94,6 @@ def dump_default_config():
         "output_dir": "benchmark-output-dir",
         "timeout": 1200,
         "token_levels": [16384],
-        "plugin_thread_limit": 1,
         "rate-limiter_temperature": 0.2,
         "moe-dense_temperature": 0.7,
         "plugins_whitelist": [],
@@ -105,21 +104,24 @@ def dump_default_config():
                 "headers": {
                     "Authorization": "Bearer ${AI_SERVER_API_KEY:sk-your-key-here}",
                     "Content-Type": "application/json"
-                }
+                },
+                "plugin_thread_limit": 1
             },
             "Local Server 2": {
                 "api_url": "http://other.server:11434/chat/completions",
                 "headers": {
                     "Authorization": "Bearer ${GAMING_PC_API_KEY:sk-your-key-here}",
                     "Content-Type": "application/json"
-                }
+                },
+                "plugin_thread_limit": 1
             },
             "Remote Provider 1": {
                 "api_url": "http://remote.provider:11434/chat/completions",
                 "headers": {
                     "Authorization": "Bearer ${REMOTE_API_KEY:sk-your-key-here}",
                     "Content-Type": "application/json"
-                }
+                },
+                "plugin_thread_limit": 1
             }
         },
         "models": {
@@ -1012,7 +1014,7 @@ def run_model(model_name, source, state, active_plugins, source_config, timeout,
         state.update(model_name, status="completed", elapsed=r["total_time"])
         return
 
-    plugin_thread_limit = (global_cfg or {}).get("plugin_thread_limit", 1)
+    plugin_thread_limit = source_config.get(source, {}).get("plugin_thread_limit", 1)
     try:
         plugin_thread_limit = int(plugin_thread_limit)
     except (TypeError, ValueError):
