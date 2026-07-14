@@ -29,6 +29,7 @@ python ai-benchmark.py [options]
 | `--api-key KEY` | (with `--base-url`) API key for model discovery |
 | `--save-responses` | Save each model's plugin response text to `<output_dir>/responses/` |
 | `--seed INT` | Fixed random seed for all API requests |
+| `--no-rerun-failed` | Keep failed models as failed on resume (default re-runs them) |
 | `-h, --help` | Show help message |
 
 ## Examples

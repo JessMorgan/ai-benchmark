@@ -9,7 +9,7 @@ All benchmark configuration lives in a single JSON file (default: `benchmark-con
 | `output_dir` | string | `benchmark-results` | Directory for reports, logs, and state |
 | `timeout` | integer | `600` | API request timeout in seconds |
 | `token_levels` | list[int] | `[16384]` | Max-token limits tried in ascending order |
-| `plugin_thread_limit` | integer | `1` | Max concurrent plugins per model. `0` means one thread per plugin |
+| `plugin_thread_limit` | integer | `1` | Top-level fallback for `sources.*.plugin_thread_limit` |
 | `plugins_whitelist` | list[string] | `[]` | Run only these plugin IDs (empty = all) |
 | `plugins_blacklist` | list[string] | `[]` | Skip these plugin IDs (empty = none) |
 | `sources` | object | required | Named API endpoint definitions |
@@ -27,11 +27,16 @@ Each entry under `sources` defines an API endpoint. The key is the source name u
       "headers": {
         "Authorization": "Bearer ${LOCAL_API_KEY:sk-fallback}",
         "Content-Type": "application/json"
-      }
+      },
+      "plugin_thread_limit": 1
     }
   }
 }
 ```
+
+### Per-Source Plugin Concurrency
+
+Each source can define `plugin_thread_limit` to control how many plugins run concurrently for models against that source. The top-level `plugin_thread_limit` is used as a fallback for sources that do not define their own value. The CLI `--plugin-thread-limit` overrides all sources.
 
 ### Environment Variable Expansion
 
@@ -114,7 +119,6 @@ Legacy keys `code_temperature` and `general_temperature` are also supported for 
   "output_dir": "benchmark-results",
   "timeout": 600,
   "token_levels": [16384],
-  "plugin_thread_limit": 1,
   "rate-limiter_temperature": 0.2,
   "moe-dense_temperature": 0.7,
   "plugins_whitelist": [],
@@ -125,7 +129,8 @@ Legacy keys `code_temperature` and `general_temperature` are also supported for 
       "headers": {
         "Authorization": "Bearer ${LOCAL_API_KEY:sk-fallback}",
         "Content-Type": "application/json"
-      }
+      },
+      "plugin_thread_limit": 1
     },
     "Remote Provider": {
       "api_url": "https://api.example.com/v1/chat/completions",
@@ -148,4 +153,4 @@ Legacy keys `code_temperature` and `general_temperature` are also supported for 
 ## Notes
 
 - `token_levels` are tried in order. If a response is truncated, the next level is used.
-- `plugin_thread_limit` controls how many plugins run concurrently for each model. Set to `1` for sequential execution or `0` for maximum parallelism.
+- `plugin_thread_limit` controls how many plugins run concurrently for each model against a given source. Set to `1` for sequential execution or `0` for maximum parallelism. Define it per-source or as a top-level fallback.

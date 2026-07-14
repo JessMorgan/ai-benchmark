@@ -75,7 +75,7 @@ The benchmark will:
 1. Load the config.
 2. Discover and select plugins.
 3. Queue each model against its configured source.
-4. Run plugins in parallel (respecting `plugin_thread_limit`).
+4. Run plugins in parallel (respecting per-source `plugin_thread_limit`).
 5. Save state after each model so runs can resume.
 6. Generate `results.md`, `results.csv`, `results.html`, and `results.pdf` in the output directory.
 

@@ -48,7 +48,7 @@ python -m pytest tests/test_cli.py -v
 Run `mypy` on the core modules:
 
 ```sh
-python -m mypy benchmark_core.py ai-benchmark.py benchmark_plugin.py plugins/
+python -m mypy benchmark_core.py ai-benchmark.py
 ```
 
 ## Linting

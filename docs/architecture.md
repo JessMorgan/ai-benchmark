@@ -96,7 +96,7 @@ Output generators handle mixed numeric and string scores defensively to avoid er
 ## Concurrency Model
 
 - Source-level parallelism: one thread per source.
-- Plugin-level parallelism: controlled by `plugin_thread_limit`.
+- Plugin-level parallelism: controlled by per-source `plugin_thread_limit` (with a top-level fallback).
 - `ThreadPoolExecutor` runs plugins for a single model.
 
 ## Resume Behavior
