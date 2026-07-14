@@ -114,7 +114,18 @@ On resume:
 2. Detect plugin set changes.
 3. Prompt user to restart or continue.
 4. Skip models with status `completed`.
-5. Retry models with status `failed`.
+5. Reset models with status `failed` to `pending` so they are re-run.
+6. Re-run only the plugins that failed or were missing; successful plugin scores are preserved.
+
+### Disabling automatic rerun
+
+By default, any model that failed in a previous session is re-run on resume. To keep failed models as failed and skip them, pass `--no-rerun-failed`:
+
+```bash
+python ai-benchmark.py --no-rerun-failed
+```
+
+This is useful when failures are known to be non-transient or when you want to preserve the existing results for reporting.
 
 ## Error Handling
 
