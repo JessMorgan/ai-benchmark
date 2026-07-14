@@ -18,7 +18,7 @@ import time
 
 from benchmark_core import (
     BenchmarkState,
-    _source_abbrev,
+    _unique_source_abbrevs,
     close_active_requests,
     dump_default_config,
     generate_config_from_api,
@@ -31,23 +31,6 @@ from plugins import discover_plugins, format_plugin_list
 from shell_completion import generate_shell_completion
 
 DEFAULT_CONFIG_PATH = "benchmark-config.json"
-
-
-def _unique_source_abbrevs(sources):
-    """Return a mapping from source names to short, unique abbreviations."""
-    abbrevs = {}
-    used = set()
-    for src in sources:
-        ab = _source_abbrev(src)
-        if ab in used:
-            for i in range(1, 100):
-                candidate = f"{ab}{i}"
-                if candidate not in used:
-                    ab = candidate
-                    break
-        abbrevs[src] = ab
-        used.add(ab)
-    return abbrevs
 
 
 def tui_main(state, stop_event, num_sources, active_plugins):

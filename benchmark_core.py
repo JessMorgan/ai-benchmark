@@ -212,6 +212,23 @@ def _source_abbrev(name):
     return ab if len(ab) >= 2 else (name * 2)[:2].upper()
 
 
+def _unique_source_abbrevs(sources):
+    """Return a mapping from source names to short, unique abbreviations."""
+    abbrevs = {}
+    used = set()
+    for src in sources:
+        ab = _source_abbrev(src)
+        if ab in used:
+            for i in range(1, 100):
+                candidate = f"{ab}{i}"
+                if candidate not in used:
+                    ab = candidate
+                    break
+        abbrevs[src] = ab
+        used.add(ab)
+    return abbrevs
+
+
 # ─── Logging helpers ────────────────────────────────────────────────────────
 
 def build_curl_cmd(model, prompt, max_tokens, stream, api_url, headers):
