@@ -2,3 +2,8 @@
 benchmark-config.json
 benchmark-results/
 __pycache__/
+.venv/
+.~*
+*.bak
+*~
+.coverage
