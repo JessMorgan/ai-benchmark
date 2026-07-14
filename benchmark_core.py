@@ -70,6 +70,28 @@ def load_config(path):
     return data
 
 
+def parse_plugin_temperatures(cfg):
+    """Parse per-plugin temperature settings from a config dict.
+
+    Keys ending in ``_temperature`` are mapped to plugin IDs by replacing
+    underscores with hyphens (e.g. ``rate-limiter_temperature`` →
+    ``rate-limiter``). Legacy ``code_temperature`` and ``general_temperature``
+    keys are mapped to ``rate-limiter`` and ``moe-dense`` respectively when
+    those plugins do not already have an explicit value.
+    """
+    plugin_temperatures = {}
+    for key, value in cfg.items():
+        if key.endswith("_temperature"):
+            plugin_id = key[:-len("_temperature")].replace("_", "-")
+            plugin_temperatures[plugin_id] = value
+    # Backward compatibility for legacy config keys
+    if "code_temperature" in cfg and "rate-limiter" not in plugin_temperatures:
+        plugin_temperatures["rate-limiter"] = cfg["code_temperature"]
+    if "general_temperature" in cfg and "moe-dense" not in plugin_temperatures:
+        plugin_temperatures["moe-dense"] = cfg["general_temperature"]
+    return plugin_temperatures
+
+
 def resolve_model_sources(models):
     """Resolve model entries to source strings.
 

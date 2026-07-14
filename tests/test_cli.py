@@ -421,29 +421,19 @@ class TestSeedCLI(unittest.TestCase):
 
 class TestPerPluginTemperature(unittest.TestCase):
     def test_plugin_temperature_from_config(self):
+        from benchmark_core import parse_plugin_temperatures
         cfg = {
             "rate-limiter_temperature": 0.1,
             "moe-dense_temperature": 0.9,
         }
-        plugin_temperatures = {}
-        for key, value in cfg.items():
-            if key.endswith("_temperature"):
-                plugin_id = key[:-len("_temperature")].replace("_", "-")
-                plugin_temperatures[plugin_id] = value
+        plugin_temperatures = parse_plugin_temperatures(cfg)
         self.assertEqual(plugin_temperatures["rate-limiter"], 0.1)
         self.assertEqual(plugin_temperatures["moe-dense"], 0.9)
 
     def test_legacy_temperature_keys_map_correctly(self):
+        from benchmark_core import parse_plugin_temperatures
         cfg = {"code_temperature": 0.2, "general_temperature": 0.7}
-        plugin_temperatures = {}
-        for key, value in cfg.items():
-            if key.endswith("_temperature"):
-                plugin_id = key[:-len("_temperature")].replace("_", "-")
-                plugin_temperatures[plugin_id] = value
-        if "code_temperature" in cfg and "rate-limiter" not in plugin_temperatures:
-            plugin_temperatures["rate-limiter"] = cfg["code_temperature"]
-        if "general_temperature" in cfg and "moe-dense" not in plugin_temperatures:
-            plugin_temperatures["moe-dense"] = cfg["general_temperature"]
+        plugin_temperatures = parse_plugin_temperatures(cfg)
         self.assertEqual(plugin_temperatures["rate-limiter"], 0.2)
         self.assertEqual(plugin_temperatures["moe-dense"], 0.7)
 

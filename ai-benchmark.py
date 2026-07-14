@@ -23,6 +23,7 @@ from benchmark_core import (
     dump_default_config,
     generate_config_from_api,
     load_config,
+    parse_plugin_temperatures,
     resolve_model_sources,
     run_model,
     _save_outputs,
@@ -430,16 +431,7 @@ def main():
 
     # Per-plugin temperatures: CLI overrides config. Config keys may use either
     # hyphen or underscore, e.g. "rate-limiter_temperature" or "rate_servererature".
-    plugin_temperatures = {}
-    for key, value in cfg.items():
-        if key.endswith("_temperature"):
-            plugin_id = key[:-len("_temperature")].replace("_", "-")
-            plugin_temperatures[plugin_id] = value
-    # Backward compatibility for legacy config keys
-    if "code_temperature" in cfg and "rate-limiter" not in plugin_temperatures:
-        plugin_temperatures["rate-limiter"] = cfg["code_temperature"]
-    if "general_temperature" in cfg and "moe-dense" not in plugin_temperatures:
-        plugin_temperatures["moe-dense"] = cfg["general_temperature"]
+    plugin_temperatures = parse_plugin_temperatures(cfg)
     if args.plugin_temperature:
         for item in args.plugin_temperature:
             if "=" not in item:
