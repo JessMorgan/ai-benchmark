@@ -70,6 +70,24 @@ def load_config(path):
     return data
 
 
+def resolve_model_sources(models):
+    """Resolve model entries to source strings.
+
+    Model entries may be either a source string or a dict with a
+    ``source`` key (and optional per-model settings such as ``drop_params``).
+    Missing/invalid entries default to ``"Default"``.
+    """
+    resolved = {}
+    for name, val in models.items():
+        if isinstance(val, dict):
+            resolved[name] = val.get("source", "Default")
+        elif isinstance(val, str):
+            resolved[name] = val
+        else:
+            resolved[name] = "Default"
+    return resolved
+
+
 def dump_default_config():
     """Print the default config JSON to stdout."""
     cfg = {

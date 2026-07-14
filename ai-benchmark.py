@@ -23,6 +23,7 @@ from benchmark_core import (
     dump_default_config,
     generate_config_from_api,
     load_config,
+    resolve_model_sources,
     run_model,
     _save_outputs,
 )
@@ -432,10 +433,7 @@ def main():
     cfg = load_config(config_path)
     source_config = cfg.get("sources", {})
     models = cfg.get("models", {})
-    models_source_map = {
-        name: (val.get("source", "Default") if isinstance(val, dict) else val)
-        for name, val in models.items()
-    }
+    models_source_map = resolve_model_sources(models)
     output_dir = cfg.get("output_dir", "benchmark-results")
     if args.out:
         output_dir = args.out
