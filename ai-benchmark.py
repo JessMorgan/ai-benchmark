@@ -406,6 +406,8 @@ def main():
                         help='Save each model\'s plugin response text to <output_dir>/responses/')
     parser.add_argument('--seed', type=int, default=None,
                         help='Fixed random seed for all API requests (default: random)')
+    parser.add_argument('--no-rerun-failed', action='store_true',
+                        help='Do not re-run models that failed in a previous session')
     args = parser.parse_args()
 
     if args.list_plugins:
@@ -535,12 +537,16 @@ def main():
                     os.remove(state_file)
                     state = BenchmarkState(models_source_map, plugin_ids)
                 elif choice == "continue":
-                    state = BenchmarkState.load_state(state_file, models_source_map, plugin_ids)
+                    state = BenchmarkState.load_state(
+                        state_file, models_source_map, plugin_ids,
+                        rerun_failed=not args.no_rerun_failed)
                     resumed = True
                 else:
                     sys.exit(0)
             else:
-                state = BenchmarkState.load_state(state_file, models_source_map, plugin_ids)
+                state = BenchmarkState.load_state(
+                    state_file, models_source_map, plugin_ids,
+                    rerun_failed=not args.no_rerun_failed)
                 resumed = True
 
             if resumed:

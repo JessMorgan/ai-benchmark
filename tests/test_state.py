@@ -108,6 +108,23 @@ class TestBenchmarkState(unittest.TestCase):
             self.assertEqual(snap["model-b"]["error"], None)
             self.assertEqual(snap["model-b"]["last_error"], "")
 
+    def test_load_state_with_no_rerun_failed_preserves_failed_status(self):
+        """With rerun_failed=False, failed models keep their failed status."""
+        models = {"model-a": "Source1", "model-b": "Source2"}
+        state = self.module.BenchmarkState(models, self.plugin_ids)
+        state.update("model-a", status="completed")
+        state.update("model-b", status="failed", error="boom", last_error="boom")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, "state.json")
+            state.save_state(path)
+            loaded = self.module.BenchmarkState.load_state(
+                path, models, self.plugin_ids, rerun_failed=False)
+            snap = loaded.snapshot()
+            self.assertEqual(snap["model-a"]["status"], "completed")
+            self.assertEqual(snap["model-b"]["status"], "failed")
+            self.assertEqual(snap["model-b"]["error"], "boom")
+
 
 if __name__ == "__main__":
     unittest.main()

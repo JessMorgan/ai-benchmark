@@ -796,7 +796,7 @@ class BenchmarkState:
             return list(seen.values())
 
     @classmethod
-    def load_state(cls, path, models, plugin_ids):
+    def load_state(cls, path, models, plugin_ids, *, rerun_failed=True):
         with open(path) as f:
             data = json.load(f)
         state = cls(models, plugin_ids)
@@ -807,6 +807,8 @@ class BenchmarkState:
         state.results = data.get("results", [])
         for name, info in state._model_info.items():
             if info.get("status") == "completed":
+                continue
+            if not rerun_failed:
                 continue
             # Reset failed (and any other non-completed) models so they are
             # re-run when the benchmark restarts.
