@@ -430,6 +430,10 @@ def main():
     cfg = load_config(config_path)
     source_config = cfg.get("sources", {})
     models = cfg.get("models", {})
+    models_source_map = {
+        name: (val.get("source", "Default") if isinstance(val, dict) else val)
+        for name, val in models.items()
+    }
     output_dir = cfg.get("output_dir", "benchmark-results")
     if args.out:
         output_dir = args.out
@@ -529,7 +533,7 @@ def main():
                 choice = _prompt_restart_or_continue()
                 if choice == "restart":
                     os.remove(state_file)
-                    state = BenchmarkState(models, plugin_ids)
+                    state = BenchmarkState(models_source_map, plugin_ids)
                 elif choice == "continue":
                     state = BenchmarkState.load_state(state_file, models, plugin_ids)
                     resumed = True
@@ -559,9 +563,9 @@ def main():
         except Exception as e:
             print(f"⚠️  Could not load state file ({e}), starting fresh.",
                   file=sys.stderr)
-            state = BenchmarkState(models, plugin_ids)
+            state = BenchmarkState(models_source_map, plugin_ids)
     else:
-        state = BenchmarkState(models, plugin_ids)
+        state = BenchmarkState(models_source_map, plugin_ids)
 
     stop_event = threading.Event()
 
@@ -576,8 +580,8 @@ def main():
 
     session_seed = random.randint(0, 2**31 - 1)
 
-    source_queues = {src: [] for src in set(models.values())}
-    for name, src in models.items():
+    source_queues = {src: [] for src in set(models_source_map.values())}
+    for name, src in models_source_map.items():
         info = state.snapshot().get(name, {})
         if info.get("status") in ("completed",):
             continue

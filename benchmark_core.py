@@ -106,7 +106,11 @@ def dump_default_config():
         },
         "models": {
             "example-model-1": "Local Server 1",
-            "example-model-2": "Remote Provider 1"
+            "example-model-2": "Remote Provider 1",
+            "example-model-3": {
+                "source": "Local Server 2",
+                "drop_params": ["seed"]
+            }
         }
     }
     print(json.dumps(cfg, indent=2))
@@ -221,7 +225,8 @@ def log_request_entry(log_path, curl_cmd, response_body, request_label=None):
 # ─── API helpers ────────────────────────────────────────────────────────────
 
 def stream_request(source_config, timeout, model, source, prompt, max_tokens=2048,
-                   log_path=None, log_label=None, session_seed=0, temperature=None):
+                   log_path=None, log_label=None, session_seed=0, temperature=None,
+                   drop_params=None):
     start = time.time()
     first_tok = None
     text = ""
@@ -239,6 +244,8 @@ def stream_request(source_config, timeout, model, source, prompt, max_tokens=204
             body["temperature"] = temperature
         if session_seed:
             body["seed"] = session_seed
+        for p in drop_params or []:
+            body.pop(p, None)
         resp = requests.post(
             api_url, headers=headers, json=body, stream=True, timeout=timeout)
         with _active_requests_lock:
@@ -289,7 +296,8 @@ def stream_request(source_config, timeout, model, source, prompt, max_tokens=204
 
 
 def nonstream_request(source_config, timeout, model, source, prompt, max_tokens=2048,
-                      log_path=None, log_label=None, session_seed=0, temperature=None):
+                      log_path=None, log_label=None, session_seed=0, temperature=None,
+                      drop_params=None):
     start = time.time()
     error = None
     text = ""
@@ -307,6 +315,8 @@ def nonstream_request(source_config, timeout, model, source, prompt, max_tokens=
             body["temperature"] = temperature
         if session_seed:
             body["seed"] = session_seed
+        for p in drop_params or []:
+            body.pop(p, None)
         # Use stream=True at the transport layer so the response can be closed
         # early on Ctrl+C, while the server still returns a single JSON object.
         resp = requests.post(
@@ -801,6 +811,11 @@ def _run_plugin_task(model_name, source, plugin, source_config, timeout, token_l
 
     prompt = plugin.get_prompt()
     temperature = plugin.get_temperature(global_cfg or {})
+
+    raw_model_cfg = (global_cfg or {}).get("models", {}).get(model_name)
+    drop_params = []
+    if isinstance(raw_model_cfg, dict):
+        drop_params = raw_model_cfg.get("drop_params", [])
     text = ""
     response_time = 0
     output_tokens = 0
@@ -821,14 +836,16 @@ def _run_plugin_task(model_name, source, plugin, source_config, timeout, token_l
                 source_config, timeout, model_name, source, prompt, max_tok,
                 log_path=log_file,
                 log_label=f"{plugin.name} (Streaming, attempt {attempt + 1})",
-                session_seed=session_seed, temperature=temperature)
+                session_seed=session_seed, temperature=temperature,
+                drop_params=drop_params)
 
             if serr or first_tok is None:
                 text, nsusage, ns_time, nserr, nsfr = nonstream_request(
                     source_config, timeout, model_name, source, prompt, max_tok,
                     log_path=log_file,
                     log_label=f"{plugin.name} (Non-Streaming, attempt {attempt + 1})",
-                    session_seed=session_seed, temperature=temperature)
+                    session_seed=session_seed, temperature=temperature,
+                    drop_params=drop_params)
                 if nserr:
                     return None, f"Stream: {serr or 'no tokens'}. Nostream: {nserr}"
                 stream_ok = False
@@ -845,7 +862,8 @@ def _run_plugin_task(model_name, source, plugin, source_config, timeout, token_l
                 source_config, timeout, model_name, source, prompt, max_tok,
                 log_path=log_file,
                 log_label=f"{plugin.name} (attempt {attempt + 1})",
-                session_seed=session_seed, temperature=temperature)
+                session_seed=session_seed, temperature=temperature,
+                drop_params=drop_params)
             if gen_err:
                 return None, gen_err
             stream_ok = False

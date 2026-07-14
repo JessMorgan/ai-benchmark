@@ -49,7 +49,34 @@ All configuration lives in a JSON file (default: `benchmark-config.json`):
 | `plugins_whitelist` | List of plugin IDs to run (empty = all) |
 | `plugins_blacklist` | List of plugin IDs to skip (empty = none) |
 | `sources` | Named API endpoints with URL and headers |
-| `models` | Map of model name → source name |
+| `models` | Map of model name → source name, or model name → object with `source` and optional `drop_params` |
+
+### Per-model configuration
+
+The `models` map supports two forms. The simple form maps a model to a source:
+
+```json
+"models": {
+  "model-a": "Local Server 1"
+}
+```
+
+The extended form allows per-model settings such as dropping specific API parameters:
+
+```json
+"models": {
+  "model-a": "Local Server 1",
+  "model-b": {
+    "source": "Remote Provider 1",
+    "drop_params": ["seed"]
+  }
+}
+```
+
+| Key | Description |
+|---|---|
+| `source` | Source name from the `sources` section |
+| `drop_params` | List of request body keys to omit (e.g. `seed`, `temperature`) |
 
 **API keys** use `${VAR}` or `${VAR:default}` env-var syntax:
 ```json

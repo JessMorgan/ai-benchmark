@@ -65,6 +65,19 @@ class TestCLIArgs(unittest.TestCase):
         self.assertNotIn("code_temperature", cfg)
         self.assertNotIn("general_temperature", cfg)
 
+    def test_dump_default_config_shows_per_model_object_syntax(self):
+        result = subprocess.run(
+            [sys.executable, "ai-benchmark.py", "--dump-default-config"],
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 0)
+        cfg = json.loads(result.stdout)
+        self.assertIn("models", cfg)
+        self.assertIn("example-model-3", cfg["models"])
+        self.assertEqual(cfg["models"]["example-model-3"]["source"], "Local Server 2")
+        self.assertEqual(cfg["models"]["example-model-3"]["drop_params"], ["seed"])
+
 
 class TestPluginExecutionMode(unittest.TestCase):
     @classmethod
@@ -251,6 +264,98 @@ class TestSaveResponses(unittest.TestCase):
 
             responses_dir = os.path.join(tmpdir, "responses")
             self.assertFalse(os.path.exists(responses_dir))
+
+
+class TestDropParams(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.module = load_benchmark_module()
+        cls.plugins = discover_plugins()
+
+    def _make_response(self, status_code=200, text=""):
+        class _Resp:
+            status_code = status_code
+            def __init__(self, text):
+                self._text = text
+            def iter_lines(self, decode_unicode=False):
+                return []
+            def close(self):
+                pass
+            @property
+            def text(self):
+                return self._text
+        return _Resp(text)
+
+    def test_stream_request_drop_params_omits_seed(self):
+        """stream_request omits seed when drop_params contains 'seed'."""
+        captured = {}
+        source_config = {"Local": {"api_url": "http://localhost:11434/chat/completions", "headers": {}}}
+
+        def fake_post(url, **kwargs):
+            captured["body"] = kwargs.get("json")
+            return self._make_response()
+
+        with mock.patch("requests.post", side_effect=fake_post):
+            self.module.stream_request(
+                source_config, timeout=1, model="m", source="Local",
+                prompt="hello", max_tokens=10, session_seed=12345,
+                temperature=0.5, drop_params=["seed"],
+            )
+
+        self.assertIn("body", captured)
+        self.assertNotIn("seed", captured["body"])
+        self.assertIn("temperature", captured["body"])
+
+    def test_nonstream_request_drop_params_omits_temperature(self):
+        """nonstream_request omits temperature when drop_params contains 'temperature'."""
+        captured = {}
+        source_config = {"Local": {"api_url": "http://localhost:11434/chat/completions", "headers": {}}}
+
+        def fake_post(url, **kwargs):
+            captured["body"] = kwargs.get("json")
+            return self._make_response()
+
+        with mock.patch("requests.post", side_effect=fake_post):
+            self.module.nonstream_request(
+                source_config, timeout=1, model="m", source="Local",
+                prompt="hello", max_tokens=10, session_seed=12345,
+                temperature=0.5, drop_params=["temperature"],
+            )
+
+        self.assertIn("body", captured)
+        self.assertNotIn("temperature", captured["body"])
+        self.assertIn("seed", captured["body"])
+
+    def test_run_plugin_task_threads_drop_params_to_request(self):
+        """_run_plugin_task reads drop_params from global_cfg and omits them from requests."""
+        plugins = [p for p in self.plugins if p.id == "rate-limiter"]
+        source_config = {"Local": {"api_url": "http://localhost:11434/chat/completions", "headers": {}}}
+
+        captured = {}
+
+        def fake_post(url, **kwargs):
+            captured["body"] = kwargs.get("json")
+            return self._make_response()
+
+        global_cfg = {
+            "plugin_thread_limit": 1,
+            "models": {
+                "dummy-model": {
+                    "source": "Local",
+                    "drop_params": ["seed"],
+                }
+            }
+        }
+
+        with mock.patch("requests.post", side_effect=fake_post):
+            self.module._run_plugin_task(
+                "dummy-model", "Local", plugins[0], source_config,
+                timeout=1, token_levels=[100], session_seed=12345,
+                log_file=None, global_cfg=global_cfg,
+            )
+
+        self.assertIn("body", captured)
+        self.assertNotIn("seed", captured["body"])
 
 
 class TestPerPluginTemperature(unittest.TestCase):
