@@ -55,10 +55,27 @@ class TestOutputGenerators(unittest.TestCase):
         self.assertIn("Rate Limiter", md)
         self.assertIn("MoE vs Dense", md)
 
+    def test_gen_markdown_includes_session_seed(self):
+        md = self.module.gen_markdown(self.sample_results, self.plugins, session_seed=12345)
+        self.assertIn("**Seed:** 12345", md)
+
+    def test_gen_markdown_no_seed_line_when_session_seed_is_none(self):
+        md = self.module.gen_markdown(self.sample_results, self.plugins, session_seed=None)
+        self.assertNotIn("Seed:", md)
+
     def test_gen_html_contains_rows(self):
         html = self.module.gen_html(self.sample_results, self.plugins)
         self.assertIn("test-model", html)
         self.assertIn("<table>", html)
+
+    def test_gen_html_includes_session_seed(self):
+        html = self.module.gen_html(self.sample_results, self.plugins, session_seed=12345)
+        self.assertIn("Seed:", html)
+        self.assertIn("12345", html)
+
+    def test_gen_html_no_seed_when_session_seed_is_none(self):
+        html = self.module.gen_html(self.sample_results, self.plugins, session_seed=None)
+        self.assertNotIn("Seed:", html)
 
     def test_gen_markdown_includes_response_links_with_output_dir(self):
         md = self.module.gen_markdown(self.sample_results, self.plugins, output_dir="/tmp/benchmark-results")

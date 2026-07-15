@@ -428,18 +428,23 @@ def _numeric_score(result, plugin_id, default=0):
     return default
 
 
-def gen_markdown(results, active_plugins, output_dir=None):
+def gen_markdown(results, active_plugins, output_dir=None, session_seed=None):
     ok = [r for r in results if r["status"] == "ok"]
     plugin_names = " | ".join(f"**{p.name}** ({int(p.max_score)} pts)" for p in active_plugins)
+    seed_line = f"**Seed:** {session_seed}" if session_seed is not None else ""
     lines = [
         "# AI Benchmark — Plugin-Based",
         f"**Date:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
         f"**Tasks:** {plugin_names}",
         f"**Total:** {len(results)} models | **✅ {len(ok)} successful** | **❌ {len(results)-len(ok)} failed**",
+    ]
+    if seed_line:
+        lines.append(seed_line)
+    lines.extend([
         "",
         "## 📋 Complete Results",
         "",
-    ]
+    ])
 
     header = "| # | Model | Load (s) |"
     for p in active_plugins:
@@ -562,7 +567,7 @@ def gen_csv(results, active_plugins):
     return out.getvalue()
 
 
-def gen_html(results, active_plugins, output_dir=None):
+def gen_html(results, active_plugins, output_dir=None, session_seed=None):
     ok = [r for r in results if r["status"] == "ok"]
     rows = ""
     for r in results:
@@ -615,6 +620,7 @@ def gen_html(results, active_plugins, output_dir=None):
         header_cells += f"<th>{p.name} Resp(s)</th><th>{p.name} TPS</th><th>{p.name} Tok</th><th>{p.name} Score</th>"
     header_cells += "<th>Total</th><th>Time</th><th>Mode</th><th>Status</th>"
 
+    seed_html = f"<br><strong>Seed:</strong> {session_seed}" if session_seed is not None else ""
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -638,7 +644,7 @@ tr.fail {{ color:#8b949e; }}
 <body>
 <h1>AI Benchmark</h1>
 <p class="subtitle">Tasks: {', '.join(p.name for p in active_plugins)}</p>
-<p><strong>Date:</strong> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | <strong>Total:</strong> {len(results)} | <strong>Successful:</strong> {len(ok)} | <strong>Failed:</strong> {len(results)-len(ok)}</p>
+<p><strong>Date:</strong> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | <strong>Total:</strong> {len(results)} | <strong>Successful:</strong> {len(ok)} | <strong>Failed:</strong> {len(results)-len(ok)}{seed_html}</p>
 
 <h2>🏆 Leaderboards</h2>
 <div class="leaderboard">
@@ -657,7 +663,7 @@ tr.fail {{ color:#8b949e; }}
 </html>"""
 
 
-def gen_pdf(results, active_plugins, output_dir):
+def gen_pdf(results, active_plugins, output_dir, session_seed=None):
     try:
         from fpdf import FPDF
     except ImportError:
@@ -670,7 +676,8 @@ def gen_pdf(results, active_plugins, output_dir):
     pdf.set_font("Helvetica", "", 9)
     pdf.cell(0, 6, f"Tasks: {', '.join(p.name for p in active_plugins)}  |  {datetime.now().strftime('%Y-%m-%d %H:%M')}", align="C", new_x="LMARGIN", new_y="NEXT")
     ok = [r for r in results if r["status"] == "ok"]
-    pdf.cell(0, 6, f"Total: {len(results)}  |  OK: {len(ok)}  |  Failed: {len(results)-len(ok)}", align="C", new_x="LMARGIN", new_y="NEXT")
+    seed_part = f"  |  Seed: {session_seed}" if session_seed is not None else ""
+    pdf.cell(0, 6, f"Total: {len(results)}  |  OK: {len(ok)}  |  Failed: {len(results)-len(ok)}{seed_part}", align="C", new_x="LMARGIN", new_y="NEXT")
     pdf.ln(4)
 
     col_w = [38, 9]
@@ -730,9 +737,10 @@ def gen_pdf(results, active_plugins, output_dir):
 def _save_outputs(state, output_dir, active_plugins):
     """Regenerate CSV/markdown/HTML from latest deduplicated results."""
     results = state.latest_results()
-    md = gen_markdown(results, active_plugins, output_dir=output_dir)
+    session_seed = getattr(state, "session_seed", None)
+    md = gen_markdown(results, active_plugins, output_dir=output_dir, session_seed=session_seed)
     csv_txt = gen_csv(results, active_plugins)
-    html = gen_html(results, active_plugins, output_dir=output_dir)
+    html = gen_html(results, active_plugins, output_dir=output_dir, session_seed=session_seed)
     for fname, content in [("results.md", md), ("results.csv", csv_txt), ("results.html", html)]:
         path = os.path.join(output_dir, fname)
         try:
@@ -746,12 +754,13 @@ def _save_outputs(state, output_dir, active_plugins):
 
 class BenchmarkState:
     """Thread-safe shared state for parallel benchmark execution."""
-    def __init__(self, models, plugin_ids):
+    def __init__(self, models, plugin_ids, session_seed=None):
         self._lock = threading.Lock()
         self.results = []
         self._model_info = {}
         self._log = []
         self.plugin_ids = list(plugin_ids)
+        self.session_seed = session_seed
         for name, source in models.items():
             self._model_info[name] = {
                 "source": source,
@@ -808,6 +817,7 @@ class BenchmarkState:
                 "results": self.results,
                 "active_plugins": self.plugin_ids,
                 "plugin_versions": plugin_versions or {},
+                "session_seed": self.session_seed,
             }
         tmp = path + ".tmp"
         try:
@@ -833,7 +843,8 @@ class BenchmarkState:
     def load_state(cls, path, models, plugin_ids, *, rerun_failed=True):
         with open(path) as f:
             data = json.load(f)
-        state = cls(models, plugin_ids)
+        session_seed = data.get("session_seed")
+        state = cls(models, plugin_ids, session_seed=session_seed)
         saved_info = data.get("model_info", {})
         for name, info in saved_info.items():
             if name in state._model_info:

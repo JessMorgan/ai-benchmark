@@ -614,7 +614,15 @@ def main():
     else:
         state = BenchmarkState(models_source_map, plugin_ids)
 
-    session_seed = args.seed if args.seed is not None else random.randint(0, 2**31 - 1)
+    # Use the CLI --seed if provided; otherwise preserve the seed from a
+    # resumed state so report exports remain consistent.
+    if args.seed is not None:
+        session_seed = args.seed
+    elif getattr(state, "session_seed", None) is not None:
+        session_seed = state.session_seed
+    else:
+        session_seed = random.randint(0, 2**31 - 1)
+    state.session_seed = session_seed
 
     stop_event = threading.Event()
 
@@ -694,7 +702,7 @@ def main():
     _save_outputs(state, output_dir, active_plugins)
     final_results = state.latest_results()
     from benchmark_core import gen_pdf
-    pdf_path = gen_pdf(final_results, active_plugins, output_dir)
+    pdf_path = gen_pdf(final_results, active_plugins, output_dir, session_seed=session_seed)
     ok_count = len([r for r in final_results if r["status"] == "ok"])
     print(f"\n{'='*70}")
     print(f"AI BENCHMARK COMPLETE — {ok_count}/{total} successful "

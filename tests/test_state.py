@@ -1,4 +1,5 @@
 """Tests for BenchmarkState."""
+import json
 import os
 import tempfile
 import unittest
@@ -25,7 +26,7 @@ class TestBenchmarkState(unittest.TestCase):
 
     def test_save_and_load_state(self):
         models = {"model-a": "Source1"}
-        state = self.module.BenchmarkState(models, self.plugin_ids)
+        state = self.module.BenchmarkState(models, self.plugin_ids, session_seed=12345)
         state.update("model-a", status="completed", **{"rate-limiter_score": 10.0})
         state.add_result({"model": "model-a", "status": "ok", "rate-limiter_score": 10.0})
 
@@ -36,6 +37,7 @@ class TestBenchmarkState(unittest.TestCase):
             snap = loaded.snapshot()
             self.assertEqual(snap["model-a"]["status"], "completed")
             self.assertEqual(snap["model-a"]["rate-limiter_score"], 10.0)
+            self.assertEqual(loaded.session_seed, 12345)
 
     def test_latest_results_deduplicates(self):
         models = {"model-a": "Source1"}
@@ -57,6 +59,23 @@ class TestBenchmarkState(unittest.TestCase):
             loaded = self.module.BenchmarkState.load_state(path, models, self.plugin_ids)
             snap = loaded.snapshot()
             self.assertIn("attempt_start", snap["model-a"])
+
+    def test_save_and_load_state_without_session_seed(self):
+        """State files without session_seed load with None."""
+        models = {"model-a": "Source1"}
+        state = self.module.BenchmarkState(models, self.plugin_ids)
+        state.update("model-a", status="completed")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, "state.json")
+            state.save_state(path)
+            # Simulate an older state file without session_seed.
+            with open(path) as f:
+                data = json.load(f)
+            data.pop("session_seed", None)
+            with open(path, "w") as f:
+                json.dump(data, f)
+            loaded = self.module.BenchmarkState.load_state(path, models, self.plugin_ids)
+            self.assertIsNone(loaded.session_seed)
 
     def test_load_state_with_dict_model_config(self):
         """Regression test: dict-valued model entries resolve to source strings."""
