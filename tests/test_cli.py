@@ -258,7 +258,7 @@ class TestSaveResponses(unittest.TestCase):
                     self.module.run_model(
                         "dummy-model", "Local", state, plugins, source_config,
                         timeout=1, token_levels=[100], output_dir=tmpdir,
-                        session_seed=0, global_cfg={},
+                        session_seed=12345, global_cfg={},
                         save_responses=True,
                     )
 
@@ -288,6 +288,8 @@ class TestSaveResponses(unittest.TestCase):
             self.assertIn("response_time", meta)
             self.assertIn("output_tokens", meta)
             self.assertIn("tps", meta)
+            self.assertIn("seed", meta)
+            self.assertEqual(meta["seed"], 12345)
             self.assertIn("timestamp", meta)
 
     def test_save_responses_disabled_does_not_write_files(self):

@@ -974,6 +974,7 @@ def _run_plugin_task(model_name, source, plugin, source_config, timeout, token_l
             "response_time": response_time,
             "output_tokens": output_tokens,
             "tps": tps,
+            "seed": session_seed,
             "timestamp": datetime.now().isoformat(),
         }
         try:
