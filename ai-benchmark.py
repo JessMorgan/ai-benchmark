@@ -50,14 +50,15 @@ def _wr(stdscr, max_x, max_y, y, x, text, attr=0):
             pass
 
 
-def _fallback_tui_loop(state, stop_event):
+def _fallback_tui_loop(state, stop_event, session_seed=None):
     """Fallback terminal UI when curses is unavailable."""
     while not stop_event.is_set():
         snap = state.snapshot()
         active = sum(1 for s in snap.values() if s["status"].startswith("running_") or s["status"] == "queued")
         done = state.completed
         total = state.total
-        parts = [f"🔄 {active} active  |  ✅ {done}/{total} completed"]
+        seed_info = f"Seed: {session_seed}  |  " if session_seed is not None else ""
+        parts = [f"{seed_info}🔄 {active} active  |  ✅ {done}/{total} completed"]
         for name, s in snap.items():
             if s["status"].startswith("running_"):
                 elapsed = (time.time() - s.get("attempt_start", 0)) if s.get("attempt_start") else 0
@@ -96,11 +97,12 @@ def _handle_tui_input(stdscr, scroll_y, scroll_x, max_row_offset, visible_rows, 
 
 
 def _render_header_and_summary(stdscr, max_x, max_y, snap, done, total, running, queued, pending,
-                                scroll_y, visible_rows, total_models):
+                                scroll_y, visible_rows, total_models, session_seed):
     """Render the top header and summary statistics."""
     from datetime import datetime
     ts = datetime.now().strftime('%H:%M:%S')
-    hdr = f"AI Benchmark — Parallel  |  {ts}"
+    seed_info = f"Seed: {session_seed}  |  " if session_seed is not None else ""
+    hdr = f"AI Benchmark — Parallel  |  {seed_info}{ts}"
     if max_x > len(hdr):
         _wr(stdscr, max_x, max_y, 0, 0, hdr, curses.A_BOLD)
 
@@ -267,7 +269,7 @@ def _render_footer(stdscr, max_x, max_y, live_models, queuing, footer_line):
     _wr(stdscr, max_x, max_y, footer_line, 0, msg)
 
 
-def tui_main(state, stop_event, num_sources, active_plugins):
+def tui_main(state, stop_event, num_sources, active_plugins, session_seed=None):
     """Run ncurses TUI in a daemon thread. Updates every 200ms."""
     try:
         stdscr = curses.initscr()
@@ -283,7 +285,7 @@ def tui_main(state, stop_event, num_sources, active_plugins):
             curses.init_pair(2, curses.COLOR_YELLOW, -1)
             curses.init_pair(3, curses.COLOR_RED, -1)
     except Exception:
-        _fallback_tui_loop(state, stop_event)
+        _fallback_tui_loop(state, stop_event, session_seed)
         return
 
     try:
@@ -326,7 +328,7 @@ def tui_main(state, stop_event, num_sources, active_plugins):
 
             _render_header_and_summary(
                 stdscr, max_x, max_y, snap, done, total, running, queued, pending,
-                scroll_y, VISIBLE_ROWS, len(snap)
+                scroll_y, VISIBLE_ROWS, len(snap), session_seed
             )
 
             plugin_hdr = _render_table_headings(
@@ -612,9 +614,11 @@ def main():
     else:
         state = BenchmarkState(models_source_map, plugin_ids)
 
+    session_seed = args.seed if args.seed is not None else random.randint(0, 2**31 - 1)
+
     stop_event = threading.Event()
 
-    tui_thread = threading.Thread(target=tui_main, args=(state, stop_event, len(source_config), active_plugins))
+    tui_thread = threading.Thread(target=tui_main, args=(state, stop_event, len(source_config), active_plugins, session_seed))
     tui_thread.start()
 
     time.sleep(0.3)
@@ -622,8 +626,6 @@ def main():
     total = state.total
     worker_errors = 0
     interrupted = False
-
-    session_seed = args.seed if args.seed is not None else random.randint(0, 2**31 - 1)
 
     source_queues = {src: [] for src in set(models_source_map.values())}
     for name, src in models_source_map.items():
