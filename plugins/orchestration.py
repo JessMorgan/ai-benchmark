@@ -44,39 +44,57 @@ class OrchestrationPlugin(BenchmarkTaskPlugin):
             return global_config["orchestration_temperature"]
         return None
 
-    def score(self, response_text):
+    def evaluate(self, response_text):
         t = response_text
+        rubric = []
         s = 0.0
 
         # 1. Task breakdown presence (0-4)
+        earned = 0.0
         steps = sum(1 for _ in re.finditer(r'(?:task|step)\s*\d+', t, re.IGNORECASE))
         if steps >= 3:
-            s += 2.0
+            earned += 2.0
         elif steps >= 2:
-            s += 1.0
+            earned += 1.0
         if re.search(r'(?:geoip|anomal|pdf|report|logs|server)', t, re.IGNORECASE):
-            s += 2.0
+            earned += 2.0
+        earned = round(min(earned, 4.0), 1)
+        s += earned
+        rubric.append({"name": "Task breakdown presence", "max": 4.0, "earned": earned, "missed": round(4.0 - earned, 1)})
 
         # 2. Explicit dependency tagging (0-4)
+        earned = 0.0
         if re.search(r'\[DEPENDS_ON[^\]]*\]', t):
-            s += 4.0
+            earned = 4.0
         elif re.search(r'depends on', t, re.IGNORECASE):
-            s += 2.0
+            earned = 2.0
+        s += earned
+        rubric.append({"name": "Explicit dependency tagging", "max": 4.0, "earned": earned, "missed": round(4.0 - earned, 1)})
 
         # 3. Parallel vs sequential logic (0-4)
+        earned = 0.0
         has_parallel = re.search(r'\[PARALLEL\]', t) or re.search(r'\bparallel\b', t, re.IGNORECASE)
         has_sequential = re.search(r'\[SEQUENTIAL\]', t) or re.search(r'\bsequential\b', t, re.IGNORECASE)
         if has_parallel and has_sequential:
-            s += 4.0
+            earned = 4.0
         elif has_parallel or has_sequential:
-            s += 2.0
+            earned = 2.0
+        s += earned
+        rubric.append({"name": "Parallel vs sequential logic", "max": 4.0, "earned": earned, "missed": round(4.0 - earned, 1)})
 
         # 4. State / execution trace simulation (0-4)
+        earned = 0.0
         if re.search(r'(?:trace|execution|pipeline)', t, re.IGNORECASE):
-            s += 1.0
+            earned += 1.0
         has_start = re.search(r'(?:init|start|running|pending)', t, re.IGNORECASE)
         has_end = re.search(r'(?:complete|done|success|finish)', t, re.IGNORECASE)
         if has_start and has_end:
-            s += 3.0
+            earned += 3.0
+        earned = round(min(earned, 4.0), 1)
+        s += earned
+        rubric.append({"name": "State / execution trace", "max": 4.0, "earned": earned, "missed": round(4.0 - earned, 1)})
 
-        return round(min(s, self.max_score), 1)
+        return round(min(s, self.max_score), 1), rubric
+
+    def score(self, response_text):
+        return self.evaluate(response_text)[0]

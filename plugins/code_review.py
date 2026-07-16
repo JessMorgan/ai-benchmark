@@ -79,46 +79,62 @@ class CodeReviewPlugin(BenchmarkTaskPlugin):
                 descriptions.append(line[2:].lower() if line[0] != "*" else line[2:].lower())
         return descriptions
 
-    def score(self, response_text):
+    def evaluate(self, response_text):
         descriptions = self._extract_descriptions(response_text)
         if not descriptions:
-            return 0.0
+            return 0.0, []
 
         combined = " ".join(descriptions)
+        rubric = []
         s = 0.0
 
         # 1. File handle not closed / resource leak (0-3)
-        # Require mention of the actual open call or close/context manager
+        earned = 0.0
         if re.search(r"\b(open\(|\.close\(\)|context\s+manager|with\s+open|file\s+handle)\b", combined):
-            s += 3.0
+            earned = 3.0
+        s += earned
+        rubric.append({"name": "File handle not closed / resource leak", "max": 3.0, "earned": earned, "missed": round(3.0 - earned, 1)})
 
         # 2. == None instead of is None (0-2)
-        # Require mention of the actual comparison
+        earned = 0.0
         if re.search(r"\b(==\s*none|\bis\s+none)\b", combined):
-            s += 2.0
+            earned = 2.0
+        s += earned
+        rubric.append({"name": "== None instead of is None", "max": 2.0, "earned": earned, "missed": round(2.0 - earned, 1)})
 
         # 3. Hardcoded /tmp path (0-2)
-        # Require mention of the actual path or db_path parameter
+        earned = 0.0
         if re.search(r"\b(/tmp/data\.txt|tmp/data|db_path)\b", combined):
-            s += 2.0
+            earned = 2.0
+        s += earned
+        rubric.append({"name": "Hardcoded /tmp path", "max": 2.0, "earned": earned, "missed": round(2.0 - earned, 1)})
 
         # 4. Missing error handling / fetch_data may fail (0-3)
-        # Require mention of fetch_data and try/except/error handling
+        earned = 0.0
         has_fetch_data = re.search(r"\bfetch_data\b", combined)
         has_error_handling = re.search(r"\b(try|except|error\s+handling|may\s+raise|could\s+fail|exception)\b", combined)
         if has_fetch_data and has_error_handling:
-            s += 3.0
+            earned = 3.0
+        s += earned
+        rubric.append({"name": "Missing error handling / fetch_data may fail", "max": 3.0, "earned": earned, "missed": round(3.0 - earned, 1)})
 
         # 5. Unused imports (0-2)
-        # Require mention of imports being unused and the actual modules
+        earned = 0.0
         has_unused = re.search(r"\b(unused\s+import|not\s+used|remove\s+(?:the\s+)?import)\b", combined)
         has_modules = re.search(r"\b(import\s+os|import\s+time|\bos\b|\btime\b)\b", combined)
         if has_unused and has_modules:
-            s += 2.0
+            earned = 2.0
+        s += earned
+        rubric.append({"name": "Unused imports", "max": 2.0, "earned": earned, "missed": round(2.0 - earned, 1)})
 
         # 6. Actionable / concrete fix or recommendation (0-3)
-        # Require specific fix language tied to the code
+        earned = 0.0
         if re.search(r"\b(use\s+(?:a\s+)?context\s+manager|with\s+open|remove\s+(?:the\s+)?import|is\s+none|try:|except|parameterize)\b", combined):
-            s += 3.0
+            earned = 3.0
+        s += earned
+        rubric.append({"name": "Actionable / concrete fix", "max": 3.0, "earned": earned, "missed": round(3.0 - earned, 1)})
 
-        return round(min(s, self.max_score), 1)
+        return round(min(s, self.max_score), 1), rubric
+
+    def score(self, response_text):
+        return self.evaluate(response_text)[0]

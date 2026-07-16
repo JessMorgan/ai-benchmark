@@ -158,8 +158,9 @@ class StructuredOutputPlugin(BenchmarkTaskPlugin):
         pattern = r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})?$"
         return bool(re.match(pattern, value))
 
-    def score(self, response_text):
+    def evaluate(self, response_text):
         t = response_text.strip()
+        rubric = []
         s = 0.0
 
         candidate = self._extract_candidate(t)
@@ -173,11 +174,10 @@ class StructuredOutputPlugin(BenchmarkTaskPlugin):
         # 1. Valid JSON/YAML syntax (0-4)
         data = self._parse_data(candidate)
         if data is None:
-            return round(s, 1)
+            rubric.append({"name": "Valid JSON/YAML syntax", "max": 4.0, "earned": 0.0, "missed": 4.0})
+            return round(s, 1), rubric
         s += 4.0
-
-        if has_explanatory_text:
-            s -= 0.5
+        rubric.append({"name": "Valid JSON/YAML syntax", "max": 4.0, "earned": 4.0, "missed": 0.0})
 
         # 2. Required top-level fields present (0-4)
         required = {
@@ -186,9 +186,11 @@ class StructuredOutputPlugin(BenchmarkTaskPlugin):
         }
         present = required & set(data.keys())
         if len(present) == len(required):
-            s += 4.0
+            earned = 4.0
         else:
-            s += (len(present) / len(required)) * 2.0
+            earned = (len(present) / len(required)) * 2.0
+        s += earned
+        rubric.append({"name": "Required top-level fields", "max": 4.0, "earned": round(earned, 1), "missed": round(4.0 - earned, 1)})
 
         # 3. Basic types and constraints (0-6)
         type_score = 0.0
@@ -256,7 +258,9 @@ class StructuredOutputPlugin(BenchmarkTaskPlugin):
             if isinstance(score_val, (int, float)) and 0.0 <= float(score_val) <= 1.0:
                 type_score += 0.5
 
-        s += min(type_score, 6.0)
+        earned = round(min(type_score, 6.0), 1)
+        s += earned
+        rubric.append({"name": "Basic types and constraints", "max": 6.0, "earned": earned, "missed": round(6.0 - earned, 1)})
 
         # 4. Non-empty values and completeness (0-4)
         complete = (
@@ -267,14 +271,19 @@ class StructuredOutputPlugin(BenchmarkTaskPlugin):
             and isinstance(tags, list)
             and len(tags) > 0
         )
-        if complete:
-            s += 2.0
+        earned = 2.0 if complete else 0.0
+        s += earned
+        rubric.append({"name": "Non-empty values / completeness", "max": 4.0, "earned": earned, "missed": round(4.0 - earned, 1)})
 
         # 5. Strict format bonus: no extra top-level keys beyond required (0-2)
         if isinstance(data, dict) and set(data.keys()) == required:
-            s += 2.0
+            earned = 2.0
         elif isinstance(data, dict):
-            s += max(0.0, 2.0 - abs(len(data.keys()) - len(required)) * 0.5)
+            earned = max(0.0, 2.0 - abs(len(data.keys()) - len(required)) * 0.5)
+        else:
+            earned = 0.0
+        s += earned
+        rubric.append({"name": "Strict format (no extra keys)", "max": 2.0, "earned": round(earned, 1), "missed": round(2.0 - earned, 1)})
 
         # 6. Penalize values that are clearly placeholders or hallucinated booleans/strings (0-2)
         if complete:
@@ -282,9 +291,22 @@ class StructuredOutputPlugin(BenchmarkTaskPlugin):
             leaf_values = []
             self._collect_leaf_values(data, leaf_values)
             if all(v not in bad_values for v in leaf_values):
-                s += 2.0
+                earned = 2.0
+            else:
+                earned = 0.0
+        else:
+            earned = 0.0
+        s += earned
+        rubric.append({"name": "No placeholder values", "max": 2.0, "earned": earned, "missed": round(2.0 - earned, 1)})
 
-        return round(min(s, self.max_score), 1)
+        # Explanatory text penalty is not part of a rubric item; apply it after the rubric sum.
+        if has_explanatory_text:
+            s -= 0.5
+
+        return round(min(s, self.max_score), 1), rubric
+
+    def score(self, response_text):
+        return self.evaluate(response_text)[0]
 
     def _collect_leaf_values(self, obj, out):
         """Recursively collect leaf values for placeholder checking."""

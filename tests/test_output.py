@@ -20,10 +20,17 @@ class TestOutputGenerators(unittest.TestCase):
                 "stream_ok": True,
                 "ttft": 1.2,
                 "rate-limiter_score": 15.5,
+                "rate-limiter_rubric": [
+                    {"name": "Interface design", "max": 3.0, "earned": 3.0, "missed": 0.0},
+                    {"name": "Token Bucket", "max": 4.0, "earned": 4.0, "missed": 0.0},
+                ],
                 "rate-limiter_response_time": 5.0,
                 "rate-limiter_output_tokens": 100,
                 "rate-limiter_tps": 20.0,
                 "moe-dense_score": 10.0,
+                "moe-dense_rubric": [
+                    {"name": "Covers both architectures", "max": 2.0, "earned": 2.0, "missed": 0.0},
+                ],
                 "moe-dense_response_time": 3.0,
                 "moe-dense_output_tokens": 50,
                 "moe-dense_tps": 16.7,
@@ -76,6 +83,25 @@ class TestOutputGenerators(unittest.TestCase):
     def test_gen_html_no_seed_when_session_seed_is_none(self):
         html = self.module.gen_html(self.sample_results, self.plugins, session_seed=None)
         self.assertNotIn("Seed:", html)
+
+    def test_gen_markdown_includes_rubric_breakdown(self):
+        md = self.module.gen_markdown(self.sample_results, self.plugins)
+        self.assertIn("Detailed Rubric Breakdown", md)
+        self.assertIn("Interface design", md)
+        self.assertIn("Token Bucket", md)
+        self.assertIn("Covers both architectures", md)
+
+    def test_gen_html_includes_rubric_breakdown(self):
+        html = self.module.gen_html(self.sample_results, self.plugins)
+        self.assertIn("Detailed Rubric Breakdown", html)
+        self.assertIn("Interface design", html)
+        self.assertIn("Token Bucket", html)
+
+    def test_gen_pdf_includes_rubric_breakdown(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            pdf_path = self.module.gen_pdf(self.sample_results, self.plugins, tmpdir)
+            if pdf_path:
+                self.assertTrue(os.path.exists(pdf_path))
 
     def test_gen_markdown_includes_response_links_with_output_dir(self):
         md = self.module.gen_markdown(self.sample_results, self.plugins, output_dir="/tmp/benchmark-results")

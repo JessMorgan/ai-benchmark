@@ -529,6 +529,24 @@ def gen_markdown(results, active_plugins, output_dir=None, session_seed=None):
                 "| Paper references | 2 | Specific papers, technical reports |",
             ])
 
+    # Per-response rubric breakdown
+    has_rubric = any(isinstance(r.get(f"{p.id}_rubric"), list) and r.get(f"{p.id}_rubric") for p in active_plugins for r in results)
+    if has_rubric:
+        lines.extend(["", "---", "## 🔍 Detailed Rubric Breakdown", ""])
+        for r in results:
+            if r["status"] != "ok":
+                continue
+            for p in active_plugins:
+                rubric = r.get(f"{p.id}_rubric")
+                if not isinstance(rubric, list) or not rubric:
+                    continue
+                lines.append(f"### {p.name} — {r['model']}")
+                lines.append("| Criterion | Earned | Max | Missed |")
+                lines.append("|---|---|---|---|")
+                for item in rubric:
+                    lines.append(f"| {item['name']} | {item['earned']} | {item['max']} | {item['missed']} |")
+                lines.append("")
+
     lines.extend(["", "## ❌ Failed Models", ""])
     for r in results:
         if r["status"] != "ok":
@@ -615,6 +633,24 @@ def gen_html(results, active_plugins, output_dir=None, session_seed=None):
 {lb_for_plugin(p)}
 </table></div>"""
 
+    # Per-response rubric breakdown
+    rubric_html = ""
+    has_rubric = any(isinstance(r.get(f"{p.id}_rubric"), list) and r.get(f"{p.id}_rubric") for p in active_plugins for r in results)
+    if has_rubric:
+        rubric_html = "<h2>🔍 Detailed Rubric Breakdown</h2>\n"
+        for r in results:
+            if r["status"] != "ok":
+                continue
+            for p in active_plugins:
+                rubric = r.get(f"{p.id}_rubric")
+                if not isinstance(rubric, list) or not rubric:
+                    continue
+                rubric_html += f"<h3>{html.escape(p.name)} — {html.escape(r['model'])}</h3>\n"
+                rubric_html += '<table><tr><th>Criterion</th><th>Earned</th><th>Max</th><th>Missed</th></tr>\n'
+                for item in rubric:
+                    rubric_html += f"<tr><td>{html.escape(str(item['name']))}</td><td>{item['earned']}</td><td>{item['max']}</td><td>{item['missed']}</td></tr>\n"
+                rubric_html += "</table>\n"
+
     header_cells = "<th>Model</th><th>Load(s)</th>"
     for p in active_plugins:
         header_cells += f"<th>{p.name} Resp(s)</th><th>{p.name} TPS</th><th>{p.name} Tok</th><th>{p.name} Score</th>"
@@ -659,6 +695,7 @@ tr.fail {{ color:#8b949e; }}
 <tr>{header_cells}</tr>
 {rows}
 </table>
+{rubric_html}
 </body>
 </html>"""
 
@@ -727,6 +764,27 @@ def gen_pdf(results, active_plugins, output_dir, session_seed=None):
             pdf.set_font("Helvetica", "", 7)
             for i, r in enumerate(sorted(ok, key=lambda x: _numeric_score(x, p.id), reverse=True)[:5], 1):
                 pdf.cell(0, 4, f"  {i}. {r['model'][:50]}  --  {r.get(f'{p.id}_score', '-')}/{int(p.max_score)}", new_x="LMARGIN", new_y="NEXT")
+
+    # Per-response rubric breakdown
+    has_rubric = any(isinstance(r.get(f"{p.id}_rubric"), list) and r.get(f"{p.id}_rubric") for p in active_plugins for r in results)
+    if has_rubric:
+        pdf.add_page()
+        pdf.set_font("Helvetica", "B", 10)
+        pdf.cell(0, 6, "Detailed Rubric Breakdown", new_x="LMARGIN", new_y="NEXT")
+        pdf.set_font("Helvetica", "", 7)
+        for r in results:
+            if r["status"] != "ok":
+                continue
+            for p in active_plugins:
+                rubric = r.get(f"{p.id}_rubric")
+                if not isinstance(rubric, list) or not rubric:
+                    continue
+                pdf.set_font("Helvetica", "B", 8)
+                pdf.cell(0, 5, f"{p.name} -- {r['model']}", new_x="LMARGIN", new_y="NEXT")
+                pdf.set_font("Helvetica", "", 7)
+                for item in rubric:
+                    pdf.cell(0, 4, f"  {item['name']}: {item['earned']}/{item['max']} (missed {item['missed']})", new_x="LMARGIN", new_y="NEXT")
+                pdf.ln(1)
 
     os.makedirs(output_dir, exist_ok=True)
     path = os.path.join(output_dir, "results.pdf")
@@ -973,7 +1031,7 @@ def _run_plugin_task(model_name, source, plugin, source_config, timeout, token_l
         except OSError:
             pass
 
-    score = plugin.score(text)
+    score, rubric = plugin.evaluate(text)
 
     if save_responses and output_dir:
         meta_path = os.path.join(responses_dir, f"{plugin.id}.meta.json")
@@ -982,6 +1040,7 @@ def _run_plugin_task(model_name, source, plugin, source_config, timeout, token_l
             "plugin_version": plugin.version,
             "model": model_name,
             "score": score,
+            "rubric": rubric,
             "response_time": response_time,
             "output_tokens": output_tokens,
             "tps": tps,
@@ -996,6 +1055,7 @@ def _run_plugin_task(model_name, source, plugin, source_config, timeout, token_l
 
     result = {
         f"{pid}_score": score,
+        f"{pid}_rubric": rubric,
         f"{pid}_response_time": response_time,
         f"{pid}_output_tokens": output_tokens,
         f"{pid}_tps": tps,

@@ -58,3 +58,13 @@ class BenchmarkTaskPlugin(abc.ABC):
     def score(self, response_text: str) -> float:
         """Score the model's response and return a float."""
         ...
+
+    def evaluate(self, response_text: str) -> tuple[float, list[dict]]:
+        """Score the model's response and return a detailed rubric.
+
+        Returns a tuple of ``(score, rubric)`` where ``rubric`` is a list of
+        dictionaries describing each graded criterion. Plugins may override
+        this method to provide a breakdown; the default implementation
+        returns ``(self.score(response_text), [])`` for backward compatibility.
+        """
+        return self.score(response_text), []

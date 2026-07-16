@@ -66,27 +66,35 @@ class ToolCallingPlugin(BenchmarkTaskPlugin):
                 continue
         return calls
 
-    def score(self, response_text):
+    def evaluate(self, response_text):
         t = response_text
+        rubric = []
         s = 0.0
 
         # 1. Output format compliance (0-3)
+        earned = 0.0
         tool_call_blocks = re.findall(r'<tool_call>.*?</tool_call>', t, re.DOTALL)
         if tool_call_blocks:
-            s += 2.0
-            # Bonus for multiple well-formed calls
+            earned += 2.0
             parsed = self._extract_tool_calls(t)
             if len(parsed) >= 2:
-                s += 1.0
+                earned += 1.0
+        earned = round(min(earned, 3.0), 1)
+        s += earned
+        rubric.append({"name": "Output format compliance", "max": 3.0, "earned": earned, "missed": round(3.0 - earned, 1)})
 
         # 2. Planning / reasoning section before tool calls (0-2)
+        earned = 0.0
         tool_call_index = t.find('<tool_call>')
         before_tools = t[:tool_call_index] if tool_call_index != -1 else t
         before_tools_sample = before_tools[:1000]
         if re.search(r'<plan>.*?</plan>', before_tools_sample, re.DOTALL):
-            s += 1.5
+            earned += 1.5
         if re.search(r'(?i)(plan|step|first|then|finally|order|sequence)', before_tools_sample):
-            s += 0.5
+            earned += 0.5
+        earned = round(min(earned, 2.0), 1)
+        s += earned
+        rubric.append({"name": "Planning / reasoning", "max": 2.0, "earned": earned, "missed": round(2.0 - earned, 1)})
 
         calls = self._extract_tool_calls(t)
         call_names = [c.get("name") for c in calls if isinstance(c, dict)]
@@ -102,8 +110,10 @@ class ToolCallingPlugin(BenchmarkTaskPlugin):
             "send_email",
         }
         present_tools = set(call_names) & required_tools
-        if present_tools:
-            s += (len(present_tools) / len(required_tools)) * 5.0
+        earned = (len(present_tools) / len(required_tools)) * 5.0 if present_tools else 0.0
+        earned = round(min(earned, 5.0), 1)
+        s += earned
+        rubric.append({"name": "Required tools present", "max": 5.0, "earned": earned, "missed": round(5.0 - earned, 1)})
 
         # 4. Correct arguments for each tool (0-8)
         arg_score = 0.0
@@ -157,10 +167,11 @@ class ToolCallingPlugin(BenchmarkTaskPlugin):
                 if isinstance(subject, str) and "tokyo" in subject.lower():
                     arg_score += 0.5
 
-        s += min(arg_score, 8.0)
+        earned = round(min(arg_score, 8.0), 1)
+        s += earned
+        rubric.append({"name": "Correct arguments", "max": 8.0, "earned": earned, "missed": round(8.0 - earned, 1)})
 
         # 5. Correct ordering / dependencies (0-3, bonus)
-        # Expected order: weather, flights, hotel, stock, currency, email
         expected_order = [
             "get_weather",
             "search_flights",
@@ -170,8 +181,12 @@ class ToolCallingPlugin(BenchmarkTaskPlugin):
             "send_email",
         ]
         order_matches = sum(1 for a, b in zip(call_names, expected_order) if a == b)
+        earned = 0.0
         if len(call_names) >= 3 and order_matches > 0:
-            s += (order_matches / len(expected_order)) * 3.0
+            earned = (order_matches / len(expected_order)) * 3.0
+        earned = round(min(earned, 3.0), 1)
+        s += earned
+        rubric.append({"name": "Correct ordering / dependencies", "max": 3.0, "earned": earned, "missed": round(3.0 - earned, 1)})
 
         # 6. Synthesis / mock final response (0-4)
         has_weather = re.search(r'(?:weather|degrees|celsius|fahrenheit|sunny|rain|cloud)', t.lower())
@@ -181,6 +196,11 @@ class ToolCallingPlugin(BenchmarkTaskPlugin):
         has_currency = re.search(r'(?:yen|jpy|usd|currency|exchange)', t.lower())
         has_email = re.search(r'(?:email|itinerary|alice)', t.lower())
         synthesis_hits = sum([bool(has_weather), bool(has_flight), bool(has_hotel), bool(has_stock), bool(has_currency), bool(has_email)])
-        s += (synthesis_hits / 6.0) * 4.0
+        earned = round((synthesis_hits / 6.0) * 4.0, 1)
+        s += earned
+        rubric.append({"name": "Synthesis / final response", "max": 4.0, "earned": earned, "missed": round(4.0 - earned, 1)})
 
-        return round(min(s, self.max_score), 1)
+        return round(min(s, self.max_score), 1), rubric
+
+    def score(self, response_text):
+        return self.evaluate(response_text)[0]

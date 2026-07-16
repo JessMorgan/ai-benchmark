@@ -47,50 +47,82 @@ class MoEDensePlugin(BenchmarkTaskPlugin):
             return global_config["moe_dense_temperature"]
         return None
 
-    def score(self, response_text):
+    def evaluate(self, response_text):
         t = response_text.lower()
+        rubric = []
         s = 0.0
 
         # 1. Covers both architectures explicitly (0-2)
+        earned = 0.0
         if re.search(r'(?:mixture.of.expert|moe|sparse.*moe)', t):
-            s += 1.0
+            earned += 1.0
         if re.search(r'(?:dense\s*(?:transformer|model|architecture)|standard\s*transformer)', t):
-            s += 1.0
+            earned += 1.0
+        earned = round(min(earned, 2.0), 1)
+        s += earned
+        rubric.append({"name": "Covers both architectures", "max": 2.0, "earned": earned, "missed": round(2.0 - earned, 1)})
 
         # 2. Gating/routing mechanism (0-2.5)
+        earned = 0.0
         if re.search(r'(?:gating|routing|gate|router|top.k|softmax.*gate)', t):
-            s += 1.5
+            earned += 1.5
         if re.search(r'(?:expert.*select|which.*expert|rout.*token)', t):
-            s += 1.0
+            earned += 1.0
+        earned = round(min(earned, 2.5), 1)
+        s += earned
+        rubric.append({"name": "Gating/routing mechanism", "max": 2.5, "earned": earned, "missed": round(2.5 - earned, 1)})
 
         # 3. Load-balancing loss (0-2.5)
+        earned = 0.0
         if re.search(r'(?:load.balanc|auxiliary.*loss|aux.*loss|balance.*loss)', t):
-            s += 1.5
+            earned += 1.5
         if re.search(r'(?:importance|loss.*formula|load.*equation|L_aux)', t):
-            s += 1.0
+            earned += 1.0
+        earned = round(min(earned, 2.5), 1)
+        s += earned
+        rubric.append({"name": "Load-balancing loss", "max": 2.5, "earned": earned, "missed": round(2.5 - earned, 1)})
 
         # 4. Training challenges (0-2)
+        earned = 0.0
         if re.search(r'(?:token.dropp|expert.collaps|instability|collapse|dropping)', t):
-            s += 1.0
+            earned += 1.0
         if re.search(r'(?:training.*challeng|difficult|problem|issue|stability)', t):
-            s += 1.0
+            earned += 1.0
+        earned = round(min(earned, 2.0), 1)
+        s += earned
+        rubric.append({"name": "Training challenges", "max": 2.0, "earned": earned, "missed": round(2.0 - earned, 1)})
 
         # 5. Inference implications (0-2)
+        earned = 0.0
         if re.search(r'(?:inference|memory.*bandwidth|expert.*parallel|sparse.*compute)', t):
-            s += 1.0
+            earned += 1.0
         if re.search(r'(?:throughput|latency|batch.*size|parameter.*efficien)', t):
-            s += 1.0
+            earned += 1.0
+        earned = round(min(earned, 2.0), 1)
+        s += earned
+        rubric.append({"name": "Inference implications", "max": 2.0, "earned": earned, "missed": round(2.0 - earned, 1)})
 
         # 6. Specific benchmarks / performance comparison (0-2)
+        earned = 0.0
         if re.search(r'(?:benchmark|mmlu|gsm8k|human-eval|mbpp|hellaswag|arc|truthful)', t):
-            s += 1.0
+            earned += 1.0
         if re.search(r'(?:outperform|better.*than|compared to|vs\.|versus|advantage)', t):
-            s += 1.0
+            earned += 1.0
+        earned = round(min(earned, 2.0), 1)
+        s += earned
+        rubric.append({"name": "Benchmarks/comparison", "max": 2.0, "earned": earned, "missed": round(2.0 - earned, 1)})
 
         # 7. Paper references (0-2)
+        earned = 0.0
         if re.search(r'(?:paper|report|arxiv|technical.*report)', t):
-            s += 1.0
+            earned += 1.0
         if re.search(r'(?:2023|2024|2025|et\s*al|vashwani|shazeer|fedus|lepikhin|du et al)', t):
-            s += 1.0
+            earned += 1.0
+        earned = round(min(earned, 2.0), 1)
+        s += earned
+        rubric.append({"name": "Paper references", "max": 2.0, "earned": earned, "missed": round(2.0 - earned, 1)})
 
-        return round(s, 1)
+        return round(s, 1), rubric
+
+    def score(self, response_text):
+        return self.evaluate(response_text)[0]

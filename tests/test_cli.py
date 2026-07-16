@@ -291,6 +291,9 @@ class TestSaveResponses(unittest.TestCase):
             self.assertIn("seed", meta)
             self.assertEqual(meta["seed"], 12345)
             self.assertIn("timestamp", meta)
+            self.assertIn("rubric", meta)
+            self.assertIsInstance(meta["rubric"], list)
+            self.assertTrue(all("name" in item and "max" in item and "earned" in item and "missed" in item for item in meta["rubric"]))
 
     def test_save_responses_disabled_does_not_write_files(self):
         plugins = [p for p in self.plugins if p.id == "rate-limiter"]
