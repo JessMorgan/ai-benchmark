@@ -275,6 +275,19 @@ def log_request_entry(log_path, curl_cmd, response_body, request_label=None):
             f.write("\n" + "-" * 60 + "\n")
 
 
+def _check_total_timeout(start_time, timeout, error, finish_reason=None):
+    """Return a timeout error if the overall request duration was exceeded."""
+    if not error and not finish_reason and time.time() - start_time > timeout:
+        return f"Total timeout ({timeout}s) exceeded"
+    return error
+
+
+def _log_response(log_path, curl_cmd, response_body, log_label):
+    """Write the response body to the request log if logging is enabled."""
+    if log_path and curl_cmd:
+        log_request_entry(log_path, curl_cmd, response_body or "(empty response)", log_label)
+
+
 # ─── API helpers ────────────────────────────────────────────────────────────
 
 def _build_request_body(model, prompt, max_tokens, session_seed, temperature, drop_params, stream):
@@ -348,6 +361,33 @@ def _post_request_context(source_config, source, body, timeout, stream, log_path
         resp.close()
 
 
+def _parse_sse_line(line, first_tok, text, finish_reason, usage):
+    """Parse a single Server-Sent Events line and update streaming state.
+
+    Returns a tuple of ``(first_tok, text, finish_reason, usage, done)``.
+    ``done`` is True when the ``[DONE]`` sentinel is encountered.
+    """
+    if not line.startswith("data: "):
+        return first_tok, text, finish_reason, usage, False
+    payload = line[6:]
+    if payload.strip() == "[DONE]":
+        return first_tok, text, finish_reason, usage, True
+    try:
+        data = json.loads(payload)
+    except json.JSONDecodeError:
+        return first_tok, text, finish_reason, usage, False
+    if first_tok is None:
+        first_tok = time.time()
+    for ch in data.get("choices", []):
+        text += ch.get("delta", {}).get("content", "")
+        fr = ch.get("finish_reason")
+        if fr:
+            finish_reason = fr
+    if "usage" in data:
+        usage = data["usage"]
+    return first_tok, text, finish_reason, usage, False
+
+
 def stream_request(source_config, timeout, model, source, prompt, max_tokens=2048,
                    log_path=None, log_label=None, session_seed=0, temperature=None,
                    drop_params=None, stop_event=None):
@@ -367,28 +407,24 @@ def stream_request(source_config, timeout, model, source, prompt, max_tokens=204
                 break
             if not line:
                 continue
-            if line.startswith("data: "):
-                payload = line[6:]
-                if payload.strip() == "[DONE]":
-                    break
-                try:
-                    data = json.loads(payload)
-                    if first_tok is None:
-                        first_tok = time.time()
-                    for ch in data.get("choices", []):
-                        text += ch.get("delta", {}).get("content", "")
-                        fr = ch.get("finish_reason")
-                        if fr:
-                            finish_reason = fr
-                    if "usage" in data:
-                        usage = data["usage"]
-                except json.JSONDecodeError:
-                    continue
-        if not error and not finish_reason and time.time() - start > timeout:
-            error = f"Total timeout ({timeout}s) exceeded"
-        if log_path and curl_cmd:
-            log_request_entry(log_path, curl_cmd, text or "(empty response)", log_label)
+            first_tok, text, finish_reason, usage, done = _parse_sse_line(
+                line, first_tok, text, finish_reason, usage)
+            if done:
+                break
+        error = _check_total_timeout(start, timeout, error, finish_reason)
+        _log_response(log_path, curl_cmd, text, log_label)
     return text, first_tok, time.time(), error, finish_reason, usage
+
+
+def _read_response_body(resp, stop_event):
+    """Read a non-streaming response body in chunks, honouring cancellation."""
+    chunks = []
+    for chunk in resp.iter_content(chunk_size=8192):
+        if stop_event and stop_event.is_set():
+            return None, "Cancelled"
+        if chunk:
+            chunks.append(chunk)
+    return b"".join(chunks).decode("utf-8", errors="replace"), None
 
 
 def nonstream_request(source_config, timeout, model, source, prompt, max_tokens=2048,
@@ -404,22 +440,15 @@ def nonstream_request(source_config, timeout, model, source, prompt, max_tokens=
     with _post_request_context(source_config, source, body, timeout, False, log_path, log_label) as (resp, err, curl_cmd):
         if err:
             return text, usage, time.time() - start, err, finish_reason
-        # Read the body in chunks so we can react to a cancellation signal.
-        chunks = []
-        for chunk in resp.iter_content(chunk_size=8192):
-            if stop_event and stop_event.is_set():
-                return text, usage, time.time() - start, "Cancelled", finish_reason
-            if chunk:
-                chunks.append(chunk)
-        raw_resp_text = b"".join(chunks).decode("utf-8", errors="replace")
+        raw_resp_text, read_error = _read_response_body(resp, stop_event)
+        if read_error:
+            return text, usage, time.time() - start, read_error, finish_reason
         data = json.loads(raw_resp_text)
         text = data["choices"][0]["message"]["content"]
         usage = data.get("usage", {})
         finish_reason = data.get("choices", [{}])[0].get("finish_reason")
-        if log_path and curl_cmd:
-            log_request_entry(log_path, curl_cmd, raw_resp_text, log_label)
-    if not error and time.time() - start > timeout:
-        error = f"Total timeout ({timeout}s) exceeded"
+        _log_response(log_path, curl_cmd, raw_resp_text, log_label)
+    error = _check_total_timeout(start, timeout, error, finish_reason)
     return text, usage, time.time() - start, error, finish_reason
 
 
