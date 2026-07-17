@@ -20,7 +20,6 @@ import time
 from benchmark_core import (
     BenchmarkState,
     _unique_source_abbrevs,
-    close_active_requests,
     dump_default_config,
     generate_config_from_api,
     load_config,
@@ -29,6 +28,7 @@ from benchmark_core import (
     run_model,
     _save_outputs,
 )
+from benchmark_http import close_active_requests
 from plugins import discover_plugins, format_plugin_list
 from shell_completion import generate_shell_completion
 
