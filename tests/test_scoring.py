@@ -197,6 +197,81 @@ class TestCodeReviewScoring(unittest.TestCase):
         self.assertGreater(score, 0.0)
 
 
+class TestMultiStepScoring(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.plugin = next(p for p in discover_plugins() if p.id == "multi-step")
+
+    def test_empty_response_scores_zero(self):
+        self.assertEqual(self.plugin.score(""), 0.0)
+
+    def test_partial_response_scores(self):
+        text = (
+            "```python\n"
+            "def greet_user(name: str) -> str:\n"
+            "    return f'Hello, {name}! Welcome.'\n"
+            "```\n"
+            "```python\n"
+            "def validate_name(name: str) -> bool:\n"
+            "    return name.isalpha() and len(name) <= 50\n"
+            "```\n"
+            "```python\n"
+            "def format_greeting(greeting: str, times: int) -> str:\n"
+            "    if times < 1:\n"
+            "        return ''\n"
+            "    return '\\n'.join([greeting] * times)\n"
+            "```\n"
+            "[SUMMARY: 3 lines, 3 functions, completed all steps]."
+        )
+        score = self.plugin.score(text)
+        self.assertGreater(score, 0.0)
+        self.assertLess(score, self.plugin.max_score)
+
+    def test_full_response_scores_high(self):
+        text = (
+            "```python\n"
+            "def greet_user(name: str) -> str:\n"
+            "    return f'Hello, {name}! Welcome.'\n"
+            "```\n"
+            "```python\n"
+            "def validate_name(name: str) -> bool:\n"
+            "    if not name or len(name) > 50:\n"
+            "        return False\n"
+            "    return name.replace(' ', '').isalpha()\n"
+            "```\n"
+            "```python\n"
+            "def format_greeting(greeting: str, times: int) -> str:\n"
+            "    if times < 1:\n"
+            "        return ''\n"
+            "    return '\\n'.join([greeting] * times)\n"
+            "```\n"
+            "[SUMMARY: 3 lines, 3 functions, completed all steps]."
+        )
+        score = self.plugin.score(text)
+        self.assertGreater(score, 10.0)
+
+    def test_missing_summary_scores_less(self):
+        text = (
+            "```python\n"
+            "def greet_user(name: str) -> str:\n"
+            "    return f'Hello, {name}! Welcome.'\n"
+            "```\n"
+            "```python\n"
+            "def validate_name(name: str) -> bool:\n"
+            "    return name.isalpha() and len(name) <= 50\n"
+            "```\n"
+            "```python\n"
+            "def format_greeting(greeting: str, times: int) -> str:\n"
+            "    if times < 1:\n"
+            "        return ''\n"
+            "    return '\\n'.join([greeting] * times)\n"
+            "```"
+        )
+        score = self.plugin.score(text)
+        self.assertGreater(score, 0.0)
+        self.assertLess(score, self.plugin.max_score)
+
+
 class TestStructuredOutputScoring(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
