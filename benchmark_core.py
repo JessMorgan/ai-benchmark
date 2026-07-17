@@ -311,9 +311,15 @@ def _post_request_context(source_config, source, body, timeout, stream, log_path
     max_tokens = body.get("max_tokens", 2048)
     curl_cmd = build_curl_cmd(model, prompt, max_tokens, stream, api_url, headers) if log_path else None
     resp = None
+    # Use a short connection timeout so a stuck connect() returns quickly,
+    # but keep the user's full timeout for reading so slow models are not
+    # aborted prematurely.
+    connect_timeout = min(float(timeout), 5.0)
+    request_timeout = (connect_timeout, timeout)
     try:
         resp = requests.post(
-            api_url, headers=headers, json=body, stream=True, timeout=timeout)
+            api_url, headers=headers, json=body, stream=True,
+            timeout=request_timeout)
     except Exception as e:
         error = f"{type(e).__name__}: {e}"
         if log_path and curl_cmd:
@@ -344,7 +350,7 @@ def _post_request_context(source_config, source, body, timeout, stream, log_path
 
 def stream_request(source_config, timeout, model, source, prompt, max_tokens=2048,
                    log_path=None, log_label=None, session_seed=0, temperature=None,
-                   drop_params=None):
+                   drop_params=None, stop_event=None):
     start = time.time()
     first_tok = None
     text = ""
@@ -356,6 +362,9 @@ def stream_request(source_config, timeout, model, source, prompt, max_tokens=204
         if err:
             return text, first_tok, time.time(), err, finish_reason, usage
         for line in resp.iter_lines(decode_unicode=True):
+            if stop_event and stop_event.is_set():
+                error = "Cancelled"
+                break
             if not line:
                 continue
             if line.startswith("data: "):
@@ -375,7 +384,7 @@ def stream_request(source_config, timeout, model, source, prompt, max_tokens=204
                         usage = data["usage"]
                 except json.JSONDecodeError:
                     continue
-        if not finish_reason and time.time() - start > timeout:
+        if not error and not finish_reason and time.time() - start > timeout:
             error = f"Total timeout ({timeout}s) exceeded"
         if log_path and curl_cmd:
             log_request_entry(log_path, curl_cmd, text or "(empty response)", log_label)
@@ -384,7 +393,7 @@ def stream_request(source_config, timeout, model, source, prompt, max_tokens=204
 
 def nonstream_request(source_config, timeout, model, source, prompt, max_tokens=2048,
                       log_path=None, log_label=None, session_seed=0, temperature=None,
-                      drop_params=None):
+                      drop_params=None, stop_event=None):
     start = time.time()
     error = None
     text = ""
@@ -395,8 +404,14 @@ def nonstream_request(source_config, timeout, model, source, prompt, max_tokens=
     with _post_request_context(source_config, source, body, timeout, False, log_path, log_label) as (resp, err, curl_cmd):
         if err:
             return text, usage, time.time() - start, err, finish_reason
-        # Use resp.content so requests handles decompression/encoding.
-        raw_resp_text = resp.content.decode("utf-8", errors="replace")
+        # Read the body in chunks so we can react to a cancellation signal.
+        chunks = []
+        for chunk in resp.iter_content(chunk_size=8192):
+            if stop_event and stop_event.is_set():
+                return text, usage, time.time() - start, "Cancelled", finish_reason
+            if chunk:
+                chunks.append(chunk)
+        raw_resp_text = b"".join(chunks).decode("utf-8", errors="replace")
         data = json.loads(raw_resp_text)
         text = data["choices"][0]["message"]["content"]
         usage = data.get("usage", {})
@@ -964,7 +979,7 @@ def _run_plugin_task(model_name, source, plugin, source_config, timeout, token_l
                 log_path=log_file,
                 log_label=f"{plugin.name} (Streaming, attempt {attempt + 1})",
                 session_seed=session_seed, temperature=temperature,
-                drop_params=drop_params)
+                drop_params=drop_params, stop_event=stop_event)
 
             if serr or first_tok is None:
                 text, nsusage, ns_time, nserr, nsfr = nonstream_request(
@@ -972,7 +987,7 @@ def _run_plugin_task(model_name, source, plugin, source_config, timeout, token_l
                     log_path=log_file,
                     log_label=f"{plugin.name} (Non-Streaming, attempt {attempt + 1})",
                     session_seed=session_seed, temperature=temperature,
-                    drop_params=drop_params)
+                    drop_params=drop_params, stop_event=stop_event)
                 if nserr:
                     return None, f"Stream: {serr or 'no tokens'}. Nostream: {nserr}"
                 stream_ok = False
@@ -990,7 +1005,7 @@ def _run_plugin_task(model_name, source, plugin, source_config, timeout, token_l
                 log_path=log_file,
                 log_label=f"{plugin.name} (attempt {attempt + 1})",
                 session_seed=session_seed, temperature=temperature,
-                drop_params=drop_params)
+                drop_params=drop_params, stop_event=stop_event)
             if gen_err:
                 return None, gen_err
             stream_ok = False

@@ -18,6 +18,9 @@ class MockResponse:
     def iter_lines(self, decode_unicode=False):
         return []
 
+    def iter_content(self, chunk_size=8192):
+        return [self.content]
+
     def close(self):
         pass
 
