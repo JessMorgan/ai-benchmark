@@ -4,6 +4,8 @@ import os
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 import unittest
 from unittest import mock
 
@@ -422,6 +424,82 @@ class TestSeedCLI(unittest.TestCase):
 
         self.assertIn("body", captured)
         self.assertEqual(captured["body"]["seed"], 42)
+
+
+class TestStopEventInterruption(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.module = load_benchmark_module()
+
+    def test_stream_request_respects_stop_event(self):
+        """stream_request returns 'Cancelled' when stop_event is set mid-stream."""
+        source_config = {"Local": {"api_url": "http://localhost:11434/chat/completions", "headers": {}}}
+        stop_event = threading.Event()
+
+        class SlowMockResponse:
+            status_code = 200
+
+            def iter_lines(self, decode_unicode=False):
+                # Yield many lines; the outer loop will see stop_event and break.
+                for _ in range(100):
+                    yield "data: {\"choices\":[{\"delta\":{\"content\":\"x\"}}]}"
+                    time.sleep(0.01)
+
+            def close(self):
+                pass
+
+        def fake_post(url, **kwargs):
+            return SlowMockResponse()
+
+        def set_stop_after_delay():
+            time.sleep(0.05)
+            stop_event.set()
+
+        with mock.patch("requests.post", side_effect=fake_post):
+            thread = threading.Thread(target=set_stop_after_delay)
+            thread.start()
+            text, first_tok, stream_end, err, finish_reason, usage = self.module.stream_request(
+                source_config, timeout=5, model="m", source="Local",
+                prompt="hello", max_tokens=10, stop_event=stop_event,
+            )
+            thread.join()
+
+        self.assertEqual(err, "Cancelled")
+
+    def test_nonstream_request_respects_stop_event(self):
+        """nonstream_request returns 'Cancelled' when stop_event is set mid-read."""
+        source_config = {"Local": {"api_url": "http://localhost:11434/chat/completions", "headers": {}}}
+        stop_event = threading.Event()
+
+        class SlowMockResponse:
+            status_code = 200
+
+            def iter_content(self, chunk_size=8192):
+                # Yield many chunks; the outer loop will see stop_event and break.
+                for _ in range(100):
+                    yield b'{"choices":[{"message":{"content":"x"}}]}'
+                    time.sleep(0.01)
+
+            def close(self):
+                pass
+
+        def fake_post(url, **kwargs):
+            return SlowMockResponse()
+
+        def set_stop_after_delay():
+            time.sleep(0.05)
+            stop_event.set()
+
+        with mock.patch("requests.post", side_effect=fake_post):
+            thread = threading.Thread(target=set_stop_after_delay)
+            thread.start()
+            text, usage, gen_time, err, finish_reason = self.module.nonstream_request(
+                source_config, timeout=5, model="m", source="Local",
+                prompt="hello", max_tokens=10, stop_event=stop_event,
+            )
+            thread.join()
+
+        self.assertEqual(err, "Cancelled")
 
 
 class TestPerPluginTemperature(unittest.TestCase):
