@@ -69,7 +69,8 @@ def _fallback_tui_loop(state, stop_event, session_seed=None):
         sys.stdout.write(f"\r{' ' * 80}\r")
         sys.stdout.write(" | ".join(parts))
         sys.stdout.flush()
-        time.sleep(1)
+        # Sleep in short increments so Ctrl+C is handled promptly.
+        stop_event.wait(0.2)
     print()
 
 
@@ -626,7 +627,14 @@ def main():
 
     stop_event = threading.Event()
 
-    tui_thread = threading.Thread(target=tui_main, args=(state, stop_event, len(source_config), active_plugins, session_seed))
+    # Run the TUI as a daemon so the process can exit promptly on Ctrl+C.
+    # Without this, a stuck curses/fallback UI thread would block interpreter
+    # shutdown, forcing the user to press Ctrl+C a second time.
+    tui_thread = threading.Thread(
+        target=tui_main,
+        args=(state, stop_event, len(source_config), active_plugins, session_seed),
+        daemon=True,
+    )
     tui_thread.start()
 
     time.sleep(0.3)
