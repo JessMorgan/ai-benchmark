@@ -31,7 +31,7 @@ repos:
 
       - id: unit-tests
         name: Run unit tests
-        entry: python -m unittest discover -s tests -v
+        entry: bash -c "python -m pytest tests/ plugins/test_*.py -v"
         language: system
         pass_filenames: false
         always_run: true
