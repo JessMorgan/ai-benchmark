@@ -372,9 +372,17 @@ def tui_main(state, stop_event, num_sources, active_plugins, session_seed=None):
             pass
 
 
-def _prompt_restart_or_continue():
-    """Ask the user whether to restart or continue a run with changed plugins."""
+def _prompt_restart_or_continue(scripted=False):
+    """Ask the user whether to restart or continue a run with changed plugins.
+
+    In scripted mode, no input is requested and the run continues automatically,
+    running any new plugins on all models while preserving existing results.
+    """
     print("\nPlugin set has changed since the last run.")
+    if scripted:
+        print("   Scripted mode: continuing run and running new plugins on all models.",
+              file=sys.stderr)
+        return "continue"
     print("[r] Restart run (discard old state)")
     print("[c] Continue run (keep old data, run missing plugins)")
     print("[q] Quit")
@@ -453,6 +461,8 @@ def main():
                         help='Fixed random seed for all API requests (default: random)')
     parser.add_argument('--no-rerun-failed', action='store_true',
                         help='Do not re-run models that failed in a previous session')
+    parser.add_argument('--scripted', action='store_true',
+                        help='Non-interactive mode: never prompt for input; default to continuing runs')
     args = parser.parse_args()
 
     if args.list_plugins:
@@ -577,7 +587,7 @@ def main():
                 print("\n⚠️  Plugin set has changed.", file=sys.stderr)
                 print(f"   Saved:   {', '.join(saved_plugins) or '(none)'}", file=sys.stderr)
                 print(f"   Current: {', '.join(plugin_ids)}", file=sys.stderr)
-                choice = _prompt_restart_or_continue()
+                choice = _prompt_restart_or_continue(scripted=args.scripted)
                 if choice == "restart":
                     os.remove(state_file)
                     state = BenchmarkState(models_source_map, plugin_ids)

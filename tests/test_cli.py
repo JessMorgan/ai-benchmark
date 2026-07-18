@@ -502,6 +502,37 @@ class TestStopEventInterruption(unittest.TestCase):
         self.assertEqual(err, "Cancelled")
 
 
+class TestScriptedMode(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("ai_benchmark", "ai-benchmark.py")
+        cls.ai_benchmark = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cls.ai_benchmark)
+
+    def test_scripted_flag_defaults_to_continue_on_plugin_change(self):
+        """--scripted continues a run when the plugin set changes."""
+        import io
+        old_stderr = sys.stderr
+        sys.stderr = io.StringIO()
+        try:
+            choice = self.ai_benchmark._prompt_restart_or_continue(scripted=True)
+        finally:
+            sys.stderr = old_stderr
+        self.assertEqual(choice, "continue")
+
+    def test_interactive_prompt_returns_continue(self):
+        """Interactive mode returns the user's choice."""
+        import io
+        old_stdin = sys.stdin
+        sys.stdin = io.StringIO("c\n")
+        try:
+            choice = self.ai_benchmark._prompt_restart_or_continue(scripted=False)
+        finally:
+            sys.stdin = old_stdin
+        self.assertEqual(choice, "continue")
+
+
 class TestPerPluginTemperature(unittest.TestCase):
     def test_plugin_temperature_from_config(self):
         from benchmark_core import parse_plugin_temperatures
