@@ -1,5 +1,55 @@
-"""Abstract base class for AI benchmark task plugins."""
+"""Abstract base classes for AI benchmark plugins."""
 import abc
+
+
+class BenchmarkOutputPlugin(abc.ABC):
+    """A report-output generator that persists benchmark results to disk.
+
+    Each output plugin writes a single report file (e.g. results.md,
+    results.csv) into the output directory.  The main benchmark runner
+    discovers output plugins from the ``plugins/`` directory and invokes
+    them after all task plugins have completed.
+    """
+
+    @property
+    @abc.abstractmethod
+    def id(self) -> str:
+        """Stable machine-readable identifier, e.g. 'output-markdown'."""
+        ...
+
+    @property
+    @abc.abstractmethod
+    def name(self) -> str:
+        """Human-readable name, e.g. 'Markdown Report'."""
+        ...
+
+    @property
+    @abc.abstractmethod
+    def extension(self) -> str:
+        """File extension (without dot), e.g. 'md', 'csv', 'html'."""
+        ...
+
+    @abc.abstractmethod
+    def generate(self, results, active_plugins, output_dir=None, session_seed=None):
+        """Write the report file into *output_dir* and return the file path.
+
+        Parameters
+        ----------
+        results : list[dict]
+            Deduplicated result dicts (one per model).
+        active_plugins : list[BenchmarkTaskPlugin]
+            The task plugins that produced the results.
+        output_dir : str or None
+            The directory to write into.
+        session_seed : int or None
+            The random seed used for the session.
+
+        Returns
+        -------
+        str or None
+            The path to the generated file, or None if nothing was written.
+        """
+        ...
 
 
 class BenchmarkTaskPlugin(abc.ABC):

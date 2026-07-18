@@ -738,8 +738,6 @@ def main():
 
     _save_outputs(state, output_dir, active_plugins)
     final_results = state.latest_results()
-    from benchmark_core import gen_pdf
-    pdf_path = gen_pdf(final_results, active_plugins, output_dir, session_seed=session_seed)
     ok_count = len([r for r in final_results if r["status"] == "ok"])
     print(f"\n{'='*70}")
     print(f"AI BENCHMARK COMPLETE — {ok_count}/{total} successful "
@@ -747,8 +745,6 @@ def main():
     print(f"Outputs: {output_dir}/")
     for fname in sorted(os.listdir(output_dir)):
         print(f"  - {fname}")
-    if pdf_path:
-        print(f"  - {os.path.basename(pdf_path)}")
     print(f"{'='*70}")
 
 
