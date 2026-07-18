@@ -102,10 +102,23 @@ class BenchmarkState:
             data = json.load(f)
         session_seed = data.get("session_seed")
         state = cls(models, plugin_ids, session_seed=session_seed)
+        saved_plugins = data.get("active_plugins", [])
+        new_plugins = [pid for pid in plugin_ids if pid not in saved_plugins]
         saved_info = data.get("model_info", {})
         for name, info in saved_info.items():
             if name in state._model_info:
                 state._model_info[name] = info
+                # If new plugins were added, ensure existing models get the
+                # new plugin fields and are re-queued so every model runs the
+                # new plugins while preserving old plugin results.
+                if new_plugins:
+                    for pid in new_plugins:
+                        state._model_info[name].setdefault(f"{pid}_score", None)
+                        state._model_info[name].setdefault(f"{pid}_tps", None)
+                        state._model_info[name].setdefault(f"{pid}_response_time", None)
+                        state._model_info[name].setdefault(f"{pid}_output_tokens", None)
+                    if state._model_info[name].get("status") == "completed":
+                        state._model_info[name]["status"] = "pending"
         state.results = data.get("results", [])
         for name, info in state._model_info.items():
             if info.get("status") == "completed":

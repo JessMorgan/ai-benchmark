@@ -144,6 +144,41 @@ class TestBenchmarkState(unittest.TestCase):
             self.assertEqual(snap["model-b"]["status"], "failed")
             self.assertEqual(snap["model-b"]["error"], "boom")
 
+    def test_load_state_with_new_plugins_resets_completed_models(self):
+        """When new plugins are added, completed models are re-queued to run them."""
+        models = {"model-a": "Source1"}
+        original_plugins = ["rate-limiter"]
+        state = self.module.BenchmarkState(models, original_plugins)
+        state.update("model-a", status="completed", **{"rate-limiter_score": 5.0})
+        state.add_result({"model": "model-a", "status": "ok", "rate-limiter_score": 5.0})
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, "state.json")
+            state.save_state(path)
+            # Now load with an expanded plugin set.
+            expanded_plugins = ["rate-limiter", "moe-dense"]
+            loaded = self.module.BenchmarkState.load_state(path, models, expanded_plugins)
+            snap = loaded.snapshot()
+            self.assertEqual(snap["model-a"]["status"], "pending")
+            self.assertIn("moe-dense_score", snap["model-a"])
+            self.assertIsNone(snap["model-a"]["moe-dense_score"])
+            # Old plugin results should be preserved in results.
+            latest = loaded.latest_results()[0]
+            self.assertEqual(latest["rate-limiter_score"], 5.0)
+
+    def test_load_state_without_new_plugins_preserves_completed_status(self):
+        """Without plugin changes, completed models stay completed."""
+        models = {"model-a": "Source1"}
+        state = self.module.BenchmarkState(models, self.plugin_ids)
+        state.update("model-a", status="completed")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, "state.json")
+            state.save_state(path)
+            loaded = self.module.BenchmarkState.load_state(path, models, self.plugin_ids)
+            snap = loaded.snapshot()
+            self.assertEqual(snap["model-a"]["status"], "completed")
+
 
 if __name__ == "__main__":
     unittest.main()
