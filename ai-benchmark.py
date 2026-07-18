@@ -22,6 +22,7 @@ from benchmark_core import (
     _unique_source_abbrevs,
     dump_default_config,
     generate_config_from_api,
+    get_model_plugins_blacklist,
     load_config,
     parse_plugin_temperatures,
     resolve_model_sources,
@@ -669,7 +670,9 @@ def main():
             if stop_event.is_set():
                 break
             try:
-                run_model(model_name, source, state, active_plugins, source_config,
+                model_blacklist = get_model_plugins_blacklist(cfg.get("models", {}), model_name)
+                model_active_plugins = [p for p in active_plugins if p.id not in model_blacklist]
+                run_model(model_name, source, state, model_active_plugins, source_config,
                           timeout, token_levels, output_dir, session_seed=session_seed,
                           global_cfg=cfg, stop_event=stop_event,
                           save_responses=args.save_responses)

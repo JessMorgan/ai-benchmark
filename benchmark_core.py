@@ -129,7 +129,8 @@ def resolve_model_sources(models):
     """Resolve model entries to source strings.
 
     Model entries may be either a source string or a dict with a
-    ``source`` key (and optional per-model settings such as ``drop_params``).
+    ``source`` key (and optional per-model settings such as ``drop_params``
+    and ``plugins_blacklist``).
     Missing/invalid entries default to ``"Default"``.
     """
     resolved = {}
@@ -141,6 +142,14 @@ def resolve_model_sources(models):
         else:
             resolved[name] = "Default"
     return resolved
+
+
+def get_model_plugins_blacklist(models, model_name):
+    """Get the plugins blacklist for a specific model."""
+    val = models.get(model_name)
+    if isinstance(val, dict):
+        return val.get("plugins_blacklist", [])
+    return []
 
 
 def dump_default_config():
