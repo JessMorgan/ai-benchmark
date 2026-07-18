@@ -280,6 +280,56 @@ class TestNewPluginContinue(unittest.TestCase):
             self.assertEqual(snap["model-b"]["status"], "pending",
                              "model-b missing moe-dense_score, should be reset to pending")
 
+    def test_load_state_resets_model_when_result_plugin_versions_is_subset(self):
+        """Result from an older run with fewer plugins resets for missing plugins."""
+        models = {"model-a": "Src1", "model-b": "Src1"}
+        state = self.module.BenchmarkState(
+            models, ["code-review", "moe-dense", "multi-step"])
+        state.update("model-a", status="completed",
+                     **{"code-review_score": 10.0, "moe-dense_score": 8.0,
+                        "multi-step_score": 5.0})
+        state.add_result({
+            "model": "model-a", "status": "ok",
+            "code-review_score": 10.0, "code-review_response_time": 1.0,
+            "code-review_output_tokens": 100, "code-review_tps": 50.0,
+            "code-review_stream_ok": True,
+            "moe-dense_score": 8.0, "moe-dense_response_time": 2.0,
+            "moe-dense_output_tokens": 200, "moe-dense_tps": 100.0,
+            "moe-dense_stream_ok": True,
+            "multi-step_score": 5.0, "multi-step_response_time": 3.0,
+            "multi-step_output_tokens": 300, "multi-step_tps": 80.0,
+            "multi-step_stream_ok": True,
+            "total_time": 6.0,
+            "plugin_versions": {"code-review": "0.2.0", "moe-dense": "0.1.0",
+                                "multi-step": "0.1.0"},
+        })
+        # model-b ran before multi-step existed — its result has fewer plugins
+        state.update("model-b", status="completed",
+                     **{"code-review_score": 7.0, "moe-dense_score": 9.0})
+        state.add_result({
+            "model": "model-b", "status": "ok",
+            "code-review_score": 7.0, "code-review_response_time": 1.5,
+            "code-review_output_tokens": 150, "code-review_tps": 60.0,
+            "code-review_stream_ok": True,
+            "moe-dense_score": 9.0, "moe-dense_response_time": 2.5,
+            "moe-dense_output_tokens": 250, "moe-dense_tps": 90.0,
+            "moe-dense_stream_ok": True,
+            "total_time": 4.0,
+            "plugin_versions": {"code-review": "0.2.0", "moe-dense": "0.1.0"},
+        })
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, "state.json")
+            state.save_state(path)
+
+            loaded = self.module.BenchmarkState.load_state(
+                path, models, ["code-review", "moe-dense", "multi-step"])
+            snap = loaded.snapshot()
+            self.assertEqual(snap["model-a"]["status"], "completed",
+                             "model-a has all plugin scores, should stay completed")
+            self.assertEqual(snap["model-b"]["status"], "pending",
+                             "model-b result has fewer plugins, missing multi-step_score")
+
 
 if __name__ == "__main__":
     unittest.main()

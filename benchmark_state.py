@@ -124,7 +124,7 @@ class BenchmarkState:
                     latest = latest_by_model.get(name)
                     if latest is not None:
                         result_plugins = set(latest.get("plugin_versions", {}).keys())
-                        if result_plugins and result_plugins == set(plugin_ids):
+                        if result_plugins and result_plugins.issubset(set(plugin_ids)):
                             for pid in plugin_ids:
                                 if f"{pid}_score" not in latest:
                                     state._model_info[name]["status"] = "pending"
