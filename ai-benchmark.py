@@ -688,23 +688,42 @@ def main():
         t.start()
         source_threads[source] = t
 
+    def _join_workers(timeout=None):
+        """Wait for worker threads with an optional timeout.
+
+        Returns True if all workers finished, False if any are still alive.
+        """
+        if not source_threads:
+            return True
+        if timeout is None:
+            # Poll with short timeouts so Ctrl+C is handled promptly.
+            while any(t.is_alive() for t in source_threads.values()):
+                for t in source_threads.values():
+                    t.join(timeout=0.2)
+            return True
+        for t in source_threads.values():
+            t.join(timeout=timeout / max(len(source_threads), 1))
+        return not any(t.is_alive() for t in source_threads.values())
+
     if not source_threads:
         print("✅ All models already completed. Nothing to run.", file=sys.stderr)
     else:
         try:
-            for t in source_threads.values():
-                t.join()
+            _join_workers()
         except KeyboardInterrupt:
             interrupted = True
             stop_event.set()
             print("\n\n⚠️  Ctrl+C — saving state and shutting down...", file=sys.stderr)
-            print("   (Press Ctrl+C again to force exit)", file=sys.stderr)
             close_active_requests()
-            for t in source_threads.values():
-                t.join(timeout=3)
+            # Workers are daemon threads, so the process can exit without
+            # waiting for them. Give them a brief grace period to finish
+            # cleanly, but do not block shutdown on a slow I/O call.
+            _join_workers(timeout=1.0)
 
     stop_event.set()
-    tui_thread.join(timeout=2)
+    # The TUI thread is a daemon, so we don't need to wait for it. A short
+    # timeout keeps the terminal tidy if it happens to finish quickly.
+    tui_thread.join(timeout=0.5)
 
     try:
         state.save_state(state_file, plugin_versions=plugin_versions)
