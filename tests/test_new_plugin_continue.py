@@ -152,6 +152,12 @@ class TestNewPluginContinue(unittest.TestCase):
         models = {"model-a": "Src1", "model-b": "Src1"}
         state = self.module.BenchmarkState(models, ["rate-limiter"])
         state.update("model-a", status="completed", **{"rate-limiter_score": 5.0})
+        state.add_result({
+            "model": "model-a", "status": "ok",
+            "rate-limiter_score": 5.0, "rate-limiter_response_time": 1.0,
+            "rate-limiter_output_tokens": 100, "rate-limiter_tps": 50.0,
+            "rate-limiter_stream_ok": True, "total_time": 1.0,
+        })
         state.update("model-b", status="failed")
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -233,6 +239,46 @@ class TestNewPluginContinue(unittest.TestCase):
             for name in models:
                 self.assertEqual(snap[name]["status"], "pending",
                                  f"{name} on {models[name]} should be pending")
+
+    def test_load_state_resets_model_when_plugin_listed_but_not_scored(self):
+        """Plugin in active_plugins without a score for a model resets that model."""
+        models = {"model-a": "Src1", "model-b": "Src1"}
+        state = self.module.BenchmarkState(models, ["rate-limiter", "moe-dense"])
+        state.update("model-a", status="completed",
+                     **{"rate-limiter_score": 5.0, "moe-dense_score": 8.0})
+        state.add_result({
+            "model": "model-a", "status": "ok",
+            "rate-limiter_score": 5.0, "rate-limiter_response_time": 1.0,
+            "rate-limiter_output_tokens": 100, "rate-limiter_tps": 50.0,
+            "rate-limiter_stream_ok": True,
+            "moe-dense_score": 8.0, "moe-dense_response_time": 2.0,
+            "moe-dense_output_tokens": 200, "moe-dense_tps": 100.0,
+            "moe-dense_stream_ok": True,
+            "total_time": 3.0,
+            "plugin_versions": {"rate-limiter": "0.1.0", "moe-dense": "0.1.0"},
+        })
+        # model-b completed but moe-dense never ran (partial previous run)
+        state.update("model-b", status="completed", **{"rate-limiter_score": 6.0})
+        state.add_result({
+            "model": "model-b", "status": "ok",
+            "rate-limiter_score": 6.0, "rate-limiter_response_time": 1.5,
+            "rate-limiter_output_tokens": 150, "rate-limiter_tps": 60.0,
+            "rate-limiter_stream_ok": True,
+            "total_time": 1.5,
+            "plugin_versions": {"rate-limiter": "0.1.0", "moe-dense": "0.1.0"},
+        })
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, "state.json")
+            state.save_state(path)
+
+            loaded = self.module.BenchmarkState.load_state(
+                path, models, ["rate-limiter", "moe-dense"])
+            snap = loaded.snapshot()
+            self.assertEqual(snap["model-a"]["status"], "completed",
+                             "model-a has all plugin scores, should stay completed")
+            self.assertEqual(snap["model-b"]["status"], "pending",
+                             "model-b missing moe-dense_score, should be reset to pending")
 
 
 if __name__ == "__main__":
