@@ -10,7 +10,7 @@ repos:
     hooks:
       - id: python-syntax-check
         name: Python syntax check
-        entry: python -m py_compile ai-benchmark.py benchmark_core.py benchmark_plugin.py plugins/__init__.py plugins/rate_limiter.py plugins/moe_dense.py
+        entry: bash -c "python -m py_compile ai-benchmark.py benchmark_core.py benchmark_plugin.py plugins/__init__.py plugins/challenges/*.py plugins/outputs/*.py"
         language: system
         pass_filenames: false
         always_run: true
@@ -31,7 +31,7 @@ repos:
 
       - id: unit-tests
         name: Run unit tests
-        entry: bash -c "python -m pytest tests/ plugins/test_*.py -v"
+        entry: bash -c "python -m pytest tests/ plugins/challenges/test_scoring.py plugins/outputs/ -v"
         language: system
         pass_filenames: false
         always_run: true

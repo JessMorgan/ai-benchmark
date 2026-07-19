@@ -1,15 +1,13 @@
-import os
-import tempfile
 import unittest
 
 from plugins import discover_plugins
-from plugins.output_pdf import PDFOutputPlugin
+from plugins.outputs.output_markdown import MarkdownOutputPlugin
 
 
-class TestPDFOutputPlugin(unittest.TestCase):
+class TestMarkdownOutputPlugin(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.plugin = PDFOutputPlugin()
+        cls.plugin = MarkdownOutputPlugin()
         cls.plugins = discover_plugins()
         cls.sample_results = [
             {
@@ -44,11 +42,30 @@ class TestPDFOutputPlugin(unittest.TestCase):
             },
         ]
 
-    def test_gen_pdf_includes_rubric_breakdown(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            pdf_path = self.plugin.generate(self.sample_results, self.plugins, tmpdir)
-            if pdf_path:
-                self.assertTrue(os.path.exists(pdf_path))
+    def test_gen_markdown_contains_plugin_names(self):
+        md = self.plugin.generate(self.sample_results, self.plugins)
+        self.assertIn("**Rate Limiter**", md)
+
+    def test_gen_markdown_includes_session_seed(self):
+        md = self.plugin.generate(self.sample_results, self.plugins, session_seed=12345)
+        self.assertIn("**Seed:** 12345", md)
+
+    def test_gen_markdown_no_seed_line_when_session_seed_is_none(self):
+        md = self.plugin.generate(self.sample_results, self.plugins, session_seed=None)
+        self.assertNotIn("**Seed:**", md)
+
+    def test_gen_markdown_includes_rubric_breakdown(self):
+        md = self.plugin.generate(self.sample_results, self.plugins)
+        self.assertIn("Interface design", md)
+        self.assertIn("Token Bucket", md)
+
+    def test_gen_markdown_includes_response_links_with_output_dir(self):
+        md = self.plugin.generate(self.sample_results, self.plugins, output_dir="/tmp/benchmark-results")
+        self.assertIn("[view]", md)
+
+    def test_gen_markdown_no_response_links_without_output_dir(self):
+        md = self.plugin.generate(self.sample_results, self.plugins)
+        self.assertNotIn("[view]", md)
 
     def test_output_generators_render_partial_failure(self):
         results = [
@@ -69,10 +86,10 @@ class TestPDFOutputPlugin(unittest.TestCase):
                 "moe-dense_tps": 16.7,
             },
         ]
-        with tempfile.TemporaryDirectory() as tmpdir:
-            pdf_path = self.plugin.generate(results, self.plugins, tmpdir)
-            if pdf_path:
-                self.assertTrue(os.path.exists(pdf_path))
+        md = self.plugin.generate(results, self.plugins)
+        self.assertIn("partial-model", md)
+        self.assertIn("fail", md)
+        self.assertIn("10.0", md)
 
     def test_output_generators_handle_ok_with_string_score(self):
         results = [
@@ -109,7 +126,6 @@ class TestPDFOutputPlugin(unittest.TestCase):
                 "moe-dense_tps": 20.0,
             },
         ]
-        with tempfile.TemporaryDirectory() as tmpdir:
-            pdf_path = self.plugin.generate(results, self.plugins, tmpdir)
-            if pdf_path:
-                self.assertTrue(os.path.exists(pdf_path))
+        md = self.plugin.generate(results, self.plugins)
+        self.assertIn("weird-model", md)
+        self.assertIn("good-model", md)

@@ -1,7 +1,7 @@
 import unittest
 
 from plugins import discover_plugins
-from plugins.output_csv import CSVOutputPlugin
+from plugins.outputs.output_csv import CSVOutputPlugin
 
 
 class TestCSVOutputPlugin(unittest.TestCase):

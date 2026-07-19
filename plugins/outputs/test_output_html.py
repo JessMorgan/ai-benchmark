@@ -1,7 +1,7 @@
 import unittest
 
 from plugins import discover_plugins
-from plugins.output_html import HTMLOutputPlugin
+from plugins.outputs.output_html import HTMLOutputPlugin
 
 
 class TestHTMLOutputPlugin(unittest.TestCase):
