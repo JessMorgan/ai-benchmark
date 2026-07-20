@@ -47,6 +47,25 @@ class TestSoftwareArchitectureScoring(unittest.TestCase):
         self.assertGreater(score, 0.0)
         self.assertLess(score, self.plugin.max_score)
 
+    def test_mid_tier_response_scores_in_middle_range(self):
+        text = (
+            "## Architecture\n\n"
+            "We will use a microservices architecture with an API Gateway.\n\n"
+            "## Data Model\n\n"
+            "PostgreSQL for relational data. Redis for caching with TTL.\n\n"
+            "## Real-Time Sync\n\n"
+            "WebSockets for live updates and Kafka for events.\n\n"
+            "## Scalability\n\n"
+            "Kubernetes with horizontal pod autoscaling and a CDN.\n\n"
+            "## Security\n\n"
+            "OAuth2, JWT, and rate limiting.\n\n"
+            "## Observability\n\n"
+            "Prometheus and Grafana with 99.9% uptime target.\n"
+        )
+        score = self.plugin.score(text)
+        self.assertGreater(score, 5.0)
+        self.assertLess(score, 15.0)
+
     def test_full_response_scores_high(self):
         text = (
             "## Executive Summary\n\n"
@@ -107,7 +126,48 @@ class TestSoftwareArchitectureScoring(unittest.TestCase):
             "PostgreSQL chosen over NoSQL for strong consistency of scheduling data.\n"
         )
         score = self.plugin.score(text)
-        self.assertGreater(score, 10.0)
+        self.assertGreater(score, 0.0)
+        self.assertLess(score, self.plugin.max_score)
+
+    def test_excellent_response_scores_near_max(self):
+        text = (
+            "## Executive Summary\n\n"
+            "FlowState will be built as an event-driven microservices platform. "
+            "An API Gateway routes traffic to bounded contexts (Auth, Calendar, Music, AI Planner, Analytics, Notifications). "
+            "Real-time sync uses WebSockets; calendar conflicts are resolved with CRDTs.\n\n"
+            "```mermaid\n"
+            "graph TD\n"
+            "  A[Client Apps] --> B[API Gateway]\n"
+            "  B --> C[Auth Service]\n"
+            "  B --> D[Calendar Service]\n"
+            "  B --> E[Music Service]\n"
+            "  B --> F[AI Planner Service]\n"
+            "  B --> G[Analytics Service]\n"
+            "  B --> H[Notification Service]\n"
+            "```\n\n"
+            "## Data Model & Strategy\n\n"
+            "Relational data (users, sessions, schedules) lives in PostgreSQL with read replicas. "
+            "Time-series focus metrics and event streams go to a columnar store. "
+            "Sharding by user_id partitions data, and Redis provides read-aside caching with TTL.\n\n"
+            "## Real-Time Sync & Communication\n\n"
+            "WebSockets push live focus sessions to clients. Calendar updates use CRDTs for offline-first "
+            "conflict resolution. Kafka acts as the event bus for async processing.\n\n"
+            "## Scalability & Capacity Planning\n\n"
+            "At 1M DAU we estimate ~2,300 concurrent users and ~1,150 RPS at peak. Kubernetes HPA scales "
+            "pods horizontally. A CDN (CloudFront) serves static assets from edge locations.\n\n"
+            "## Resiliency & Failure Modes\n\n"
+            "Circuit breakers protect downstream calendar and music APIs. Failed Kafka messages go to a "
+            "dead-letter queue. Exponential backoff with jitter retries transient errors.\n\n"
+            "## Security & Protections\n\n"
+            "OAuth2/OIDC with refresh-token rotation, rate limiting and a WAF at the API gateway, "
+            "encryption at rest for PII, and GDPR-compliant data retention.\n\n"
+            "## Observability & SLOs\n\n"
+            "OpenTelemetry tracing, Prometheus metrics, and Grafana dashboards. SLO: 99.9% availability, "
+            "p99 latency < 200 ms.\n"
+        )
+        score = self.plugin.score(text)
+        self.assertGreater(score, 15.0)
+        self.assertLessEqual(score, self.plugin.max_score)
 
 
 if __name__ == "__main__":

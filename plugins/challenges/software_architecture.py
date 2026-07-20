@@ -12,7 +12,7 @@ class SoftwareArchitecturePlugin(BenchmarkTaskPlugin):
 
     @property
     def version(self):
-        return "0.1.0"
+        return "0.2.0"
 
     @property
     def name(self):
@@ -72,115 +72,75 @@ class SoftwareArchitecturePlugin(BenchmarkTaskPlugin):
 
         rubric = Rubric(self.max_score)
 
-        rubric.eval_regex(
-            "Executive Summary",
-            1.0,
-            t,
-            [(r'executive summary|overview|architecture overview', 1.0)],
-        )
-
-        rubric.eval_regex(
-            "Requirements Summary",
-            2.0,
-            t,
-            [
-                (r'requirements summary|functional requirements|non.functional requirements', 1.0),
-                (r'\b(?:sync|real.time|oauth|push notification|analytics|scale|1 million|calendar|music|AI)\b', 1.0),
-            ],
-        )
-
-        rubric.eval_regex(
-            "Architecture Style",
-            2.0,
-            t,
-            [
-                (r'\b(?:microservices|modular monolith|event.driven|serverless|layered|hexagonal|SOA)\b', 1.0),
-                (r'architecture style|architectural pattern|chosen approach|rationale', 1.0),
-            ],
-        )
-
-        # Component Description needs custom counting logic
+        # Architecture & Patterns (3.0)
         earned = 0.0
-        if re.search(r'component|service|module|subsystem', t, re.IGNORECASE):
+        if re.search(r'\b(?:microservices|event.driven|serverless|modular monolith|hexagonal|layered|SOA)\b', t, re.IGNORECASE):
             earned += 1.0
-        if re.search(r'```|┌|├──|(\[.*\].*\n.*){2,}', t):
+        if re.search(r'\b(?:api gateway|backend.for.frontend|bff|service mesh)\b', t, re.IGNORECASE):
             earned += 1.0
-        components = ["auth", "calendar", "music", "AI", "analytics", "notification", "api", "gateway", "database"]
-        matched = sum(1 for comp in components if re.search(rf'\b{comp}\b', t, re.IGNORECASE))
-        if matched >= 4:
+        if re.search(r'```(?:mermaid|plantuml)|graph\s+(?:TD|LR)|sequenceDiagram|classDiagram|flowchart', t, re.IGNORECASE):
             earned += 1.0
-        rubric.add_criterion("Component Description", 3.0, earned)
+        rubric.add_criterion("Architecture & Patterns", 3.0, earned)
 
-        # Data Model needs custom counting logic
+        # Data Modeling & Strategy (3.0)
         earned = 0.0
-        if re.search(r'data model|database schema|entity|ERD|entity.relationship', t, re.IGNORECASE):
-            earned += 1.0
-        if re.search(r'\b(user|session|focus|calendar|event|playlist|schedule)\b', t, re.IGNORECASE):
+        if re.search(r'\b(?:relational|sql|postgres|mysql|sqlite)\b', t, re.IGNORECASE):
             earned += 0.5
-        if re.search(r'relationship|foreign key|one.to.many|many.to.many|primary key|index', t, re.IGNORECASE):
-            earned += 1.0
-        if re.search(r'\b(table|schema|collection)\s*[:\-]?\s*\w+', t, re.IGNORECASE):
+        if re.search(r'\b(?:time.series|nosql|document db|document.database|columnar|graph db|wide.column|cassandra|mongodb|dynamodb)\b', t, re.IGNORECASE):
             earned += 0.5
-        rubric.add_criterion("Data Model", 3.0, earned)
+        if re.search(r'\b(?:sharding|read replica|partitioning|cluster|database scaling|federation)\b', t, re.IGNORECASE):
+            earned += 1.0
+        if re.search(r'\b(?:cache eviction|ttl|time.to.live|write.through|read.aside|cache invalidation|cache.aside)\b', t, re.IGNORECASE):
+            earned += 1.0
+        rubric.add_criterion("Data Modeling & Strategy", 3.0, earned)
 
-        rubric.eval_regex(
-            "API Design",
-            2.0,
-            t,
-            [
-                (r'API design|API endpoints|REST|GraphQL|gRPC|endpoint', 1.0),
-                (r'GET|POST|PUT|DELETE|PATCH|/api/v1|mutation|query', 1.0),
-            ],
-        )
-
-        # Technology Stack needs custom counting logic
+        # Real-Time Sync & Communication (3.0)
         earned = 0.0
-        if re.search(r'technology stack|tech stack|stack|languages|frameworks', t, re.IGNORECASE):
+        if re.search(r'\b(?:websocket|wss|server.sent events|sse|grpc|mqtt|long.polling)\b', t, re.IGNORECASE):
             earned += 1.0
-        techs = ["python", "node", "go", "rust", "java", "react", "flutter", "swift", "kotlin",
-                 "postgres", "mongodb", "redis", "kafka", "rabbitmq", "docker", "kubernetes",
-                 "aws", "gcp", "azure", "terraform", "nginx"]
-        matched = sum(1 for tech in techs if re.search(rf'\b{tech}\b', t, re.IGNORECASE))
-        if matched >= 3:
+        if re.search(r'\b(?:crdt|conflict.free|conflict resolution|operational transformation|event sourcing|offline.first|vector clock)\b', t, re.IGNORECASE):
             earned += 1.0
-        rubric.add_criterion("Technology Stack", 2.0, earned)
+        if re.search(r'\b(?:kafka|rabbitmq|event bus|pub.sub|kinesis|sqs|sns|nats|pulsar)\b', t, re.IGNORECASE):
+            earned += 1.0
+        rubric.add_criterion("Real-Time Sync & Communication", 3.0, earned)
 
-        rubric.eval_regex(
-            "Deployment Architecture",
-            2.0,
-            t,
-            [
-                (r'deployment|CI/CD|continuous integration|continuous delivery|pipeline', 1.0),
-                (r'\b(?:docker|kubernetes|k8s|ecs|eks|gke|aks|lambda|container)\b', 1.0),
-            ],
-        )
+        # Scalability & Capacity Planning (3.0)
+        earned = 0.0
+        if re.search(r'\b(?:requests per second|rps|qps|capacity planning|back.of.the.envelope|throughput estimate|bandwidth|1[\s,]*000[\s,]*000|million)\b', t, re.IGNORECASE):
+            earned += 1.0
+        if re.search(r'\b(?:auto.scaling|kubernetes|k8s|horizontal pod|hpa|vertical scaling)\b', t, re.IGNORECASE):
+            earned += 1.0
+        if re.search(r'\b(?:cdn|content delivery network|edge computing|multi.region|cloudfront|cloudflare)\b', t, re.IGNORECASE):
+            earned += 1.0
+        rubric.add_criterion("Scalability & Capacity Planning", 3.0, earned)
 
-        rubric.eval_regex(
-            "Security Considerations",
-            2.0,
-            t,
-            [
-                (r'security|authentication|authorization|OAuth|JWT|encryption', 1.0),
-                (r'\b(?:OAuth2?|JWT|TLS|SSL|HTTPS|mTLS|RBAC|CORS|XSS|CSRF|SQL injection)\b', 1.0),
-            ],
-        )
+        # Resiliency & Failure Modes (3.0)
+        earned = 0.0
+        if re.search(r'\b(?:circuit breaker|bulkhead pattern|bulkheads|failover|fault isolation)\b', t, re.IGNORECASE):
+            earned += 1.0
+        if re.search(r'\b(?:dead.letter|dlq|poison pill|message retry|retry queue)\b', t, re.IGNORECASE):
+            earned += 1.0
+        if re.search(r'\b(?:exponential backoff|jitter|chaos engineering|fallback|graceful degradation|retry mechanism)\b', t, re.IGNORECASE):
+            earned += 1.0
+        rubric.add_criterion("Resiliency & Failure Modes", 3.0, earned)
 
-        rubric.eval_regex(
-            "Scalability & Performance",
-            2.0,
-            t,
-            [
-                (r'scalability|performance|caching|load balancing|database scaling', 1.0),
-                (r'\b(?:cache|redis|CDN|load balancer|sharding|replica|horizontal|vertical|rate.limit)\b', 1.0),
-            ],
-        )
+        # Security & Protections (3.0)
+        earned = 0.0
+        if re.search(r'\b(?:refresh token|token rotation|oidc|openid connect|mfa|multi.factor)\b', t, re.IGNORECASE):
+            earned += 1.0
+        if re.search(r'\b(?:rate limit|throttling|waf|ddos protection|api gateway security)\b', t, re.IGNORECASE):
+            earned += 1.0
+        if re.search(r'\b(?:gdpr|ccpa|pii|encryption at rest|encryption in transit|kms|secrets manager)\b', t, re.IGNORECASE):
+            earned += 1.0
+        rubric.add_criterion("Security & Protections", 3.0, earned)
 
-        rubric.eval_regex(
-            "Trade-offs & Decisions",
-            1.0,
-            t,
-            [(r'trade.off|tradeoffs|decisions|rationale|pros and cons|considerations', 1.0)],
-        )
+        # Observability & SLOs (2.0)
+        earned = 0.0
+        if re.search(r'\b(?:opentelemetry|distributed tracing|prometheus|datadog|grafana|elk|metrics and logs|logging|monitoring)\b', t, re.IGNORECASE):
+            earned += 1.0
+        if re.search(r'\b(?:slo|sli|sla|service level objective|error budget|99\.[0-9]%)', t, re.IGNORECASE):
+            earned += 1.0
+        rubric.add_criterion("Observability & SLOs", 2.0, earned)
 
         return rubric.results()
 
