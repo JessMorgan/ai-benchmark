@@ -2,6 +2,7 @@
 import re
 
 from benchmark_plugin import BenchmarkTaskPlugin
+from plugins.challenges._rubric import Rubric
 
 
 class MultiStepPlugin(BenchmarkTaskPlugin):
@@ -56,10 +57,9 @@ class MultiStepPlugin(BenchmarkTaskPlugin):
         t = response_text
         if not t or not t.strip():
             return 0.0, []
-        rubric = []
-        s = 0.0
 
-        # 1. greet_user function present and correct (0-5)
+        rubric = Rubric(self.max_score)
+
         earned = 0.0
         if re.search(r"def\s+greet_user\s*\(\s*name\s*:\s*str\s*\)", t):
             earned += 1.0
@@ -73,11 +73,8 @@ class MultiStepPlugin(BenchmarkTaskPlugin):
             earned += 1.0
         if re.search(r"def\s+greet_user", t):
             earned += 1.0
-        earned = round(min(earned, 5.0), 1)
-        s += earned
-        rubric.append({"name": "greet_user function", "max": 5.0, "earned": earned, "missed": round(5.0 - earned, 1)})
+        rubric.add_criterion("greet_user function", 5.0, earned)
 
-        # 2. validate_name function present and correct (0-5)
         earned = 0.0
         if re.search(r"def\s+validate_name\s*\(\s*name\s*:\s*str\s*\)", t):
             earned += 1.0
@@ -89,11 +86,8 @@ class MultiStepPlugin(BenchmarkTaskPlugin):
             earned += 1.5
         if re.search(r"return\s+(True|False)", t):
             earned += 1.0
-        earned = round(min(earned, 5.0), 1)
-        s += earned
-        rubric.append({"name": "validate_name function", "max": 5.0, "earned": earned, "missed": round(5.0 - earned, 1)})
+        rubric.add_criterion("validate_name function", 5.0, earned)
 
-        # 3. format_greeting function present and correct (0-5)
         earned = 0.0
         if re.search(r"def\s+format_greeting\s*\(\s*greeting\s*:\s*str\s*,\s*times\s*:\s*int\s*\)", t):
             earned += 1.0
@@ -105,11 +99,8 @@ class MultiStepPlugin(BenchmarkTaskPlugin):
             earned += 1.5
         if re.search(r"greeting\s*\*\s*times|for\s+.*in\s+range\(\s*times\s*\)", t):
             earned += 1.0
-        earned = round(min(earned, 5.0), 1)
-        s += earned
-        rubric.append({"name": "format_greeting function", "max": 5.0, "earned": earned, "missed": round(5.0 - earned, 1)})
+        rubric.add_criterion("format_greeting function", 5.0, earned)
 
-        # 4. Summary line format (0-3)
         earned = 0.0
         summary_match = re.search(r"\[SUMMARY:\s*(\d+)\s*lines?,\s*(\d+)\s*functions?,\s*completed all steps\]\.", t)
         if summary_match:
@@ -118,26 +109,18 @@ class MultiStepPlugin(BenchmarkTaskPlugin):
             earned = 1.5
         elif re.search(r"completed all steps", t, re.IGNORECASE):
             earned = 0.5
-        earned = round(min(earned, 3.0), 1)
-        s += earned
-        rubric.append({"name": "Summary line format", "max": 3.0, "earned": earned, "missed": round(3.0 - earned, 1)})
+        rubric.add_criterion("Summary line format", 3.0, earned)
 
-        # 5. No extra explanatory text / no main block (0-2)
         earned = 2.0
         if re.search(r"if\s+__name__\s*==\s*['\"]__main__['\"]", t):
             earned -= 1.0
-        if re.search(r"Example\s+usage|Here\s+is|Below\s+is|Step\s+\d+:", t, re.IGNORECASE):
-            # Allow the prompt-included step markers, but penalize extra prose.
-            pass
-        # Heuristic: count code fences vs prose paragraphs
         code_blocks = re.findall(r"```[\s\S]*?```", t)
         if len(code_blocks) < 3:
             earned -= 1.0
         earned = round(max(earned, 0.0), 1)
-        s += earned
-        rubric.append({"name": "No extra prose/main block", "max": 2.0, "earned": earned, "missed": round(2.0 - earned, 1)})
+        rubric.add_criterion("No extra prose/main block", 2.0, earned)
 
-        return round(min(s, self.max_score), 1), rubric
+        return rubric.results()
 
     def score(self, response_text):
         return self.evaluate(response_text)[0]

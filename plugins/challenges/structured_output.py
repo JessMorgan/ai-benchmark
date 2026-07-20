@@ -3,6 +3,7 @@ import json
 import re
 
 from benchmark_plugin import BenchmarkTaskPlugin
+from plugins.challenges._rubric import Rubric
 
 try:
     import yaml
@@ -160,26 +161,21 @@ class StructuredOutputPlugin(BenchmarkTaskPlugin):
 
     def evaluate(self, response_text):
         t = response_text.strip()
-        rubric = []
-        s = 0.0
+        rubric = Rubric(self.max_score)
 
         candidate = self._extract_candidate(t)
 
-        # Penalize explanatory text outside the code fence
         has_explanatory_text = bool(
             re.search(r'```', t)
             and re.sub(r'```[\s\S]*?```', '', t).strip()
         )
 
-        # 1. Valid JSON/YAML syntax (0-4)
         data = self._parse_data(candidate)
         if data is None:
-            rubric.append({"name": "Valid JSON/YAML syntax", "max": 4.0, "earned": 0.0, "missed": 4.0})
-            return round(s, 1), rubric
-        s += 4.0
-        rubric.append({"name": "Valid JSON/YAML syntax", "max": 4.0, "earned": 4.0, "missed": 0.0})
+            rubric.add_criterion("Valid JSON/YAML syntax", 4.0, 0.0)
+            return rubric.results()
+        rubric.add_criterion("Valid JSON/YAML syntax", 4.0, 4.0)
 
-        # 2. Required top-level fields present (0-4)
         required = {
             "id", "name", "age", "email", "department", "roles",
             "address", "settings", "tags", "metadata",
@@ -189,10 +185,8 @@ class StructuredOutputPlugin(BenchmarkTaskPlugin):
             earned = 4.0
         else:
             earned = (len(present) / len(required)) * 2.0
-        s += earned
-        rubric.append({"name": "Required top-level fields", "max": 4.0, "earned": round(earned, 1), "missed": round(4.0 - earned, 1)})
+        rubric.add_criterion("Required top-level fields", 4.0, earned)
 
-        # 3. Basic types and constraints (0-6)
         type_score = 0.0
 
         if isinstance(data.get("name"), str) and data.get("name"):
@@ -258,11 +252,8 @@ class StructuredOutputPlugin(BenchmarkTaskPlugin):
             if isinstance(score_val, (int, float)) and 0.0 <= float(score_val) <= 1.0:
                 type_score += 0.5
 
-        earned = round(min(type_score, 6.0), 1)
-        s += earned
-        rubric.append({"name": "Basic types and constraints", "max": 6.0, "earned": earned, "missed": round(6.0 - earned, 1)})
+        rubric.add_criterion("Basic types and constraints", 6.0, type_score)
 
-        # 4. Non-empty values and completeness (0-4)
         complete = (
             data.get("name")
             and data.get("email")
@@ -272,38 +263,29 @@ class StructuredOutputPlugin(BenchmarkTaskPlugin):
             and len(tags) > 0
         )
         earned = 2.0 if complete else 0.0
-        s += earned
-        rubric.append({"name": "Non-empty values / completeness", "max": 4.0, "earned": earned, "missed": round(4.0 - earned, 1)})
+        rubric.add_criterion("Non-empty values / completeness", 4.0, earned)
 
-        # 5. Strict format bonus: no extra top-level keys beyond required (0-2)
         if isinstance(data, dict) and set(data.keys()) == required:
             earned = 2.0
         elif isinstance(data, dict):
             earned = max(0.0, 2.0 - abs(len(data.keys()) - len(required)) * 0.5)
         else:
             earned = 0.0
-        s += earned
-        rubric.append({"name": "Strict format (no extra keys)", "max": 2.0, "earned": round(earned, 1), "missed": round(2.0 - earned, 1)})
+        rubric.add_criterion("Strict format (no extra keys)", 2.0, earned)
 
-        # 6. Penalize values that are clearly placeholders or hallucinated booleans/strings (0-2)
         if complete:
             bad_values = {"unknown", "n/a", "none", "null", "", None}
             leaf_values = []
             self._collect_leaf_values(data, leaf_values)
-            if all(v not in bad_values for v in leaf_values):
-                earned = 2.0
-            else:
-                earned = 0.0
+            earned = 2.0 if all(v not in bad_values for v in leaf_values) else 0.0
         else:
             earned = 0.0
-        s += earned
-        rubric.append({"name": "No placeholder values", "max": 2.0, "earned": earned, "missed": round(2.0 - earned, 1)})
+        rubric.add_criterion("No placeholder values", 2.0, earned)
 
-        # Explanatory text penalty is not part of a rubric item; apply it after the rubric sum.
+        score, criteria = rubric.results()
         if has_explanatory_text:
-            s -= 0.5
-
-        return round(min(s, self.max_score), 1), rubric
+            score = round(max(score - 0.5, 0.0), 1)
+        return score, criteria
 
     def score(self, response_text):
         return self.evaluate(response_text)[0]

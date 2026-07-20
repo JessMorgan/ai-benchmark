@@ -2,6 +2,7 @@
 import re
 
 from benchmark_plugin import BenchmarkTaskPlugin
+from plugins.challenges._rubric import Rubric
 
 
 class PRDCreationPlugin(BenchmarkTaskPlugin):
@@ -60,136 +61,114 @@ class PRDCreationPlugin(BenchmarkTaskPlugin):
         if not t or not t.strip():
             return 0.0, []
 
-        rubric = []
-        s = 0.0
+        rubric = Rubric(self.max_score)
 
-        # 1. Executive Summary / Overview (0-2)
-        earned = 0.0
-        if re.search(r'executive summary|overview|product overview', t, re.IGNORECASE):
-            earned += 1.0
-        if re.search(r'flowstate|productivity|focus|time.block|calendar|playlist|ai', t, re.IGNORECASE):
-            earned += 1.0
-        earned = round(min(earned, 2.0), 1)
-        s += earned
-        rubric.append({"name": "Executive Summary", "max": 2.0, "earned": earned, "missed": round(2.0 - earned, 1)})
+        rubric.eval_regex(
+            "Executive Summary",
+            2.0,
+            t,
+            [
+                (r'executive summary|overview|product overview', 1.0),
+                (r'flowstate|productivity|focus|time.block|calendar|playlist|ai', 1.0),
+            ],
+        )
 
-        # 2. Problem Statement (0-2)
-        earned = 0.0
-        if re.search(r'problem statement|pain point|challenge|issue', t, re.IGNORECASE):
-            earned += 1.0
-        if re.search(r'focus|distraction|scheduling|planning|productivity|overwhelm', t, re.IGNORECASE):
-            earned += 1.0
-        earned = round(min(earned, 2.0), 1)
-        s += earned
-        rubric.append({"name": "Problem Statement", "max": 2.0, "earned": earned, "missed": round(2.0 - earned, 1)})
+        rubric.eval_regex(
+            "Problem Statement",
+            2.0,
+            t,
+            [
+                (r'problem statement|pain point|challenge|issue', 1.0),
+                (r'focus|distraction|scheduling|planning|productivity|overwhelm', 1.0),
+            ],
+        )
 
-        # 3. Goals & Objectives (0-2)
-        earned = 0.0
-        if re.search(r'goals?\s*(and|&)?\s*objectives?|objectives?', t, re.IGNORECASE):
-            earned += 1.0
-        # Look for SMART-like indicators: numbers, percentages, timeframes
-        if re.search(r'\d+%|\d+\s*(min|hours?|days?|weeks?|months?)\b|increase|reduce|improve', t, re.IGNORECASE):
-            earned += 1.0
-        earned = round(min(earned, 2.0), 1)
-        s += earned
-        rubric.append({"name": "Goals & Objectives", "max": 2.0, "earned": earned, "missed": round(2.0 - earned, 1)})
+        rubric.eval_regex(
+            "Goals & Objectives",
+            2.0,
+            t,
+            [
+                (r'goals?\s*(and|&)?\s*objectives?|objectives?', 1.0),
+                (r'\d+%|\d+\s*(min|hours?|days?|weeks?|months?)\b|increase|reduce|improve', 1.0),
+            ],
+        )
 
-        # 4. Target Users & Personas (0-2)
+        # Target Users & Personas needs custom counting logic
         earned = 0.0
         if re.search(r'target users?|personas?|user personas?', t, re.IGNORECASE):
             earned += 1.0
-        # Look for two persona-like sections or names
         if len(re.findall(r'\b(?:persona|user)\s*[:\-]?\s*\w+', t, re.IGNORECASE)) >= 2:
             earned += 1.0
-        earned = round(min(earned, 2.0), 1)
-        s += earned
-        rubric.append({"name": "Target Users & Personas", "max": 2.0, "earned": earned, "missed": round(2.0 - earned, 1)})
+        rubric.add_criterion("Target Users & Personas", 2.0, earned)
 
-        # 5. User Stories (0-2)
-        earned = 0.0
+        # User Stories needs custom counting logic
         stories = re.findall(r'as a\s+\w+.*?i want\s+.*?so that\s+.*', t, re.IGNORECASE | re.DOTALL)
+        earned = 0.0
         if stories:
             earned += 1.0
         if len(stories) >= 3:
             earned += 1.0
-        earned = round(min(earned, 2.0), 1)
-        s += earned
-        rubric.append({"name": "User Stories", "max": 2.0, "earned": earned, "missed": round(2.0 - earned, 1)})
+        rubric.add_criterion("User Stories", 2.0, earned)
 
-        # 6. Functional Requirements (0-3)
+        # Functional Requirements needs custom counting logic
         earned = 0.0
         if re.search(r'functional requirements?', t, re.IGNORECASE):
             earned += 1.0
-        # Count requirement-like lines (FR-1, bullet points, numbered items)
         req_matches = len(re.findall(r'(?:FR[-\s]?\d+|\b(?:must|should|shall)\s+\w+|\-\s+\w+.*?:)', t, re.IGNORECASE))
         if req_matches >= 5:
             earned += 2.0
         elif req_matches >= 3:
             earned += 1.0
-        earned = round(min(earned, 3.0), 1)
-        s += earned
-        rubric.append({"name": "Functional Requirements", "max": 3.0, "earned": earned, "missed": round(3.0 - earned, 1)})
+        rubric.add_criterion("Functional Requirements", 3.0, earned)
 
-        # 7. Non-Functional Requirements (0-2)
+        # Non-Functional Requirements needs custom counting logic
         earned = 0.0
         if re.search(r'non.functional requirements?|NFR', t, re.IGNORECASE):
             earned += 0.5
         nfr_topics = ["performance", "security", "reliability", "scalability", "availability", "usability"]
         nfr_hits = sum(1 for topic in nfr_topics if re.search(rf'\b{topic}\b', t, re.IGNORECASE))
         earned += min(nfr_hits, 4) * 0.375
-        earned = round(min(earned, 2.0), 1)
-        s += earned
-        rubric.append({"name": "Non-Functional Requirements", "max": 2.0, "earned": earned, "missed": round(2.0 - earned, 1)})
+        rubric.add_criterion("Non-Functional Requirements", 2.0, earned)
 
-        # 8. Success Metrics / KPIs (0-2)
+        # Success Metrics / KPIs needs custom counting logic
         earned = 0.0
         if re.search(r'success metrics?|KPIs?|key performance indicators?', t, re.IGNORECASE):
             earned += 0.5
-        # Count metric-like lines (numbered, bulleted, or containing %/users/time)
         metric_matches = len(re.findall(r'(?:^|\n)\s*(?:\d+\.\s+|\-\s+|\*\s+).*(?:\d+%|\d+\s*(?:users?|customers?|hours?|minutes?)|retention|conversion|churn|engagement|satisfaction)', t, re.IGNORECASE | re.MULTILINE))
         earned += min(metric_matches, 3) * 0.5
-        earned = round(min(earned, 2.0), 1)
-        s += earned
-        rubric.append({"name": "Success Metrics / KPIs", "max": 2.0, "earned": earned, "missed": round(2.0 - earned, 1)})
+        rubric.add_criterion("Success Metrics / KPIs", 2.0, earned)
 
-        # 9. Competitive Analysis (0-2)
+        # Competitive Analysis needs custom counting logic
         earned = 0.0
         if re.search(r'competitive analysis|competitors?|comparison|vs\.?', t, re.IGNORECASE):
             earned += 0.5
-        # Look for named competitors and comparison details
         competitor_names = re.findall(r'\b(todoist|notion|calendar|outlook|google calendar|trello|asana|clockify|forest|rescue time|focusmate)\b', t, re.IGNORECASE)
         earned += min(len(competitor_names), 2) * 0.5
         if re.search(r'(?:lacks|strength|weakness|advantage|differentiator|comparison)', t, re.IGNORECASE):
             earned += 0.5
-        earned = round(min(earned, 2.0), 1)
-        s += earned
-        rubric.append({"name": "Competitive Analysis", "max": 2.0, "earned": earned, "missed": round(2.0 - earned, 1)})
+        rubric.add_criterion("Competitive Analysis", 2.0, earned)
 
-        # 10. Timeline / Milestones (0-2)
-        earned = 0.0
-        if re.search(r'timeline|milestones?|roadmap|phases?|release plan', t, re.IGNORECASE):
-            earned += 1.0
-        if re.search(r'\b(Q\d|week\s*\d+|month\s*\d+|phase\s*\d+|MVP|beta|launch)\b', t, re.IGNORECASE):
-            earned += 1.0
-        earned = round(min(earned, 2.0), 1)
-        s += earned
-        rubric.append({"name": "Timeline / Milestones", "max": 2.0, "earned": earned, "missed": round(2.0 - earned, 1)})
+        rubric.eval_regex(
+            "Timeline / Milestones",
+            2.0,
+            t,
+            [
+                (r'timeline|milestones?|roadmap|phases?|release plan', 1.0),
+                (r'\b(Q\d|week\s*\d+|month\s*\d+|phase\s*\d+|MVP|beta|launch)\b', 1.0),
+            ],
+        )
 
-        # 11. Open Questions / Risks (0-1)
+        # Open Questions / Risks needs custom logic
         earned = 0.0
         if re.search(r'open questions?|risks?|assumptions?|dependencies?', t, re.IGNORECASE):
             earned += 0.5
-        has_question = re.search(r'\?', t)
-        has_risk = re.search(r'\b(risk|mitigation|concern|dependency|assumption)\b', t, re.IGNORECASE)
-        if has_question:
+        if re.search(r'\?', t):
             earned += 0.25
-        if has_risk:
+        if re.search(r'\b(risk|mitigation|concern|dependency|assumption)\b', t, re.IGNORECASE):
             earned += 0.25
-        earned = round(min(earned, 1.0), 1)
-        s += earned
-        rubric.append({"name": "Open Questions / Risks", "max": 1.0, "earned": earned, "missed": round(1.0 - earned, 1)})
+        rubric.add_criterion("Open Questions / Risks", 1.0, earned)
 
-        return round(min(s, self.max_score), 1), rubric
+        return rubric.results()
 
     def score(self, response_text):
         return self.evaluate(response_text)[0]

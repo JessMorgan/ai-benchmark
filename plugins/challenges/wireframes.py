@@ -2,6 +2,7 @@
 import re
 
 from benchmark_plugin import BenchmarkTaskPlugin
+from plugins.challenges._rubric import Rubric
 
 
 class WireframesPlugin(BenchmarkTaskPlugin):
@@ -62,10 +63,9 @@ class WireframesPlugin(BenchmarkTaskPlugin):
         if not t or not t.strip():
             return 0.0, []
 
-        rubric = []
-        s = 0.0
+        rubric = Rubric(self.max_score)
 
-        # 1. Multiple screens present (0-3)
+        # Multiple screens present (0-3)
         earned = 0.0
         screen_headers = re.findall(r'(?:^|\n)\s*(?:#{1,3}\s+)?(?:screen|wireframe|page)\s*[:\-]?\s*\w+', t, re.IGNORECASE)
         if len(screen_headers) >= 4:
@@ -74,42 +74,33 @@ class WireframesPlugin(BenchmarkTaskPlugin):
             earned = 1.5
         elif len(screen_headers) >= 1:
             earned = 0.5
-        s += earned
-        rubric.append({"name": "Multiple screens present", "max": 3.0, "earned": earned, "missed": round(3.0 - earned, 1)})
+        rubric.add_criterion("Multiple screens present", 3.0, earned)
 
-        # 2. Screen names and purposes (0-3)
+        # Screen names and purposes (0-3)
         earned = 0.0
         if re.search(r'(?:screen|page)\s*(?:name|title)|purpose', t, re.IGNORECASE):
             earned += 1.0
-        # Look for named screens related to the PRD
         screen_names = ["dashboard", "focus", "calendar", "planning", "settings", "schedule", "timer", "music"]
         matched_names = sum(1 for name in screen_names if re.search(rf'\b{name}\b', t, re.IGNORECASE))
         if matched_names >= 4:
             earned += 2.0
         elif matched_names >= 2:
             earned += 1.0
-        earned = round(min(earned, 3.0), 1)
-        s += earned
-        rubric.append({"name": "Screen names and purposes", "max": 3.0, "earned": earned, "missed": round(3.0 - earned, 1)})
+        rubric.add_criterion("Screen names and purposes", 3.0, earned)
 
-        # 3. Visual/structural wireframe representation (0-4)
+        # Visual/structural wireframe representation (0-4)
         earned = 0.0
-        # ASCII/box drawing
         if re.search(r'[┌┐└┘├┤┬┴│─┌]', t):
             earned += 2.0
-        # Markdown code blocks or structured layout
         elif re.search(r'```|(\[.*\].*\n.*){2,}', t):
             earned += 1.5
-        # Component list with positions
         if re.search(r'\b(top|bottom|left|right|center|header|footer|sidebar)\b', t, re.IGNORECASE):
             earned += 1.0
         if re.search(r'\b(button|card|list|nav|menu|tab|modal|input|icon)\b', t, re.IGNORECASE):
             earned += 1.0
-        earned = round(min(earned, 4.0), 1)
-        s += earned
-        rubric.append({"name": "Visual/structural wireframe", "max": 4.0, "earned": earned, "missed": round(4.0 - earned, 1)})
+        rubric.add_criterion("Visual/structural wireframe", 4.0, earned)
 
-        # 4. Key UI components (0-4)
+        # Key UI components (0-4)
         earned = 0.0
         components = ["button", "card", "list", "nav", "menu", "tab", "modal", "input", "icon", "timer", "slider", "toggle"]
         matched_components = sum(1 for comp in components if re.search(rf'\b{comp}\b', t, re.IGNORECASE))
@@ -121,30 +112,29 @@ class WireframesPlugin(BenchmarkTaskPlugin):
             earned = 1.5
         elif matched_components >= 1:
             earned = 0.5
-        s += earned
-        rubric.append({"name": "Key UI components", "max": 4.0, "earned": earned, "missed": round(4.0 - earned, 1)})
+        rubric.add_criterion("Key UI components", 4.0, earned)
 
-        # 5. Navigation flows between screens (0-3)
-        earned = 0.0
-        if re.search(r'\bnavigat|flow|transition|arrow|\->|→|=>|\bto\s+(?:the\s+)?(?:dashboard|focus|calendar|planning|settings)\b', t, re.IGNORECASE):
-            earned += 1.5
-        if re.search(r'\bfrom\s+\w+\s+to\s+\w+|tapping\s+.*?(?:opens?|navigates?)|clicking\s+.*?(?:opens?|navigates?)', t, re.IGNORECASE):
-            earned += 1.5
-        earned = round(min(earned, 3.0), 1)
-        s += earned
-        rubric.append({"name": "Navigation flows", "max": 3.0, "earned": earned, "missed": round(3.0 - earned, 1)})
+        rubric.eval_regex(
+            "Navigation flows",
+            3.0,
+            t,
+            [
+                (r'\bnavigat|flow|transition|arrow|\->|→|=>|\bto\s+(?:the\s+)?(?:dashboard|focus|calendar|planning|settings)\b', 1.5),
+                (r'\bfrom\s+\w+\s+to\s+\w+|tapping\s+.*?(?:opens?|navigates?)|clicking\s+.*?(?:opens?|navigates?)', 1.5),
+            ],
+        )
 
-        # 6. Annotations and interaction notes (0-2)
-        earned = 0.0
-        if re.search(r'annotation|note:|interaction|behavior|on tap|on click|when user|feedback', t, re.IGNORECASE):
-            earned += 1.0
-        if re.search(r'\*\*Note\*\*|\*Note\*|_Note_|\(Note|\[Note\]', t, re.IGNORECASE):
-            earned += 1.0
-        earned = round(min(earned, 2.0), 1)
-        s += earned
-        rubric.append({"name": "Annotations and interaction notes", "max": 2.0, "earned": earned, "missed": round(2.0 - earned, 1)})
+        rubric.eval_regex(
+            "Annotations and interaction notes",
+            2.0,
+            t,
+            [
+                (r'annotation|note:|interaction|behavior|on tap|on click|when user|feedback', 1.0),
+                (r'\*\*Note\*\*|\*Note\*|_Note_|\(Note|\[Note\]', 1.0),
+            ],
+        )
 
-        # 7. Coverage of PRD features (0-1)
+        # Coverage of PRD features (0-1)
         earned = 0.0
         prd_features = ["focus", "calendar", "music", "schedule", "timer", "AI", "planning", "settings"]
         matched_features = sum(1 for feat in prd_features if re.search(rf'\b{feat}\b', t, re.IGNORECASE))
@@ -152,10 +142,9 @@ class WireframesPlugin(BenchmarkTaskPlugin):
             earned = 1.0
         elif matched_features >= 3:
             earned = 0.5
-        s += earned
-        rubric.append({"name": "Coverage of PRD features", "max": 1.0, "earned": earned, "missed": round(1.0 - earned, 1)})
+        rubric.add_criterion("Coverage of PRD features", 1.0, earned)
 
-        return round(min(s, self.max_score), 1), rubric
+        return rubric.results()
 
     def score(self, response_text):
         return self.evaluate(response_text)[0]

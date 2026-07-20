@@ -3,6 +3,7 @@ import json
 import re
 
 from benchmark_plugin import BenchmarkTaskPlugin
+from plugins.challenges._rubric import Rubric
 
 
 class CodeReviewPlugin(BenchmarkTaskPlugin):
@@ -85,56 +86,51 @@ class CodeReviewPlugin(BenchmarkTaskPlugin):
             return 0.0, []
 
         combined = " ".join(descriptions)
-        rubric = []
-        s = 0.0
+        rubric = Rubric(self.max_score)
 
-        # 1. File handle not closed / resource leak (0-3)
-        earned = 0.0
-        if re.search(r"\b(open\(|\.close\(\)|context\s+manager|with\s+open|file\s+handle)\b", combined):
-            earned = 3.0
-        s += earned
-        rubric.append({"name": "File handle not closed / resource leak", "max": 3.0, "earned": earned, "missed": round(3.0 - earned, 1)})
+        rubric.eval_regex(
+            "File handle not closed / resource leak",
+            3.0,
+            combined,
+            [(r"\b(open\(|\.close\(\)|context\s+manager|with\s+open|file\s+handle)\b", 3.0)],
+        )
 
-        # 2. == None instead of is None (0-2)
-        earned = 0.0
-        if re.search(r"\b(==\s*none|\bis\s+none)\b", combined):
-            earned = 2.0
-        s += earned
-        rubric.append({"name": "== None instead of is None", "max": 2.0, "earned": earned, "missed": round(2.0 - earned, 1)})
+        rubric.eval_regex(
+            "== None instead of is None",
+            2.0,
+            combined,
+            [(r"\b(==\s*none|\bis\s+none)\b", 2.0)],
+        )
 
-        # 3. Hardcoded /tmp path (0-2)
-        earned = 0.0
-        if re.search(r"\b(/tmp/data\.txt|tmp/data|db_path)\b", combined):
-            earned = 2.0
-        s += earned
-        rubric.append({"name": "Hardcoded /tmp path", "max": 2.0, "earned": earned, "missed": round(2.0 - earned, 1)})
+        rubric.eval_regex(
+            "Hardcoded /tmp path",
+            2.0,
+            combined,
+            [(r"\b(/tmp/data\.txt|tmp/data|db_path)\b", 2.0)],
+        )
 
-        # 4. Missing error handling / fetch_data may fail (0-3)
         earned = 0.0
         has_fetch_data = re.search(r"\bfetch_data\b", combined)
         has_error_handling = re.search(r"\b(try|except|error\s+handling|may\s+raise|could\s+fail|exception)\b", combined)
         if has_fetch_data and has_error_handling:
             earned = 3.0
-        s += earned
-        rubric.append({"name": "Missing error handling / fetch_data may fail", "max": 3.0, "earned": earned, "missed": round(3.0 - earned, 1)})
+        rubric.add_criterion("Missing error handling / fetch_data may fail", 3.0, earned)
 
-        # 5. Unused imports (0-2)
         earned = 0.0
         has_unused = re.search(r"\b(unused\s+import|not\s+used|remove\s+(?:the\s+)?import)\b", combined)
         has_modules = re.search(r"\b(import\s+os|import\s+time|\bos\b|\btime\b)\b", combined)
         if has_unused and has_modules:
             earned = 2.0
-        s += earned
-        rubric.append({"name": "Unused imports", "max": 2.0, "earned": earned, "missed": round(2.0 - earned, 1)})
+        rubric.add_criterion("Unused imports", 2.0, earned)
 
-        # 6. Actionable / concrete fix or recommendation (0-3)
-        earned = 0.0
-        if re.search(r"\b(use\s+(?:a\s+)?context\s+manager|with\s+open|remove\s+(?:the\s+)?import|is\s+none|try:|except|parameterize)\b", combined):
-            earned = 3.0
-        s += earned
-        rubric.append({"name": "Actionable / concrete fix", "max": 3.0, "earned": earned, "missed": round(3.0 - earned, 1)})
+        rubric.eval_regex(
+            "Actionable / concrete fix",
+            3.0,
+            combined,
+            [(r"\b(use\s+(?:a\s+)?context\s+manager|with\s+open|remove\s+(?:the\s+)?import|is\s+none|try:|except|parameterize)\b", 3.0)],
+        )
 
-        return round(min(s, self.max_score), 1), rubric
+        return rubric.results()
 
     def score(self, response_text):
         return self.evaluate(response_text)[0]

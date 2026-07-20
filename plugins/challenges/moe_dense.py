@@ -1,7 +1,7 @@
 """MoE vs Dense architecture analysis benchmark task."""
-import re
 
 from benchmark_plugin import BenchmarkTaskPlugin
+from plugins.challenges._rubric import Rubric
 
 
 class MoEDensePlugin(BenchmarkTaskPlugin):
@@ -49,80 +49,79 @@ class MoEDensePlugin(BenchmarkTaskPlugin):
 
     def evaluate(self, response_text):
         t = response_text.lower()
-        rubric = []
-        s = 0.0
+        rubric = Rubric(self.max_score)
 
-        # 1. Covers both architectures explicitly (0-2)
-        earned = 0.0
-        if re.search(r'(?:mixture.of.expert|moe|sparse.*moe)', t):
-            earned += 1.0
-        if re.search(r'(?:dense\s*(?:transformer|model|architecture)|standard\s*transformer)', t):
-            earned += 1.0
-        earned = round(min(earned, 2.0), 1)
-        s += earned
-        rubric.append({"name": "Covers both architectures", "max": 2.0, "earned": earned, "missed": round(2.0 - earned, 1)})
+        rubric.eval_regex(
+            "Covers both architectures",
+            2.0,
+            t,
+            [
+                (r'(?:mixture.of.expert|moe|sparse.*moe)', 1.0),
+                (r'(?:dense\s*(?:transformer|model|architecture)|standard\s*transformer)', 1.0),
+            ],
+        )
 
-        # 2. Gating/routing mechanism (0-2.5)
-        earned = 0.0
-        if re.search(r'(?:gating|routing|gate|router|top.k|softmax.*gate)', t):
-            earned += 1.5
-        if re.search(r'(?:expert.*select|which.*expert|rout.*token)', t):
-            earned += 1.0
-        earned = round(min(earned, 2.5), 1)
-        s += earned
-        rubric.append({"name": "Gating/routing mechanism", "max": 2.5, "earned": earned, "missed": round(2.5 - earned, 1)})
+        rubric.eval_regex(
+            "Gating/routing mechanism",
+            2.5,
+            t,
+            [
+                (r'(?:gating|routing|gate|router|top.k|softmax.*gate)', 1.5),
+                (r'(?:expert.*select|which.*expert|rout.*token)', 1.0),
+            ],
+        )
 
-        # 3. Load-balancing loss (0-2.5)
-        earned = 0.0
-        if re.search(r'(?:load.balanc|auxiliary.*loss|aux.*loss|balance.*loss)', t):
-            earned += 1.5
-        if re.search(r'(?:importance|loss.*formula|load.*equation|L_aux)', t):
-            earned += 1.0
-        earned = round(min(earned, 2.5), 1)
-        s += earned
-        rubric.append({"name": "Load-balancing loss", "max": 2.5, "earned": earned, "missed": round(2.5 - earned, 1)})
+        rubric.eval_regex(
+            "Load-balancing loss",
+            2.5,
+            t,
+            [
+                (r'(?:load.balanc|auxiliary.*loss|aux.*loss|balance.*loss)', 1.5),
+                (r'(?:importance|loss.*formula|load.*equation|L_aux)', 1.0),
+            ],
+        )
 
-        # 4. Training challenges (0-2)
-        earned = 0.0
-        if re.search(r'(?:token.dropp|expert.collaps|instability|collapse|dropping)', t):
-            earned += 1.0
-        if re.search(r'(?:training.*challeng|difficult|problem|issue|stability)', t):
-            earned += 1.0
-        earned = round(min(earned, 2.0), 1)
-        s += earned
-        rubric.append({"name": "Training challenges", "max": 2.0, "earned": earned, "missed": round(2.0 - earned, 1)})
+        rubric.eval_regex(
+            "Training challenges",
+            2.0,
+            t,
+            [
+                (r'(?:token.dropp|expert.collaps|instability|collapse|dropping)', 1.0),
+                (r'(?:training.*challeng|difficult|problem|issue|stability)', 1.0),
+            ],
+        )
 
-        # 5. Inference implications (0-2)
-        earned = 0.0
-        if re.search(r'(?:inference|memory.*bandwidth|expert.*parallel|sparse.*compute)', t):
-            earned += 1.0
-        if re.search(r'(?:throughput|latency|batch.*size|parameter.*efficien)', t):
-            earned += 1.0
-        earned = round(min(earned, 2.0), 1)
-        s += earned
-        rubric.append({"name": "Inference implications", "max": 2.0, "earned": earned, "missed": round(2.0 - earned, 1)})
+        rubric.eval_regex(
+            "Inference implications",
+            2.0,
+            t,
+            [
+                (r'(?:inference|memory.*bandwidth|expert.*parallel|sparse.*compute)', 1.0),
+                (r'(?:throughput|latency|batch.*size|parameter.*efficien)', 1.0),
+            ],
+        )
 
-        # 6. Specific benchmarks / performance comparison (0-2)
-        earned = 0.0
-        if re.search(r'(?:benchmark|mmlu|gsm8k|human-eval|mbpp|hellaswag|arc|truthful)', t):
-            earned += 1.0
-        if re.search(r'(?:outperform|better.*than|compared to|vs\.|versus|advantage)', t):
-            earned += 1.0
-        earned = round(min(earned, 2.0), 1)
-        s += earned
-        rubric.append({"name": "Benchmarks/comparison", "max": 2.0, "earned": earned, "missed": round(2.0 - earned, 1)})
+        rubric.eval_regex(
+            "Benchmarks/comparison",
+            2.0,
+            t,
+            [
+                (r'(?:benchmark|mmlu|gsm8k|human-eval|mbpp|hellaswag|arc|truthful)', 1.0),
+                (r'(?:outperform|better.*than|compared to|vs\.|versus|advantage)', 1.0),
+            ],
+        )
 
-        # 7. Paper references (0-2)
-        earned = 0.0
-        if re.search(r'(?:paper|report|arxiv|technical.*report)', t):
-            earned += 1.0
-        if re.search(r'(?:2023|2024|2025|et\s*al|vashwani|shazeer|fedus|lepikhin|du et al)', t):
-            earned += 1.0
-        earned = round(min(earned, 2.0), 1)
-        s += earned
-        rubric.append({"name": "Paper references", "max": 2.0, "earned": earned, "missed": round(2.0 - earned, 1)})
+        rubric.eval_regex(
+            "Paper references",
+            2.0,
+            t,
+            [
+                (r'(?:paper|report|arxiv|technical.*report)', 1.0),
+                (r'(?:2023|2024|2025|et\s*al|vashwani|shazeer|fedus|lepikhin|du et al)', 1.0),
+            ],
+        )
 
-        return round(s, 1), rubric
+        return rubric.results()
 
     def score(self, response_text):
         return self.evaluate(response_text)[0]

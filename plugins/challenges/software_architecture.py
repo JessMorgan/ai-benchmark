@@ -2,6 +2,7 @@
 import re
 
 from benchmark_plugin import BenchmarkTaskPlugin
+from plugins.challenges._rubric import Rubric
 
 
 class SoftwareArchitecturePlugin(BenchmarkTaskPlugin):
@@ -69,132 +70,119 @@ class SoftwareArchitecturePlugin(BenchmarkTaskPlugin):
         if not t or not t.strip():
             return 0.0, []
 
-        rubric = []
-        s = 0.0
+        rubric = Rubric(self.max_score)
 
-        # 1. Executive Summary / Overview (0-1)
-        earned = 0.0
-        if re.search(r'executive summary|overview|architecture overview', t, re.IGNORECASE):
-            earned = 1.0
-        s += earned
-        rubric.append({"name": "Executive Summary", "max": 1.0, "earned": earned, "missed": round(1.0 - earned, 1)})
+        rubric.eval_regex(
+            "Executive Summary",
+            1.0,
+            t,
+            [(r'executive summary|overview|architecture overview', 1.0)],
+        )
 
-        # 2. Requirements Summary (0-2)
-        earned = 0.0
-        if re.search(r'requirements summary|functional requirements|non.functional requirements', t, re.IGNORECASE):
-            earned += 1.0
-        if re.search(r'\b(?:sync|real.time|oauth|push notification|analytics|scale|1 million|calendar|music|AI)\b', t, re.IGNORECASE):
-            earned += 1.0
-        earned = round(min(earned, 2.0), 1)
-        s += earned
-        rubric.append({"name": "Requirements Summary", "max": 2.0, "earned": earned, "missed": round(2.0 - earned, 1)})
+        rubric.eval_regex(
+            "Requirements Summary",
+            2.0,
+            t,
+            [
+                (r'requirements summary|functional requirements|non.functional requirements', 1.0),
+                (r'\b(?:sync|real.time|oauth|push notification|analytics|scale|1 million|calendar|music|AI)\b', 1.0),
+            ],
+        )
 
-        # 3. Architecture Style (0-2)
-        earned = 0.0
-        styles = ["microservices", "modular monolith", "event-driven", "serverless", "layered", "hexagonal", "SOA"]
-        if any(re.search(rf'\b{re.escape(style)}\b', t, re.IGNORECASE) for style in styles):
-            earned += 1.0
-        if re.search(r'architecture style|architectural pattern|chosen approach|rationale', t, re.IGNORECASE):
-            earned += 1.0
-        earned = round(min(earned, 2.0), 1)
-        s += earned
-        rubric.append({"name": "Architecture Style", "max": 2.0, "earned": earned, "missed": round(2.0 - earned, 1)})
+        rubric.eval_regex(
+            "Architecture Style",
+            2.0,
+            t,
+            [
+                (r'\b(?:microservices|modular monolith|event.driven|serverless|layered|hexagonal|SOA)\b', 1.0),
+                (r'architecture style|architectural pattern|chosen approach|rationale', 1.0),
+            ],
+        )
 
-        # 4. Component Diagram / Description (0-3)
+        # Component Description needs custom counting logic
         earned = 0.0
         if re.search(r'component|service|module|subsystem', t, re.IGNORECASE):
             earned += 1.0
-        # Look for diagram markers or structured component lists
         if re.search(r'```|┌|├──|(\[.*\].*\n.*){2,}', t):
             earned += 1.0
-        # Look for specific component names
         components = ["auth", "calendar", "music", "AI", "analytics", "notification", "api", "gateway", "database"]
         matched = sum(1 for comp in components if re.search(rf'\b{comp}\b', t, re.IGNORECASE))
         if matched >= 4:
             earned += 1.0
-        earned = round(min(earned, 3.0), 1)
-        s += earned
-        rubric.append({"name": "Component Description", "max": 3.0, "earned": earned, "missed": round(3.0 - earned, 1)})
+        rubric.add_criterion("Component Description", 3.0, earned)
 
-        # 5. Data Model (0-3)
+        # Data Model needs custom counting logic
         earned = 0.0
         if re.search(r'data model|database schema|entity|ERD|entity.relationship', t, re.IGNORECASE):
             earned += 1.0
         if re.search(r'\b(user|session|focus|calendar|event|playlist|schedule)\b', t, re.IGNORECASE):
             earned += 0.5
-        # Look for relationship indicators
         if re.search(r'relationship|foreign key|one.to.many|many.to.many|primary key|index', t, re.IGNORECASE):
             earned += 1.0
-        # Look for table/schema descriptions
         if re.search(r'\b(table|schema|collection)\s*[:\-]?\s*\w+', t, re.IGNORECASE):
             earned += 0.5
-        earned = round(min(earned, 3.0), 1)
-        s += earned
-        rubric.append({"name": "Data Model", "max": 3.0, "earned": earned, "missed": round(3.0 - earned, 1)})
+        rubric.add_criterion("Data Model", 3.0, earned)
 
-        # 6. API Design (0-2)
-        earned = 0.0
-        if re.search(r'API design|API endpoints|REST|GraphQL|gRPC|endpoint', t, re.IGNORECASE):
-            earned += 1.0
-        if re.search(r'GET|POST|PUT|DELETE|PATCH|/api/v1|mutation|query', t):
-            earned += 1.0
-        earned = round(min(earned, 2.0), 1)
-        s += earned
-        rubric.append({"name": "API Design", "max": 2.0, "earned": earned, "missed": round(2.0 - earned, 1)})
+        rubric.eval_regex(
+            "API Design",
+            2.0,
+            t,
+            [
+                (r'API design|API endpoints|REST|GraphQL|gRPC|endpoint', 1.0),
+                (r'GET|POST|PUT|DELETE|PATCH|/api/v1|mutation|query', 1.0),
+            ],
+        )
 
-        # 7. Technology Stack (0-2)
+        # Technology Stack needs custom counting logic
         earned = 0.0
         if re.search(r'technology stack|tech stack|stack|languages|frameworks', t, re.IGNORECASE):
             earned += 1.0
-        # Look for specific technologies
         techs = ["python", "node", "go", "rust", "java", "react", "flutter", "swift", "kotlin",
                  "postgres", "mongodb", "redis", "kafka", "rabbitmq", "docker", "kubernetes",
                  "aws", "gcp", "azure", "terraform", "nginx"]
         matched = sum(1 for tech in techs if re.search(rf'\b{tech}\b', t, re.IGNORECASE))
         if matched >= 3:
             earned += 1.0
-        earned = round(min(earned, 2.0), 1)
-        s += earned
-        rubric.append({"name": "Technology Stack", "max": 2.0, "earned": earned, "missed": round(2.0 - earned, 1)})
+        rubric.add_criterion("Technology Stack", 2.0, earned)
 
-        # 8. Deployment Architecture (0-2)
-        earned = 0.0
-        if re.search(r'deployment|CI/CD|continuous integration|continuous delivery|pipeline', t, re.IGNORECASE):
-            earned += 1.0
-        if re.search(r'\b(docker|kubernetes|k8s|ecs|eks|gke|aks|lambda|container)\b', t, re.IGNORECASE):
-            earned += 1.0
-        earned = round(min(earned, 2.0), 1)
-        s += earned
-        rubric.append({"name": "Deployment Architecture", "max": 2.0, "earned": earned, "missed": round(2.0 - earned, 1)})
+        rubric.eval_regex(
+            "Deployment Architecture",
+            2.0,
+            t,
+            [
+                (r'deployment|CI/CD|continuous integration|continuous delivery|pipeline', 1.0),
+                (r'\b(?:docker|kubernetes|k8s|ecs|eks|gke|aks|lambda|container)\b', 1.0),
+            ],
+        )
 
-        # 9. Security Considerations (0-2)
-        earned = 0.0
-        if re.search(r'security|authentication|authorization|OAuth|JWT|encryption', t, re.IGNORECASE):
-            earned += 1.0
-        if re.search(r'\b(OAuth2?|JWT|TLS|SSL|HTTPS|mTLS|RBAC|CORS|XSS|CSRF|SQL injection)\b', t, re.IGNORECASE):
-            earned += 1.0
-        earned = round(min(earned, 2.0), 1)
-        s += earned
-        rubric.append({"name": "Security Considerations", "max": 2.0, "earned": earned, "missed": round(2.0 - earned, 1)})
+        rubric.eval_regex(
+            "Security Considerations",
+            2.0,
+            t,
+            [
+                (r'security|authentication|authorization|OAuth|JWT|encryption', 1.0),
+                (r'\b(?:OAuth2?|JWT|TLS|SSL|HTTPS|mTLS|RBAC|CORS|XSS|CSRF|SQL injection)\b', 1.0),
+            ],
+        )
 
-        # 10. Scalability & Performance (0-2)
-        earned = 0.0
-        if re.search(r'scalability|performance|caching|load balancing|database scaling', t, re.IGNORECASE):
-            earned += 1.0
-        if re.search(r'\b(cache|redis|CDN|load balancer|sharding|replica|horizontal|vertical|rate.limit)\b', t, re.IGNORECASE):
-            earned += 1.0
-        earned = round(min(earned, 2.0), 1)
-        s += earned
-        rubric.append({"name": "Scalability & Performance", "max": 2.0, "earned": earned, "missed": round(2.0 - earned, 1)})
+        rubric.eval_regex(
+            "Scalability & Performance",
+            2.0,
+            t,
+            [
+                (r'scalability|performance|caching|load balancing|database scaling', 1.0),
+                (r'\b(?:cache|redis|CDN|load balancer|sharding|replica|horizontal|vertical|rate.limit)\b', 1.0),
+            ],
+        )
 
-        # 11. Trade-offs & Decisions (0-1)
-        earned = 0.0
-        if re.search(r'trade.off|tradeoffs|decisions|rationale|pros and cons|considerations', t, re.IGNORECASE):
-            earned = 1.0
-        s += earned
-        rubric.append({"name": "Trade-offs & Decisions", "max": 1.0, "earned": earned, "missed": round(1.0 - earned, 1)})
+        rubric.eval_regex(
+            "Trade-offs & Decisions",
+            1.0,
+            t,
+            [(r'trade.off|tradeoffs|decisions|rationale|pros and cons|considerations', 1.0)],
+        )
 
-        return round(min(s, self.max_score), 1), rubric
+        return rubric.results()
 
     def score(self, response_text):
         return self.evaluate(response_text)[0]

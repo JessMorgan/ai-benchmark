@@ -2,6 +2,7 @@
 import re
 
 from benchmark_plugin import BenchmarkTaskPlugin
+from plugins.challenges._rubric import Rubric
 
 
 class OrchestrationPlugin(BenchmarkTaskPlugin):
@@ -46,10 +47,8 @@ class OrchestrationPlugin(BenchmarkTaskPlugin):
 
     def evaluate(self, response_text):
         t = response_text
-        rubric = []
-        s = 0.0
+        rubric = Rubric(self.max_score)
 
-        # 1. Task breakdown presence (0-4)
         earned = 0.0
         steps = sum(1 for _ in re.finditer(r'(?:task|step)\s*\d+', t, re.IGNORECASE))
         if steps >= 3:
@@ -58,20 +57,15 @@ class OrchestrationPlugin(BenchmarkTaskPlugin):
             earned += 1.0
         if re.search(r'(?:geoip|anomal|pdf|report|logs|server)', t, re.IGNORECASE):
             earned += 2.0
-        earned = round(min(earned, 4.0), 1)
-        s += earned
-        rubric.append({"name": "Task breakdown presence", "max": 4.0, "earned": earned, "missed": round(4.0 - earned, 1)})
+        rubric.add_criterion("Task breakdown presence", 4.0, earned)
 
-        # 2. Explicit dependency tagging (0-4)
         earned = 0.0
         if re.search(r'\[DEPENDS_ON[^\]]*\]', t):
             earned = 4.0
         elif re.search(r'depends on', t, re.IGNORECASE):
             earned = 2.0
-        s += earned
-        rubric.append({"name": "Explicit dependency tagging", "max": 4.0, "earned": earned, "missed": round(4.0 - earned, 1)})
+        rubric.add_criterion("Explicit dependency tagging", 4.0, earned)
 
-        # 3. Parallel vs sequential logic (0-4)
         earned = 0.0
         has_parallel = re.search(r'\[PARALLEL\]', t) or re.search(r'\bparallel\b', t, re.IGNORECASE)
         has_sequential = re.search(r'\[SEQUENTIAL\]', t) or re.search(r'\bsequential\b', t, re.IGNORECASE)
@@ -79,10 +73,8 @@ class OrchestrationPlugin(BenchmarkTaskPlugin):
             earned = 4.0
         elif has_parallel or has_sequential:
             earned = 2.0
-        s += earned
-        rubric.append({"name": "Parallel vs sequential logic", "max": 4.0, "earned": earned, "missed": round(4.0 - earned, 1)})
+        rubric.add_criterion("Parallel vs sequential logic", 4.0, earned)
 
-        # 4. State / execution trace simulation (0-4)
         earned = 0.0
         if re.search(r'(?:trace|execution|pipeline)', t, re.IGNORECASE):
             earned += 1.0
@@ -90,11 +82,9 @@ class OrchestrationPlugin(BenchmarkTaskPlugin):
         has_end = re.search(r'(?:complete|done|success|finish)', t, re.IGNORECASE)
         if has_start and has_end:
             earned += 3.0
-        earned = round(min(earned, 4.0), 1)
-        s += earned
-        rubric.append({"name": "State / execution trace", "max": 4.0, "earned": earned, "missed": round(4.0 - earned, 1)})
+        rubric.add_criterion("State / execution trace", 4.0, earned)
 
-        return round(min(s, self.max_score), 1), rubric
+        return rubric.results()
 
     def score(self, response_text):
         return self.evaluate(response_text)[0]

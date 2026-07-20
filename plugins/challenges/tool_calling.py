@@ -3,6 +3,7 @@ import json
 import re
 
 from benchmark_plugin import BenchmarkTaskPlugin
+from plugins.challenges._rubric import Rubric
 
 
 class ToolCallingPlugin(BenchmarkTaskPlugin):
@@ -68,10 +69,8 @@ class ToolCallingPlugin(BenchmarkTaskPlugin):
 
     def evaluate(self, response_text):
         t = response_text
-        rubric = []
-        s = 0.0
+        rubric = Rubric(self.max_score)
 
-        # 1. Output format compliance (0-3)
         earned = 0.0
         tool_call_blocks = re.findall(r'<tool_call>.*?</tool_call>', t, re.DOTALL)
         if tool_call_blocks:
@@ -79,11 +78,8 @@ class ToolCallingPlugin(BenchmarkTaskPlugin):
             parsed = self._extract_tool_calls(t)
             if len(parsed) >= 2:
                 earned += 1.0
-        earned = round(min(earned, 3.0), 1)
-        s += earned
-        rubric.append({"name": "Output format compliance", "max": 3.0, "earned": earned, "missed": round(3.0 - earned, 1)})
+        rubric.add_criterion("Output format compliance", 3.0, earned)
 
-        # 2. Planning / reasoning section before tool calls (0-2)
         earned = 0.0
         tool_call_index = t.find('<tool_call>')
         before_tools = t[:tool_call_index] if tool_call_index != -1 else t
@@ -92,15 +88,12 @@ class ToolCallingPlugin(BenchmarkTaskPlugin):
             earned += 1.5
         if re.search(r'(?i)(plan|step|first|then|finally|order|sequence)', before_tools_sample):
             earned += 0.5
-        earned = round(min(earned, 2.0), 1)
-        s += earned
-        rubric.append({"name": "Planning / reasoning", "max": 2.0, "earned": earned, "missed": round(2.0 - earned, 1)})
+        rubric.add_criterion("Planning / reasoning", 2.0, earned)
 
         calls = self._extract_tool_calls(t)
         call_names = [c.get("name") for c in calls if isinstance(c, dict)]
         args_list = [c.get("args", {}) for c in calls if isinstance(c, dict)]
 
-        # 3. Required tools present (0-5)
         required_tools = {
             "get_weather",
             "search_flights",
@@ -111,11 +104,8 @@ class ToolCallingPlugin(BenchmarkTaskPlugin):
         }
         present_tools = set(call_names) & required_tools
         earned = (len(present_tools) / len(required_tools)) * 5.0 if present_tools else 0.0
-        earned = round(min(earned, 5.0), 1)
-        s += earned
-        rubric.append({"name": "Required tools present", "max": 5.0, "earned": earned, "missed": round(5.0 - earned, 1)})
+        rubric.add_criterion("Required tools present", 5.0, earned)
 
-        # 4. Correct arguments for each tool (0-8)
         arg_score = 0.0
         for name, args in zip(call_names, args_list):
             if not isinstance(args, dict):
@@ -166,12 +156,8 @@ class ToolCallingPlugin(BenchmarkTaskPlugin):
                     arg_score += 0.5
                 if isinstance(subject, str) and "tokyo" in subject.lower():
                     arg_score += 0.5
+        rubric.add_criterion("Correct arguments", 8.0, arg_score)
 
-        earned = round(min(arg_score, 8.0), 1)
-        s += earned
-        rubric.append({"name": "Correct arguments", "max": 8.0, "earned": earned, "missed": round(8.0 - earned, 1)})
-
-        # 5. Correct ordering / dependencies (0-3, bonus)
         expected_order = [
             "get_weather",
             "search_flights",
@@ -184,11 +170,8 @@ class ToolCallingPlugin(BenchmarkTaskPlugin):
         earned = 0.0
         if len(call_names) >= 3 and order_matches > 0:
             earned = (order_matches / len(expected_order)) * 3.0
-        earned = round(min(earned, 3.0), 1)
-        s += earned
-        rubric.append({"name": "Correct ordering / dependencies", "max": 3.0, "earned": earned, "missed": round(3.0 - earned, 1)})
+        rubric.add_criterion("Correct ordering / dependencies", 3.0, earned)
 
-        # 6. Synthesis / mock final response (0-4)
         has_weather = re.search(r'(?:weather|degrees|celsius|fahrenheit|sunny|rain|cloud)', t.lower())
         has_flight = re.search(r'(?:flight|jfk|tokyo|depart)', t.lower())
         has_hotel = re.search(r'(?:hotel|check.in|guests)', t.lower())
@@ -197,10 +180,9 @@ class ToolCallingPlugin(BenchmarkTaskPlugin):
         has_email = re.search(r'(?:email|itinerary|alice)', t.lower())
         synthesis_hits = sum([bool(has_weather), bool(has_flight), bool(has_hotel), bool(has_stock), bool(has_currency), bool(has_email)])
         earned = round((synthesis_hits / 6.0) * 4.0, 1)
-        s += earned
-        rubric.append({"name": "Synthesis / final response", "max": 4.0, "earned": earned, "missed": round(4.0 - earned, 1)})
+        rubric.add_criterion("Synthesis / final response", 4.0, earned)
 
-        return round(min(s, self.max_score), 1), rubric
+        return rubric.results()
 
     def score(self, response_text):
         return self.evaluate(response_text)[0]
