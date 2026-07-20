@@ -64,6 +64,16 @@ Example:
 
 See [Configuration](./configuration.md) for the full config reference.
 
+## Plugin Discovery
+
+Challenge plugins are loaded from `plugins/challenges/` and output plugins (reports) from `plugins/outputs/`. Challenge plugins define benchmark tasks; output plugins generate the final reports (Markdown, CSV, HTML, PDF). The benchmark discovers them automatically, so adding a new plugin is usually as simple as dropping a Python module into the appropriate directory.
+
+You can list the discovered challenge plugins with:
+
+```sh
+python ai-benchmark.py --list-plugins
+```
+
 ## Run the Benchmark
 
 ```sh
@@ -73,7 +83,7 @@ python ai-benchmark.py
 The benchmark will:
 
 1. Load the config.
-2. Discover and select plugins.
+2. Discover and select plugins from `plugins/challenges/` and `plugins/outputs/`.
 3. Queue each model against its configured source.
 4. Run plugins in parallel (respecting per-source `plugin_thread_limit`).
 5. Save state after each model so runs can resume.

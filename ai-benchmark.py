@@ -412,7 +412,8 @@ def main():
 
     parser = argparse.ArgumentParser(
         description="AI Model Benchmark — Run plugin-based benchmarks across multiple API sources.",
-        epilog="Examples:\n"
+        epilog="Challenge plugins are loaded from plugins/challenges/ and report plugins from plugins/outputs/.\n\n"
+               "Examples:\n"
                "  python ai-benchmark.py --restart\n"
                "  python ai-benchmark.py --config my-config.json\n"
                "  python ai-benchmark.py --out /tmp/bench-run --timeout 300\n"
@@ -446,7 +447,7 @@ def main():
     parser.add_argument('--plugins-blacklist', type=str, nargs='+', default=None,
                         help='Run all plugins except these (e.g. --plugins-blacklist moe-dense)')
     parser.add_argument('--list-plugins', action='store_true',
-                        help='List discovered plugins with their IDs, names, and versions, then exit')
+                        help='List discovered challenge plugins (from plugins/challenges/) with their IDs, names, and versions, then exit')
     parser.add_argument('--generate-shell-completion', type=str, default=None,
                         choices=['bash', 'zsh', 'fish'],
                         help='Generate shell completion script for the specified shell and exit')
