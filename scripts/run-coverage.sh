@@ -10,4 +10,5 @@ python -m pytest tests/ plugins/challenges/ plugins/outputs/ \
   --cov-report=term-missing \
   --cov-report=html:htmlcov \
   --cov-report=xml:coverage.xml \
+  --cov-fail-under=90 \
   -q
