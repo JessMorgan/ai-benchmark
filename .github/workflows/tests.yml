@@ -47,8 +47,7 @@ jobs:
 
       - name: Syntax check all Python files
         run: |
-          python -m py_compile ai-benchmark.py benchmark_core.py benchmark_plugin.py \
-            plugins/__init__.py plugins/rate_limiter.py plugins/moe_dense.py
+          git ls-files '*.py' | xargs python -m py_compile
 
       - name: CLI smoke test
         run: |
