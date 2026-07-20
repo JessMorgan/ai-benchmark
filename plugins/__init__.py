@@ -41,7 +41,7 @@ def _discover_plugins_in_dir(directory, package_name, base_class):
         return plugins
 
     for filename in sorted(os.listdir(directory)):
-        if not filename.endswith(".py") or filename.startswith("__"):
+        if not filename.endswith(".py") or filename.startswith("__") or filename.startswith("test_"):
             continue
         path = os.path.join(directory, filename)
         module_name = f"{package_name}.{filename[:-3]}"
