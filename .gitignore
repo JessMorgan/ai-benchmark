@@ -7,3 +7,6 @@ __pycache__/
 *.bak
 *~
 .coverage
+htmlcov/
+coverage.xml
+.coverage.*

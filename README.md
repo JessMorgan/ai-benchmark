@@ -136,6 +136,22 @@ Plugins are discovered automatically from the `plugins/` directory. Each plugin 
 
 Each plugin exposes a `version` attribute so results can be correlated to a specific plugin release.
 
+## Tests & Coverage
+
+Run the test suite with pytest:
+
+```sh
+python -m pytest tests/ plugins/challenges/ plugins/outputs/ -q
+```
+
+Generate a coverage report for the plugins:
+
+```sh
+./scripts/run-coverage.sh
+```
+
+This produces a terminal summary, an HTML report in `htmlcov/`, and an XML report in `coverage.xml`.
+
 ## Reports
 
 Each model is scored on the active plugins across multiple dimensions:
