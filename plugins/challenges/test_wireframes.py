@@ -12,6 +12,31 @@ class TestWireframesScoring(unittest.TestCase):
     def test_empty_response_scores_zero(self):
         self.assertEqual(self.plugin.score(""), 0.0)
 
+    def test_whitespace_response_scores_zero(self):
+        self.assertEqual(self.plugin.score("   \n\t  "), 0.0)
+
+    def test_get_temperature_from_config(self):
+        self.assertEqual(self.plugin.get_temperature({"wireframes_temperature": 0.5}), 0.5)
+
+    def test_get_temperature_default(self):
+        self.assertIsNone(self.plugin.get_temperature({}))
+
+    def test_single_screen_header(self):
+        text = "Screen 1: Dashboard\n\n```\n[Header] Dashboard\n```"
+        score = self.plugin.score(text)
+        self.assertGreater(score, 0.0)
+        self.assertLess(score, self.plugin.max_score)
+
+    def test_two_screen_headers(self):
+        text = (
+            "Screen 1: Dashboard\n\n"
+            "Screen 2: Focus\n\n"
+            "```\n[Header] Dashboard\n[Button] Start\n```"
+        )
+        score = self.plugin.score(text)
+        self.assertGreater(score, 0.0)
+        self.assertLess(score, self.plugin.max_score)
+
     def test_partial_response_scores(self):
         text = (
             "## Screen 1: Dashboard\n\n"
