@@ -1,6 +1,6 @@
 # Configuration Reference
 
-All benchmark configuration lives in a single JSON file (default: `benchmark-config.json`). The file is passed to `ai-benchmark.py` with `--config`.
+All benchmark configuration lives in a single file (default: `benchmark-config.json`). The file is passed to `ai-benchmark.py` with `--config`. Both JSON and YAML (`.yaml`/`.yml`) formats are supported; the extension is detected automatically.
 
 ## Top-Level Keys
 
@@ -133,6 +133,27 @@ You can set the temperature for each plugin using either of these config keys:
   "tool-calling_temperature": 0.2,
   "structured-output_temperature": 0.2
 }
+```
+
+## YAML Configs
+
+YAML configs work the same way as JSON configs. For example:
+
+```yaml
+output_dir: benchmark-results
+sources:
+  Local Server:
+    api_url: http://localhost:11434/chat/completions
+    headers:
+      Authorization: "Bearer ${LOCAL_API_KEY:sk-fallback}"
+      Content-Type: application/json
+models:
+  llama3:8b: Local Server
+agents:
+  my-coding-agent:
+    model: gpt-4o
+    source: Local Server
+    system_prompt: You are an expert coder.
 ```
 
 ## Complete Example

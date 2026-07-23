@@ -7,6 +7,8 @@ import time
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from datetime import datetime
 
+import yaml
+
 from benchmark_http import (  # noqa: F401
     close_active_requests,
     fetch_models_v1,
@@ -103,9 +105,14 @@ def _expand_env(val):
 
 
 def load_config(path):
-    """Load benchmark config from a JSON file. Returns the full config dict."""
+    """Load benchmark config from a JSON or YAML file. Returns the full config dict."""
     with open(path) as f:
-        data = json.load(f)
+        if path.lower().endswith((".yaml", ".yml")):
+            data = yaml.safe_load(f)
+            if data is None:
+                raise ValueError(f"YAML config file is empty: {path}")
+        else:
+            data = json.load(f)
     data = _expand_env(data)
     return data
 
