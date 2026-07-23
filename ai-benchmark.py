@@ -453,6 +453,8 @@ def main():
                         help='Generate shell completion script for the specified shell and exit')
     parser.add_argument('--dump-default-config', action='store_true',
                         help='Print a default config file to stdout and exit')
+    parser.add_argument('--convert-config', type=str, default=None,
+                        help='Convert a YAML config to JSON or a JSON config to YAML and print to stdout')
     parser.add_argument('--base-url', default=None,
                         help='Base URL for model discovery via /v1/models API (used with --dump-default-config)')
     parser.add_argument('--api-key', default=None,
@@ -481,6 +483,22 @@ def main():
             print(json.dumps(cfg, indent=2))
         else:
             dump_default_config()
+        sys.exit(0)
+
+    if args.convert_config:
+        if not os.path.exists(args.convert_config):
+            print(f"❌ Config file not found: {args.convert_config}", file=sys.stderr)
+            sys.exit(1)
+        ext = os.path.splitext(args.convert_config)[1].lower()
+        if ext not in (".json", ".yaml", ".yml"):
+            print(f"❌ Unsupported config format: {ext}. Use .json, .yaml, or .yml.", file=sys.stderr)
+            sys.exit(1)
+        cfg = load_config(args.convert_config)
+        if ext in (".yaml", ".yml"):
+            print(json.dumps(cfg, indent=2))
+        else:
+            import yaml
+            print(yaml.safe_dump(cfg, sort_keys=False, default_flow_style=False))
         sys.exit(0)
 
     config_path = args.config

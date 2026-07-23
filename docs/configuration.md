@@ -135,6 +135,20 @@ You can set the temperature for each plugin using either of these config keys:
 }
 ```
 
+## Converting Between Formats
+
+Use the CLI to convert a config between JSON and YAML:
+
+```sh
+# Convert YAML config to JSON
+python ai-benchmark.py --convert-config benchmark-config.yaml > benchmark-config.json
+
+# Convert JSON config to YAML
+python ai-benchmark.py --convert-config benchmark-config.json > benchmark-config.yaml
+```
+
+The converted output is printed to stdout. Environment variables in the config are expanded before conversion.
+
 ## YAML Configs
 
 YAML configs work the same way as JSON configs. For example:
