@@ -18,9 +18,22 @@ class BenchmarkState:
         self._log = []
         self.plugin_ids = list(plugin_ids)
         self.session_seed = session_seed
-        for name, source in models.items():
+        for name, info in models.items():
+            if isinstance(info, dict):
+                source = info.get("source", "Default")
+                api_model = info.get("api_model", name)
+                system_prompt = info.get("system_prompt")
+                is_agent = info.get("is_agent", False)
+            else:
+                source = info
+                api_model = name
+                system_prompt = None
+                is_agent = False
             self._model_info[name] = {
                 "source": source,
+                "api_model": api_model,
+                "system_prompt": system_prompt,
+                "is_agent": is_agent,
                 "status": "pending",
                 "ttft": None,
                 "error": None, "elapsed": 0,

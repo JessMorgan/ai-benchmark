@@ -22,10 +22,10 @@ from benchmark_core import (
     _unique_source_abbrevs,
     dump_default_config,
     generate_config_from_api,
-    get_model_plugins_blacklist,
+    get_target_plugins_blacklist,
     load_config,
     parse_plugin_temperatures,
-    resolve_model_sources,
+    resolve_targets,
     run_model,
     _save_outputs,
 )
@@ -492,7 +492,12 @@ def main():
     cfg = load_config(config_path)
     source_config = cfg.get("sources", {})
     models = cfg.get("models", {})
-    models_source_map = resolve_model_sources(models)
+    agents = cfg.get("agents", {})
+    collisions = set(models) & set(agents)
+    if collisions:
+        print(f"❌ Model/agent name collision: {', '.join(sorted(collisions))}", file=sys.stderr)
+        sys.exit(1)
+    targets = resolve_targets(cfg)
     output_dir = cfg.get("output_dir", "benchmark-results")
     if args.out:
         output_dir = args.out
@@ -551,8 +556,8 @@ def main():
         for src_cfg in source_config.values():
             src_cfg["plugin_thread_limit"] = args.plugin_thread_limit
 
-    print(f"📋 Loaded {len(models)} models across {len(source_config)} sources "
-          f"from {config_path}", file=sys.stderr)
+    print(f"📋 Loaded {len(targets)} targets ({len(models)} models, {len(agents)} agents) "
+          f"across {len(source_config)} sources from {config_path}", file=sys.stderr)
     print(f"🔌 Active plugins: {', '.join(p.name for p in active_plugins)} "
           f"(v{', v'.join(p.version for p in active_plugins)})", file=sys.stderr)
     print(f"📂 Output directory: {output_dir}", file=sys.stderr)
@@ -592,17 +597,17 @@ def main():
                 choice = _prompt_restart_or_continue(scripted=args.scripted)
                 if choice == "restart":
                     os.remove(state_file)
-                    state = BenchmarkState(models_source_map, plugin_ids)
+                    state = BenchmarkState(targets, plugin_ids)
                 elif choice == "continue":
                     state = BenchmarkState.load_state(
-                        state_file, models_source_map, plugin_ids,
+                        state_file, targets, plugin_ids,
                         rerun_failed=not args.no_rerun_failed)
                     resumed = True
                 else:
                     sys.exit(0)
             else:
                 state = BenchmarkState.load_state(
-                    state_file, models_source_map, plugin_ids,
+                    state_file, targets, plugin_ids,
                     rerun_failed=not args.no_rerun_failed)
                 resumed = True
 
@@ -623,9 +628,9 @@ def main():
         except Exception as e:
             print(f"⚠️  Could not load state file ({e}), starting fresh.",
                   file=sys.stderr)
-            state = BenchmarkState(models_source_map, plugin_ids)
+            state = BenchmarkState(targets, plugin_ids)
     else:
-        state = BenchmarkState(models_source_map, plugin_ids)
+        state = BenchmarkState(targets, plugin_ids)
 
     # Use the CLI --seed if provided; otherwise preserve the seed from a
     # resumed state so report exports remain consistent.
@@ -655,15 +660,18 @@ def main():
     worker_errors = 0
     interrupted = False
 
-    source_queues = {src: [] for src in set(models_source_map.values())}
-    for name, src in models_source_map.items():
-        info = state.snapshot().get(name, {})
-        if info.get("status") in ("completed",):
+    source_queues = {src: [] for src in set(t["source"] for t in targets.values())}
+    for name, info in targets.items():
+        snap = state.snapshot().get(name, {})
+        if snap.get("status") in ("completed",):
             continue
-        source_queues[src].append(name)
+        source_queues[info["source"]].append(name)
 
     source_threads = {}
     errors_lock = threading.Lock()
+    raw_targets = {}
+    raw_targets.update(cfg.get("models", {}))
+    raw_targets.update(cfg.get("agents", {}))
 
     def worker(source, model_names):
         nonlocal worker_errors
@@ -671,12 +679,16 @@ def main():
             if stop_event.is_set():
                 break
             try:
-                model_blacklist = get_model_plugins_blacklist(cfg.get("models", {}), model_name)
+                model_blacklist = get_target_plugins_blacklist(raw_targets, model_name)
                 model_active_plugins = [p for p in active_plugins if p.id not in model_blacklist]
+                target_info = targets[model_name]
                 run_model(model_name, source, state, model_active_plugins, source_config,
                           timeout, token_levels, output_dir, session_seed=session_seed,
                           global_cfg=cfg, stop_event=stop_event,
-                          save_responses=args.save_responses)
+                          save_responses=args.save_responses,
+                          api_model=target_info["api_model"],
+                          system_prompt=target_info["system_prompt"],
+                          is_agent=target_info["is_agent"])
                 state.save_state(state_file, plugin_versions=plugin_versions)
                 _save_outputs(state, output_dir, active_plugins)
             except Exception as e:

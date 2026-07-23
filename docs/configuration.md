@@ -14,6 +14,7 @@ All benchmark configuration lives in a single JSON file (default: `benchmark-con
 | `plugins_blacklist` | list[string] | `[]` | Skip these plugin IDs (empty = none) |
 | `sources` | object | required | Named API endpoint definitions |
 | `models` | object | required | Model-to-source mapping |
+| `agents` | object | optional | Agent definitions with system prompts |
 
 ## Sources
 
@@ -77,6 +78,30 @@ The value is the source name from the `sources` section.
 |---|---|---|
 | `source` | string | Source name from `sources` |
 | `drop_params` | list[string] | Request body keys to omit for this model |
+
+## Agents
+
+The `agents` block lets you test models with a fixed system prompt. Each agent is a named wrapper around an model and source.
+
+```json
+"agents": {
+  "my-coding-agent": {
+    "model": "gpt-4o",
+    "source": "Remote Provider",
+    "system_prompt": "You are an expert Python programmer. Be concise and accurate."
+  }
+}
+```
+
+| Key | Type | Description |
+|---|---|---|
+| `model` | string | Model string sent to the API |
+| `source` | string | Source name from `sources` |
+| `system_prompt` | string | System prompt prepended to every plugin request |
+| `drop_params` | list[string] | (optional) Request body keys to omit for this agent |
+| `plugins_blacklist` | list[string] | (optional) Plugin IDs to skip for this agent |
+
+Agents and models coexist in the same config. The benchmark treats each entry as a distinct target. Results include `api_model`, `is_agent`, and `system_prompt` metadata for every target.
 
 ### Per-Model Parameter Dropping
 
@@ -147,6 +172,10 @@ You can set the temperature for each plugin using either of these config keys:
   }
 }
 ```
+
+## Model/Agent Name Collisions
+
+If a key appears in both `models` and `agents`, the benchmark exits with an error. Rename the model or agent to continue.
 
 ## Notes
 

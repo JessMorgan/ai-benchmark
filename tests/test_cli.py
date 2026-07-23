@@ -153,7 +153,7 @@ class TestPartialPluginFailure(unittest.TestCase):
         state = self.module.BenchmarkState(models, [p.id for p in plugins])
         source_config = {"Local": {"api_url": "http://localhost:11434/chat/completions", "headers": {}, "plugin_thread_limit": 1}}
 
-        def fake_run_plugin_task(model_name, source, plugin, *args, **kwargs):
+        def fake_run_plugin_task(target_name, api_model, source, plugin, *args, **kwargs):
             if plugin.id == "rate-limiter":
                 return {
                     "rate-limiter_score": 5,
@@ -210,7 +210,7 @@ class TestPartialPluginFailure(unittest.TestCase):
 
         calls = []
 
-        def fake_run_plugin_task(model_name, source, plugin, *args, **kwargs):
+        def fake_run_plugin_task(target_name, api_model, source, plugin, *args, **kwargs):
             calls.append(plugin.id)
             if plugin.id == "moe-dense":
                 return {
@@ -285,7 +285,10 @@ class TestSaveResponses(unittest.TestCase):
                 meta = json.load(f)
             self.assertEqual(meta["plugin"], "rate-limiter")
             self.assertEqual(meta["plugin_version"], plugins[0].version)
+            self.assertEqual(meta["target"], "dummy-model")
             self.assertEqual(meta["model"], "dummy-model")
+            self.assertEqual(meta["is_agent"], False)
+            self.assertIn("system_prompt", meta)
             self.assertIn("score", meta)
             self.assertIn("response_time", meta)
             self.assertIn("output_tokens", meta)
@@ -389,7 +392,7 @@ class TestDropParams(unittest.TestCase):
 
         with mock.patch("requests.post", side_effect=fake_post):
             self.module._run_plugin_task(
-                "dummy-model", "Local", plugins[0], source_config,
+                "dummy-model", "dummy-model", "Local", plugins[0], source_config,
                 timeout=1, token_levels=[100], session_seed=12345,
                 log_file=None, global_cfg=global_cfg,
             )
@@ -417,7 +420,7 @@ class TestSeedCLI(unittest.TestCase):
 
         with mock.patch("requests.post", side_effect=fake_post):
             self.module._run_plugin_task(
-                "dummy-model", "Local", plugins[0], source_config,
+                "dummy-model", "dummy-model", "Local", plugins[0], source_config,
                 timeout=1, token_levels=[100], session_seed=42,
                 log_file=None, global_cfg={},
             )

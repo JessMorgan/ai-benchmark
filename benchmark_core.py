@@ -144,12 +144,78 @@ def resolve_model_sources(models):
     return resolved
 
 
-def get_model_plugins_blacklist(models, model_name):
-    """Get the plugins blacklist for a specific model."""
-    val = models.get(model_name)
+def resolve_targets(cfg):
+    """Resolve models and agents into a unified target map.
+
+    Each target contains:
+    - ``source``: API source name
+    - ``api_model``: actual model string sent to the API
+    - ``system_prompt``: optional system prompt for the agent
+    - ``is_agent``: whether this target is an agent
+    - ``drop_params``: per-target params to drop from API requests
+    - ``plugins_blacklist``: per-target plugins to skip
+    """
+    models = cfg.get("models", {})
+    agents = cfg.get("agents", {})
+    targets = {}
+    for name, val in models.items():
+        if isinstance(val, dict):
+            targets[name] = {
+                "source": val.get("source", "Default"),
+                "api_model": name,
+                "system_prompt": None,
+                "is_agent": False,
+                "drop_params": val.get("drop_params", []),
+                "plugins_blacklist": val.get("plugins_blacklist", []),
+            }
+        elif isinstance(val, str):
+            targets[name] = {
+                "source": val,
+                "api_model": name,
+                "system_prompt": None,
+                "is_agent": False,
+                "drop_params": [],
+                "plugins_blacklist": [],
+            }
+        else:
+            targets[name] = {
+                "source": "Default",
+                "api_model": name,
+                "system_prompt": None,
+                "is_agent": False,
+                "drop_params": [],
+                "plugins_blacklist": [],
+            }
+    for name, val in agents.items():
+        if not isinstance(val, dict):
+            raise ValueError(
+                f"Agent '{name}' must be an object with at least 'model' and 'system_prompt' keys"
+            )
+        if "model" not in val:
+            raise ValueError(f"Agent '{name}' must specify a 'model' key")
+        if "system_prompt" not in val:
+            raise ValueError(f"Agent '{name}' must specify a 'system_prompt' key")
+        targets[name] = {
+            "source": val.get("source", "Default"),
+            "api_model": val["model"],
+            "system_prompt": val["system_prompt"],
+            "is_agent": True,
+            "drop_params": val.get("drop_params", []),
+            "plugins_blacklist": val.get("plugins_blacklist", []),
+        }
+    return targets
+
+
+def get_target_plugins_blacklist(targets, target_name):
+    """Get the plugins blacklist for a specific model or agent."""
+    val = targets.get(target_name)
     if isinstance(val, dict):
         return val.get("plugins_blacklist", [])
     return []
+
+
+# Backward-compatible alias.
+get_model_plugins_blacklist = get_target_plugins_blacklist
 
 
 def dump_default_config():
@@ -195,6 +261,13 @@ def dump_default_config():
                 "source": "Local Server 2",
                 "drop_params": ["seed"]
             }
+        },
+        "agents": {
+            "example-agent": {
+                "model": "gpt-4",
+                "source": "Remote Provider 1",
+                "system_prompt": "You are a helpful coding assistant. Be concise and accurate."
+            }
         }
     }
     print(json.dumps(cfg, indent=2))
@@ -229,10 +302,11 @@ def generate_config_from_api(base_url, api_key=None):
 
 # ─── Model execution ─────────────────────────────────────────────────────────
 
-def _run_plugin_task(model_name, source, plugin, source_config, timeout, token_levels,
-                     session_seed, log_file, global_cfg, stop_event=None,
-                     save_responses=False, output_dir=None):
-    """Run a single plugin task for a model. Returns (result_dict, error)."""
+def _run_plugin_task(target_name, api_model, source, plugin, source_config, timeout,
+                     token_levels, session_seed, log_file, global_cfg, stop_event=None,
+                     save_responses=False, output_dir=None, system_prompt=None,
+                     is_agent=False):
+    """Run a single plugin task for a model or agent. Returns (result_dict, error)."""
     pid = plugin.id
     cfg = source_config.get(source)
     if cfg is None:
@@ -244,7 +318,7 @@ def _run_plugin_task(model_name, source, plugin, source_config, timeout, token_l
     prompt = plugin.get_prompt()
     temperature = plugin.get_temperature(global_cfg or {})
 
-    raw_model_cfg = (global_cfg or {}).get("models", {}).get(model_name)
+    raw_model_cfg = (global_cfg or {}).get("models", {}).get(target_name) or (global_cfg or {}).get("agents", {}).get(target_name)
     drop_params = []
     if isinstance(raw_model_cfg, dict):
         drop_params = raw_model_cfg.get("drop_params", [])
@@ -265,19 +339,21 @@ def _run_plugin_task(model_name, source, plugin, source_config, timeout, token_l
 
         if plugin.supports_streaming:
             text, first_tok, stream_end, serr, sfr, _usage = stream_request(
-                source_config, timeout, model_name, source, prompt, max_tok,
+                source_config, timeout, api_model, source, prompt, max_tok,
                 log_path=log_file,
                 log_label=f"{plugin.name} (Streaming, attempt {attempt + 1})",
                 session_seed=session_seed, temperature=temperature,
-                drop_params=drop_params, stop_event=stop_event)
+                drop_params=drop_params, stop_event=stop_event,
+                system_prompt=system_prompt)
 
             if serr or first_tok is None:
                 text, nsusage, ns_time, nserr, nsfr = nonstream_request(
-                    source_config, timeout, model_name, source, prompt, max_tok,
+                    source_config, timeout, api_model, source, prompt, max_tok,
                     log_path=log_file,
                     log_label=f"{plugin.name} (Non-Streaming, attempt {attempt + 1})",
                     session_seed=session_seed, temperature=temperature,
-                    drop_params=drop_params, stop_event=stop_event)
+                    drop_params=drop_params, stop_event=stop_event,
+                    system_prompt=system_prompt)
                 if nserr:
                     return None, f"Stream: {serr or 'no tokens'}. Nostream: {nserr}"
                 stream_ok = False
@@ -291,11 +367,12 @@ def _run_plugin_task(model_name, source, plugin, source_config, timeout, token_l
                 truncated = (sfr == "length")
         else:
             text, usage, gen_time, gen_err, gen_fr = nonstream_request(
-                source_config, timeout, model_name, source, prompt, max_tok,
+                source_config, timeout, api_model, source, prompt, max_tok,
                 log_path=log_file,
                 log_label=f"{plugin.name} (attempt {attempt + 1})",
                 session_seed=session_seed, temperature=temperature,
-                drop_params=drop_params, stop_event=stop_event)
+                drop_params=drop_params, stop_event=stop_event,
+                system_prompt=system_prompt)
             if gen_err:
                 return None, gen_err
             stream_ok = False
@@ -321,7 +398,7 @@ def _run_plugin_task(model_name, source, plugin, source_config, timeout, token_l
             pass
 
     if save_responses and output_dir:
-        responses_dir = os.path.join(output_dir, "responses", sanitize_filename(model_name))
+        responses_dir = os.path.join(output_dir, "responses", sanitize_filename(target_name))
         os.makedirs(responses_dir, exist_ok=True)
         prompt_path = os.path.join(responses_dir, f"{plugin.id}.prompt.txt")
         response_path = os.path.join(responses_dir, f"{plugin.id}.txt")
@@ -343,7 +420,10 @@ def _run_plugin_task(model_name, source, plugin, source_config, timeout, token_l
         meta = {
             "plugin": plugin.id,
             "plugin_version": plugin.version,
-            "model": model_name,
+            "target": target_name,
+            "model": api_model,
+            "is_agent": is_agent,
+            "system_prompt": system_prompt,
             "score": score,
             "rubric": rubric,
             "response_time": response_time,
@@ -373,19 +453,28 @@ def _run_plugin_task(model_name, source, plugin, source_config, timeout, token_l
 
 def run_model(model_name, source, state, active_plugins, source_config, timeout,
               token_levels, output_dir, session_seed=0, global_cfg=None,
-              stop_event=None, save_responses=False):
-    """Run active plugins for one model."""
+              stop_event=None, save_responses=False, api_model=None,
+              system_prompt=None, is_agent=False):
+    """Run active plugins for one model or agent."""
     start = time.time()
+    target_name = model_name
+    api_model = api_model or target_name
 
     r = {
-        "model": model_name, "source": source, "status": "ok", "stream_ok": True,
+        "model": target_name,
+        "api_model": api_model,
+        "source": source,
+        "is_agent": is_agent,
+        "system_prompt": system_prompt,
+        "status": "ok",
+        "stream_ok": True,
         "ttft": None,
         "prompt_tokens": 0, "completion_tokens": 0,
         "total_time": 0, "error": None,
         "plugin_versions": {p.id: p.version for p in active_plugins},
     }
 
-    state.update(model_name, status="queued")
+    state.update(target_name, status="queued")
 
     cfg = source_config.get(source)
     if cfg is None:
@@ -393,12 +482,12 @@ def run_model(model_name, source, state, active_plugins, source_config, timeout,
         r["error"] = f"Unknown source '{source}' — not in SOURCE_CONFIG"
         r["total_time"] = round(time.time() - start, 1)
         state.add_result(r)
-        state.update(model_name, status="failed", error=r["error"], elapsed=r["total_time"])
-        state.log(model_name, r['error'])
+        state.update(target_name, status="failed", error=r["error"], elapsed=r["total_time"])
+        state.log(target_name, r['error'])
         return
 
     latest = {res["model"]: res for res in state.latest_results()}
-    existing = latest.get(model_name)
+    existing = latest.get(target_name)
 
     plugins_to_run = []
     for plugin in active_plugins:
@@ -420,7 +509,7 @@ def run_model(model_name, source, state, active_plugins, source_config, timeout,
         r["ttft"] = existing.get("ttft") if existing else None
         r["total_time"] = round(time.time() - start, 1)
         state.add_result(r)
-        state.update(model_name, status="completed", elapsed=r["total_time"])
+        state.update(target_name, status="completed", elapsed=r["total_time"])
         return
 
     plugin_thread_limit = source_config.get(source, {}).get("plugin_thread_limit", 1)
@@ -431,20 +520,23 @@ def run_model(model_name, source, state, active_plugins, source_config, timeout,
     if plugin_thread_limit <= 0:
         plugin_thread_limit = len(plugins_to_run)
 
-    state.update(model_name, attempt_start=time.time())
+    state.update(target_name, attempt_start=time.time())
 
-    _run_plugins(model_name, source, state, active_plugins, plugins_to_run,
+    _run_plugins(target_name, api_model, source, state, active_plugins, plugins_to_run,
                  source_config, timeout, token_levels, output_dir,
                  session_seed, global_cfg, r, start,
                  max_workers=plugin_thread_limit,
                  stop_event=stop_event,
-                 save_responses=save_responses)
+                 save_responses=save_responses,
+                 system_prompt=system_prompt,
+                 is_agent=is_agent)
 
 
-def _run_plugins(model_name, source, state, active_plugins, plugins_to_run,
+def _run_plugins(target_name, api_model, source, state, active_plugins, plugins_to_run,
                  source_config, timeout, token_levels, output_dir,
                  session_seed, global_cfg, r, start, max_workers,
-                 stop_event=None, save_responses=False):
+                 stop_event=None, save_responses=False, system_prompt=None,
+                 is_agent=False):
     """Run plugins for one model using a thread pool of bounded size.
 
     A single-worker pool (``max_workers=1``) is equivalent to sequential
@@ -455,23 +547,25 @@ def _run_plugins(model_name, source, state, active_plugins, plugins_to_run,
     errors = {}
     lock = threading.Lock()
     logs_dir = os.path.join(output_dir, "logs")
-    log_file = os.path.join(logs_dir, f"{sanitize_filename(model_name)}.log")
+    log_file = os.path.join(logs_dir, f"{sanitize_filename(target_name)}.log")
 
     def run_one(plugin):
         pid = plugin.id
-        state.update(model_name, status=f"running_{pid}")
-        result, err = _run_plugin_task(model_name, source, plugin, source_config,
+        state.update(target_name, status=f"running_{pid}")
+        result, err = _run_plugin_task(target_name, api_model, source, plugin, source_config,
                                        timeout, token_levels, session_seed, log_file,
                                        global_cfg or {}, stop_event=stop_event,
                                        save_responses=save_responses,
-                                       output_dir=output_dir)
+                                       output_dir=output_dir,
+                                       system_prompt=system_prompt,
+                                       is_agent=is_agent)
         with lock:
             results[pid] = result
             if err:
                 errors[pid] = err
         if err or result is None:
             return
-        state.update(model_name,
+        state.update(target_name,
                      **{f"{pid}_score": result[f"{pid}_score"],
                         f"{pid}_tps": result[f"{pid}_tps"],
                         f"{pid}_response_time": result[f"{pid}_response_time"],
@@ -506,7 +600,7 @@ def _run_plugins(model_name, source, state, active_plugins, plugins_to_run,
                 f"{pid}_stream_ok": False,
             }
             r.update(fail_values)
-            state.update(model_name, **fail_values)
+            state.update(target_name, **fail_values)
         else:
             result = results[pid]
             r.update(result)
@@ -530,7 +624,7 @@ def _run_plugins(model_name, source, state, active_plugins, plugins_to_run,
         r["error"] = "Cancelled"
         r["total_time"] = round(time.time() - start, 1)
         state.add_result(r)
-        state.update(model_name, status="failed", error=r["error"], elapsed=r["total_time"], last_error=r["error"])
+        state.update(target_name, status="failed", error=r["error"], elapsed=r["total_time"], last_error=r["error"])
         return
 
     if errors:
@@ -538,9 +632,9 @@ def _run_plugins(model_name, source, state, active_plugins, plugins_to_run,
         r["error"] = "; ".join(f"{pid}: {err}" for pid, err in errors.items())
         r["total_time"] = round(time.time() - start, 1)
         state.add_result(r)
-        state.update(model_name, status="failed", error=r["error"], elapsed=r["total_time"], last_error=r["error"])
+        state.update(target_name, status="failed", error=r["error"], elapsed=r["total_time"], last_error=r["error"])
         return
 
     r["total_time"] = round(time.time() - start, 1)
     state.add_result(r)
-    state.update(model_name, status="completed", elapsed=r["total_time"])
+    state.update(target_name, status="completed", elapsed=r["total_time"])

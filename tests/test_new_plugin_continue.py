@@ -43,7 +43,7 @@ class TestNewPluginContinue(unittest.TestCase):
 
             calls = []
 
-            def fake_run_plugin_task(model_name, source, plugin, *args, **kwargs):
+            def fake_run_plugin_task(target_name, api_model, source, plugin, *args, **kwargs):
                 calls.append(plugin.id)
                 if plugin.id == "moe-dense":
                     return {
@@ -96,8 +96,8 @@ class TestNewPluginContinue(unittest.TestCase):
 
             plugin_calls = {}
 
-            def fake_run_plugin_task(model_name, source, plugin, *args, **kwargs):
-                plugin_calls.setdefault(model_name, []).append(plugin.id)
+            def fake_run_plugin_task(target_name, api_model, source, plugin, *args, **kwargs):
+                plugin_calls.setdefault(target_name, []).append(plugin.id)
                 if plugin.id == "moe-dense":
                     return {
                         "moe-dense_score": 7.0, "moe-dense_response_time": 2.0,
@@ -198,7 +198,7 @@ class TestNewPluginContinue(unittest.TestCase):
 
             run_calls = []
 
-            def fake_run_plugin_task(model_name, source, plugin, *args, **kwargs):
+            def fake_run_plugin_task(target_name, api_model, source, plugin, *args, **kwargs):
                 run_calls.append(plugin.id)
                 return {
                     f"{plugin.id}_score": 9.0,

@@ -141,6 +141,74 @@ class TestNonstreamRequest(unittest.TestCase):
         self.assertEqual(err, "Cancelled")
 
 
+class TestSystemPrompt(unittest.TestCase):
+    """Tests for system prompt handling in request bodies."""
+
+    def test_nonstream_request_includes_system_prompt(self):
+        """nonstream_request prepends a system message when system_prompt is provided."""
+        source_config = {"Local": {"api_url": "http://localhost/chat/completions", "headers": {}}}
+        captured = {}
+
+        class MockResponse:
+            status_code = 200
+
+            def iter_content(self, chunk_size=8192):
+                body = json.dumps({
+                    "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
+                })
+                yield body.encode("utf-8")
+
+            def close(self):
+                pass
+
+        def fake_post(url, **kwargs):
+            captured["body"] = kwargs.get("json")
+            return MockResponse()
+
+        with mock.patch("requests.post", side_effect=fake_post):
+            nonstream_request(
+                source_config, timeout=5, model="m", source="Local",
+                prompt="hi", max_tokens=10, system_prompt="You are a coder.",
+            )
+
+        self.assertIn("body", captured)
+        messages = captured["body"]["messages"]
+        self.assertEqual(messages[0], {"role": "system", "content": "You are a coder."})
+        self.assertEqual(messages[1], {"role": "user", "content": "hi"})
+
+    def test_nonstream_request_no_system_prompt_when_none(self):
+        """nonstream_request only includes a user message when no system_prompt is provided."""
+        source_config = {"Local": {"api_url": "http://localhost/chat/completions", "headers": {}}}
+        captured = {}
+
+        class MockResponse:
+            status_code = 200
+
+            def iter_content(self, chunk_size=8192):
+                body = json.dumps({
+                    "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
+                })
+                yield body.encode("utf-8")
+
+            def close(self):
+                pass
+
+        def fake_post(url, **kwargs):
+            captured["body"] = kwargs.get("json")
+            return MockResponse()
+
+        with mock.patch("requests.post", side_effect=fake_post):
+            nonstream_request(
+                source_config, timeout=5, model="m", source="Local",
+                prompt="hi", max_tokens=10,
+            )
+
+        self.assertIn("body", captured)
+        messages = captured["body"]["messages"]
+        self.assertEqual(len(messages), 1)
+        self.assertEqual(messages[0], {"role": "user", "content": "hi"})
+
+
 class TestFetchModelsV1(unittest.TestCase):
     """Tests for the model discovery helper."""
 
