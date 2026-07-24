@@ -585,6 +585,27 @@ class TestConfigFallback(unittest.TestCase):
             self.assertIn("benchmark-config.yml", result.stderr)
 
 
+class TestTimeCapsule(unittest.TestCase):
+    def test_config_file_is_copied_to_output_dir_json(self):
+        """A JSON config is copied into the output directory as a time capsule."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_path = os.path.join(tmpdir, "config.json")
+            output_dir = os.path.join(tmpdir, "output")
+            with open(config_path, "w") as f:
+                json.dump({"output_dir": output_dir}, f)
+
+            result = subprocess.run(
+                [sys.executable, "ai-benchmark.py", "--config", config_path],
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            copied = os.path.join(output_dir, "config.json")
+            self.assertTrue(os.path.isfile(copied))
+            with open(copied, "r", encoding="utf-8") as f:
+                self.assertEqual(json.load(f)["output_dir"], output_dir)
+
+
 class TestPerPluginTemperature(unittest.TestCase):
     def test_plugin_temperature_from_config(self):
         from benchmark_core import parse_plugin_temperatures

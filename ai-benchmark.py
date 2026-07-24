@@ -12,6 +12,7 @@ import glob
 import json
 import os
 import random
+import shutil
 import subprocess
 import sys
 import threading
@@ -632,6 +633,11 @@ def main():
     print(f"📂 Output directory: {output_dir}", file=sys.stderr)
 
     os.makedirs(output_dir, exist_ok=True)
+
+    try:
+        shutil.copy2(config_path, os.path.join(output_dir, os.path.basename(config_path)))
+    except Exception as e:
+        print(f"⚠️  Could not copy config file to output directory: {e}", file=sys.stderr)
 
     if args.restart:
         if os.path.exists(state_file):
