@@ -1,3 +1,5 @@
+default_stages: [pre-commit]
+
 repos:
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.4.0
@@ -10,28 +12,28 @@ repos:
     hooks:
       - id: python-syntax-check
         name: Python syntax check
-        entry: bash -c "python -m py_compile ai-benchmark.py benchmark_core.py benchmark_plugin.py plugins/__init__.py plugins/challenges/*.py plugins/outputs/*.py"
+        entry: python -m py_compile
         language: system
-        pass_filenames: false
-        always_run: true
+        types: [python]
 
       - id: mypy
         name: mypy type check
-        entry: mypy ai-benchmark.py benchmark_core.py benchmark_plugin.py plugins
+        entry: mypy
         language: system
-        pass_filenames: false
-        always_run: true
+        types: [python]
+        require_serial: true
 
       - id: cli-smoke-test
         name: CLI smoke test
         entry: python ai-benchmark.py --dump-default-config
         language: system
         pass_filenames: false
-        always_run: true
+        types: [python]
 
-      - id: unit-tests
-        name: Run unit tests
-        entry: bash -c "python -m pytest tests/ plugins/challenges/test_scoring.py plugins/outputs/ -v"
+      - id: tests-pre-push
+        name: Run unit tests with coverage
+        entry: bash scripts/pre-push-tests.sh
         language: system
         pass_filenames: false
         always_run: true
+        stages: [pre-push]

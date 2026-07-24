@@ -30,25 +30,10 @@ jobs:
 
       - name: Run pre-commit hooks
         run: |
-          pre-commit run --all-files
-
-      - name: Lint with ruff
-        run: |
-          ruff check ai-benchmark.py benchmark_core.py benchmark_plugin.py plugins tests
+          pre-commit run --all-files --show-diff-on-failure
 
       - name: Run unit tests with coverage
         run: |
           coverage run -m pytest tests/ plugins/challenges/ plugins/outputs/ -q
           coverage report -m
-
-      - name: Enforce minimum coverage threshold
-        run: |
           coverage report --fail-under=90
-
-      - name: Syntax check all Python files
-        run: |
-          git ls-files '*.py' | xargs python -m py_compile
-
-      - name: CLI smoke test
-        run: |
-          python ai-benchmark.py --dump-default-config > /dev/null
