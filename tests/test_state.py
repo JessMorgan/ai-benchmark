@@ -77,6 +77,30 @@ class TestBenchmarkState(unittest.TestCase):
             loaded = self.module.BenchmarkState.load_state(path, models, self.plugin_ids)
             self.assertIsNone(loaded.session_seed)
 
+    def test_load_state_with_missing_tui_keys(self):
+        """Older state files missing newer TUI keys still load without KeyError."""
+        models = {"model-a": "Source1"}
+        state = self.module.BenchmarkState(models, self.plugin_ids)
+        state.update("model-a", status="completed")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, "state.json")
+            state.save_state(path)
+            with open(path) as f:
+                data = json.load(f)
+            # Strip newer keys that older state files may not have.
+            for info in data.get("model_info", {}).values():
+                info.pop("phase_detail", None)
+                info.pop("attempt", None)
+                info.pop("max_tok", None)
+            with open(path, "w") as f:
+                json.dump(data, f)
+            loaded = self.module.BenchmarkState.load_state(path, models, self.plugin_ids)
+            snap = loaded.snapshot()
+            self.assertEqual(snap["model-a"]["status"], "completed")
+            self.assertEqual(snap["model-a"]["phase_detail"], "")
+            self.assertEqual(snap["model-a"]["attempt"], 0)
+            self.assertEqual(snap["model-a"]["max_tok"], 0)
+
     def test_load_state_with_dict_model_config(self):
         """Regression test: dict-valued model entries resolve to source strings."""
         raw_models = {

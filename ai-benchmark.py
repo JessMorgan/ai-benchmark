@@ -16,6 +16,7 @@ import subprocess
 import sys
 import threading
 import time
+import traceback
 
 from benchmark_core import (
     BenchmarkState,
@@ -40,15 +41,16 @@ def _wr(stdscr, max_x, max_y, y, x, text, attr=0):
     """Write text to the curses screen, bounded by the terminal size."""
     if not (0 <= y < max_y and 0 <= x < max_x):
         return
-    stdscr.move(y, x)
-    stdscr.clrtoeol()
     try:
-        stdscr.addstr(y, x, text[:max_x - x], attr)
-    except Exception:
+        stdscr.move(y, x)
+        stdscr.clrtoeol()
         try:
+            stdscr.addstr(y, x, text[:max_x - x], attr)
+        except curses.error:
             stdscr.addstr(y, x, text[:max_x - x])
-        except Exception:
-            pass
+    except curses.error:
+        # Window too small or resized since getmaxyx(); skip this frame.
+        pass
 
 
 def _fallback_tui_loop(state, stop_event, session_seed=None):
@@ -77,7 +79,11 @@ def _fallback_tui_loop(state, stop_event, session_seed=None):
 
 def _handle_tui_input(stdscr, scroll_y, scroll_x, max_row_offset, visible_rows, max_x, frozen_width, plugin_hdr_len):
     """Handle keyboard navigation and return updated scroll offsets."""
-    key = stdscr.getch()
+    try:
+        key = stdscr.getch()
+    except Exception:
+        # getch() can raise on terminal resize or when stdin is interrupted.
+        key = -1
     if key == curses.KEY_UP:
         scroll_y = max(0, scroll_y - 1)
     elif key == curses.KEY_DOWN:
@@ -151,7 +157,7 @@ def _format_model_row(name, s, display_idx, active_plugins, source_abbrevs):
         except Exception:
             return str(v)
 
-    src_ab = source_abbrevs.get(s["source"], s["source"][:3])
+    src_ab = _source_abbr(source_abbrevs, s.get("source"))
     model_disp = name[:16]
     frozen = f"{display_idx:>3}  {src_ab:<3} {model_disp:<18}  {status_ch:<3}"
 
@@ -208,6 +214,15 @@ def _render_model_rows(stdscr, max_x, max_y, snap_items, active_plugins, source_
             pass
 
 
+def _source_abbr(source_abbrevs, source):
+    """Return a short abbreviation for a source, with a safe fallback."""
+    if source in source_abbrevs:
+        return source_abbrevs[source]
+    if source is None:
+        return "???"
+    return str(source)[:3] or "???"
+
+
 def _render_live_activity(stdscr, max_x, max_y, snap, source_abbrevs, live_models,
                           live_top, live_height, log_top):
     """Render the live activity section for currently running models."""
@@ -217,13 +232,16 @@ def _render_live_activity(stdscr, max_x, max_y, snap, source_abbrevs, live_model
     for nm in live_models[:live_height - 1]:
         if live_row >= log_top:
             break
-        s = snap[nm]
-        src_ab = source_abbrevs.get(s["source"], s["source"][:3])
+        s = snap.get(nm) or {}
+        src_ab = _source_abbr(source_abbrevs, s.get("source"))
         elapsed = (time.time() - s.get("attempt_start", 0)) if s.get("attempt_start") else 0
         err = s.get("last_error", "")
         phase_ch = "\U0001f537"
-        msg = (f" {phase_ch} [{src_ab}] {nm[:42]}: {s['phase_detail']} "
-               f"Att {s['attempt']}/3  Tok {s['max_tok']}  "
+        phase_detail = s.get("phase_detail", "")
+        attempt = s.get("attempt", 0)
+        max_tok = s.get("max_tok", 0)
+        msg = (f" {phase_ch} [{src_ab}] {nm[:42]}: {phase_detail} "
+               f"Att {attempt}/3  Tok {max_tok}  "
                f"{elapsed:5.0f}s"
                f"{'  '+err if err else ''}")
         _wr(stdscr, max_x, max_y, live_row, 0, msg)
@@ -310,58 +328,72 @@ def tui_main(state, stop_event, num_sources, active_plugins, session_seed=None):
                 (f"{p.id[:3]}TPS", 6),
             ])
 
+        _last_tui_error_ts = 0.0
         while not stop_event.is_set():
-            max_y, max_x = stdscr.getmaxyx()
-            snap = state.snapshot()
-            snap_items = list(snap.items())
-            done = state.completed
-            total = state.total
-            running = [n for n, s in snap.items() if s["status"].startswith("running_")]
-            queued = [n for n, s in snap.items() if s["status"] == "queued"]
-            pending = [n for n, s in snap.items() if s["status"] == "pending"]
+            try:
+                max_y, max_x = stdscr.getmaxyx()
+                snap = state.snapshot()
+                snap_items = list(snap.items())
+                done = state.completed
+                total = state.total
+                running = [n for n, s in snap.items() if s["status"].startswith("running_")]
+                queued = [n for n, s in snap.items() if s["status"] == "queued"]
+                pending = [n for n, s in snap.items() if s["status"] == "pending"]
 
-            FOOTER_LINE = max_y - 1
-            MAX_LOG_ROWS = 3
-            LOG_TOP = FOOTER_LINE - MAX_LOG_ROWS
-            LIVE_TOP = LOG_TOP - LIVE_HEIGHT
-            MODEL_BOTTOM = LIVE_TOP - 1
-            MODEL_TOP = 4
-            VISIBLE_ROWS = max(0, MODEL_BOTTOM - MODEL_TOP)
+                FOOTER_LINE = max_y - 1
+                MAX_LOG_ROWS = 3
+                LOG_TOP = FOOTER_LINE - MAX_LOG_ROWS
+                LIVE_TOP = LOG_TOP - LIVE_HEIGHT
+                MODEL_BOTTOM = LIVE_TOP - 1
+                MODEL_TOP = 4
+                VISIBLE_ROWS = max(0, MODEL_BOTTOM - MODEL_TOP)
 
-            _render_header_and_summary(
-                stdscr, max_x, max_y, snap, done, total, running, queued, pending,
-                scroll_y, VISIBLE_ROWS, len(snap), session_seed
-            )
+                _render_header_and_summary(
+                    stdscr, max_x, max_y, snap, done, total, running, queued, pending,
+                    scroll_y, VISIBLE_ROWS, len(snap), session_seed
+                )
 
-            plugin_hdr = _render_table_headings(
-                stdscr, max_x, max_y, scroll_x, frozen_cols, plugin_cols, frozen_width
-            )
+                plugin_hdr = _render_table_headings(
+                    stdscr, max_x, max_y, scroll_x, frozen_cols, plugin_cols, frozen_width
+                )
 
-            max_row_offset = max(0, len(snap_items) - VISIBLE_ROWS)
-            scroll_y, scroll_x = _handle_tui_input(
-                stdscr, scroll_y, scroll_x, max_row_offset, VISIBLE_ROWS, max_x,
-                frozen_width, len(plugin_hdr)
-            )
+                max_row_offset = max(0, len(snap_items) - VISIBLE_ROWS)
+                scroll_y, scroll_x = _handle_tui_input(
+                    stdscr, scroll_y, scroll_x, max_row_offset, VISIBLE_ROWS, max_x,
+                    frozen_width, len(plugin_hdr)
+                )
 
-            _render_model_rows(
-                stdscr, max_x, max_y, snap_items, active_plugins, source_abbrevs,
-                scroll_y, scroll_x, VISIBLE_ROWS, frozen_width, MODEL_TOP
-            )
+                _render_model_rows(
+                    stdscr, max_x, max_y, snap_items, active_plugins, source_abbrevs,
+                    scroll_y, scroll_x, VISIBLE_ROWS, frozen_width, MODEL_TOP
+                )
 
-            if MODEL_BOTTOM >= 0:
-                _wr(stdscr, max_x, max_y, MODEL_BOTTOM, 0, "\u2500" * min(max_x, 60))
+                if MODEL_BOTTOM >= 0:
+                    _wr(stdscr, max_x, max_y, MODEL_BOTTOM, 0, "\u2500" * min(max_x, 60))
 
-            _render_live_activity(
-                stdscr, max_x, max_y, snap, source_abbrevs, running,
-                LIVE_TOP, LIVE_HEIGHT, LOG_TOP
-            )
+                _render_live_activity(
+                    stdscr, max_x, max_y, snap, source_abbrevs, running,
+                    LIVE_TOP, LIVE_HEIGHT, LOG_TOP
+                )
 
-            _render_recent_errors(stdscr, max_x, max_y, state, LOG_TOP, FOOTER_LINE)
+                _render_recent_errors(stdscr, max_x, max_y, state, LOG_TOP, FOOTER_LINE)
 
-            queuing = queued + pending
-            _render_footer(stdscr, max_x, max_y, running, queuing, FOOTER_LINE)
+                queuing = queued + pending
+                _render_footer(stdscr, max_x, max_y, running, queuing, FOOTER_LINE)
 
-            stdscr.refresh()
+                stdscr.refresh()
+            except Exception:
+                # Don't let a transient curses/render error kill the TUI thread.
+                # Log to a file so the screen isn't corrupted and the benchmark
+                # workers can keep running. Throttle to avoid a runaway log.
+                now = time.time()
+                if now - _last_tui_error_ts > 5.0:
+                    _last_tui_error_ts = now
+                    try:
+                        with open("tui_render_errors.log", "a", encoding="utf-8") as f:
+                            traceback.print_exc(file=f)
+                    except Exception:
+                        pass
             time.sleep(0.2)
 
     finally:

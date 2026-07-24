@@ -124,7 +124,10 @@ class BenchmarkState:
             latest_by_model[r["model"]] = r
         for name, info in saved_info.items():
             if name in state._model_info:
-                state._model_info[name] = info
+                # Merge saved values into the fully-initialized default dict.
+                # This keeps backward compatibility with older state files that
+                # may be missing newer keys (e.g. phase_detail, attempt).
+                state._model_info[name].update(info)
                 if new_plugins:
                     for pid in new_plugins:
                         state._model_info[name].setdefault(f"{pid}_score", None)
