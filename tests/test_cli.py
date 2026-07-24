@@ -584,6 +584,28 @@ class TestConfigFallback(unittest.TestCase):
             self.assertIn("benchmark-config.yaml", result.stderr)
             self.assertIn("benchmark-config.yml", result.stderr)
 
+    def test_default_yaml_config_is_used_when_json_missing(self):
+        """If benchmark-config.json is missing, benchmark-config.yaml is used."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_path = os.path.join(tmpdir, "benchmark-config.yaml")
+            output_dir = os.path.join(tmpdir, "output")
+            with open(config_path, "w") as f:
+                f.write(f"output_dir: {output_dir}\n")
+
+            result = subprocess.run(
+                [sys.executable, os.path.abspath("ai-benchmark.py")],
+                cwd=tmpdir,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            run_info_path = os.path.join(output_dir, "run-info.json")
+            self.assertTrue(os.path.isfile(run_info_path))
+            with open(run_info_path, "r", encoding="utf-8") as f:
+                run_info = json.load(f)
+            self.assertEqual(os.path.basename(run_info["config_file"]), "benchmark-config.yaml")
+            self.assertTrue(os.path.isfile(os.path.join(output_dir, "benchmark-config.yaml")))
+
 
 class TestTimeCapsule(unittest.TestCase):
     def test_config_file_is_copied_to_output_dir_json(self):
@@ -604,6 +626,65 @@ class TestTimeCapsule(unittest.TestCase):
             self.assertTrue(os.path.isfile(copied))
             with open(copied, "r", encoding="utf-8") as f:
                 self.assertEqual(json.load(f)["output_dir"], output_dir)
+
+
+class TestRunInfo(unittest.TestCase):
+    def test_run_info_written_for_empty_config(self):
+        """A run with no models still writes run-info.json with metadata."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_path = os.path.join(tmpdir, "config.yaml")
+            output_dir = os.path.join(tmpdir, "output")
+            with open(config_path, "w") as f:
+                f.write(f"output_dir: {output_dir}\n")
+
+            result = subprocess.run(
+                [sys.executable, "ai-benchmark.py", "--config", config_path],
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+            run_info_path = os.path.join(output_dir, "run-info.json")
+            self.assertTrue(os.path.isfile(run_info_path))
+            with open(run_info_path, "r", encoding="utf-8") as f:
+                run_info = json.load(f)
+
+            self.assertEqual(run_info["config_file"], config_path)
+            self.assertEqual(run_info["output_dir"], output_dir)
+            self.assertEqual(run_info["status"], "completed")
+            self.assertEqual(run_info["total_targets"], 0)
+            self.assertEqual(run_info["completed_targets"], 0)
+            self.assertIn("cli_args", run_info)
+            self.assertIn("start_time", run_info)
+            self.assertIn("end_time", run_info)
+            self.assertIsNotNone(run_info["end_time"])
+            self.assertIn("session_seed", run_info)
+
+    def test_write_run_info_persists_status(self):
+        """_write_run_info persists the supplied status to run-info.json."""
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("ai_benchmark", "ai-benchmark.py")
+        ai_benchmark = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(ai_benchmark)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            run_info = {
+                "config_file": "config.yaml",
+                "cli_args": {},
+                "output_dir": tmpdir,
+                "start_time": None,
+                "end_time": None,
+                "status": "running",
+                "total_targets": 0,
+                "completed_targets": 0,
+                "worker_errors": 0,
+                "session_seed": None,
+            }
+            ai_benchmark._write_run_info(tmpdir, run_info)
+            run_info_path = os.path.join(tmpdir, "run-info.json")
+            self.assertTrue(os.path.isfile(run_info_path))
+            with open(run_info_path, "r", encoding="utf-8") as f:
+                self.assertEqual(json.load(f)["status"], "running")
 
 
 class TestPerPluginTemperature(unittest.TestCase):

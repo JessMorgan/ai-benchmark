@@ -18,6 +18,7 @@ import sys
 import threading
 import time
 import traceback
+from datetime import datetime
 
 from benchmark_core import (
     BenchmarkState,
@@ -54,6 +55,16 @@ def _resolve_config_path(config_path):
             if os.path.exists(fallback):
                 return fallback
     return None
+
+
+def _write_run_info(output_dir, run_info):
+    """Persist run metadata to ``run-info.json`` in the output directory."""
+    path = os.path.join(output_dir, "run-info.json")
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(run_info, f, indent=2, default=str)
+    except Exception as e:
+        print(f"⚠️  Could not write run-info.json: {e}", file=sys.stderr)
 
 
 def _wr(stdscr, max_x, max_y, y, x, text, attr=0):
@@ -639,204 +650,236 @@ def main():
     except Exception as e:
         print(f"⚠️  Could not copy config file to output directory: {e}", file=sys.stderr)
 
-    if args.restart:
-        if os.path.exists(state_file):
-            os.remove(state_file)
-        for f in glob.glob(os.path.join(output_dir, "results.*")):
-            try:
-                os.remove(f)
-            except OSError:
-                pass
-        logs_dir = os.path.join(output_dir, "logs")
-        if os.path.isdir(logs_dir):
-            for f in glob.glob(os.path.join(logs_dir, "*.log")):
+    state = None
+    worker_errors = 0
+    interrupted = False
+    run_info = {
+        "config_file": config_path,
+        "cli_args": vars(args),
+        "output_dir": output_dir,
+        "start_time": datetime.now().isoformat(),
+        "end_time": None,
+        "status": "running",
+        "total_targets": len(targets),
+        "completed_targets": 0,
+        "worker_errors": 0,
+        "session_seed": None,
+        "active_plugins": [p.id for p in active_plugins],
+        "targets": list(targets.keys()),
+    }
+
+    try:
+        if args.restart:
+            if os.path.exists(state_file):
+                os.remove(state_file)
+            for f in glob.glob(os.path.join(output_dir, "results.*")):
                 try:
                     os.remove(f)
                 except OSError:
                     pass
+            logs_dir = os.path.join(output_dir, "logs")
+            if os.path.isdir(logs_dir):
+                for f in glob.glob(os.path.join(logs_dir, "*.log")):
+                    try:
+                        os.remove(f)
+                    except OSError:
+                        pass
 
-    plugin_ids = [p.id for p in active_plugins]
-    plugin_versions = {p.id: p.version for p in active_plugins}
+        plugin_ids = [p.id for p in active_plugins]
+        plugin_versions = {p.id: p.version for p in active_plugins}
 
-    resumed = False
-    if not args.restart and os.path.exists(state_file):
-        try:
-            with open(state_file) as f:
-                saved_state = json.load(f)
-            saved_plugins = saved_state.get("active_plugins", [])
+        resumed = False
+        if not args.restart and os.path.exists(state_file):
+            try:
+                with open(state_file) as f:
+                    saved_state = json.load(f)
+                saved_plugins = saved_state.get("active_plugins", [])
 
-            if set(saved_plugins) != set(plugin_ids):
-                print("\n⚠️  Plugin set has changed.", file=sys.stderr)
-                print(f"   Saved:   {', '.join(saved_plugins) or '(none)'}", file=sys.stderr)
-                print(f"   Current: {', '.join(plugin_ids)}", file=sys.stderr)
-                choice = _prompt_restart_or_continue(scripted=args.scripted)
-                if choice == "restart":
-                    os.remove(state_file)
-                    state = BenchmarkState(targets, plugin_ids)
-                elif choice == "continue":
+                if set(saved_plugins) != set(plugin_ids):
+                    print("\n⚠️  Plugin set has changed.", file=sys.stderr)
+                    print(f"   Saved:   {', '.join(saved_plugins) or '(none)'}", file=sys.stderr)
+                    print(f"   Current: {', '.join(plugin_ids)}", file=sys.stderr)
+                    choice = _prompt_restart_or_continue(scripted=args.scripted)
+                    if choice == "restart":
+                        os.remove(state_file)
+                        state = BenchmarkState(targets, plugin_ids)
+                    elif choice == "continue":
+                        state = BenchmarkState.load_state(
+                            state_file, targets, plugin_ids,
+                            rerun_failed=not args.no_rerun_failed)
+                        resumed = True
+                    else:
+                        sys.exit(0)
+                else:
                     state = BenchmarkState.load_state(
                         state_file, targets, plugin_ids,
                         rerun_failed=not args.no_rerun_failed)
                     resumed = True
-                else:
-                    sys.exit(0)
-            else:
-                state = BenchmarkState.load_state(
-                    state_file, targets, plugin_ids,
-                    rerun_failed=not args.no_rerun_failed)
-                resumed = True
 
-            if resumed:
-                completed = state.completed
-                total = state.total
-                print(f"📂 Resuming — {completed}/{total} models already completed. "
-                      f"Failed models/plugins will be re-run.\n"
-                      f"   Remove {state_file} or use --restart to start fresh.",
-                      file=sys.stderr)
+                if resumed:
+                    completed = state.completed
+                    total = state.total
+                    print(f"📂 Resuming — {completed}/{total} models already completed. "
+                          f"Failed models/plugins will be re-run.\n"
+                          f"   Remove {state_file} or use --restart to start fresh.",
+                          file=sys.stderr)
 
-                if completed == total and total > 0:
-                    print(f"\n{'='*70}")
-                    print(f"✅ PRIOR RUN COMPLETE — {completed}/{total} successful")
-                    print(f"   Results: {output_dir}/")
-                    print(f"{'='*70}")
-                    sys.exit(0)
-        except Exception as e:
-            print(f"⚠️  Could not load state file ({e}), starting fresh.",
-                  file=sys.stderr)
-            state = BenchmarkState(targets, plugin_ids)
-    else:
-        state = BenchmarkState(targets, plugin_ids)
-
-    # Use the CLI --seed if provided; otherwise preserve the seed from a
-    # resumed state so report exports remain consistent.
-    if args.seed is not None:
-        session_seed = args.seed
-    elif getattr(state, "session_seed", None) is not None:
-        session_seed = state.session_seed
-    else:
-        session_seed = random.randint(0, 2**31 - 1)
-    state.session_seed = session_seed
-
-    stop_event = threading.Event()
-
-    # Run the TUI as a daemon so the process can exit promptly on Ctrl+C.
-    # Without this, a stuck curses/fallback UI thread would block interpreter
-    # shutdown, forcing the user to press Ctrl+C a second time.
-    tui_thread = threading.Thread(
-        target=tui_main,
-        args=(state, stop_event, len(source_config), active_plugins, session_seed),
-        daemon=True,
-    )
-    tui_thread.start()
-
-    time.sleep(0.3)
-
-    total = state.total
-    worker_errors = 0
-    interrupted = False
-
-    source_queues = {src: [] for src in set(t["source"] for t in targets.values())}
-    for name, info in targets.items():
-        snap = state.snapshot().get(name, {})
-        if snap.get("status") in ("completed",):
-            continue
-        source_queues[info["source"]].append(name)
-
-    source_threads = {}
-    errors_lock = threading.Lock()
-    raw_targets = {}
-    raw_targets.update(cfg.get("models", {}))
-    raw_targets.update(cfg.get("agents", {}))
-
-    def worker(source, model_names):
-        nonlocal worker_errors
-        for model_name in model_names:
-            if stop_event.is_set():
-                break
-            try:
-                model_blacklist = get_target_plugins_blacklist(raw_targets, model_name)
-                model_active_plugins = [p for p in active_plugins if p.id not in model_blacklist]
-                target_info = targets[model_name]
-                run_model(model_name, source, state, model_active_plugins, source_config,
-                          timeout, token_levels, output_dir, session_seed=session_seed,
-                          global_cfg=cfg, stop_event=stop_event,
-                          save_responses=args.save_responses,
-                          api_model=target_info["api_model"],
-                          system_prompt=target_info["system_prompt"],
-                          is_agent=target_info["is_agent"])
-                state.save_state(state_file, plugin_versions=plugin_versions)
-                _save_outputs(state, output_dir, active_plugins)
+                    if completed == total and total > 0:
+                        print(f"\n{'='*70}")
+                        print(f"✅ PRIOR RUN COMPLETE — {completed}/{total} successful")
+                        print(f"   Results: {output_dir}/")
+                        print(f"{'='*70}")
+                        sys.exit(0)
             except Exception as e:
-                with errors_lock:
-                    worker_errors += 1
-                print(f"\n❌ Worker exception ({model_name}): {type(e).__name__}: {e}",
+                print(f"⚠️  Could not load state file ({e}), starting fresh.",
                       file=sys.stderr)
+                state = BenchmarkState(targets, plugin_ids)
+        else:
+            state = BenchmarkState(targets, plugin_ids)
 
-    for source, queue in source_queues.items():
-        if not queue:
-            continue
-        t = threading.Thread(target=worker, args=(source, queue), daemon=True)
-        t.start()
-        source_threads[source] = t
+        # Use the CLI --seed if provided; otherwise preserve the seed from a
+        # resumed state so report exports remain consistent.
+        if args.seed is not None:
+            session_seed = args.seed
+        elif getattr(state, "session_seed", None) is not None:
+            session_seed = state.session_seed
+        else:
+            session_seed = random.randint(0, 2**31 - 1)
+        state.session_seed = session_seed
+        run_info["session_seed"] = session_seed
 
-    def _join_workers(timeout=None):
-        """Wait for worker threads with an optional timeout.
+        stop_event = threading.Event()
 
-        Returns True if all workers finished, False if any are still alive.
-        """
+        # Run the TUI as a daemon so the process can exit promptly on Ctrl+C.
+        # Without this, a stuck curses/fallback UI thread would block interpreter
+        # shutdown, forcing the user to press Ctrl+C a second time.
+        tui_thread = threading.Thread(
+            target=tui_main,
+            args=(state, stop_event, len(source_config), active_plugins, session_seed),
+            daemon=True,
+        )
+        tui_thread.start()
+
+        time.sleep(0.3)
+
+        total = state.total
+
+        source_queues = {src: [] for src in set(t["source"] for t in targets.values())}
+        for name, info in targets.items():
+            snap = state.snapshot().get(name, {})
+            if snap.get("status") in ("completed",):
+                continue
+            source_queues[info["source"]].append(name)
+
+        source_threads = {}
+        errors_lock = threading.Lock()
+        raw_targets = {}
+        raw_targets.update(cfg.get("models", {}))
+        raw_targets.update(cfg.get("agents", {}))
+
+        def worker(source, model_names):
+            nonlocal worker_errors
+            for model_name in model_names:
+                if stop_event.is_set():
+                    break
+                try:
+                    model_blacklist = get_target_plugins_blacklist(raw_targets, model_name)
+                    model_active_plugins = [p for p in active_plugins if p.id not in model_blacklist]
+                    target_info = targets[model_name]
+                    run_model(model_name, source, state, model_active_plugins, source_config,
+                              timeout, token_levels, output_dir, session_seed=session_seed,
+                              global_cfg=cfg, stop_event=stop_event,
+                              save_responses=args.save_responses,
+                              api_model=target_info["api_model"],
+                              system_prompt=target_info["system_prompt"],
+                              is_agent=target_info["is_agent"])
+                    state.save_state(state_file, plugin_versions=plugin_versions)
+                    _save_outputs(state, output_dir, active_plugins)
+                except Exception as e:
+                    with errors_lock:
+                        worker_errors += 1
+                    print(f"\n❌ Worker exception ({model_name}): {type(e).__name__}: {e}",
+                          file=sys.stderr)
+
+        for source, queue in source_queues.items():
+            if not queue:
+                continue
+            t = threading.Thread(target=worker, args=(source, queue), daemon=True)
+            t.start()
+            source_threads[source] = t
+
+        def _join_workers(timeout=None):
+            """Wait for worker threads with an optional timeout.
+
+            Returns True if all workers finished, False if any are still alive.
+            """
+            if not source_threads:
+                return True
+            if timeout is None:
+                # Poll with short timeouts so Ctrl+C is handled promptly.
+                while any(t.is_alive() for t in source_threads.values()):
+                    for t in source_threads.values():
+                        t.join(timeout=0.2)
+                return True
+            for t in source_threads.values():
+                t.join(timeout=timeout / max(len(source_threads), 1))
+            return not any(t.is_alive() for t in source_threads.values())
+
         if not source_threads:
-            return True
-        if timeout is None:
-            # Poll with short timeouts so Ctrl+C is handled promptly.
-            while any(t.is_alive() for t in source_threads.values()):
-                for t in source_threads.values():
-                    t.join(timeout=0.2)
-            return True
-        for t in source_threads.values():
-            t.join(timeout=timeout / max(len(source_threads), 1))
-        return not any(t.is_alive() for t in source_threads.values())
+            print("✅ All models already completed. Nothing to run.", file=sys.stderr)
+        else:
+            try:
+                _join_workers()
+            except KeyboardInterrupt:
+                interrupted = True
+                run_info["status"] = "interrupted"
+                stop_event.set()
+                print("\n\n⚠️  Ctrl+C — saving state and shutting down...", file=sys.stderr)
+                close_active_requests()
+                # Workers are daemon threads, so the process can exit without
+                # waiting for them. Give them a brief grace period to finish
+                # cleanly, but do not block shutdown on a slow I/O call.
+                _join_workers(timeout=1.0)
 
-    if not source_threads:
-        print("✅ All models already completed. Nothing to run.", file=sys.stderr)
-    else:
+        stop_event.set()
+        # The TUI thread is a daemon, so we don't need to wait for it. A short
+        # timeout keeps the terminal tidy if it happens to finish quickly.
+        tui_thread.join(timeout=0.5)
+
         try:
-            _join_workers()
-        except KeyboardInterrupt:
-            interrupted = True
-            stop_event.set()
-            print("\n\n⚠️  Ctrl+C — saving state and shutting down...", file=sys.stderr)
-            close_active_requests()
-            # Workers are daemon threads, so the process can exit without
-            # waiting for them. Give them a brief grace period to finish
-            # cleanly, but do not block shutdown on a slow I/O call.
-            _join_workers(timeout=1.0)
+            state.save_state(state_file, plugin_versions=plugin_versions)
+        except Exception:
+            pass
 
-    stop_event.set()
-    # The TUI thread is a daemon, so we don't need to wait for it. A short
-    # timeout keeps the terminal tidy if it happens to finish quickly.
-    tui_thread.join(timeout=0.5)
-
-    try:
-        state.save_state(state_file, plugin_versions=plugin_versions)
-    except Exception:
-        pass
-
-    if interrupted:
-        done = state.completed
-        print(f"✅ Saved state ({done}/{total} done). Re-run without --restart to continue.\n",
-              file=sys.stderr)
-        return
-
-    _save_outputs(state, output_dir, active_plugins)
-    final_results = state.latest_results()
-    ok_count = len([r for r in final_results if r["status"] == "ok"])
-    print(f"\n{'='*70}")
-    print(f"AI BENCHMARK COMPLETE — {ok_count}/{total} successful "
-          f"({worker_errors} worker errors)")
-    print(f"Outputs: {output_dir}/")
-    for fname in sorted(os.listdir(output_dir)):
-        print(f"  - {fname}")
-    print(f"{'='*70}")
+        if interrupted:
+            done = state.completed
+            print(f"✅ Saved state ({done}/{total} done). Re-run without --restart to continue.\n",
+                  file=sys.stderr)
+        else:
+            _save_outputs(state, output_dir, active_plugins)
+        final_results = state.latest_results()
+        ok_count = len([r for r in final_results if r["status"] == "ok"])
+        print(f"\n{'='*70}")
+        print(f"AI BENCHMARK COMPLETE — {ok_count}/{total} successful "
+              f"({worker_errors} worker errors)")
+        print(f"Outputs: {output_dir}/")
+        for fname in sorted(os.listdir(output_dir)):
+            print(f"  - {fname}")
+        print(f"{'='*70}")
+    except KeyboardInterrupt:
+        run_info["status"] = "interrupted"
+        raise
+    except Exception as exc:
+        run_info["status"] = "crashed"
+        run_info["error"] = f"{type(exc).__name__}: {exc}"
+        raise
+    finally:
+        run_info["end_time"] = datetime.now().isoformat()
+        run_info["completed_targets"] = state.completed if state is not None else 0
+        run_info["worker_errors"] = worker_errors
+        if run_info["status"] == "running":
+            run_info["status"] = "completed"
+        _write_run_info(output_dir, run_info)
 
 
 if __name__ == "__main__":
