@@ -37,6 +37,24 @@ from shell_completion import generate_shell_completion
 DEFAULT_CONFIG_PATH = "benchmark-config.json"
 
 
+def _resolve_config_path(config_path):
+    """Resolve a config path, falling back to .yaml/.yml when using the default.
+
+    If ``config_path`` is the default and does not exist, try
+    ``benchmark-config.yaml`` then ``benchmark-config.yml``. Returns the
+    first existing path, or ``None`` if no fallback exists.
+    """
+    if os.path.exists(config_path):
+        return config_path
+    if os.path.basename(config_path) == "benchmark-config.json":
+        base, _ = os.path.splitext(config_path)
+        for ext in (".yaml", ".yml"):
+            fallback = base + ext
+            if os.path.exists(fallback):
+                return fallback
+    return None
+
+
 def _wr(stdscr, max_x, max_y, y, x, text, attr=0):
     """Write text to the curses screen, bounded by the terminal size."""
     if not (0 <= y < max_y and 0 <= x < max_x):
@@ -533,9 +551,10 @@ def main():
             print(yaml.safe_dump(cfg, sort_keys=False, default_flow_style=False))
         sys.exit(0)
 
-    config_path = args.config
-    if not os.path.exists(config_path):
-        print(f"❌ Config file not found: {config_path}\n"
+    config_path = _resolve_config_path(args.config)
+    if config_path is None:
+        print(f"❌ Config file not found: {args.config}\n"
+              f"   Tried: benchmark-config.json, benchmark-config.yaml, benchmark-config.yml\n"
               f"   Copy benchmark-config.json or create one with --dump-default-config.",
               file=sys.stderr)
         sys.exit(1)

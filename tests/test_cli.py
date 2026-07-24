@@ -536,6 +536,55 @@ class TestScriptedMode(unittest.TestCase):
         self.assertEqual(choice, "continue")
 
 
+class TestConfigFallback(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("ai_benchmark", "ai-benchmark.py")
+        cls.ai_benchmark = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cls.ai_benchmark)
+
+    def test_resolve_config_prefers_existing_json(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            json_path = os.path.join(tmpdir, "benchmark-config.json")
+            yaml_path = os.path.join(tmpdir, "benchmark-config.yaml")
+            open(json_path, "w").close()
+            open(yaml_path, "w").close()
+            result = self.ai_benchmark._resolve_config_path(json_path)
+            self.assertEqual(result, json_path)
+
+    def test_resolve_config_falls_back_to_yaml_then_yml(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            default_path = os.path.join(tmpdir, "benchmark-config.json")
+            yaml_path = os.path.join(tmpdir, "benchmark-config.yaml")
+            yml_path = os.path.join(tmpdir, "benchmark-config.yml")
+            self.assertIsNone(self.ai_benchmark._resolve_config_path(default_path))
+            open(yml_path, "w").close()
+            self.assertEqual(self.ai_benchmark._resolve_config_path(default_path), yml_path)
+            open(yaml_path, "w").close()
+            self.assertEqual(self.ai_benchmark._resolve_config_path(default_path), yaml_path)
+
+    def test_resolve_config_does_not_fallback_for_explicit_path(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            explicit_path = os.path.join(tmpdir, "my-config.json")
+            self.assertIsNone(self.ai_benchmark._resolve_config_path(explicit_path))
+
+    def test_missing_default_config_exits_with_error(self):
+        """Running without a config exits with a helpful error message."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result = subprocess.run(
+                [sys.executable, os.path.abspath("ai-benchmark.py")],
+                cwd=tmpdir,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("Config file not found", result.stderr)
+            self.assertIn("benchmark-config.json", result.stderr)
+            self.assertIn("benchmark-config.yaml", result.stderr)
+            self.assertIn("benchmark-config.yml", result.stderr)
+
+
 class TestPerPluginTemperature(unittest.TestCase):
     def test_plugin_temperature_from_config(self):
         from benchmark_core import parse_plugin_temperatures
