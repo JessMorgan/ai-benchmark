@@ -1,5 +1,7 @@
 """MoE vs Dense architecture analysis benchmark task."""
 
+import re
+
 from benchmark_plugin import BenchmarkTaskPlugin
 from plugins.challenges._rubric import Rubric
 
@@ -11,7 +13,7 @@ class MoEDensePlugin(BenchmarkTaskPlugin):
 
     @property
     def version(self):
-        return "0.1.0"
+        return "0.2.0"
 
     @property
     def name(self):
@@ -19,7 +21,11 @@ class MoEDensePlugin(BenchmarkTaskPlugin):
 
     @property
     def max_score(self):
-        return 15.0
+        # 15 points of existing rubric + 2 points for the new sharper
+        # "Quantitative trade-off" criterion.  If we kept this at 15.0,
+        # Rubric.results() would cap the displayed score at min(earned, 15)
+        # and silently redistribute points without expanding the score range.
+        return 17.0
 
     @property
     def supports_streaming(self):
@@ -119,6 +125,66 @@ class MoEDensePlugin(BenchmarkTaskPlugin):
                 (r'(?:paper|report|arxiv|technical.*report)', 1.0),
                 (r'(?:2023|2024|2025|et\s*al|vashwani|shazeer|fedus|lepikhin|du et al)', 1.0),
             ],
+        )
+
+        # Quantitative trade-off (0-2): sharpen this task so merely listing
+        # concepts earns less than articulating a numeric comparison.  We
+        # require (a) at least one specific numeric measurement tied to
+        # compute or scale, and (b) an explicit side-by-side comparison
+        # anchored in numerics.  Pattern B uses re.DOTALL so multi-line
+        # comparisons like "70.6% MMLU \nvs 69.8% MMLU" still match; the
+        # default eval_regex flag is just IGNORECASE which would miss
+        # those.
+        rubric.eval_regex(
+            "Quantitative measurement (specifics)",
+            1.0,
+            t,
+            [
+                (
+                    # Word-boundary anchored so "30%" in prose still matches,
+                    # but "\\d+ teraflops / \\d+x faster" must have a real
+                    # unit.  `mixture[\\s\\-_]of[\\s\\-_]experts?` covers
+                    # hyphens, spaces, underscores between tokens.  The
+                    # `more\\s+compute` arm allows trailing adjectives like
+                    # "more compute intensive / required / overhead".
+                    r'\b\d+(?:\.\d+)?\s*(?:%|x\b|'
+                    r'TFLOPs?|GFLOPs?|FLOPs?|BFLOPs|'
+                    r'billion|trillion|million|billion\s+parameters?|trillion\s+parameters?|'
+                    r'TOPS(?:/s)?\b|'
+                    r'(?:B|M|K)\s+params?|(?:B|M|K)\s+parameters?)|'
+                    r'\b\d+\s*[xX]\s*(?:faster|slower|larger|smaller|cheaper|'
+                    r'more\s+compute(?:\s+(?:intensive|required|overhead|operations|heavy))?)|'
+                    r'\b(?:total\s+params?|active\s+params?|inference\s+params?|'
+                    r'trainable\s+params?|'
+                    r'total\s+parameters?|active\s+parameters?|inference\s+parameters?|'
+                    r'trainable\s+parameters?|total\s+parameter\s+count)|'
+                    r'\b\d+(?:\.\d+)?\s*(?:tokens?\s*[/]?\s*s\b|tokens?\s+per\s+second\b)',
+                    1.0,
+                ),
+            ],
+        )
+        rubric.eval_regex(
+            "Quantitative side-by-side comparison",
+            1.0,
+            t,
+            [
+                (
+                    # Four flavors of side-by-side comparison, all anchored
+                    # by a numeric token on at least one side so a generic
+                    # "MoE is faster than dense" without numerics cannot earn
+                    # credit.  Flavors 3 and 4 are expressed as single
+                    # subgraphs that contain both the digit and the
+                    # comparative - rather than as variable-width
+                    # lookbehinds, which Python's stdlib `re` rejects (it
+                    # only supports fixed-width lookbehinds).
+                    r'\b\d+(?:\.\d+)?%[\s\S]{0,200}?(?:vs\.?|versus|compared\s+to|over|higher\s+than|lower\s+than)[\s\S]{0,200}?\b\d+(?:\.\d+)?%|'
+                    r'\b\d+(?:\.\d+)?\s*(?:B|M|K)\s*(?:params?|parameters?)[\s\S]{0,200}?(?:vs\.?|versus|compared\s+to)[\s\S]{0,200}?\b\d+(?:\.\d+)?\s*(?:B|M|K)\s*(?:params?|parameters?)|'
+                    r'\b\d+(?:\.\d+)?\s*[xX][\s\S]{0,80}?\b(?:faster|slower|cheaper|more\s+expensive|larger|smaller)\s+than[\s\S]{0,80}?\b(?:dense|MoE|mixture[\s\-_]of[\s\-_]experts?|mixtral|llama|gemma|gpt-4)\b|'
+                    r'\b(?:dense|MoE|mixture[\s\-_]of[\s\-_]experts?|mixtral|llama|gemma|gpt-4)[\s\S]{0,80}?\b(?:faster|slower|cheaper|more\s+expensive|larger|smaller|denser|sparser)\s+than[\s\S]{0,200}?\b\d+(?:\.\d+)?',
+                    1.0,
+                ),
+            ],
+            flags=re.IGNORECASE | re.DOTALL,
         )
 
         return rubric.results()
