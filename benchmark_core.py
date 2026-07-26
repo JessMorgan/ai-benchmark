@@ -4,6 +4,7 @@ import os
 import re
 import threading
 import time
+import traceback
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from datetime import datetime
 
@@ -444,7 +445,22 @@ def _run_plugin_task(target_name, api_model, source, plugin, source_config, time
         except OSError:
             pass
 
-    score, rubric = plugin.evaluate(text)
+    # B5: a plugin that crashes mid-evaluation used to silently lose its
+    # ``meta.json`` sidecar — only ``prompt.txt`` and ``<plugin>.txt``
+    # survived, which forced debuggers to rebuild the failure by hand. We
+    # now catch every exception, persist the ``error`` + ``traceback``
+    # fields alongside the metrics that WERE successfully gathered, and
+    # surface the same ``(None, err_str)`` fail signature as the streaming
+    # failure path.
+    score = "fail"
+    rubric = []
+    score_error = None
+    score_traceback_text = None
+    try:
+        score, rubric = plugin.evaluate(text)
+    except Exception as exc:
+        score_error = f"plugin.evaluate raised {type(exc).__name__}: {exc}"
+        score_traceback_text = traceback.format_exc()
 
     if save_responses and output_dir:
         meta_path = os.path.join(responses_dir, f"{plugin.id}.meta.json")
@@ -463,11 +479,17 @@ def _run_plugin_task(target_name, api_model, source, plugin, source_config, time
             "seed": session_seed,
             "timestamp": datetime.now().isoformat(),
         }
+        if score_error is not None:
+            meta["error"] = score_error
+            meta["traceback"] = score_traceback_text
         try:
             with open(meta_path, "w", encoding="utf-8") as f:
                 json.dump(meta, f, indent=2, default=str)
         except OSError:
             pass
+
+    if score_error is not None:
+        return None, score_error
 
     result = {
         f"{pid}_score": score,
