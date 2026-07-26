@@ -171,6 +171,86 @@ class TestWireframesScoring(unittest.TestCase):
         score = self.plugin.score(text)
         self.assertGreater(score, 10.0)
 
+    # ───── Regression tests for the 2026-07-26 wireframes crash ─────
+
+    def _screen_criterion(self, rubric):
+        return next(c for c in rubric if c["name"] == "Multiple screens present")
+
+    def test_regression_emoji_numbered_screen_headers_score(self):
+        """Regression (A1+A2+A3): emoji-keycap numbered headers like
+        ``## 1️⃣ Screen: Dashboard`` used to crash with
+        ``UnboundLocalError: cannot access local variable 'earned'``
+        because both the explicit-screen regex AND the canonical
+        ``_PRD_SCREEN_HEADERS`` frozenset found zero matches. They are
+        now scored as multiple screens.
+        """
+        text = (
+            "## 1️⃣ Screen: Dashboard\n"
+            "ascii diagram\n\n"
+            "## 2️⃣ Screen: Focus Session\n"
+            "ascii diagram\n\n"
+            "## 3️⃣ Screen: Calendar Integration (Tomorrow's Schedule)\n"
+            "ascii diagram\n\n"
+            "## 4️⃣ Screen: AI Planning\n"
+            "ascii diagram\n\n"
+            "## 5️⃣ Screen: Settings\n"
+            "ascii diagram\n"
+        )
+        score, rubric = self.plugin.evaluate(text)
+        self.assertIsInstance(score, float)
+        self.assertGreater(score, 0.0)
+        screens = self._screen_criterion(rubric)
+        self.assertGreater(screens["earned"], 0.0,
+                           msg="emoji-numbered '## N️⃣ Screen: ...' headers should "
+                               "now be detected as multiple screens")
+        self.assertEqual(screens["max"], 3.0)
+
+    def test_regression_prose_section_header_not_a_screen(self):
+        """Regression: prose-style numbered headings like
+        ``## 100 mixed-case section`` must NOT inflate the screen count.
+        """
+        text = (
+            "## 100 mixed-case section header\n\n"
+            "## 200 another section\n\n"
+        )
+        _, rubric = self.plugin.evaluate(text)
+        screens = self._screen_criterion(rubric)
+        self.assertEqual(screens["earned"], 0.0)
+
+    def test_regression_no_screens_no_unbound_error(self):
+        """Regression (A1): a response that fails BOTH detector branches
+        must NOT raise UnboundLocalError on the ``earned`` variable.
+        """
+        text = "Lorem ipsum dolor sit amet, consectetur adipiscing elit."
+        _, rubric = self.plugin.evaluate(text)
+        screens = self._screen_criterion(rubric)
+        self.assertEqual(screens["earned"], 0.0)
+
+    def test_regression_saved_failing_response_no_longer_crashes(self):
+        """Regression: the literal failing response from the 2026-07-26
+        run (added 2026-07-26-updated-tests-and-models) used to throw
+        ``UnboundLocalError`` on evaluate(). If the sidecar directory
+        is missing (e.g. in CI without saved runs) the test is skipped.
+        """
+        import os.path
+        repro_path = os.path.join(
+            os.path.dirname(__file__),
+            "..", "..",
+            "2026-07-26-updated-tests-and-models",
+            "responses", "north-mini-code-1.0_30b-128k", "wireframes.txt",
+        )
+        repro_path = os.path.realpath(repro_path)
+        if not os.path.exists(repro_path):
+            self.skipTest(f"saved failing response not on disk: {repro_path}")
+        with open(repro_path, encoding="utf-8") as f:
+            text = f.read()
+        score, rubric = self.plugin.evaluate(text)
+        self.assertIsInstance(score, (int, float))
+        # The response has 5 well-formed screens; we should now earn more
+        # than just the default 0.0 on the screen-count criterion.
+        screens = self._screen_criterion(rubric)
+        self.assertGreater(screens["earned"], 0.0)
+
 
 if __name__ == "__main__":
     unittest.main()

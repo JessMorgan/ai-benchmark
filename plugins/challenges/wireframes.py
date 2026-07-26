@@ -5,6 +5,62 @@ from benchmark_plugin import BenchmarkTaskPlugin
 from plugins.challenges._rubric import Rubric
 
 
+# Canonical set of header texts that count as a real screen for the
+# "Multiple screens present" criterion.  A header matches if, after
+# stripping markdown decoration (bold / italics / leading numbering /
+# trailing parentheticals like "(placeholder)"), its normalized text is
+# in this set exactly.
+#
+# Keep in sync with the screen list in the Wireframes challenge prompt.
+_PRD_SCREEN_HEADERS = frozenset({
+    # Single-word screen names
+    "dashboard", "focus", "calendar", "planning", "settings",
+    "schedule", "timer", "music", "session", "planner",
+    "home", "onboarding", "profile", "analytics", "notifications",
+    # Canonical two-word / suffix variants the prompt suggests
+    "dashboard tab", "dashboard screen", "dashboard view",
+    "focus session", "focus screen", "focus mode", "focus view",
+    "focus timer",
+    "calendar screen", "calendar view", "calendar integration",
+    "planning screen", "planning view", "ai planning", "ai planner",
+    "settings screen", "settings page", "settings view",
+    "schedule screen", "schedule view",
+    "timer screen", "timer view",
+    "music screen", "music player", "music view",
+    "session screen", "session view",
+    "planner screen", "planner view",
+})
+
+
+def _normalize_header(text: str) -> str:
+    """Strip markdown decoration from a header for screen-name matching.
+
+    Handles (in order):
+    - Leading numbering: ``1.``, ``1)``, ``1``, ``(a)``, ``-``, ``*``.
+    - Emoji-keycap numbering: ``1️⃣`` / ``2️⃣`` / ... where the digit is
+      followed by VS16 + COMBINING ENCLOSING KEYCAP (no `.` / `)` / space).
+      ``\\d+\\W*?(?=\\s)`` keeps non-greedy with a ``\\s`` lookahead so
+      we never eat into the next word.
+    - Trailing parenthetical: ``(placeholder)``, ``(optional)``, ``(Tomorrow's Schedule)``.
+    - Leading labels: ``Screen:``, ``Wireframe:``, ``Page:``.
+    """
+    s = text.strip().strip("_*`")
+    # Leading numbering — covers 1. / 1) / 1 + emoji / 1 / (a) / - / *
+    s = re.sub(r'^\s*(?:\d+\W*?(?=\s)|\(\w+\)|[-*])\s*', '', s)
+    # Trailing parenthetical like "(placeholder)", "(optional)"
+    s = re.sub(r'\s*\([^)]*\)\s*$', '', s)
+    # Leading "Screen:" / "Wireframe:" / "Page:" labels.
+    s = re.sub(r'^(?:screen|wireframe|page)\s*[:\-]\s*', '', s, flags=re.IGNORECASE)
+    # Collapse internal punctuation to single spaces, lowercase
+    s = re.sub(r'[\s\u2013\u2014\-_/]+', ' ', s).strip().lower()
+    return s
+
+
+def _looks_like_screen_header(header_text: str) -> bool:
+    """True iff the markdown header text is unambiguously a screen name."""
+    return _normalize_header(header_text) in _PRD_SCREEN_HEADERS
+
+
 class WireframesPlugin(BenchmarkTaskPlugin):
     @property
     def id(self):
@@ -12,7 +68,7 @@ class WireframesPlugin(BenchmarkTaskPlugin):
 
     @property
     def version(self):
-        return "0.1.0"
+        return "0.2.0"
 
     @property
     def name(self):
@@ -66,13 +122,41 @@ class WireframesPlugin(BenchmarkTaskPlugin):
         rubric = Rubric(self.max_score)
 
         # Multiple screens present (0-3)
+        # Two signals are combined: explicit "Screen:" labels AND
+        # well-formed markdown headers whose text *is* a PRD-known screen
+        # name (or a close canonical variant like "Focus Session" /
+        # "Dashboard Tab").  We deliberately score only exact-match headers
+        # so that prose-style headings like "## Pre-Dashboard Loading State"
+        # or "## Focus Group Notes" do NOT over-count as screens.  An
+        # earlier substring-match heuristic miscounted those and gave
+        # filler wireframes 3/3 here.
+        # `[^a-zA-Z]{0,8}?` lets us tolerate up to eight non-letter chars
+        # (digits / emojis / `,` / `:` etc.) between the markdown `#` and
+        # the keyword. This handles emoji-keycap headers like
+        # `## 1️⃣ Screen: Dashboard` without breaking the line anchor.
+        explicit = re.findall(
+            r'(?:^|\n)\s*(?:#{1,3}\s+[^a-zA-Z]{0,8}?)?(?:screen|wireframe|page)\s*[:\-]?\s*\w+',
+            t,
+            re.IGNORECASE,
+        )
+        section_headers = re.findall(r'(?:^|\n)\s*#{1,4}\s+([^\n]+)', t)
+        named_in_headers = sum(
+            1 for h in section_headers if _looks_like_screen_header(h.lower())
+        )
+        screen_count = max(len(explicit), named_in_headers)
+        # A1: defensive default — if neither detector finds any screens the
+        # if/elif chain below would skip every branch and `earned` would be
+        # unbound when we hand it to `rubric.add_criterion`. Captured in
+        # the 2026-07-26 run as
+        # `UnboundLocalError: cannot access local variable 'earned'`.
         earned = 0.0
-        screen_headers = re.findall(r'(?:^|\n)\s*(?:#{1,3}\s+)?(?:screen|wireframe|page)\s*[:\-]?\s*\w+', t, re.IGNORECASE)
-        if len(screen_headers) >= 4:
+        if screen_count >= 4:
             earned = 3.0
-        elif len(screen_headers) >= 2:
+        elif screen_count >= 3:
+            earned = 2.0
+        elif screen_count >= 2:
             earned = 1.5
-        elif len(screen_headers) >= 1:
+        elif screen_count >= 1:
             earned = 0.5
         rubric.add_criterion("Multiple screens present", 3.0, earned)
 
