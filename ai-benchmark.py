@@ -22,6 +22,7 @@ from datetime import datetime
 
 from benchmark_core import (
     BenchmarkState,
+    _apply_http_retry_default,
     _unique_source_abbrevs,
     dump_default_config,
     generate_config_from_api,
@@ -525,6 +526,17 @@ def main():
                         help='Save each model\'s plugin response text to <output_dir>/responses/')
     parser.add_argument('--seed', type=int, default=None,
                         help='Fixed random seed for all API requests (default: random)')
+    retry_group = parser.add_mutually_exclusive_group()
+    retry_group.add_argument('--retry-on-429', action='store_true', default=True,
+                             help='Retry HTTP 429 responses with exponential backoff for any source '
+                                  'that did not set its own max_429_retries (default: enabled). Each '
+                                  'rate-limited request can sleep up to (max_429_retries x max_backoff_seconds) '
+                                  'before failing. Use --no-retry-on-429 if you want the legacy fail-fast '
+                                  'behaviour back.')
+    retry_group.add_argument('--no-retry-on-429', action='store_false',
+                             help='Disable HTTP 429 retries globally. Overrides per-source max_429_retries '
+                                  'only when the source did not set its own; explicit per-source values '
+                                  'are preserved.')
     parser.add_argument('--no-rerun-failed', action='store_true',
                         help='Do not re-run models that failed in a previous session')
     parser.add_argument('--scripted', action='store_true',
@@ -571,6 +583,9 @@ def main():
               file=sys.stderr)
         sys.exit(1)
     cfg = load_config(config_path)
+    # Apply the global --retry-on-429 / --no-retry-on-429 toggle before any
+    # plugin sees the config so per-source defaults are aligned with the flag.
+    _apply_http_retry_default(cfg, args.retry_on_429)
     source_config = cfg.get("sources", {})
     models = cfg.get("models", {})
     agents = cfg.get("agents", {})

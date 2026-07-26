@@ -220,9 +220,33 @@ def get_target_plugins_blacklist(targets, target_name):
         return val.get("plugins_blacklist", [])
     return []
 
-
 # Backward-compatible alias.
 get_model_plugins_blacklist = get_target_plugins_blacklist
+
+
+def _apply_http_retry_default(cfg, retry_on_429):
+    """Mutate ``cfg`` so HTTP 429 retries align with a global toggle.
+
+    When ``retry_on_429`` is True (the default), this function is a no-op —
+    per-source ``max_429_retries`` defaults to 2 inside ``_post_request_context``
+    and per-source overrides remain in force. When ``retry_on_429`` is False
+    (the user passed ``--no-retry-on-429``), every source that did NOT explicitly
+    set ``max_429_retries`` is flipped to ``0`` here so the opt-out propagates
+    globally without forcing operators to edit every per-source config block.
+    Explicit per-source ``max_429_retries`` values are preserved regardless of
+    the global flag — a source that opted in to 5 retries keeps its 5 even
+    when the global flag is ``--no-retry-on-429``.
+
+    Mutating ``cfg`` in place is intentional: ``load_config`` returns a fresh
+    dict every call, and downstream consumers (``resolve_targets``,
+    ``run_model``) read the same object.
+    """
+    if retry_on_429:
+        return
+    sources = cfg.get("sources") or {}
+    for src_cfg in sources.values():
+        if isinstance(src_cfg, dict) and "max_429_retries" not in src_cfg:
+            src_cfg["max_429_retries"] = 0
 
 
 def dump_default_config():

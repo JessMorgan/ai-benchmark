@@ -3,6 +3,7 @@ import json
 import threading
 import time
 import unittest
+from datetime import datetime, timedelta, timezone
 from unittest import mock
 
 from benchmark_http import fetch_models_v1, nonstream_request, stream_request
@@ -139,6 +140,188 @@ class TestNonstreamRequest(unittest.TestCase):
             thread.join()
 
         self.assertEqual(err, "Cancelled")
+
+
+class TestRateLimitRetries(unittest.TestCase):
+    """Tests for HTTP 429 retry/backoff in `_post_request_context`.
+
+    These tests use tiny backoff values (`backoff_seconds=0.01`) so a test
+    run completes in well under a second even when 2 retries fire.
+    """
+
+    def _cfg(self, **overrides):
+        base = {
+            "api_url": "http://localhost/chat/completions",
+            "headers": {},
+            "backoff_seconds": 0.01,
+            "backoff_factor": 1.0,
+            "max_backoff_seconds": 1.0,
+            "max_429_retries": 2,
+        }
+        base.update(overrides)
+        return {"Local": base}
+
+    def _mock_429(self, retry_after=None, body="rate limited"):
+        m = mock.MagicMock()
+        m.status_code = 429
+        m.text = body
+        m.headers = {}
+        if retry_after is not None:
+            m.headers["Retry-After"] = str(retry_after)
+        m.close = mock.MagicMock()
+        return m
+
+    def _mock_200(self, content="ok"):
+        m = mock.MagicMock()
+        m.status_code = 200
+        m.text = content
+        m.headers = {}
+        m.iter_lines = mock.MagicMock(return_value=iter([
+            "data: " + json.dumps({
+                "choices": [{"delta": {"content": content}, "finish_reason": "stop"}],
+            }),
+            "data: [DONE]",
+        ]))
+        m.iter_content = mock.MagicMock(return_value=iter([
+            json.dumps({"choices": [{"message": {"content": content},
+                                    "finish_reason": "stop"}]}).encode("utf-8"),
+        ]))
+        m.close = mock.MagicMock()
+        return m
+
+    def test_429_eventually_succeeds(self):
+        """Two consecutive 429s then a 200 must yield the eventual OK."""
+        cfg = self._cfg(max_429_retries=2)
+        sequence = [self._mock_429(), self._mock_429(), self._mock_200("hello")]
+        with mock.patch("requests.post", side_effect=sequence) as mp:
+            text, _, _, err, _, _ = stream_request(
+                cfg, timeout=5, model="m", source="Local",
+                prompt="hi", max_tokens=10,
+            )
+        self.assertEqual(err, None)
+        self.assertEqual(text, "hello")
+        self.assertEqual(mp.call_count, 3)
+
+    def test_429_exhausted_returns_error_string(self):
+        """All attempts 429 should yield `(None, 'HTTP 429: ...')`."""
+        cfg = self._cfg(max_429_retries=2)
+        sequence = [self._mock_429()] * 3  # 2 retries + 1 final attempt
+        with mock.patch("requests.post", side_effect=sequence):
+            text, _, _, err, _, _ = stream_request(
+                cfg, timeout=5, model="m", source="Local",
+                prompt="hi", max_tokens=10,
+            )
+        self.assertEqual(text, "")
+        self.assertIn("HTTP 429: ", err)
+
+    def test_max_429_retries_zero_disables_retry(self):
+        """Explicit ``max_429_retries: 0`` is opt-out — fail fast on first 429."""
+        cfg = self._cfg(max_429_retries=0)
+        with mock.patch("requests.post", side_effect=[self._mock_429()]) as mp:
+            text, _, _, err, _, _ = stream_request(
+                cfg, timeout=5, model="m", source="Local",
+                prompt="hi", max_tokens=10,
+            )
+        self.assertEqual(mp.call_count, 1, "max_429_retries=0 must not retry")
+        self.assertIn("HTTP 429: ", err)
+
+    def test_default_max_429_retries_is_two(self):
+        """When no per-source config is supplied, the default is 2 retries."""
+        cfg_no_opt = {"Local": {
+            "api_url": "http://localhost/chat/completions", "headers": {}}}
+        sequence = [self._mock_429(), self._mock_429(), self._mock_200()]
+        with mock.patch("requests.post", side_effect=sequence) as mp:
+            text, _, _, err, _, _ = stream_request(
+                cfg_no_opt, timeout=5, model="m", source="Local",
+                prompt="hi", max_tokens=10,
+            )
+        self.assertEqual(mp.call_count, 3, "default config: 3 attempts -> success on 3rd mock")
+        self.assertEqual(err, None)
+        self.assertEqual(text, "ok")
+
+    def test_retry_after_header_beats_computed_delay(self):
+        """Retry-After: 0.5s must beat the computed 0.01s floor.
+
+        We pin both bounds so a regression that silently switches in the
+        factory-default 30s floor would FAIL loudly.
+        """
+        cfg = self._cfg(max_429_retries=1, backoff_seconds=0.01,
+                        backoff_factor=1.0, max_backoff_seconds=5.0)
+        start = time.monotonic()
+        with mock.patch("requests.post",
+                        side_effect=[self._mock_429(retry_after=0.5), self._mock_200()]):
+            text, _, _, err, _, _ = stream_request(
+                cfg, timeout=5, model="m", source="Local",
+                prompt="hi", max_tokens=10,
+            )
+        elapsed = time.monotonic() - start
+        self.assertEqual(err, None)
+        self.assertGreaterEqual(elapsed, 0.45,
+                                f"Retry-After:0.5s should beat the 0.01s floor; got {elapsed:.2f}s")
+        self.assertLess(elapsed, 1.0,
+                        f"sanity upper bound — if 30s factory default leaked in we'd be here; got {elapsed:.2f}s")
+
+    def test_retry_after_http_date_form_is_parsed(self):
+        """Retry-After can also be RFC 7231 §7.1.3 form-2: an HTTP-date ~5s from now."""
+        future = (datetime.now(timezone.utc) + timedelta(seconds=5)).strftime(
+            "%a, %d %b %Y %H:%M:%S GMT")
+        cfg = self._cfg(max_429_retries=1, backoff_seconds=0.01,
+                        backoff_factor=1.0, max_backoff_seconds=30.0)
+        start = time.monotonic()
+        with mock.patch("requests.post",
+                        side_effect=[self._mock_429(retry_after=future), self._mock_200()]):
+            text, _, _, err, _, _ = stream_request(
+                cfg, timeout=5, model="m", source="Local",
+                prompt="hi", max_tokens=10,
+            )
+        elapsed = time.monotonic() - start
+        self.assertEqual(err, None)
+        # HTTP-date ~5s ahead, no jitter because Retry-After present.
+        self.assertGreaterEqual(elapsed, 4.0,
+                                f"HTTP-date Retry-After:~5s should be ~5s; got {elapsed:.2f}s")
+        self.assertLess(elapsed, 6.5,
+                        f"upper bound; got {elapsed:.2f}s")
+
+    def test_429_exponential_growth_increases_delay(self):
+        """backoff_factor=10 means second sleep ~10x the first.
+
+        Both bounds asserted so a regression that swaps ``time.sleep`` for
+        ``stop_event.wait`` (or back) will fail loudly either way.
+        """
+        cfg = self._cfg(max_429_retries=2, backoff_seconds=0.01,
+                        backoff_factor=10.0, max_backoff_seconds=10.0)
+        start = time.monotonic()
+        with mock.patch("requests.post",
+                        side_effect=[self._mock_429(), self._mock_429(), self._mock_200()]):
+            text, _, _, err, _, _ = stream_request(
+                cfg, timeout=5, model="m", source="Local",
+                prompt="hi", max_tokens=10,
+            )
+        elapsed = time.monotonic() - start
+        self.assertEqual(err, None)
+        # delay #1 ~= 0.012s (jitter 0.8-1.2x), delay #2 ~= 0.10s.
+        # Without growth both come to ~0.024s; with growth total ~0.10-0.13s.
+        self.assertGreaterEqual(elapsed, 0.05,
+                                f"second sleep should be ~10x the first; total={elapsed:.2f}s")
+        self.assertLess(elapsed, 0.3,
+                        f"sanity upper bound — not silently 30s; got {elapsed:.2f}s")
+
+    def test_stop_event_aborts_retry(self):
+        """If stop_event is set before retry, we should bail out immediately."""
+        stop = threading.Event()
+        stop.set()  # pre-cancel
+        cfg = self._cfg(max_429_retries=2)
+        start = time.monotonic()
+        with mock.patch("requests.post", side_effect=[self._mock_429()]) as mp:
+            text, _, _, err, _, _ = stream_request(
+                cfg, timeout=5, model="m", source="Local",
+                prompt="hi", max_tokens=10, stop_event=stop,
+            )
+        elapsed = time.monotonic() - start
+        self.assertEqual(err, "Cancelled")
+        self.assertLess(elapsed, 0.1, "must not sleep when stop_event is set")
+        # Pre-loop cancellation short-circuits before any HTTP request fires.
+        self.assertEqual(mp.call_count, 0)
 
 
 class TestSystemPrompt(unittest.TestCase):

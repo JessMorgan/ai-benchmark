@@ -39,6 +39,23 @@ Each entry under `sources` defines an API endpoint. The key is the source name u
 
 Each source can define `plugin_thread_limit` to control how many plugins run concurrently for models against that source. The top-level `plugin_thread_limit` is used as a fallback for sources that do not define their own value. The CLI `--plugin-thread-limit` overrides all sources.
 
+### HTTP 429 Retry / Backoff
+
+Each source can opt into automatic retries for HTTP 429 (Too Many Requests) responses.
+
+```yaml
+sources:
+  Google:
+    api_url: ...
+    headers: ...
+    max_429_retries: 2        # default 2; set 0 to fail-fast (legacy)
+    backoff_seconds: 30       # first-sleep default
+    backoff_factor: 2.0       # exponential growth per retry
+    max_backoff_seconds: 300  # hard cap per sleep
+```
+
+Defaults are **opt-out**: every source retries up to twice by default. To restore the previous fail-fast behaviour, set `max_429_retries: 0` per source (or globally with `--no-default-429-retry` when implemented). When a 429 is returned, the runner sleeps `max(Retry-After, backoff_seconds * backoff_factor ** attempt)` bounded by `max_backoff_seconds`, with ±20 % jitter applied only when `Retry-After` is absent. Each retry is logged to that model's `logs/<model>.log` and `stop_event` cancels the sleep immediately, so Ctrl+C still terminates the runner quickly.
+
 ### Environment Variable Expansion
 
 Header values support `${VAR}` and `${VAR:default}` syntax:

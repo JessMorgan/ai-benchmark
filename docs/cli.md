@@ -30,6 +30,7 @@ python ai-benchmark.py [options]
 | `--save-responses` | Save each model's plugin response text to `<output_dir>/responses/` |
 | `--seed INT` | Fixed random seed for all API requests |
 | `--no-rerun-failed` | Keep failed models as failed on resume (default re-runs them) |
+| `--retry-on-429` / `--no-retry-on-429` | Toggle HTTP-429 retry/backoff globally. Default is **ON**; pass `--no-retry-on-429` to opt out (sources with explicit `max_429_retries` are preserved). See [Configuration Reference](configuration.md#http-429-retry--backoff) for the per-source keys and migration notes. |
 | `-h, --help` | Show help message |
 
 ## Examples

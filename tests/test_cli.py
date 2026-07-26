@@ -736,5 +736,102 @@ class TestPerPluginTemperature(unittest.TestCase):
 
 
 
+class TestCLIRetryOn429(unittest.TestCase):
+    """Tests for the --retry-on-429 / --no-retry-on-429 CLI flag pair
+    and benchmark_core._apply_http_retry_default helper."""
+
+    def test_help_advertises_retry_on_429(self):
+        """ai-benchmark.py --help mentions both flag forms."""
+        result = subprocess.run(
+            [sys.executable, "ai-benchmark.py", "--help"],
+            capture_output=True, text=True,
+        )
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("--retry-on-429", result.stdout)
+        self.assertIn("--no-retry-on-429", result.stdout)
+
+    def test_retry_on_429_fat_finger_rejected(self):
+        """Passing both --retry-on-429 and --no-retry-on-429 on the same command line
+        must produce an argparse error (mutually exclusive group), not silently
+        last-wins. Argparse exits with code 2 on conflict and writes the
+        offending flag pair to stderr.
+        """
+        result = subprocess.run(
+            [sys.executable, "ai-benchmark.py",
+             "--retry-on-429", "--no-retry-on-429",
+             "--dump-default-config"],
+            capture_output=True, text=True,
+        )
+        self.assertEqual(result.returncode, 2,
+                         "passing both retry flags must fail (exit 2); "
+                         "the mutual-exclusion is the whole point of "
+                         "add_mutually_exclusive_group().")
+        # argparse formats the error as 'argument --no-retry-on-429: not
+        # allowed with argument --retry-on-429' (or the reverse).
+        self.assertIn("not allowed", result.stderr.lower())
+        self.assertIn("--retry-on-429", result.stderr)
+        self.assertIn("--no-retry-on-429", result.stderr)
+
+    def test_default_retry_on_429_is_true(self):
+        """When neither flag is supplied, --dump-default-config shows no
+        max_429_retries injection (default-ON path is a no-op at the helper)."""
+        result = subprocess.run(
+            [sys.executable, "ai-benchmark.py", "--dump-default-config"],
+            capture_output=True, text=True,
+        )
+        self.assertEqual(result.returncode, 0)
+        cfg = json.loads(result.stdout)
+        for src_cfg in cfg["sources"].values():
+            self.assertNotIn("max_429_retries", src_cfg)
+
+    def test_apply_http_retry_default_no_op_when_retry_on(self):
+        """retry_on_429=True leaves per-source config untouched."""
+        from benchmark_core import _apply_http_retry_default
+        cfg = {"sources": {"Local": {"api_url": "http://x", "headers": {}}}}
+        _apply_http_retry_default(cfg, retry_on_429=True)
+        self.assertNotIn("max_429_retries", cfg["sources"]["Local"])
+
+    def test_apply_http_retry_default_zeros_implicit_sources(self):
+        """retry_on_429=False zeroes max_429_retries on sources that didn't set it."""
+        from benchmark_core import _apply_http_retry_default
+        cfg = {
+            "sources": {
+                "Local": {"api_url": "http://x", "headers": {}},
+                "Remote": {"api_url": "http://r", "headers": {}, "max_429_retries": 5,
+                            "backoff_seconds": 12},
+            }
+        }
+        _apply_http_retry_default(cfg, retry_on_429=False)
+        # Implicit source flipped to 0.
+        self.assertEqual(cfg["sources"]["Local"]["max_429_retries"], 0)
+        # Explicit source preserved.
+        self.assertEqual(cfg["sources"]["Remote"]["max_429_retries"], 5)
+        self.assertEqual(cfg["sources"]["Remote"]["backoff_seconds"], 12)
+
+    def test_apply_http_retry_default_handles_missing_sources(self):
+        """A config without a 'sources' key should not crash."""
+        from benchmark_core import _apply_http_retry_default
+        cfg = {}
+        _apply_http_retry_default(cfg, retry_on_429=False)
+        self.assertEqual(cfg, {})
+
+    def test_apply_http_retry_default_preserves_explicit_per_source_only(self):
+        """End-to-end story: default-ON keeps implicit sources untouched;
+        default-OFF flips the implicit ones while preserving explicit opts-in."""
+        from benchmark_core import _apply_http_retry_default
+        cfg = {
+            "sources": {
+                "Local": {"api_url": "http://x", "headers": {}},
+                "Remote": {"api_url": "http://r", "headers": {}, "max_429_retries": 4},
+            }
+        }
+        _apply_http_retry_default(cfg, retry_on_429=True)
+        self.assertNotIn("max_429_retries", cfg["sources"]["Local"])
+        self.assertEqual(cfg["sources"]["Remote"]["max_429_retries"], 4)
+        _apply_http_retry_default(cfg, retry_on_429=False)
+        self.assertEqual(cfg["sources"]["Local"]["max_429_retries"], 0)
+        self.assertEqual(cfg["sources"]["Remote"]["max_429_retries"], 4)
+
+
 if __name__ == "__main__":
     unittest.main()
