@@ -620,8 +620,8 @@ def _run_plugins(target_name, api_model, source, state, active_plugins, plugins_
         pid = plugin.id
         # Track in-flight plugin tasks via the canonical ``running_pids``
         # list (not a pid-suffix status string) so the live TUI can render
-        # each plugin's "[waiting]"/"[streaming]" cell and the table's
-        # yellow highlight for parallel plugin threads (max_workers > 1).
+        # each plugin's "[streaming]"/"[requested]" bracket cell and the
+        # table's yellow highlight for parallel plugin threads (max_workers > 1).
         # The previous ``state.update(target_name, status=f"running_{pid}")``
         # write left ``running_pids`` empty, which silently broke every
         # downstream visualisation that read it.

@@ -43,8 +43,11 @@ class BenchmarkState:
                 "last_error": "",
                 "phase_detail": "",
                 # In-flight plugin task ids; canonical source-of-truth for the
-                # live TUI's "[waiting]"/"[streaming]" cells and the table's
-                # yellow highlight. ``__init__`` sets this to ``[]``; the
+                # live TUI's "[streaming]"/"[requested]" bracket cells
+                # (pre-first-tok and post-first-tok transient share the same
+                # label; the elapsed suffix once wait > 2s is the cue for
+                # "no first chunk yet") and the table's yellow highlight.
+                # ``__init__`` sets this to ``[]``; the
                 # runtime tracks it via ``start_plugin_run`` / ``finish_plugin_run``
                 # and ``load_state`` clears it on resume (no plugin task is
                 # actually running until a worker picks the task up).
@@ -60,7 +63,8 @@ class BenchmarkState:
                 # Starts at 0; ``start_plugin_run`` resets it on each
                 # dispatch so retry runs don't carry a stale count.
                 # ``finish_plugin_run`` leaves it in place (post-flight
-                # cells fall back to the standard 5-cell results layout,
+                # cells fall back to the standard 4-cell results layout
+                # after the per-plugin St column was deleted as redundant,
                 # so this transient is harmless).
                 self._model_info[name][f"{pid}_bytes_received"] = 0
 
@@ -206,7 +210,7 @@ class BenchmarkState:
                 # Strip transient in-flight state on resume: no plugin task
                 # is actually running until a worker picks the task up, so
                 # carrying stale ``running_pids`` forward causes phantom
-                # "[waiting]" cells and a false-yellow highlight in the
+                # "[streaming]" bracket cells and a false-yellow highlight in the
                 # live TUI. The migration used to *preserve* this state,
                 # but that assumption broke once the visual-layer read
                 # ``running_pids`` as the source-of-truth.

@@ -197,12 +197,15 @@ def _render_table_headings(stdscr, max_x, max_y, scroll_x, frozen_cols, plugin_c
 
 
 # Width of the per-plugin cell block rendered by ``_plugin_cell_block``.
-# The standard 5-cell results layout sums to 5+6+6+6+5=28 plus 4 single
-# spaces between cells = 32 chars -- so a merged bracket status centred
-# in this same 32-char span lines up under the existing sub-headers
-# (``RateSc RateTok RateTm RateTPS RateSt``) without reshaping the
-# ``plugin_cols`` table.
-PLUGIN_BLOCK_WIDTH = 32
+# The standard 4-cell results layout sums to 5+6+6+6=23 plus 3 single
+# spaces between cells = 26 chars -- so a merged bracket status centred
+# in this same 26-char span lines up under the existing sub-headers
+# (``RateSc RateTok RateTm RateTPS``) without reshaping the
+# ``plugin_cols`` table. The previous per-plugin streaming-glyph column
+# (``<id>St`` width 5) was deleted as redundant: the merged status block
+# already conveys in-flight state, and post-flight the plugin isn't
+# streaming anymore, so the glyph was always ``-``.
+PLUGIN_BLOCK_WIDTH = 26
 
 
 def _fmt_value(v, fmt=".1f"):
@@ -224,8 +227,8 @@ def _elapsed_suffix(s, threshold=2):
     plugin has been waiting long enough to be worth flagging, else
     ``""``.
 
-    Used by ``_plugin_cell_block`` to enrich the bare ``[waiting]``
-    (streaming-capable, no first token yet) and ``[in flight]``
+    Used by ``_plugin_cell_block`` to enrich the bare ``[streaming]``
+    (streaming-capable, no first token yet) and ``[requested]``
     (non-streaming-capable) brackets once the wall-clock wait
     crosses ``threshold`` seconds (default 2s). Below the threshold
     we keep the bare bracket so quick plugins don't carry visual
@@ -262,30 +265,31 @@ def _plugin_cell_block(pid, s, p, sleeping_remaining):
 
     When the plugin is in flight (``pid in running_pids``) OR
     the model is currently in a 429 backoff sleep, the block collapses
-    to a single bracket-delimited status centred in 32 chars:
-        ``[waiting - Ns]``      -- streaming-capable in flight, no first token,
-                                    wait crossed the elapsed threshold (default 2s)
-        ``[waiting]``           -- streaming-capable in flight, no first token,
-                                    fresh (<=2s; no visual noise)
-        ``[streaming]``         -- streaming-capable in flight, first token received,
-                                    no bytes accumulated yet (rare transient)
+    to a single bracket-delimited status centred in 26 chars:
         ``[streaming - N tok]`` -- streaming-capable in flight, bytes accumulated
-        ``[in flight - Ns]``    -- non-streaming-capable in flight, wait crossed
+        ``[streaming - Ns]``   -- streaming-capable in flight, no first token,
+                                    wait crossed the elapsed threshold (default 2s)
+        ``[streaming]``         -- streaming-capable in flight, no first token,
+                                    fresh (<=2s; no visual noise)
+        ``[requested - Ns]``   -- non-streaming-capable in flight, wait crossed
                                     the elapsed threshold
-        ``[in flight]``         -- non-streaming-capable in flight, fresh
-        ``[429 sleeping Xs]``   -- model is mid-backoff (pauses the plugin task)
+        ``[requested]``        -- non-streaming-capable in flight, fresh
+        ``[429 sleeping Xs]``  -- model is mid-backoff (pauses the plugin task)
 
-    The ``- Ns`` suffix on ``[waiting]`` / ``[in flight]`` is added by
-    ``_elapsed_suffix`` once the wall-clock wait exceeds 2s so the
-    operator can distinguish a slow-but-progressing plugin from a
-    stuck/hung one; below 2s the bare bracket is kept (no noise on
-    quick plugins). The threshold default matches typical TTFT (time
-    to first token) budgets so a fresh start never carries the suffix.
+    Note: the ``pre-chunk`` in-flight states (``[streaming]``,
+    ``[requested]``, and their elapsed-suffix forms) cannot show a
+    byte/token counter because ``bytes_received`` is genuinely 0 in
+    those states -- no SSE chunk has arrived for streaming-capable
+    plugins, and there are no chunks at all for non-streaming plugins.
+    The elapsed-seconds suffix is the operator's fallback signal for
+    "we sent the request but the API hasn't yielded data yet"; once
+    a chunk arrives the bracket transitions to ``[streaming - N tok]``
+    with a live counter incrementing on every ``on_chunk`` callback.
 
     When none of the above applies, the block falls back to the standard
-    5-cell results layout (``score tok tm tps st``) with ``st`` set to
-    ``-`` because once results are recorded the streaming glyph is no
-    longer live.
+    4-cell results layout (``score tok tm tps``). The previous per-plugin
+    streaming-glyph column (``st``) was deleted as redundant (see the
+    ``PLUGIN_BLOCK_WIDTH`` block comment).
 
     ``sleeping_remaining`` is the integer seconds remaining for the
     model's source/model entry in the 429 sleeping map, or ``None`` if
@@ -312,30 +316,32 @@ def _plugin_cell_block(pid, s, p, sleeping_remaining):
                 text = f"[streaming - {bytes_received // 4} tok]"
             else:
                 # Streaming-capable in flight but no first tok yet (or
-                # the rare ft-set-but-no-bytes transient). Build the
-                # bracket content with the elapsed suffix INSIDE the
-                # brackets (so the suffix is part of the centred text
-                # and reads as ``[waiting - 5s]`` rather than
-                # ``[waiting] - 5s`` outside the closing ``]``).
-                bare_state = "streaming" if ft else "waiting"
-                text = f"[{bare_state}{_elapsed_suffix(s)}]"
+                # the rare ft-set-but-no-bytes transient once first
+                # tok has arrived but no delta has accumulated). After
+                # the rename consolidating ``[waiting]`` under
+                # ``[streaming]``, both states render the same bracket;
+                # the elapsed suffix is added INSIDE the brackets so a
+                # long wait reads as ``[streaming - 5s]`` and a fresh
+                # start reads as ``[streaming]`` with no trailing
+                # whitespace outside the closing ``]``.
+                text = f"[streaming{_elapsed_suffix(s)}]"
         else:
-            # ``[running]`` would collide with the model's status column
-            # glyph for ``status="running"``; ``[in flight]`` is the
-            # unambiguous transport-only label. Build the bracket
-            # content with the elapsed suffix INSIDE the brackets (see
-            # comment in the streaming branch above for the rationale).
-            text = f"[in flight{_elapsed_suffix(s)}]"
+            # Non-streaming-capable plugin in flight. ``[requested]``
+            # conveys "we sent the request, awaiting the buffered
+            # response" (previously labelled ``[in flight]`` which
+            # sounded like an upstream-status verb). The elapsed suffix
+            # is added INSIDE the brackets (see comment in the
+            # streaming branch above for the rationale).
+            text = f"[requested{_elapsed_suffix(s)}]"
         return f"{text:^{PLUGIN_BLOCK_WIDTH}}"
-    # Standard 5-cell results layout -- widths sum to 5+6+6+6+5=28 with
-    # 4 single-space separators between cells = 32 chars, matching the
-    # merged status width. The streaming glyph column (``st``) is fixed
-    # to ``-`` post-flight because the live stream event is over.
+    # Standard 4-cell results layout -- widths sum to 5+6+6+6=23 with 3
+    # single-space separators between cells = 26 chars, matching the
+    # merged status width.
     sc = _fmt_value(s.get(f"{pid}_score"))
     tok = _fmt_value(s.get(f"{pid}_output_tokens"), "d")
     tm = _fmt_value(s.get(f"{pid}_response_time"))
     tps = _fmt_value(s.get(f"{pid}_tps"))
-    return f"{sc:>5} {tok:>6} {tm:>6} {tps:>6} {'-':>5}"
+    return f"{sc:>5} {tok:>6} {tm:>6} {tps:>6}"
 
 
 def _format_model_row(name, s, display_idx, active_plugins, source_abbrevs,
@@ -455,11 +461,11 @@ def _build_live_indicators(s, active_plugins):
     ``"[<pid>: <N> tok]"`` per streaming in-flight plugin (decided by
     ``pid_first_tok_ts`` > 0 AND ``bytes_received`` > 0). Plugins in
     flight with NO first token yet contribute to a single trailing
-    ``"[waiting: K]"`` aggregate rather than per-name entries -- this
-    keeps the row readable when 5+ streaming plugins are queueing for
-    their first chunk. Non-streaming plugins are omitted entirely (we
-    cannot observe a transport detail for them and the table cell
-    already shows ``[in flight]`` per-cell).
+    ``"[pre-stream: K]"`` aggregate rather than per-name entries --
+    this keeps the row readable when 5+ streaming plugins are queueing
+    for their first chunk. Non-streaming plugins are omitted entirely
+    (we cannot observe a transport detail for them and the table cell
+    already shows ``[requested]`` per-cell).
 
     With parallel plugin threads (``max_workers > 1``), a model can
     carry several streaming-capable plugins in flight at once; this
@@ -470,7 +476,7 @@ def _build_live_indicators(s, active_plugins):
     Returns ``""`` when no observable plugin is in flight.
 
     Example output (two in-flight streaming plugins + 1 waiting):
-        ``"[rate-limiter: 16 tok] [software-architecture: 152 tok] [waiting: 1]"``
+        ``"[rate-limiter: 16 tok] [software-architecture: 152 tok] [pre-stream: 1]"``
     """
     running_pids = s.get("running_pids") or []
     parts = []
@@ -494,7 +500,13 @@ def _build_live_indicators(s, active_plugins):
         # ft > 0 but no bytes: rare transient (just landed first-tok
         # event but no delta has accumulated yet) -- skip silently.
     if waiting_count > 0:
-        parts.append(f"[waiting: {waiting_count}]")
+        # ``pre-stream`` disambiguates from the per-plugin
+        # ``[streaming]`` brackets in the table cells (one is "in
+        # flight, waiting for first chunk"; the other is "in flight,
+        # first chunk received"). The aggregate is preferred over
+        # listing every waiting plugin by name to keep the row
+        # readable when many plugins are queueing.
+        parts.append(f"[pre-stream: {waiting_count}]")
     return " ".join(parts)
 
 
@@ -653,14 +665,17 @@ def tui_main(state, stop_event, num_sources, active_plugins, session_seed=None):
 
         plugin_cols = []
         for p in active_plugins:
+            # Each plugin gets 4 sub-headers (Sc/Tok/Tm/TPS). The
+            # previous per-plugin streaming-glyph column (``St``) was
+            # deleted as redundant: the merged bracket status block
+            # already conveys in-flight state, and post-flight the
+            # plugin isn't streaming anymore, so the glyph was always
+            # ``-`` (see the ``PLUGIN_BLOCK_WIDTH`` block comment).
             plugin_cols.extend([
                 (f"{p.id[:3]}Sc", 5),
                 (f"{p.id[:3]}Tok", 6),
                 (f"{p.id[:3]}Tm", 6),
                 (f"{p.id[:3]}TPS", 6),
-                # Per-plugin streaming indicator (▶ / · / -). Width 5
-                # matches the score column so vertical alignment holds.
-                (f"{p.id[:3]}St", 5),
             ])
 
         _last_tui_error_ts = 0.0

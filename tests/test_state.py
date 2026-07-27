@@ -208,10 +208,10 @@ class TestBenchmarkState(unittest.TestCase):
     def test_start_plugin_run_sets_running_status_and_pid(self):
         """start_plugin_run promotes the model to in-flight with the canonical
         status="running" form AND records the pid in ``running_pids`` so the
-        live TUI's "[waiting]"/"[streaming]" cells and yellow highlight both
-        fire correctly. The previous pid-suffix status string only worked
-        for the live-panel filter; ``running_pids`` is the canonical source
-        of truth for everything else.
+        live TUI's "[streaming]"/"[requested]" bracket cells and yellow
+        highlight both fire correctly. The previous pid-suffix status string
+        only worked for the live-panel filter; ``running_pids`` is the
+        canonical source of truth for everything else.
         """
         models = {"model-a": "Source1"}
         state = self.module.BenchmarkState(models, self.plugin_ids)
@@ -223,7 +223,7 @@ class TestBenchmarkState(unittest.TestCase):
     def test_start_plugin_run_is_idempotent_on_same_pid(self):
         """Calling start_plugin_run twice with the same pid does not duplicate
         the entry in ``running_pids`` -- otherwise the table would render
-        duplicate "[waiting]" cells and the per-model thread count would be
+        duplicate "[streaming]" cells and the per-model thread count would be
         wrong for plugins that the runtime touches multiple times.
         """
         models = {"model-a": "Source1"}
@@ -237,7 +237,7 @@ class TestBenchmarkState(unittest.TestCase):
         accumulates one entry per in-flight plugin. The previous pid-suffix
         status approach lost all but the most-recent plugin's marker because
         status was overwritten; the list form preserves them all so each
-        plugin's cell can render its own "[waiting]" independently.
+        plugin's cell can render its own "[streaming]" independently.
         """
         models = {"model-a": "Source1"}
         state = self.module.BenchmarkState(models, self.plugin_ids)
@@ -296,7 +296,7 @@ class TestBenchmarkState(unittest.TestCase):
     def test_load_state_clears_stale_running_pids(self):
         """Regression test: a saved state with stale ``running_pids`` (from
         a previously interrupted run) must NOT carry those pids forward --
-        carrying them forward causes phantom "[waiting]" cells in the live
+        carrying them forward causes phantom "[streaming]" cells in the live
         TUI even though no plugin task is actually running on resume.
         """
         models = {"model-a": "Source1"}
