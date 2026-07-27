@@ -11,6 +11,19 @@ import time
 
 class BenchmarkState:
     """Thread-safe shared state for parallel benchmark execution."""
+
+    # Fallback tokens-per-second estimate used by the live TUI's
+    # ``[streaming - est. ~N tok]`` bracket form (see
+    # ``ai-benchmark._plugin_cell_block``). Picks a conservative value
+    # typical of code-generation LLMs so the estimate stays a
+    # ballpark rather than over-promising; the cell reserves the bare
+    # ``[streaming - N tok]`` form (no ``~`` marker, derived from
+    # real ``bytes_received``) for the actually-arriving counter once
+    # a chunk lands. Operators read the ``~`` glyph as the
+    # transparent "this is a guess" cue. Tests can monkey-patch
+    # ``BenchmarkState.tps_estimate`` to exercise alternative tps
+    # values without touching dispatch logic.
+    tps_estimate = 15
     def __init__(self, models, plugin_ids, session_seed=None):
         self._lock = threading.Lock()
         self.results = []
@@ -67,6 +80,17 @@ class BenchmarkState:
                 # after the per-plugin St column was deleted as redundant,
                 # so this transient is harmless).
                 self._model_info[name][f"{pid}_bytes_received"] = 0
+                # First-chunk-received flag, callable via
+                # ``mark_first_chunk_seen`` from the SSE parse layer the
+                # moment the first delta lands. The flag drives a separate
+                # downstream code path -- the live TUI's
+                # ``[streaming - est. ~N tok]`` bracket form (when
+                # absent) versus ``[streaming - N tok]`` (when present
+                # alongside nonzero ``bytes_received``). Default False so
+                # the renderer can read it without a ``KeyError``; reset
+                # in ``start_plugin_run`` to drop carry-over from a
+                # previous dispatch.
+                self._model_info[name][f"{pid}_first_chunk_seen"] = False
 
     def update(self, model_name, **kwargs):
         with self._lock:
@@ -91,12 +115,16 @@ class BenchmarkState:
                 cur.append(pid)
             info["running_pids"] = cur
             info["status"] = "running"
-            # Reset the per-plugin streaming byte counter so a retry
-            # dispatch doesn't carry forward the count from the
-            # previous (now-finished) attempt. This mirrors the
+            # Reset the per-plugin streaming byte counter AND the
+            # first-chunk flag so a retry dispatch doesn't carry
+            # forward either signal from the previous (now-finished)
+            # attempt. ``mark_first_chunk_seen`` is a sticky flag
+            # within a single dispatch; ``start_plugin_run`` owns the
+            # cross-dispatch reset semantics. This mirrors the
             # dispatch-time reset (``attempt_start`` is rewritten on
             # each entry to ``_run_plugins``).
             info[f"{pid}_bytes_received"] = 0
+            info[f"{pid}_first_chunk_seen"] = False
 
     def add_bytes_received(self, model_name, pid, n_bytes):
         """Atomically accumulate streaming bytes for a plugin task.
@@ -111,6 +139,12 @@ class BenchmarkState:
         unknown model/pid raises ``KeyError`` (Python standard behaviour)
         so the caller can detect a programming error immediately rather
         than silently drop bytes.
+
+        Note: this method does NOT auto-fire ``mark_first_chunk_seen``;
+        the SSE parse loop calls the marker independently so transport
+        events (handshake ack, first delta, structured-error ack etc.)
+        can flip the flag without growing the byte counter, and so the
+        bytes-counting path stays purely additive for tests.
         """
         if not n_bytes:
             return
@@ -118,6 +152,31 @@ class BenchmarkState:
             key = f"{pid}_bytes_received"
             info = self._model_info[model_name]
             info[key] = (info.get(key) or 0) + n_bytes
+
+    def mark_first_chunk_seen(self, model_name, pid):
+        """Atomically mark that a first streaming chunk has arrived for
+        a plugin task.
+
+        Idempotent: calling repeatedly is safe (the flag only flips
+        False -> True; we never set it back to False once a chunk has
+        landed -- retry/resume semantics are owned by
+        ``start_plugin_run`` which resets per-dispatch). The change
+        drives the live TUI's bracket form: before the flag flips,
+        the cell may show ``[streaming - est. ~N tok]`` (an elapsed-time
+        estimate); after the flag flips and ``bytes_received`` becomes
+        positive, the cell shows the real ``[streaming - N tok]``
+        counter.
+
+        Decoupled from ``add_bytes_received`` so SSE-layer callers can
+        flip the flag on whatever transport event constitutes "the
+        response has actually begun" (first parsed delta, first
+        non-heartbeat byte, first acknowledged HTTP chunk, etc.)
+        without coupling to the bytes-accumulation path.
+        """
+        with self._lock:
+            info = self._model_info[model_name]
+            flag_key = f"{pid}_first_chunk_seen"
+            info[flag_key] = True
 
     def finish_plugin_run(self, model_name, pid):
         """Atomically clear a plugin task's in-flight marker on this model.

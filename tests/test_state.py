@@ -444,5 +444,122 @@ class TestBenchmarkState(unittest.TestCase):
         self.assertEqual(snap["rate-limiter_bytes_received"], 0)
         self.assertEqual(snap["wireframes_bytes_received"], 0)
 
+    def test_first_chunk_seen_default_is_false(self):
+        """Every plugin gets a ``first_chunk_seen`` field of ``False``
+        in the default model_info dict so the renderer can read it
+        without a ``KeyError`` (matching the pattern of
+        ``_bytes_received``). Bool default (not None) cleanly drives
+        the ``first_chunk_seen and bytes_received`` branching in
+        ``_plugin_cell_block``.
+        """
+        state = self.module.BenchmarkState(
+            {"m1": "Default"}, ["rate-limiter", "wireframes"]
+        )
+        snap = state.snapshot()["m1"]
+        self.assertEqual(snap["rate-limiter_first_chunk_seen"], False)
+        self.assertEqual(snap["wireframes_first_chunk_seen"], False)
+
+    def test_mark_first_chunk_seen_flips_flag_atomically(self):
+        """``mark_first_chunk_seen`` flips the per-plugin flag from
+        ``False`` -> ``True`` and is observable through subsequent
+        snapshots (used by the live TUI's ``[streaming - N tok]``
+        cell path to switch from the estimate form to the real
+        counter).
+        """
+        state = self.module.BenchmarkState({"m1": "Default"}, ["rate-limiter"])
+        self.assertEqual(
+            state.snapshot()["m1"]["rate-limiter_first_chunk_seen"], False
+        )
+        state.mark_first_chunk_seen("m1", "rate-limiter")
+        self.assertEqual(
+            state.snapshot()["m1"]["rate-limiter_first_chunk_seen"], True
+        )
+
+    def test_mark_first_chunk_seen_is_idempotent(self):
+        """Repeated ``mark_first_chunk_seen`` calls stay ``True`` --
+        the flag never regresses to ``False`` within a single
+        dispatch (cross-dispatch reset is owned by
+        ``start_plugin_run``). Repeated calls also don't error --
+        the SSE parse loop may fire the marker on multiple events
+        (first parsed delta, first non-heartbeat byte, etc.) and
+        each call must be a no-op rather than a programming error.
+        """
+        state = self.module.BenchmarkState({"m1": "Default"}, ["rate-limiter"])
+        state.mark_first_chunk_seen("m1", "rate-limiter")
+        state.mark_first_chunk_seen("m1", "rate-limiter")
+        state.mark_first_chunk_seen("m1", "rate-limiter")
+        self.assertEqual(
+            state.snapshot()["m1"]["rate-limiter_first_chunk_seen"], True
+        )
+
+    def test_start_plugin_run_resets_first_chunk_seen(self):
+        """``start_plugin_run`` zeros both ``bytes_received`` and
+        ``first_chunk_seen`` so a retry dispatch doesn't carry a
+        stale flag from the previous (now-finished) attempt. Without
+        this reset, a retry would skip the
+        ``[streaming - est. ~N tok]`` estimate path on its first 2s
+        and jump straight to the real-counter form --
+        visually lying to the operator about what's happening.
+        """
+        state = self.module.BenchmarkState({"m1": "Default"}, ["rate-limiter"])
+        state.start_plugin_run("m1", "rate-limiter")
+        state.mark_first_chunk_seen("m1", "rate-limiter")
+        state.add_bytes_received("m1", "rate-limiter", 128)
+        self.assertEqual(
+            state.snapshot()["m1"]["rate-limiter_first_chunk_seen"], True
+        )
+        # End the first attempt and re-dispatch.
+        state.finish_plugin_run("m1", "rate-limiter")
+        state.start_plugin_run("m1", "rate-limiter")
+        self.assertEqual(
+            state.snapshot()["m1"]["rate-limiter_first_chunk_seen"], False,
+            "start_plugin_run must reset first_chunk_seen on each dispatch"
+        )
+        self.assertEqual(
+            state.snapshot()["m1"]["rate-limiter_bytes_received"], 0,
+            "start_plugin_run must reset bytes_received on each dispatch"
+        )
+
+    def test_tps_estimate_class_attribute_default(self):
+        """The ``BenchmarkState.tps_estimate`` class attribute
+        defaults to a realistic tokens/sec rate so the estimate
+        bracket stays a ballpark rather than over-promising; tests
+        monkey-patch this attribute (set, run, restore) to exercise
+        alternative rates without touching dispatch logic.
+        """
+        # Class-level, accessible without an instance.
+        self.assertEqual(self.module.BenchmarkState.tps_estimate, 15)
+        # Also accessible via instance (no instance state overrides).
+        state = self.module.BenchmarkState({"m1": "Default"}, ["rate-limiter"])
+        self.assertEqual(state.tps_estimate, 15)
+
+    def test_load_state_backfills_first_chunk_seen_default(self):
+        """Older state files lacking ``{pid}_first_chunk_seen``
+        resolve to ``False`` on ``load_state`` so the renderer can
+        read the field without a ``KeyError`` after the field was
+        added. Backward-compat guard.
+        """
+        state = self.module.BenchmarkState({"m1": "Default"}, ["rate-limiter"])
+        state.update("m1", status="completed")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, "state.json")
+            state.save_state(path)
+            with open(path) as f:
+                data = json.load(f)
+            # Strip the new key to simulate a state file written
+            # before the field existed.
+            for info in data.get("model_info", {}).values():
+                info.pop("rate-limiter_first_chunk_seen", None)
+            with open(path, "w") as f:
+                json.dump(data, f)
+            loaded = self.module.BenchmarkState.load_state(
+                path, {"m1": "Default"}, ["rate-limiter"]
+            )
+            snap = loaded.snapshot()["m1"]
+            self.assertEqual(
+                snap["rate-limiter_first_chunk_seen"], False,
+                "missing first_chunk_seen key in legacy state file must default to False"
+            )
+
 if __name__ == "__main__":
     unittest.main()

@@ -198,7 +198,7 @@ class TestPluginCellBlock(unittest.TestCase):
         """
         s = {
             "running_pids": ["rate-limiter"],
-            "rate-limiter_first_tok_ts": 1234.5,
+            "rate-limiter_first_chunk_seen": True,
             "rate-limiter_bytes_received": 64,  # 64 // 4 = 16 tok
         }
         block = ai_benchmark._plugin_cell_block(
@@ -206,7 +206,11 @@ class TestPluginCellBlock(unittest.TestCase):
         self.assertIn("[streaming - 16 tok]", block)
         # Bare "[streaming]" must NOT appear after substituting out
         # the enriched indicator -- the cell shows the tok-counter
-        # form, not the bare bracket.
+        # form, not the bare bracket. The cells read
+        # ``first_chunk_seen`` (bool) rather than the legacy
+        # ``first_tok_ts`` (timestamp) -- ``mark_first_chunk_seen``
+        # is the canonical hook the SSE parse layer fires when the
+        # first chunk lands.
         leftover = block.replace("[streaming - 16 tok]", "")
         self.assertNotIn("[streaming]", leftover,
                          "cell should enrich to [streaming - N tok] when bytes accumulate")
@@ -229,25 +233,109 @@ class TestPluginCellBlock(unittest.TestCase):
         self.assertNotIn("tok", block,
                          "no bytes yet -> don't show 0-tok indicator")
 
-    def test_in_flight_streaming_plugin_shows_elapsed_suffix_above_threshold(self):
-        """Streaming-capable plugin in flight with no first token yet:
-        once the wall-clock wait exceeds 2s, the bracket becomes
-        ``[streaming - Ns]`` so the operator can tell a slow / stuck
-        wait from a normal <2s one. Below the threshold the bare
-        ``[streaming]`` form is kept (no visual noise on quick plugins).
-        A missing ``attempt_start`` also keeps the bare form (we
-        don't fabricate a meaningless elapsed value from epoch 0).
+    def test_in_flight_streaming_plugin_pre_first_chunk_shows_estimated_tok_after_threshold(self):
+        """Streaming-capable plugin in flight BEFORE any first chunk
+        has landed: once the wall-clock wait crosses the 2s threshold,
+        the cell switches to ``[streaming - est. ~N tok]`` so the
+        operator gets a live counter feel even before the API yields
+        data. ``N`` is computed as ``int(elapsed * state.tps_estimate)``
+        using the class-level default (15 tok/s). The ``est.`` prefix
+        + ``~`` glyph is the transparent \"this is a guess\" cue --
+        the operator must never read this counter as actually-
+        received data. Below the threshold the bare ``[streaming]``
+        form is kept (no visual noise on quick plugins).
         """
         now = time.time()
-        # Above threshold (5s ago): expect elapsed suffix.
+        # Set attempt_start 6s ago so elapsed clears the 2s threshold
+        # regardless of micro-jitter between ``time.time()`` calls.
+        s = {
+            "running_pids": ["rate-limiter"],
+            "rate-limiter_first_chunk_seen": False,
+            "rate-limiter_bytes_received": 0,
+            "attempt_start": now - 6.0,
+        }
+        block = ai_benchmark._plugin_cell_block(
+            "rate-limiter", s, self.p_streaming, None)
+        # Reproducible est-tok count: use the current ``elapsed``
+        # snapshot (may be 5/6/7s depending on jitter) so the
+        # assertion pins both the prefix AND the tps math.
+        elapsed = int(time.time() - s["attempt_start"])
+        expected_tok = elapsed * 15  # default tps_estimate
+        self.assertIn(f"[streaming - est. ~{expected_tok} tok]", block,
+                      "pre-chunk cell past threshold should show "
+                      "[streaming - est. ~N tok] with tps-derived N")
+        # Tilde is the transparent \"guess\" cue -- must never appear
+        # without the ``est.`` prefix.
+        self.assertIn("~", block)
+        self.assertIn("est.", block)
+
+    def test_in_flight_streaming_plugin_post_first_chunk_does_not_use_estimate_marker(self):
+        """Streaming-capable plugin in flight WITH first chunk seen
+        AND positive byte count: the cell shows the real counter
+        ``[streaming - N tok]`` -- NO ``~`` glyph, NO ``est.`` prefix.
+        This pins the explicit visual distinction between the
+        estimate form (clearly labelled) and the real form (no
+        decoration). Even when bytes_received is positive after the
+        first chunk, the operator reads the value as actually-
+        received data.
+        """
+        s = {
+            "running_pids": ["rate-limiter"],
+            "rate-limiter_first_chunk_seen": True,
+            "rate-limiter_bytes_received": 64,    # 64 // 4 = 16 tok
+            "attempt_start": time.time() - 5.0,  # past threshold (irrelevant here)
+        }
+        block = ai_benchmark._plugin_cell_block(
+            "rate-limiter", s, self.p_streaming, None)
+        self.assertIn("[streaming - 16 tok]", block)
+        # The estimate-form decorations are FORBIDDEN once the real
+        # counter is in use -- a ``~`` would falsely imply "guess".
+        self.assertNotIn("~", block,
+                         "real counter form must not carry the ~ glyph "
+                         "(the ~ is reserved for the estimate path)")
+        self.assertNotIn("est.", block,
+                         "real counter form must not carry the 'est.' "
+                         "prefix (reserved for the estimate path)")
+
+    def test_in_flight_streaming_plugin_shows_estimated_tok_form_above_threshold(self):
+        """Streaming-capable plugin in flight with no first chunk yet:
+        once the wall-clock wait exceeds 2s, the bracket transitions
+        from the bare ``[streaming]`` form to the
+        ``[streaming - est. ~N tok]`` estimate form (using
+        ``state.tps_estimate`` as the conservative tokens/sec source).
+        This supersedes the previous elapsed-suffix form
+        (``[streaming - Ns]``) so the operator gets a live counter
+        feel instead of just a "waited N seconds" label, while still
+        distinguishing clearly from the real counter
+        (``[streaming - N tok]``, no ``~`` glyph).
+
+        Below the 2s threshold the bare ``[streaming]`` form is kept
+        (no visual noise on quick plugins). A missing ``attempt_start``
+        also keeps the bare form -- we don't fabricate a meaningless
+        elapsed value from epoch 0.
+        """
+        now = time.time()
+        # Above threshold (5s ago): expect the estimate form
+        # (the elapsed-suffix form ``[streaming - Ns]`` was superseded
+        # by the est-tok ticker; the new form is
+        # ``[streaming - est. ~N tok]``).
         s_above = {
             "running_pids": ["rate-limiter"],
             "attempt_start": now - 5.0,
         }
         block = ai_benchmark._plugin_cell_block(
             "rate-limiter", s_above, self.p_streaming, None)
-        self.assertIn("[streaming - 5s]", block)
-        # Below threshold (1s ago): bare bracket, no suffix.
+        elapsed = int(time.time() - s_above["attempt_start"])
+        expected_tok = elapsed * 15  # BenchmarkState.tps_estimate default
+        self.assertIn(f"[streaming - est. ~{expected_tok} tok]", block,
+                      "above-threshold pre-chunk cell should show "
+                      "[streaming - est. ~N tok] (elapsed-suffix form "
+                      "was superseded by the est-tok ticker)")
+        # The legacy form is gone -- the estimate is the new "above
+        # threshold" indicator.
+        self.assertNotIn("[streaming - 5s]", block,
+                         "elapsed-suffix form was superseded by est-tok ticker")
+        # Below threshold (1s ago): bare bracket, no estimate.
         s_below = {
             "running_pids": ["rate-limiter"],
             "attempt_start": now - 1.0,
@@ -256,7 +344,7 @@ class TestPluginCellBlock(unittest.TestCase):
             "rate-limiter", s_below, self.p_streaming, None)
         self.assertIn("[streaming]", block)
         self.assertNotIn("[streaming -", block,
-                         "below-threshold streaming should not carry an elapsed suffix")
+                         "below-threshold streaming should not carry any suffix or estimate")
         # Missing attempt_start: bare bracket (no fabricated elapsed).
         s_none = {
             "running_pids": ["rate-limiter"],
