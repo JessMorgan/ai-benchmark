@@ -12,18 +12,6 @@ import time
 class BenchmarkState:
     """Thread-safe shared state for parallel benchmark execution."""
 
-    # Fallback tokens-per-second estimate used by the live TUI's
-    # ``[streaming - est. ~N tok]`` bracket form (see
-    # ``ai-benchmark._plugin_cell_block``). Picks a conservative value
-    # typical of code-generation LLMs so the estimate stays a
-    # ballpark rather than over-promising; the cell reserves the bare
-    # ``[streaming - N tok]`` form (no ``~`` marker, derived from
-    # real ``bytes_received``) for the actually-arriving counter once
-    # a chunk lands. Operators read the ``~`` glyph as the
-    # transparent "this is a guess" cue. Tests can monkey-patch
-    # ``BenchmarkState.tps_estimate`` to exercise alternative tps
-    # values without touching dispatch logic.
-    tps_estimate = 15
     def __init__(self, models, plugin_ids, session_seed=None):
         self._lock = threading.Lock()
         self.results = []
@@ -84,11 +72,12 @@ class BenchmarkState:
                 # ``mark_first_chunk_seen`` from the SSE parse layer the
                 # moment the first delta lands. The flag drives a separate
                 # downstream code path -- the live TUI's
-                # ``[streaming - est. ~N tok]`` bracket form (when
-                # absent) versus ``[streaming - N tok]`` (when present
-                # alongside nonzero ``bytes_received``). Default False so
-                # the renderer can read it without a ``KeyError``; reset
-                # in ``start_plugin_run`` to drop carry-over from a
+                # ``[streaming - Ns]`` bracket form (pre-chunk, with
+                # the seconds suffix past the elapsed threshold) versus
+                # ``[streaming - N tok]`` (real counter, post-chunk with
+                # nonzero ``bytes_received``). Default False so the
+                # renderer can read it without a ``KeyError``; reset in
+                # ``start_plugin_run`` to drop carry-over from a
                 # previous dispatch.
                 self._model_info[name][f"{pid}_first_chunk_seen"] = False
                 # Timestamp of the first SSE non-empty delta, set in the
@@ -156,15 +145,15 @@ class BenchmarkState:
         SSE-layer caller forgot to fire ``mark_first_chunk_seen`` on
         the first delta. This is the wiring contract: every code path
         that adds bytes MUST have already flipped the marker -- the
-        cell renderer (and any future ticker consumer) cannot switch
-        from the estimate branch ([streaming - est. ~N tok]) to the
-        real counter branch ([streaming - N tok]) without the marker.
-        We raise loudly here so the drift fails the test suite (and
-        the live run) the moment a future caller forgets the hook,
-        rather than silently keeping the bracket stuck on the
-        estimate path indefinitely. The check is inside ``self._lock``
-        so a concurrent ``mark_first_chunk_seen`` cannot interleave
-        between the read and the increment.
+        cell renderer cannot switch from the pre-chunk
+        ``[streaming]`` / ``[streaming - Ns]`` form to the real-
+        counter form ``[streaming - N tok]`` without the marker
+        being flipped first. We raise loudly here so the drift fails
+        the test suite (and the live run) the moment a future caller
+        forgets the hook, rather than silently keeping the bracket
+        stuck on the pre-chunk form indefinitely. The check is inside
+        ``self._lock`` so a concurrent ``mark_first_chunk_seen``
+        cannot interleave between the read and the increment.
 
         Note: this method does NOT auto-fire ``mark_first_chunk_seen``;
         the SSE parse loop calls the marker independently so transport
@@ -195,10 +184,10 @@ class BenchmarkState:
         landed -- retry/resume semantics are owned by
         ``start_plugin_run`` which resets per-dispatch). The change
         drives the live TUI's bracket form: before the flag flips,
-        the cell may show ``[streaming - est. ~N tok]`` (an elapsed-time
-        estimate); after the flag flips and ``bytes_received`` becomes
-        positive, the cell shows the real ``[streaming - N tok]``
-        counter.
+        the cell shows ``[streaming]`` or ``[streaming - Ns]``
+        (depending on wall-clock wait vs the elapsed threshold);
+        after the flag flips and ``bytes_received`` becomes positive,
+        the cell shows the real ``[streaming - N tok]`` counter.
 
         The optional ``ts`` parameter atomically writes
         ``{pid}_first_tok_ts`` ONLY on the False -> True transition

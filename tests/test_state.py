@@ -411,11 +411,12 @@ class TestBenchmarkState(unittest.TestCase):
 
     def test_add_bytes_received_raises_if_first_chunk_seen_not_fired(self):
         """``add_bytes_received`` is wired to fail loudly if the SSE
-        parse layer forgot to call ``mark_first_chunk_seen`` on the
+        parse layer forgot to call        ``mark_first_chunk_seen`` on the
         first delta. The check is the runtime self-check that protects
-        against the cell renderer getting stuck on the
-        ``[streaming - est. ~N tok]`` estimate branch when the real
-        counter is actually arriving. Without this RuntimeError the
+        against the cell renderer getting stuck on the pre-chunk
+        waiting form (``[streaming]`` or ``[streaming - Ns]``) when
+        the real counter is actually arriving. Without this
+        RuntimeError the
         drift would only surface visually -- the operator would see
         estimates that never converge to real byte counts.
         """
@@ -603,8 +604,8 @@ class TestBenchmarkState(unittest.TestCase):
         """``start_plugin_run`` zeros both ``bytes_received`` and
         ``first_chunk_seen`` so a retry dispatch doesn't carry a
         stale flag from the previous (now-finished) attempt. Without
-        this reset, a retry would skip the
-        ``[streaming - est. ~N tok]`` estimate path on its first 2s
+        this reset, a retry would skip the pre-chunk waiting form
+        (``[streaming]`` or ``[streaming - Ns]``) on its first 2s
         and jump straight to the real-counter form --
         visually lying to the operator about what's happening.
         """
@@ -651,19 +652,6 @@ class TestBenchmarkState(unittest.TestCase):
             "start_plugin_run must zero first_tok_ts on each dispatch "
             "so the live footer doesn't anchor TTFT on the previous attempt"
         )
-
-    def test_tps_estimate_class_attribute_default(self):
-        """The ``BenchmarkState.tps_estimate`` class attribute
-        defaults to a realistic tokens/sec rate so the estimate
-        bracket stays a ballpark rather than over-promising; tests
-        monkey-patch this attribute (set, run, restore) to exercise
-        alternative rates without touching dispatch logic.
-        """
-        # Class-level, accessible without an instance.
-        self.assertEqual(self.module.BenchmarkState.tps_estimate, 15)
-        # Also accessible via instance (no instance state overrides).
-        state = self.module.BenchmarkState({"m1": "Default"}, ["rate-limiter"])
-        self.assertEqual(state.tps_estimate, 15)
 
     def test_load_state_backfills_first_chunk_seen_default(self):
         """Older state files lacking ``{pid}_first_chunk_seen``

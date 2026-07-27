@@ -209,11 +209,9 @@ PLUGIN_BLOCK_WIDTH = 26
 
 # Wall-clock threshold (seconds) past which an in-flight plugin shows a
 # secondary indicator so the operator can spot slow / hung requests vs
-# normal quick ones. Used by both ``_elapsed_suffix`` (the ``- Ns``
-# bracket suffix on ``[requested]`` / streaming bare forms) and the
-# ``[streaming - est. ~N tok]`` estimate path in ``_plugin_cell_block``
-# (the dynamic-N version of this threshold). Single source of truth so
-# the two consumers don't drift out of sync.
+# normal quick ones. Used by ``_elapsed_suffix`` (the ``- Ns`` bracket
+# suffix on both ``[streaming]`` and ``[requested]`` pre-chunk forms).
+# Single source of truth so the two consumers don't drift out of sync.
 _ELAPSED_THRESHOLD_S = 2
 
 
@@ -236,16 +234,17 @@ def _elapsed_suffix(s, threshold=_ELAPSED_THRESHOLD_S):
     plugin has been waiting long enough to be worth flagging, else
     ``""``.
 
-    Used by ``_plugin_cell_block`` to enrich the bare ``[requested]``
-    bracket (non-streaming-capable plugin in flight) once the
-    wait crosses ``threshold`` seconds (default
-    ``_ELAPSED_THRESHOLD_S`` -- the module-level constant shared
-    with the est-tok ticker so both consumers stay in sync). The
-    streaming-capable variant is no longer rendered with the
-    ``- Ns`` suffix -- past the threshold, the cell switches to
-    ``[streaming - est. ~N tok]`` (the estimate path), which
-    carries both the wait signal AND a tok-rate-derived
-    approximation.
+    Used by ``_plugin_cell_block`` to enrich BOTH the bare
+    ``[requested]`` bracket (non-streaming-capable plugin in flight)
+    AND the bare ``[streaming]`` bracket (streaming-capable plugin
+    in flight but no first chunk yet) once the wait crosses
+    ``threshold`` seconds. Default ``threshold`` is
+    ``_ELAPSED_THRESHOLD_S`` -- the module-level constant so the
+    two consumers (streaming-vs-non-streaming pre-chunk) stay in
+    sync. Pre-chunk display is wall-clock seconds elapsed since
+    dispatch (NOT an estimated token count, which would be
+    misleading at this stage because real throughput varies
+    wildly between providers / temperatures / prompt sizes).
 
     Below the threshold we keep the bare bracket (no visual noise
     on quick plugins); above the threshold we surface ``- Ns`` so
@@ -280,48 +279,47 @@ def _plugin_cell_block(pid, s, p, sleeping_remaining):
     When the plugin is in flight (``pid in running_pids``) OR
     the model is currently in a 429 backoff sleep, the block collapses
     to a single bracket-delimited status centred in 26 chars:
-        ``[streaming - N tok]``     -- streaming-capable in flight, real counter
-                                        (first chunk seen; bytes > 0)
-        ``[streaming - est. ~N tok]`` -- streaming-capable in flight, BEFORE first
-                                        chunk AND wait crossed the threshold
-                                        (default 2s). ``est.`` + ``~`` marks this
-                                        as a ``state.tps_estimate``-based guess,
-                                        never confused with the real counter.
-        ``[streaming - Ns]``       -- streaming-capable in flight, no first chunk,
-                                        wait crossed elapsed threshold; produced
-                                        when no estimate source is available
-                                        (rare; tests should pin both branches)
-        ``[streaming]``             -- streaming-capable in flight, no first chunk,
-                                        fresh (<=2s; no visual noise)
-        ``[requested - Ns]``       -- non-streaming-capable in flight, wait crossed
-                                        the elapsed threshold
+        ``[streaming - N tok]``     -- streaming-capable in flight, real
+                                        counter (first chunk seen; bytes > 0).
+                                        ``N`` is chars // 4 so the live
+                                        ticker matches the post-completion
+                                        ``count_tokens(text)`` estimator.
+        ``[streaming - Ns]``       -- streaming-capable in flight, no first
+                                        chunk yet, wait crossed the elapsed
+                                        threshold (default 2s). Operator
+                                        sees wall-clock seconds elapsed
+                                        since dispatch; an estimate of the
+                                        eventual token count would be
+                                        misleading at this stage.
+        ``[streaming]``             -- streaming-capable in flight, no first
+                                        chunk yet, fresh (<=2s). Bare
+                                        bracket to avoid visual noise on
+                                        quick plugins.
+        ``[requested - Ns]``       -- non-streaming-capable in flight, wait
+                                        crossed the elapsed threshold
         ``[requested]``             -- non-streaming-capable in flight, fresh
-        ``[429 sleeping Xs]``      -- model is mid-backoff (pauses the plugin task)
+        ``[429 sleeping Xs]``      -- model is mid-backoff (pauses the
+                                        plugin task)
 
-    Note: the ``pre-chunk`` in-flight states (``[streaming]``,
-    ``[requested]``, and their elapsed-suffix forms) cannot show a
-    real byte/token counter because ``bytes_received`` is genuinely 0
-    in those states -- no SSE chunk has arrived for streaming-capable
-    plugins, and there are no chunks at all for non-streaming plugins.
-    The cells resolve this with two layered fallbacks:
+    Wait-for-first-chunk is communicated as wall-clock seconds, NOT
+    as an estimated token count. The operator can already see
+    elapsed seconds elsewhere in the live footer, but pairing
+    seconds with the in-flight bracket answers the most useful
+    diagnostic question: "how long has this plugin been waiting
+    for the server to respond?" Once a chunk arrives
+    (``mark_first_chunk_seen`` called by the SSE parse layer +
+    ``bytes_received`` becomes positive), the bracket transitions
+    to ``[streaming - N tok]`` with a real counter incrementing on
+    every ``on_chunk`` callback.
 
-    1. ``[streaming - est. ~N tok]`` for streaming-capable plugins
-       where the ``BenchmarkState.mark_first_chunk_seen`` flag has
-       not yet flipped AND the elapsed wait crossed the threshold.
-       ``N`` is computed as ``int(elapsed * state.tps_estimate)``
-       using the class-level ``BenchmarkState.tps_estimate``
-       default (15 tok/s; see ``benchmark_state.py``). The ``~``
-       glyph is the transparent "this is a guess" cue -- the
-       operator must never read the estimated counter as actually-
-       received data.
-    2. ``[streaming - Ns]`` (the elapsed-suffix form added by
-       ``_elapsed_suffix``) for the fallback case when no estimate
-       source is available (e.g. ``tps_estimate`` is disabled).
-
-    Once a chunk arrives (``mark_first_chunk_seen`` called by the
-    SSE parse layer + ``bytes_received`` becomes positive), the
-    bracket transitions to ``[streaming - N tok]`` with a real
-    counter incrementing on every ``on_chunk`` callback.
+    Note on retry semantics: ``attempt_start`` is the model-level
+    timer set once in ``benchmark_core.run_model`` BEFORE
+    ``_run_plugins`` runs. If a plugin retries via ``token_levels``
+    truncation / 429 backoff, the seconds counter accumulates
+    wall-clock time across all attempts of that plugin -- it does
+    NOT reset per retry. This is intentional -- the operator sees
+    "total time the model has been waiting for a useful response",
+    which is the right signal for slow-or-hung plugin threads.
 
     When none of the above applies, the block falls back to the standard
     4-cell results layout (``score tok tm tps``). The previous per-plugin
@@ -342,57 +340,39 @@ def _plugin_cell_block(pid, s, p, sleeping_remaining):
         if p.supports_streaming:
             first_chunk_seen = bool(s.get(f"{pid}_first_chunk_seen", False))
             bytes_received = s.get(f"{pid}_bytes_received", 0) or 0
-            # Default to bare ``[streaming]``; overridden by the two
-            # conditional branches below (real counter or estimate).
-            # All four pre-chunk / no-data paths (no attempt_start,
-            # below threshold, missing first chunk + bytes=0 rare
-            # transient, anything else) collapse to this single
-            # bare form instead of matching identical ``if/elif/else``
-            # trees -- one statement does the same job.
-            text = "[streaming]"
             if first_chunk_seen and bytes_received:
                 # Real counter: first chunk is in AND bytes have
                 # accumulated. chars // 4 matches the
                 # ``count_tokens`` estimator in ``benchmark_core``;
-                # using bytes here would show huge numbers that are
-                # harder to scan than 3- or 4-digit tok counts. NO
-                # ``~`` marker -- this is real data, not an estimate.
+                # this is NOT an estimate -- the operator sees the
+                # exact tok count the post-completion calculation
+                # will report (modulo streaming-vs-final parsing
+                # edge cases). No ``~`` marker is needed because
+                # this byte-derived counter is genuinely real.
                 text = f"[streaming - {bytes_received // 4} tok]"
-            elif not first_chunk_seen:
-                # Pre-chunk state. After the elapsed wait crosses
-                # the module-level threshold, fall through to an
-                # elapsed-time estimate so the operator gets a live
-                # counter feel instead of just ``[streaming]`` (the
-                # previous ``[streaming - Ns]`` elapsed-suffix form
-                # was superseded by the est-tok ticker for this
-                # branch). The state class exposes
-                # ``BenchmarkState.tps_estimate`` as the fallback
-                # tokens-per-second source; tests can monkey-patch
-                # the class attribute to exercise alternative
-                # rates. The ``est. ~`` prefix is the transparent
-                # cue -- the operator must read this as a guess,
-                # never as actually-received data.
-                attempt_start = s.get("attempt_start") or 0
-                if attempt_start:
-                    elapsed = int(time.time() - attempt_start)
-                    if elapsed > _ELAPSED_THRESHOLD_S:
-                        # Read tps_estimate defensively: if
-                        # monkey-patched to a falsy value we fall
-                        # back to the bare ``[streaming]`` form
-                        # rather than rendering ``[streaming - 0 tok]``.
-                        tps = BenchmarkState.tps_estimate or 15
-                        est_tok = int(elapsed * tps)
-                        text = f"[streaming - est. ~{est_tok} tok]"
+            else:
+                # Pre-chunk state (no first chunk yet OR first
+                # chunk seen with bytes still 0, the rare
+                # transient). Show wall-clock seconds elapsed
+                # since dispatch -- NOT an estimated token count:
+                # predicting tokens from seconds is misleading
+                # because actual throughput varies wildly between
+                # providers / temperatures / prompt sizes. The
+                # ``- Ns`` suffix makes per-plugin hangs obvious
+                # in the table once the wait crosses the module
+                # threshold (``_ELAPSED_THRESHOLD_S``); below the
+                # threshold we keep the bare bracket to avoid
+                # visual noise on quick responses.
+                text = f"[streaming{_elapsed_suffix(s)}]"
         else:
             # Non-streaming-capable plugin in flight. ``[requested]``
             # conveys "we sent the request, awaiting the buffered
             # response" (previously labelled ``[in flight]`` which
-            # sounded like an upstream-status verb). The elapsed suffix
-            # is added INSIDE the brackets (see comment in the
-            # streaming branch above for the rationale). No
-            # tokens-estimate fallback for non-streaming -- the
-            # transport doesn't yield data until completion so a
-            # guess would be misleading.
+            # sounded like an upstream-status verb). The elapsed
+            # suffix is added INSIDE the brackets (re-uses the
+            # same ``_elapsed_suffix`` helper as the streaming
+            # branch above). No token display for non-streaming --
+            # the transport doesn't yield data until completion.
             text = f"[requested{_elapsed_suffix(s)}]"
         return f"{text:^{PLUGIN_BLOCK_WIDTH}}"
     # Standard 4-cell results layout -- widths sum to 5+6+6+6=23 with 3

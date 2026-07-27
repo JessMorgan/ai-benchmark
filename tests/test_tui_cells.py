@@ -237,17 +237,22 @@ class TestPluginCellBlock(unittest.TestCase):
         self.assertNotIn("tok", block,
                          "no bytes yet -> don't show 0-tok indicator")
 
-    def test_in_flight_streaming_plugin_pre_first_chunk_shows_estimated_tok_after_threshold(self):
+    def test_in_flight_streaming_plugin_pre_first_chunk_shows_elapsed_seconds_after_threshold(self):
         """Streaming-capable plugin in flight BEFORE any first chunk
         has landed: once the wall-clock wait crosses the 2s threshold,
-        the cell switches to ``[streaming - est. ~N tok]`` so the
-        operator gets a live counter feel even before the API yields
-        data. ``N`` is computed as ``int(elapsed * state.tps_estimate)``
-        using the class-level default (15 tok/s). The ``est.`` prefix
-        + ``~`` glyph is the transparent \"this is a guess\" cue --
-        the operator must never read this counter as actually-
-        received data. Below the threshold the bare ``[streaming]``
-        form is kept (no visual noise on quick plugins).
+        the cell switches from ``[streaming]`` to ``[streaming - Ns]``
+        showing the wall-clock seconds elapsed since dispatch.
+
+        Pre-chunk display is wall-clock seconds, NOT an estimated
+        token count, because predicting tokens from seconds is
+        misleading at this stage (real throughput varies wildly
+        between providers / temperatures / prompt sizes). The
+        ``_elapsed_suffix`` helper is shared with the
+        ``[requested - Ns]`` non-streaming branch so the two
+        pre-chunk indicators stay in sync.
+
+        Below the threshold the bare ``[streaming]`` form is kept
+        (no visual noise on quick plugins).
         """
         now = time.time()
         # Set attempt_start 6s ago so elapsed clears the 2s threshold
@@ -260,69 +265,86 @@ class TestPluginCellBlock(unittest.TestCase):
         }
         block = ai_benchmark._plugin_cell_block(
             "rate-limiter", s, self.p_streaming, None)
-        # Reproducible est-tok count: use the current ``elapsed``
+        # Reproducible elapsed count: use the current ``elapsed``
         # snapshot (may be 5/6/7s depending on jitter) so the
-        # assertion pins both the prefix AND the tps math.
+        # assertion pins both the prefix AND the seconds math.
         elapsed = int(time.time() - s["attempt_start"])
-        expected_tok = elapsed * 15  # default tps_estimate
-        self.assertIn(f"[streaming - est. ~{expected_tok} tok]", block,
+        self.assertIn(f"[streaming - {elapsed}s]", block,
                       "pre-chunk cell past threshold should show "
-                      "[streaming - est. ~N tok] with tps-derived N")
-        # Tilde is the transparent \"guess\" cue -- must never appear
-        # without the ``est.`` prefix.
-        self.assertIn("~", block)
-        self.assertIn("est.", block)
+                      "[streaming - Ns] with wall-clock seconds elapsed")
+        # The pre-chunk-with-bytes form is gone -- we use wall-clock
+        # seconds, not an estimated tok count. The ``~`` tilde
+        # glyph was the transparent estimate cue; it must never
+        # appear in the streaming-pre-chunk branch.
+        self.assertNotIn("~", block,
+                         "tilde (~) is reserved for the estimate-guess "
+                         "form which was removed in favour of seconds")
+        self.assertNotIn("est.", block,
+                         "'est.' prefix was removed from the streaming "
+                         "pre-chunk branch in favour of wall-clock seconds")
+        self.assertNotIn("tok", block,
+                         "pre-chunk state (no bytes yet) must not show any "
+                         "tok indicator -- the seconds-suffix form is the "
+                         "operator's only signal until the real counter starts")
 
     def test_in_flight_streaming_plugin_post_first_chunk_does_not_use_estimate_marker(self):
         """Streaming-capable plugin in flight WITH first chunk seen
         AND positive byte count: the cell shows the real counter
         ``[streaming - N tok]`` -- NO ``~`` glyph, NO ``est.`` prefix.
-        This pins the explicit visual distinction between the
-        estimate form (clearly labelled) and the real form (no
-        decoration). Even when bytes_received is positive after the
-        first chunk, the operator reads the value as actually-
-        received data.
+        Even when bytes_received is positive after the first chunk,
+        the operator reads the value as actually-received data.
+
+        This test pins the contract that the operator NEVER sees a
+        ``~`` decoration on the real counter -- after the tilde /
+        est-tok ticker was removed in favour of wall-clock seconds,
+        the post-chunk branch is bare by design (no estimate form
+        to fall back to).
         """
+        # No ``attempt_start`` needed: the post-chunk branch is
+        # pure-attribute (depends on ``first_chunk_seen`` +
+        # ``bytes_received``) and doesn't read``attempt_start``
+        # once we know the first chunk has landed. Including the
+        # past-threshold value would just confuse future readers
+        # about which field drives this test.
         s = {
             "running_pids": ["rate-limiter"],
             "rate-limiter_first_chunk_seen": True,
             "rate-limiter_bytes_received": 64,    # 64 // 4 = 16 tok
-            "attempt_start": time.time() - 5.0,  # past threshold (irrelevant here)
         }
         block = ai_benchmark._plugin_cell_block(
             "rate-limiter", s, self.p_streaming, None)
         self.assertIn("[streaming - 16 tok]", block)
-        # The estimate-form decorations are FORBIDDEN once the real
-        # counter is in use -- a ``~`` would falsely imply "guess".
+        # Estimate decorations are now forbidden EVERYWHERE -- a
+        # ``~`` would falsely imply "guess", and we no longer have
+        # any estimate path to cue.
         self.assertNotIn("~", block,
-                         "real counter form must not carry the ~ glyph "
-                         "(the ~ is reserved for the estimate path)")
+                         "tilde (~) is reserved for the [removed] "
+                         "estimate form; the seconds-suffix path uses "
+                         "no decoration")
         self.assertNotIn("est.", block,
-                         "real counter form must not carry the 'est.' "
-                         "prefix (reserved for the estimate path)")
+                         "'est.' prefix is reserved for the [removed] "
+                         "estimate form; the seconds-suffix path uses "
+                         "no decoration")
 
-    def test_in_flight_streaming_plugin_shows_estimated_tok_form_above_threshold(self):
-        """Streaming-capable plugin in flight with no first chunk yet:
-        once the wall-clock wait exceeds 2s, the bracket transitions
-        from the bare ``[streaming]`` form to the
-        ``[streaming - est. ~N tok]`` estimate form (using
-        ``state.tps_estimate`` as the conservative tokens/sec source).
-        This supersedes the previous elapsed-suffix form
-        (``[streaming - Ns]``) so the operator gets a live counter
-        feel instead of just a "waited N seconds" label, while still
-        distinguishing clearly from the real counter
-        (``[streaming - N tok]``, no ``~`` glyph).
+    def test_in_flight_streaming_plugin_shows_elapsed_seconds_form_above_threshold(self):
+        """Streaming-capable plugin in flight with no first chunk
+        yet: once the wall-clock wait exceeds the 2s threshold
+        (``_ELAPSED_THRESHOLD_S``), the bracket transitions from
+        the bare ``[streaming]`` form to ``[streaming - Ns]``
+        (re-using the same ``_elapsed_suffix`` helper that drives
+        ``[requested - Ns]`` for non-streaming plugins). This is
+        wall-clock seconds elapsed since dispatch -- NOT an
+        estimated token count, since predicting tokens from
+        seconds is misleading (actual throughput varies wildly
+        between providers / temperatures / prompt sizes).
 
-        Below the 2s threshold the bare ``[streaming]`` form is kept
-        (no visual noise on quick plugins). A missing ``attempt_start``
-        also keeps the bare form -- we don't fabricate a meaningless
-        elapsed value from epoch 0.
+        Below the 2s threshold the bare ``[streaming]`` form is
+        kept (no visual noise on quick plugins). A missing
+        ``attempt_start`` also keeps the bare form -- we don't
+        fabricate a meaningless elapsed value from epoch 0.
         """
         now = time.time()
-        # Above threshold (5s ago): expect the estimate form
-        # (the elapsed-suffix form ``[streaming - Ns]`` was superseded
-        # by the est-tok ticker; the new form is
-        # ``[streaming - est. ~N tok]``).
+        # Above threshold (5s ago): expect the seconds-suffix form.
         s_above = {
             "running_pids": ["rate-limiter"],
             "attempt_start": now - 5.0,
@@ -330,16 +352,17 @@ class TestPluginCellBlock(unittest.TestCase):
         block = ai_benchmark._plugin_cell_block(
             "rate-limiter", s_above, self.p_streaming, None)
         elapsed = int(time.time() - s_above["attempt_start"])
-        expected_tok = elapsed * 15  # BenchmarkState.tps_estimate default
-        self.assertIn(f"[streaming - est. ~{expected_tok} tok]", block,
+        self.assertIn(f"[streaming - {elapsed}s]", block,
                       "above-threshold pre-chunk cell should show "
-                      "[streaming - est. ~N tok] (elapsed-suffix form "
-                      "was superseded by the est-tok ticker)")
-        # The legacy form is gone -- the estimate is the new "above
-        # threshold" indicator.
-        self.assertNotIn("[streaming - 5s]", block,
-                         "elapsed-suffix form was superseded by est-tok ticker")
-        # Below threshold (1s ago): bare bracket, no estimate.
+                      "[streaming - Ns] with wall-clock seconds elapsed")
+        # The estimate-decoration forms are gone entirely -- the
+        # operator sees wall-clock seconds, not a tok guess.
+        self.assertNotIn("~", block)
+        self.assertNotIn("est.", block)
+        self.assertNotIn("tok", block,
+                         "above-threshold pre-chunk state must show seconds, "
+                         "not tokens -- tok would require a real chunk to have arrived")
+        # Below threshold (1s ago): bare bracket, no suffix.
         s_below = {
             "running_pids": ["rate-limiter"],
             "attempt_start": now - 1.0,
@@ -348,7 +371,7 @@ class TestPluginCellBlock(unittest.TestCase):
             "rate-limiter", s_below, self.p_streaming, None)
         self.assertIn("[streaming]", block)
         self.assertNotIn("[streaming -", block,
-                         "below-threshold streaming should not carry any suffix or estimate")
+                         "below-threshold streaming should not carry any suffix")
         # Missing attempt_start: bare bracket (no fabricated elapsed).
         s_none = {
             "running_pids": ["rate-limiter"],
