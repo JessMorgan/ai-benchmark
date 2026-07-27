@@ -302,13 +302,7 @@ def _format_model_row(name, s, display_idx, active_plugins, source_abbrevs,
     model_disp = name[:16]
     frozen = f"{display_idx:>3}  {src_ab:<3} {model_disp:<18}  {status_ch:<3}"
 
-    # Per-plugin membership in this model's ``running_pids`` list -- decides
-    # which streaming columns highlight as live. With parallel plugin threads,
-    # multiple plugin ids can sit in ``running_pids`` simultaneously, so each
-    # column independently reflects THIS specific plugin's progress while
-    # the shared race is gone.
-    running_pids_set = set(s.get("running_pids") or [])
-
+    # Each plugin contributes exactly one 32-char block (merged status
     # Each plugin contributes exactly one 32-char block (merged status
     # OR standard 5-cell results) so ``plugin_str`` has the same total
     # length and column geometry as before. Joins the per-plugin blocks
@@ -390,6 +384,39 @@ def _source_abbr(source_abbrevs, source):
     return str(source)[:3] or "???"
 
 
+def _build_live_indicators(s, active_plugins):
+    """Build the comma-separated streaming-capable-plugin indicator string for a
+    model's live-activity row.
+
+    Iterates ``s["running_pids"]`` in insertion order and emits one
+    ``"<pid> (stream)"`` or ``"<pid> (wait)"`` per streaming-capable
+    plugin (decided by ``pid.first_tok_ts`` > 0). Non-streaming
+    plugins are omitted so we never lie about a transport detail we
+    cannot observe. Plugins that completed are no longer in
+    ``running_pids`` -- they fall out of the loop naturally.
+
+    With parallel plugin threads (``max_workers > 1``), a model can
+    carry several streaming-capable plugins in flight at once; this
+    surfaces ALL of them rather than only the first streaming-capable
+    one (the previous single-indicator choice hid active thread state
+    from the operator).
+
+    Returns ``""`` when no streaming-capable plugin is in flight.
+
+    Example output (three in-flight streaming plugins):
+        ``"rate-limiter (stream), moe-dense (wait), wireframes (stream)"``
+    """
+    running_pids = s.get("running_pids") or []
+    parts = []
+    for pid in running_pids:
+        plugin = next((p for p in active_plugins if p.id == pid), None)
+        if plugin is None or not plugin.supports_streaming:
+            continue
+        ft = s.get(f"{pid}_first_tok_ts", 0) or 0
+        parts.append(f"{pid} (stream)" if ft else f"{pid} (wait)")
+    return ", ".join(parts)
+
+
 def _render_live_activity(stdscr, max_x, max_y, snap, source_abbrevs, live_models,
                           live_top, live_height, log_top, active_plugins, backoff_429):
     """Render running models + 429-sleeping models in the live area.
@@ -440,21 +467,17 @@ def _render_live_activity(stdscr, max_x, max_y, snap, source_abbrevs, live_model
         elapsed = (time.time() - s.get("attempt_start", 0)) if s.get("attempt_start") else 0
         err = s.get("last_error", "")
         msg = f" \U0001f537 [{src_ab}] {nm[:36]} {elapsed:5.0f}s"
-        running_pids = s.get("running_pids") or []
-        # Pick the first streaming-capable plugin in flight for the
-        # ``(stream)/(wait)`` indicator. With parallel plugin threads the
-        # ``running_pids`` list can carry several ids; choosing the first
-        # streaming-capable one is consistent across renders and avoids
-        # the last-write-wins highlight flip we had under the old shared
-        # ``status="running_<pid>"`` field.
-        indicator_pid = next(
-            (p.id for p in active_plugins
-             if p.id in running_pids and p.supports_streaming),
-            None,
-        )
-        if indicator_pid is not None:
-            ft = s.get(f"{indicator_pid}_first_tok_ts", 0) or 0
-            msg += "  (stream)" if ft else "  (wait)"
+        # Per-plugin (stream)/(wait) indicators for ALL streaming-capable
+        # in-flight plugins (not just the first). With parallel plugin
+        # threads (``max_workers > 1``), a model can have N streaming
+        # plugins running simultaneously -- the operator needs to see
+        # all N thread states, not just the most-recently-started.
+        # Non-streaming plugins are omitted (no transport-state glyph).
+        # Example output:
+        #   "rate-limiter (stream), moe-dense (wait), wireframes (stream)"
+        indicators = _build_live_indicators(s, active_plugins)
+        if indicators:
+            msg += "  " + indicators
         if err:
             msg += f"  {err}"
         _wr(stdscr, max_x, max_y, live_row, 0, msg)

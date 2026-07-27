@@ -159,5 +159,113 @@ class TestPluginCellBlock(unittest.TestCase):
                          "st column is '-' post-flight regardless of stream state")
 
 
+class TestBuildLiveIndicators(unittest.TestCase):
+    """Tests for ``_build_live_indicators`` in ai-benchmark.py.
+
+    The helper feeds the per-model row of the live TUI's ``Live:``
+    section. It must show ALL streaming-capable plugins in
+    ``running_pids`` (not just the first), in ``running_pids``
+    insertion order, comma-separated; non-streaming plugins are
+    omitted so we never lie about a transport detail we cannot
+    observe. With parallel plugin threads (``max_workers > 1``) a
+    model can be running several streaming plugins simultaneously;
+    the operator needs to see every active thread's state.
+
+    Example expected output for three in-flight streaming plugins:
+        ``"rate-limiter (stream), moe-dense (wait), wireframes (stream)"``
+    """
+
+    @staticmethod
+    def _plugin(pid, *, streaming=True):
+        return type("P", (), {"id": pid, "supports_streaming": streaming})()
+
+    def test_multiple_streaming_plugins_all_shown_in_running_pids_order(self):
+        """With three streaming-capable plugins in flight, each one's
+        ``(stream)`` or ``(wait)`` indicator appears in the output, in
+        the order the pids appear in ``running_pids``. The format is
+        ``"<pid1> (stream), <pid2> (wait), <pid3> (stream)"``.
+        """
+        s = {
+            # running_pids is the source-of-truth insertion order;
+            # rate-limiter started first, wireframes second, moe-dense
+            # last (the order matches the user's example output).
+            "running_pids": ["rate-limiter", "moe-dense", "wireframes"],
+            "rate-limiter_first_tok_ts": 1.5,
+            # moe-dense deliberately has no first_tok_ts -> wait branch
+            "wireframes_first_tok_ts": 2.0,
+        }
+        plugins = [
+            self._plugin("rate-limiter", streaming=True),
+            self._plugin("moe-dense", streaming=True),
+            self._plugin("wireframes", streaming=True),
+        ]
+        out = ai_benchmark._build_live_indicators(s, plugins)
+        self.assertEqual(
+            out,
+            "rate-limiter (stream), moe-dense (wait), wireframes (stream)",
+        )
+
+    def test_non_streaming_plugin_in_flight_is_omitted(self):
+        """A non-streaming-capable plugin (e.g. ``structured-output``)
+        that is in flight does NOT get a ``(stream)/(wait)`` glyph --
+        we cannot observe its transport state so we don't add a
+        misleading indicator to the row.
+        """
+        s = {
+            "running_pids": ["rate-limiter", "structured-output"],
+            "rate-limiter_first_tok_ts": 1.5,
+        }
+        plugins = [
+            self._plugin("rate-limiter", streaming=True),
+            self._plugin("structured-output", streaming=False),
+        ]
+        out = ai_benchmark._build_live_indicators(s, plugins)
+        self.assertEqual(out, "rate-limiter (stream)")
+
+    def test_plugin_not_in_running_pids_is_excluded(self):
+        """A plugin that completed (no longer in ``running_pids``) and a
+        plugin that never ran (also not in ``running_pids``) are both
+        excluded from the indicator string. Only ids in
+        ``running_pids`` are iterated.
+        """
+        s = {
+            # completed_plugin ran but finished -- not in running_pids
+            # wireframes never started -- not in running_pids
+            "running_pids": ["rate-limiter"],
+            "rate-limiter_first_tok_ts": 0,  # still waiting, no first token
+            # These would shape up as (stream)/(stream) if shown:
+            "completed_plugin_first_tok_ts": 5.0,
+            "wireframes_first_tok_ts": 3.0,
+        }
+        plugins = [
+            self._plugin("rate-limiter", streaming=True),
+            self._plugin("wireframes", streaming=True),
+            self._plugin("completed_plugin", streaming=True),
+        ]
+        out = ai_benchmark._build_live_indicators(s, plugins)
+        self.assertEqual(out, "rate-limiter (wait)")
+
+    def test_empty_running_pids_returns_empty_string(self):
+        """No in-flight plugins -> empty string. The caller
+        (``_render_live_activity``) skips the ``"  <indicators>"``
+        prefix when the result is empty.
+        """
+        s = {"running_pids": []}
+        plugins = [self._plugin("any"), self._plugin("other")]
+        self.assertEqual(ai_benchmark._build_live_indicators(s, plugins), "")
+
+    def test_all_non_streaming_returns_empty_string(self):
+        """All in-flight plugins are non-streaming -> empty string.
+        We don't surface any glyph on rows whose transport state we
+        cannot observe, even when running_pids has entries.
+        """
+        s = {"running_pids": ["structured-output", "tool-calling"]}
+        plugins = [
+            self._plugin("structured-output", streaming=False),
+            self._plugin("tool-calling", streaming=False),
+        ]
+        self.assertEqual(ai_benchmark._build_live_indicators(s, plugins), "")
+
+
 if __name__ == "__main__":
     unittest.main()
