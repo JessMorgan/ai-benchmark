@@ -8,6 +8,7 @@ the helper functions.
 import importlib.util
 import pathlib
 import sys
+import time
 import unittest
 from unittest import mock
 
@@ -200,6 +201,71 @@ class TestPluginCellBlock(unittest.TestCase):
         self.assertIn("[streaming]", block)
         self.assertNotIn("tok", block,
                          "no bytes yet -> don't show 0-tok indicator")
+
+    def test_in_flight_waiting_plugin_shows_elapsed_suffix_above_threshold(self):
+        """Streaming-capable plugin in flight with no first token yet:
+        once the wall-clock wait exceeds 2s, the bracket becomes
+        ``[waiting - Ns]`` so the operator can tell a slow / stuck
+        wait from a normal <2s one. Below the threshold the bare
+        ``[waiting]`` form is kept (no visual noise on quick plugins).
+        A missing ``attempt_start`` also keeps the bare form (we
+        don't fabricate a meaningless elapsed value from epoch 0).
+        """
+        now = time.time()
+        # Above threshold (5s ago): expect elapsed suffix.
+        s_above = {
+            "running_pids": ["rate-limiter"],
+            "attempt_start": now - 5.0,
+        }
+        block = ai_benchmark._plugin_cell_block(
+            "rate-limiter", s_above, self.p_streaming, None)
+        self.assertIn("[waiting - 5s]", block)
+        # Below threshold (1s ago): bare bracket, no suffix.
+        s_below = {
+            "running_pids": ["rate-limiter"],
+            "attempt_start": now - 1.0,
+        }
+        block = ai_benchmark._plugin_cell_block(
+            "rate-limiter", s_below, self.p_streaming, None)
+        self.assertIn("[waiting]", block)
+        self.assertNotIn("[waiting -", block,
+                         "below-threshold wait should not carry an elapsed suffix")
+        # Missing attempt_start: bare bracket (no fabricated elapsed).
+        s_none = {
+            "running_pids": ["rate-limiter"],
+            # no attempt_start key -- simulates a model that hasn't been dispatched yet
+        }
+        block = ai_benchmark._plugin_cell_block(
+            "rate-limiter", s_none, self.p_streaming, None)
+        self.assertIn("[waiting]", block)
+        self.assertNotIn("[waiting -", block,
+                         "missing attempt_start should keep bare bracket (no fabricated elapsed)")
+
+    def test_in_flight_non_streaming_plugin_shows_elapsed_suffix_above_threshold(self):
+        """Non-streaming-capable plugin in flight: once elapsed
+        exceeds 2s, the bracket becomes ``[in flight - Ns]`` so the
+        operator can spot hung non-streaming requests. Below the
+        threshold the bare ``[in flight]`` form is kept.
+        """
+        now = time.time()
+        # Above threshold (5s ago): expect elapsed suffix.
+        s_above = {
+            "running_pids": ["counter"],
+            "attempt_start": now - 5.0,
+        }
+        block = ai_benchmark._plugin_cell_block(
+            "counter", s_above, self.p_nonstream, None)
+        self.assertIn("[in flight - 5s]", block)
+        # Below threshold (1s ago): bare bracket.
+        s_below = {
+            "running_pids": ["counter"],
+            "attempt_start": now - 1.0,
+        }
+        block = ai_benchmark._plugin_cell_block(
+            "counter", s_below, self.p_nonstream, None)
+        self.assertIn("[in flight]", block)
+        self.assertNotIn("[in flight -", block,
+                         "below-threshold non-streaming should not carry an elapsed suffix")
 
 
 class TestBuildLiveIndicators(unittest.TestCase):

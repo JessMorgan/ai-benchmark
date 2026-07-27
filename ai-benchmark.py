@@ -219,6 +219,35 @@ def _fmt_value(v, fmt=".1f"):
         return str(v)
 
 
+def _elapsed_suffix(s, threshold=2):
+    """Return ``f" - {N}s"`` to append to in-flight brackets when a
+    plugin has been waiting long enough to be worth flagging, else
+    ``""``.
+
+    Used by ``_plugin_cell_block`` to enrich the bare ``[waiting]``
+    (streaming-capable, no first token yet) and ``[in flight]``
+    (non-streaming-capable) brackets once the wall-clock wait
+    crosses ``threshold`` seconds (default 2s). Below the threshold
+    we keep the bare bracket so quick plugins don't carry visual
+    noise; above the threshold we surface ``- Ns`` so the operator
+    can tell a stuck/hung plugin from a normal slow one.
+
+    The model-level ``attempt_start`` field is set by
+    ``benchmark_core.run_model`` (``state.update(target_name,
+    attempt_start=time.time())``) so a missing/zero value means the
+    dispatch hasn't been recorded yet; we return ``""`` in that case
+    rather than fabricating a meaningless elapsed value (which would
+    always exceed the threshold at any wall-clock time after epoch 2).
+    """
+    attempt_start = s.get("attempt_start") or 0
+    if not attempt_start:
+        return ""
+    elapsed = int(time.time() - attempt_start)
+    if elapsed > threshold:
+        return f" - {elapsed}s"
+    return ""
+
+
 def _plugin_cell_block(pid, s, p, sleeping_remaining):
     """Render a single per-model cell block for one plugin.
 
@@ -234,10 +263,24 @@ def _plugin_cell_block(pid, s, p, sleeping_remaining):
     When the plugin is in flight (``pid in running_pids``) OR
     the model is currently in a 429 backoff sleep, the block collapses
     to a single bracket-delimited status centred in 32 chars:
-        ``[waiting]``         -- in flight, streaming-capable, no first token yet
-        ``[streaming]``       -- in flight, streaming-capable, first token received
-        ``[running]``         -- in flight, non-streaming-capable plugin
-        ``[429 sleeping Xs]`` -- model is mid-backoff (pauses the plugin task)
+        ``[waiting - Ns]``      -- streaming-capable in flight, no first token,
+                                    wait crossed the elapsed threshold (default 2s)
+        ``[waiting]``           -- streaming-capable in flight, no first token,
+                                    fresh (<=2s; no visual noise)
+        ``[streaming]``         -- streaming-capable in flight, first token received,
+                                    no bytes accumulated yet (rare transient)
+        ``[streaming - N tok]`` -- streaming-capable in flight, bytes accumulated
+        ``[in flight - Ns]``    -- non-streaming-capable in flight, wait crossed
+                                    the elapsed threshold
+        ``[in flight]``         -- non-streaming-capable in flight, fresh
+        ``[429 sleeping Xs]``   -- model is mid-backoff (pauses the plugin task)
+
+    The ``- Ns`` suffix on ``[waiting]`` / ``[in flight]`` is added by
+    ``_elapsed_suffix`` once the wall-clock wait exceeds 2s so the
+    operator can distinguish a slow-but-progressing plugin from a
+    stuck/hung one; below 2s the bare bracket is kept (no noise on
+    quick plugins). The threshold default matches typical TTFT (time
+    to first token) budgets so a fresh start never carries the suffix.
 
     When none of the above applies, the block falls back to the standard
     5-cell results layout (``score tok tm tps st``) with ``st`` set to
@@ -268,12 +311,21 @@ def _plugin_cell_block(pid, s, p, sleeping_remaining):
                 # harder to scan than 3- or 4-digit tok counts.
                 text = f"[streaming - {bytes_received // 4} tok]"
             else:
-                text = "[streaming]" if ft else "[waiting]"
+                # Streaming-capable in flight but no first tok yet (or
+                # the rare ft-set-but-no-bytes transient). Build the
+                # bracket content with the elapsed suffix INSIDE the
+                # brackets (so the suffix is part of the centred text
+                # and reads as ``[waiting - 5s]`` rather than
+                # ``[waiting] - 5s`` outside the closing ``]``).
+                bare_state = "streaming" if ft else "waiting"
+                text = f"[{bare_state}{_elapsed_suffix(s)}]"
         else:
             # ``[running]`` would collide with the model's status column
             # glyph for ``status="running"``; ``[in flight]`` is the
-            # unambiguous transport-only label.
-            text = "[in flight]"
+            # unambiguous transport-only label. Build the bracket
+            # content with the elapsed suffix INSIDE the brackets (see
+            # comment in the streaming branch above for the rationale).
+            text = f"[in flight{_elapsed_suffix(s)}]"
         return f"{text:^{PLUGIN_BLOCK_WIDTH}}"
     # Standard 5-cell results layout -- widths sum to 5+6+6+6+5=28 with
     # 4 single-space separators between cells = 32 chars, matching the
