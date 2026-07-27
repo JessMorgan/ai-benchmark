@@ -125,6 +125,12 @@ class BenchmarkState:
             info[f"{pid}_bytes_received"] = 0
             info[f"{pid}_first_chunk_seen"] = False
             info[f"{pid}_first_tok_ts"] = 0
+            # Per-plugin dispatch timestamp so the live TUI can show
+            # wall-clock seconds since *this* plugin's request started,
+            # rather than the model-level timer which grows for the
+            # whole model. Reset on every dispatch so retries and
+            # sequential plugins get a fresh zero point.
+            info[f"{pid}_start_ts"] = time.monotonic()
 
     def add_bytes_received(self, model_name, pid, n_bytes):
         """Atomically accumulate streaming bytes for a plugin task.

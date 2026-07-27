@@ -390,15 +390,50 @@ class TestDropParams(unittest.TestCase):
             }
         }
 
+        state = self.module.BenchmarkState({"dummy-model": "Local"}, ["rate-limiter"])
         with mock.patch("requests.post", side_effect=fake_post):
             self.module._run_plugin_task(
                 "dummy-model", "dummy-model", "Local", plugins[0], source_config,
                 timeout=1, token_levels=[100], session_seed=12345,
-                log_file=None, global_cfg=global_cfg,
+                log_file=None, global_cfg=global_cfg, state=state,
             )
 
         self.assertIn("body", captured)
         self.assertNotIn("seed", captured["body"])
+
+    def test_run_plugin_task_streaming_callback_updates_state(self):
+        """The streaming on_chunk closure updates bytes_received and first_chunk_seen."""
+        plugins = [p for p in self.plugins if p.id == "rate-limiter"]
+        models = {"dummy-model": "Local"}
+        state = self.module.BenchmarkState(models, [p.id for p in plugins])
+        source_config = {"Local": {"api_url": "http://localhost:11434/chat/completions", "headers": {}}}
+
+        def fake_stream_request(source_config, timeout, model, source, prompt, max_tokens=2048,
+                                log_path=None, log_label=None, session_seed=0, temperature=None,
+                                drop_params=None, stop_event=None, system_prompt=None,
+                                on_chunk=None):
+            # Simulate two SSE deltas; the closure should fire once per delta.
+            for delta in ["Hello, ", "world"]:
+                if on_chunk is not None:
+                    on_chunk(delta)
+            return "Hello, world", 1.0, 1.5, None, "stop", {}
+
+        with mock.patch.object(self.module, "stream_request", side_effect=fake_stream_request):
+            with mock.patch.object(self.module, "nonstream_request", return_value=("", {}, 0.1, "no tokens", "stop")):
+                result, err = self.module._run_plugin_task(
+                    "dummy-model", "dummy-model", "Local", plugins[0], source_config,
+                    timeout=1, token_levels=[100], session_seed=12345,
+                    log_file=None, global_cfg={}, state=state,
+                )
+
+        self.assertIsNone(err)
+        snap = state.snapshot()["dummy-model"]
+        self.assertTrue(snap["rate-limiter_first_chunk_seen"])
+        # "Hello, " (7) + "world" (5) = 12 chars -> 12 // 4 = 3 tok
+        self.assertEqual(snap["rate-limiter_bytes_received"], 12)
+        self.assertEqual(result["rate-limiter_output_tokens"], 3)
+
+
 
 
 class TestSeedCLI(unittest.TestCase):
@@ -418,11 +453,12 @@ class TestSeedCLI(unittest.TestCase):
             captured["body"] = kwargs.get("json")
             return MockResponse()
 
+        state = self.module.BenchmarkState({"dummy-model": "Local"}, ["rate-limiter"])
         with mock.patch("requests.post", side_effect=fake_post):
             self.module._run_plugin_task(
                 "dummy-model", "dummy-model", "Local", plugins[0], source_config,
                 timeout=1, token_levels=[100], session_seed=42,
-                log_file=None, global_cfg={},
+                log_file=None, global_cfg={}, state=state,
             )
 
         self.assertIn("body", captured)

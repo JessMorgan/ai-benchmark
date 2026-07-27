@@ -335,9 +335,9 @@ def generate_config_from_api(base_url, api_key=None):
 # ─── Model execution ─────────────────────────────────────────────────────────
 
 def _run_plugin_task(target_name, api_model, source, plugin, source_config, timeout,
-                     token_levels, session_seed, log_file, global_cfg, stop_event=None,
-                     save_responses=False, output_dir=None, system_prompt=None,
-                     is_agent=False):
+                     token_levels, session_seed, log_file, global_cfg, state,
+                     stop_event=None, save_responses=False, output_dir=None,
+                     system_prompt=None, is_agent=False):
     """Run a single plugin task for a model or agent. Returns (result_dict, error)."""
     pid = plugin.id
     cfg = source_config.get(source)
@@ -606,7 +606,7 @@ def run_model(model_name, source, state, active_plugins, source_config, timeout,
     if plugin_thread_limit <= 0:
         plugin_thread_limit = len(plugins_to_run)
 
-    state.update(target_name, attempt_start=time.time())
+    state.update(target_name, attempt_start=time.monotonic())
 
     _run_plugins(target_name, api_model, source, state, active_plugins, plugins_to_run,
                  source_config, timeout, token_levels, output_dir,
@@ -648,7 +648,8 @@ def _run_plugins(target_name, api_model, source, state, active_plugins, plugins_
         try:
             result, err = _run_plugin_task(target_name, api_model, source, plugin, source_config,
                                            timeout, token_levels, session_seed, log_file,
-                                           global_cfg or {}, stop_event=stop_event,
+                                           global_cfg or {}, state=state,
+                                           stop_event=stop_event,
                                            save_responses=save_responses,
                                            output_dir=output_dir,
                                            system_prompt=system_prompt,

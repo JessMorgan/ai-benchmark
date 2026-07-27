@@ -181,12 +181,13 @@ class TestAgentHTTPRequest(unittest.TestCase):
             captured["body"]["messages"].append({"role": "user", "content": prompt})
             return "ok", {}, 0.1, None, "stop"
 
+        state = module.BenchmarkState({"my-agent": "Local"}, ["rate-limiter"])
         with mock.patch.object(module, "nonstream_request", side_effect=fake_nonstream):
             with mock.patch.object(module, "stream_request", return_value=("", None, 0, "no tokens", None, {})):
                 module._run_plugin_task(
                     "my-agent", "underlying-model", "Local", plugins[0], source_config,
                     timeout=1, token_levels=[100], session_seed=12345,
-                    log_file=None, global_cfg={},
+                    log_file=None, global_cfg={}, state=state,
                     system_prompt="You are a coding agent.",
                 )
 

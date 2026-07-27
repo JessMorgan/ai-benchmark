@@ -108,7 +108,7 @@ def _fallback_tui_loop(state, stop_event, session_seed=None):
         ]
         for name, s in snap.items():
             if s.get("running_pids"):
-                elapsed = (time.time() - s.get("attempt_start", 0)) if s.get("attempt_start") else 0
+                elapsed = (time.monotonic() - s.get("attempt_start", 0)) if s.get("attempt_start") else 0
                 err = s.get("last_error", "")
                 msg = f"  {name[:30]} {elapsed:.0f}s"
                 if err:
@@ -229,7 +229,7 @@ def _fmt_value(v, fmt=".1f"):
         return str(v)
 
 
-def _elapsed_suffix(s, threshold=_ELAPSED_THRESHOLD_S):
+def _elapsed_suffix(start_ts, threshold=_ELAPSED_THRESHOLD_S):
     """Return ``f" - {N}s"`` to append to in-flight brackets when a
     plugin has been waiting long enough to be worth flagging, else
     ``""``.
@@ -242,23 +242,20 @@ def _elapsed_suffix(s, threshold=_ELAPSED_THRESHOLD_S):
     ``_ELAPSED_THRESHOLD_S`` -- the module-level constant so the
     two consumers (streaming-vs-non-streaming pre-chunk) stay in
     sync. Pre-chunk display is wall-clock seconds elapsed since
-    dispatch (NOT an estimated token count, which would be
-    misleading at this stage because real throughput varies
-    wildly between providers / temperatures / prompt sizes).
+    *this plugin's* initial dispatch (NOT an estimated token count,
+    which would be misleading at this stage because real throughput
+    varies wildly between providers / temperatures / prompt sizes).
 
     Below the threshold we keep the bare bracket (no visual noise
     on quick plugins); above the threshold we surface ``- Ns`` so
     the operator can tell a stuck/hung plugin from a normal slow
-    one. The model-level ``attempt_start`` field is set by
-    ``benchmark_core.run_model`` (``state.update(target_name,
-    attempt_start=time.time())``) so a missing/zero value means
-    the dispatch hasn't been recorded yet -- we return ``""`` in
-    that case rather than fabricating a meaningless elapsed value.
+    one. A missing/zero ``start_ts`` means the dispatch hasn't been
+    recorded yet -- we return ``""`` in that case rather than
+    fabricating a meaningless elapsed value.
     """
-    attempt_start = s.get("attempt_start") or 0
-    if not attempt_start:
+    if not start_ts:
         return ""
-    elapsed = int(time.time() - attempt_start)
+    elapsed = int(time.monotonic() - start_ts)
     if elapsed > threshold:
         return f" - {elapsed}s"
     return ""
@@ -312,14 +309,12 @@ def _plugin_cell_block(pid, s, p, sleeping_remaining):
     to ``[streaming - N tok]`` with a real counter incrementing on
     every ``on_chunk`` callback.
 
-    Note on retry semantics: ``attempt_start`` is the model-level
-    timer set once in ``benchmark_core.run_model`` BEFORE
-    ``_run_plugins`` runs. If a plugin retries via ``token_levels``
-    truncation / 429 backoff, the seconds counter accumulates
-    wall-clock time across all attempts of that plugin -- it does
-    NOT reset per retry. This is intentional -- the operator sees
-    "total time the model has been waiting for a useful response",
-    which is the right signal for slow-or-hung plugin threads.
+    The seconds counter is per-plugin, using the
+    ``{pid}_start_ts`` timestamp recorded by
+    ``BenchmarkState.start_plugin_run``. It therefore resets to
+    zero for each plugin dispatch, so the second plugin for a
+    model starts counting from its own request time rather than
+    inheriting the elapsed time of the first plugin.
 
     When none of the above applies, the block falls back to the standard
     4-cell results layout (``score tok tm tps``). The previous per-plugin
@@ -336,6 +331,11 @@ def _plugin_cell_block(pid, s, p, sleeping_remaining):
     if sleeping_remaining is not None:
         text = f"[429 sleeping {sleeping_remaining}s]"
         return f"{text:^{PLUGIN_BLOCK_WIDTH}}"
+    # Per-plugin dispatch timestamp. Newer state records it via
+    # ``start_plugin_run``; older state files may lack it, so fall
+    # back to the legacy model-level ``attempt_start`` for graceful
+    # backward compat.
+    start_ts = s.get(f"{pid}_start_ts") or s.get("attempt_start") or 0
     if in_flight:
         if p.supports_streaming:
             first_chunk_seen = bool(s.get(f"{pid}_first_chunk_seen", False))
@@ -354,16 +354,16 @@ def _plugin_cell_block(pid, s, p, sleeping_remaining):
                 # Pre-chunk state (no first chunk yet OR first
                 # chunk seen with bytes still 0, the rare
                 # transient). Show wall-clock seconds elapsed
-                # since dispatch -- NOT an estimated token count:
-                # predicting tokens from seconds is misleading
-                # because actual throughput varies wildly between
-                # providers / temperatures / prompt sizes. The
-                # ``- Ns`` suffix makes per-plugin hangs obvious
-                # in the table once the wait crosses the module
-                # threshold (``_ELAPSED_THRESHOLD_S``); below the
-                # threshold we keep the bare bracket to avoid
-                # visual noise on quick responses.
-                text = f"[streaming{_elapsed_suffix(s)}]"
+                # since this plugin's dispatch -- NOT an estimated
+                # token count: predicting tokens from seconds is
+                # misleading because actual throughput varies wildly
+                # between providers / temperatures / prompt sizes.
+                # The ``- Ns`` suffix makes per-plugin hangs
+                # obvious in the table once the wait crosses the
+                # module threshold (``_ELAPSED_THRESHOLD_S``);
+                # below the threshold we keep the bare bracket to
+                # avoid visual noise on quick responses.
+                text = f"[streaming{_elapsed_suffix(start_ts)}]"
         else:
             # Non-streaming-capable plugin in flight. ``[requested]``
             # conveys "we sent the request, awaiting the buffered
@@ -373,7 +373,7 @@ def _plugin_cell_block(pid, s, p, sleeping_remaining):
             # same ``_elapsed_suffix`` helper as the streaming
             # branch above). No token display for non-streaming --
             # the transport doesn't yield data until completion.
-            text = f"[requested{_elapsed_suffix(s)}]"
+            text = f"[requested{_elapsed_suffix(start_ts)}]"
         return f"{text:^{PLUGIN_BLOCK_WIDTH}}"
     # Standard 4-cell results layout -- widths sum to 5+6+6+6=23 with 3
     # single-space separators between cells = 26 chars, matching the
@@ -494,60 +494,55 @@ def _source_abbr(source_abbrevs, source):
     return str(source)[:3] or "???"
 
 
-def _build_live_indicators(s, active_plugins):
+def _build_live_indicators(s, active_plugins, *, now=None):
     """Build the space-separated live-activity indicator string for a
     model's "Live:" footer row.
 
     Iterates ``s["running_pids"]`` in insertion order and emits one
-    ``"[<pid>: <N> tok]"`` per streaming in-flight plugin (decided by
-    ``pid_first_tok_ts`` > 0 AND ``bytes_received`` > 0). Plugins in
-    flight with NO first token yet contribute to a single trailing
-    ``"[pre-stream: K]"`` aggregate rather than per-name entries --
-    this keeps the row readable when 5+ streaming plugins are queueing
-    for their first chunk. Non-streaming plugins are omitted entirely
-    (we cannot observe a transport detail for them and the table cell
-    already shows ``[requested]`` per-cell).
+    bracket per in-flight plugin. Each bracket includes the elapsed
+    seconds since *that plugin's* dispatch (using the monotonic
+    ``{pid}_start_ts`` timestamp), so the operator can see per-plugin
+    wait time in the same place as the streaming token ticker.
+
+    Format:
+      * Streaming plugin with first chunk + bytes:
+        ``"[<pid>: <N> tok (<e>s)]"``
+      * Streaming plugin waiting for first chunk:
+        ``"[<pid>: waiting <e>s]"``
+      * Non-streaming plugin:
+        ``"[<pid>: requested <e>s]"``
+
+    Non-streaming plugins are now included because the elapsed seconds
+    since their request is observable and useful, even though the
+    transport itself does not yield streaming chunks.
 
     With parallel plugin threads (``max_workers > 1``), a model can
-    carry several streaming-capable plugins in flight at once; this
-    surfaces ALL of them rather than only the first streaming-capable
-    one (the previous single-indicator choice hid active thread state
-    from the operator).
+    carry several plugins in flight at once; this surfaces ALL of
+    them rather than only the streaming-capable ones.
 
-    Returns ``""`` when no observable plugin is in flight.
+    Returns ``""`` when no plugin is in flight.
 
-    Example output (two in-flight streaming plugins + 1 waiting):
-        ``"[rate-limiter: 16 tok] [software-architecture: 152 tok] [pre-stream: 1]"``
+    Example output (two streaming + one waiting + one non-streaming):
+        ``"[rate-limiter: 16 tok (4s)] [moe-dense: requested 6s] [wireframes: waiting 2s]"``
     """
+    if now is None:
+        now = time.monotonic()
     running_pids = s.get("running_pids") or []
     parts = []
-    waiting_count = 0
     for pid in running_pids:
         plugin = next((p for p in active_plugins if p.id == pid), None)
-        if plugin is None or not plugin.supports_streaming:
+        if plugin is None:
             continue
+        start_ts = s.get(f"{pid}_start_ts") or 0
+        elapsed = int(now - start_ts) if start_ts else 0
         ft = s.get(f"{pid}_first_tok_ts", 0) or 0
         bytes_received = s.get(f"{pid}_bytes_received", 0) or 0
-        if ft and bytes_received:
-            # Live streaming with progress: per-plugin tok count
-            # (chars // 4 matches the ``count_tokens`` estimator).
-            parts.append(f"[{pid}: {bytes_received // 4} tok]")
-        elif not ft:
-            # In flight but no first token yet -- counted in the
-            # trailing aggregate so a single "[waiting: K]" tells the
-            # operator how many plugins are queueing for their first
-            # chunk without listing every name twice.
-            waiting_count += 1
-        # ft > 0 but no bytes: rare transient (just landed first-tok
-        # event but no delta has accumulated yet) -- skip silently.
-    if waiting_count > 0:
-        # ``pre-stream`` disambiguates from the per-plugin
-        # ``[streaming]`` brackets in the table cells (one is "in
-        # flight, waiting for first chunk"; the other is "in flight,
-        # first chunk received"). The aggregate is preferred over
-        # listing every waiting plugin by name to keep the row
-        # readable when many plugins are queueing.
-        parts.append(f"[pre-stream: {waiting_count}]")
+        if plugin.supports_streaming and ft and bytes_received:
+            parts.append(f"[{pid}: {bytes_received // 4} tok ({elapsed}s)]")
+        elif plugin.supports_streaming:
+            parts.append(f"[{pid}: waiting {elapsed}s]")
+        else:
+            parts.append(f"[{pid}: requested {elapsed}s]")
     return " ".join(parts)
 
 
@@ -598,17 +593,13 @@ def _render_live_activity(stdscr, max_x, max_y, snap, source_abbrevs, live_model
         if live_row >= log_top:
             break
         src_ab = _source_abbr(source_abbrevs, s.get("source"))
-        elapsed = (time.time() - s.get("attempt_start", 0)) if s.get("attempt_start") else 0
         err = s.get("last_error", "")
-        msg = f" \U0001f537 [{src_ab}] {nm[:36]} {elapsed:5.0f}s"
-        # Per-plugin (stream)/(wait) indicators for ALL streaming-capable
-        # in-flight plugins (not just the first). With parallel plugin
-        # threads (``max_workers > 1``), a model can have N streaming
-        # plugins running simultaneously -- the operator needs to see
-        # all N thread states, not just the most-recently-started.
-        # Non-streaming plugins are omitted (no transport-state glyph).
-        # Example output:
-        #   "rate-limiter (stream), moe-dense (wait), wireframes (stream)"
+        msg = f" \U0001f537 [{src_ab}] {nm[:36]}"
+        # Per-plugin live indicators. Each bracket includes the elapsed
+        # seconds since *that plugin's* dispatch, so the footer never
+        # inherits the elapsed time of an earlier plugin. Monotonic
+        # timestamps from ``BenchmarkState.start_plugin_run`` keep the
+        # counters correct even if the system clock jumps.
         indicators = _build_live_indicators(s, active_plugins)
         if indicators:
             msg += "  " + indicators

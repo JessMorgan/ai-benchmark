@@ -239,11 +239,11 @@ class TestPluginCellBlock(unittest.TestCase):
 
     def test_in_flight_streaming_plugin_pre_first_chunk_shows_elapsed_seconds_after_threshold(self):
         """Streaming-capable plugin in flight BEFORE any first chunk
-        has landed: once the wall-clock wait crosses the 2s threshold,
+        has landed: once the wait crosses the 2s threshold,
         the cell switches from ``[streaming]`` to ``[streaming - Ns]``
-        showing the wall-clock seconds elapsed since dispatch.
+        showing the seconds elapsed since dispatch.
 
-        Pre-chunk display is wall-clock seconds, NOT an estimated
+        Pre-chunk display is elapsed seconds, NOT an estimated
         token count, because predicting tokens from seconds is
         misleading at this stage (real throughput varies wildly
         between providers / temperatures / prompt sizes). The
@@ -254,9 +254,8 @@ class TestPluginCellBlock(unittest.TestCase):
         Below the threshold the bare ``[streaming]`` form is kept
         (no visual noise on quick plugins).
         """
-        now = time.time()
-        # Set attempt_start 6s ago so elapsed clears the 2s threshold
-        # regardless of micro-jitter between ``time.time()`` calls.
+        now = time.monotonic()
+        # Set attempt_start 6s ago so elapsed clears the 2s threshold.
         s = {
             "running_pids": ["rate-limiter"],
             "rate-limiter_first_chunk_seen": False,
@@ -265,13 +264,10 @@ class TestPluginCellBlock(unittest.TestCase):
         }
         block = ai_benchmark._plugin_cell_block(
             "rate-limiter", s, self.p_streaming, None)
-        # Reproducible elapsed count: use the current ``elapsed``
-        # snapshot (may be 5/6/7s depending on jitter) so the
-        # assertion pins both the prefix AND the seconds math.
-        elapsed = int(time.time() - s["attempt_start"])
+        elapsed = int(time.monotonic() - s["attempt_start"])
         self.assertIn(f"[streaming - {elapsed}s]", block,
                       "pre-chunk cell past threshold should show "
-                      "[streaming - Ns] with wall-clock seconds elapsed")
+                      "[streaming - Ns] with elapsed seconds since dispatch")
         # The pre-chunk-with-bytes form is gone -- we use wall-clock
         # seconds, not an estimated tok count. The ``~`` tilde
         # glyph was the transparent estimate cue; it must never
@@ -328,33 +324,34 @@ class TestPluginCellBlock(unittest.TestCase):
 
     def test_in_flight_streaming_plugin_shows_elapsed_seconds_form_above_threshold(self):
         """Streaming-capable plugin in flight with no first chunk
-        yet: once the wall-clock wait exceeds the 2s threshold
+        yet: once the wait exceeds the 2s threshold
         (``_ELAPSED_THRESHOLD_S``), the bracket transitions from
         the bare ``[streaming]`` form to ``[streaming - Ns]``
         (re-using the same ``_elapsed_suffix`` helper that drives
         ``[requested - Ns]`` for non-streaming plugins). This is
-        wall-clock seconds elapsed since dispatch -- NOT an
-        estimated token count, since predicting tokens from
-        seconds is misleading (actual throughput varies wildly
-        between providers / temperatures / prompt sizes).
+        elapsed seconds since *this plugin's* dispatch -- NOT an
+        estimated token count, since predicting tokens from seconds is
+        misleading (actual throughput varies wildly between providers /
+        temperatures / prompt sizes).
 
-        Below the 2s threshold the bare ``[streaming]`` form is
-        kept (no visual noise on quick plugins). A missing
-        ``attempt_start`` also keeps the bare form -- we don't
-        fabricate a meaningless elapsed value from epoch 0.
+        Below the 2s threshold the bare ``[streaming]`` form is kept
+        (no visual noise on quick plugins). A missing
+        ``{pid}_start_ts`` falls back to the legacy model-level
+        ``attempt_start``; a missing/zero start keeps the bare form
+        -- we don't fabricate a meaningless elapsed value from epoch 0.
         """
-        now = time.time()
+        now = time.monotonic()
         # Above threshold (5s ago): expect the seconds-suffix form.
         s_above = {
             "running_pids": ["rate-limiter"],
-            "attempt_start": now - 5.0,
+            "rate-limiter_start_ts": now - 5.0,
         }
         block = ai_benchmark._plugin_cell_block(
             "rate-limiter", s_above, self.p_streaming, None)
-        elapsed = int(time.time() - s_above["attempt_start"])
+        elapsed = int(time.monotonic() - s_above["rate-limiter_start_ts"])
         self.assertIn(f"[streaming - {elapsed}s]", block,
                       "above-threshold pre-chunk cell should show "
-                      "[streaming - Ns] with wall-clock seconds elapsed")
+                      "[streaming - Ns] with elapsed seconds since dispatch")
         # The estimate-decoration forms are gone entirely -- the
         # operator sees wall-clock seconds, not a tok guess.
         self.assertNotIn("~", block)
@@ -389,7 +386,7 @@ class TestPluginCellBlock(unittest.TestCase):
         operator can spot hung non-streaming requests. Below the
         threshold the bare ``[requested]`` form is kept.
         """
-        now = time.time()
+        now = time.monotonic()
         # Above threshold (5s ago): expect elapsed suffix.
         s_above = {
             "running_pids": ["counter"],
@@ -415,64 +412,65 @@ class TestBuildLiveIndicators(unittest.TestCase):
 
     The helper feeds the per-model row of the live TUI's ``Live:``
     section. With parallel plugin threads (``max_workers > 1``), a
-    model can be running several streaming plugins simultaneously;
-    the operator needs to see every per-thread streaming state AND
-    a single aggregate count of plugins still waiting for their
-    first token.
+    model can be running several plugins simultaneously; the
+    operator needs to see every in-flight plugin's elapsed seconds,
+    not a single model-level timer.
 
     Format requirements:
-    * Space-separated ``"[<pid>: <N> tok]"`` entries in
-      ``running_pids`` insertion order for streaming plugins with
-      bytes accumulated.
-    * Trailing ``"[pre-stream: K]"`` aggregate (count of streaming-
-      capable in-flight plugins with no first_tok_ts yet).
-    * Non-streaming in-flight plugins are omitted entirely (the
-      table cell already shows ``[requested]`` per-cell, and we have
-      no transport state to report for them in the footer).
+    * Space-separated ``"[<pid>: <N> tok (<e>s)]"`` entries for
+      streaming plugins with bytes accumulated.
+    * ``"[<pid>: waiting <e>s]"`` for streaming plugins with no
+      first chunk yet.
+    * ``"[<pid>: requested <e>s]"`` for non-streaming plugins.
     * Empty running_pids -> empty string.
-    * Plugin in running_pids with ft > 0 but bytes_received == 0
-      is silently omitted (rare transient; nothing useful to show).
+    * Elapsed seconds are derived from ``{pid}_start_ts`` against
+      the monotonic ``now`` parameter so tests are deterministic.
 
-    Example expected output for two streaming + 1 waiting:
-        ``"[rate-limiter: 16 tok] [software-architecture: 152 tok] [pre-stream: 1]"``
+    Example expected output for two streaming + one waiting + one non-streaming:
+        ``"[rate-limiter: 16 tok (4s)] [moe-dense: requested 4s] [wireframes: waiting 4s]"``
     """
 
     @staticmethod
     def _plugin(pid, *, streaming=True):
         return type("P", (), {"id": pid, "supports_streaming": streaming})()
 
-    def test_two_streaming_plugins_and_one_pre_stream_in_running_pids_order(self):
-        """With three streaming-capable plugins in flight -- two
-        streaming with bytes and one awaiting first chunk -- the
-        per-plugin tok entries appear in ``running_pids`` insertion
-        order, followed by a single ``[pre-stream: K]`` aggregate.
-        Demonstrates the new format end-to-end.
+    def test_two_streaming_plugins_and_one_waiting_in_running_pids_order(self):
+        """Three streaming-capable plugins in flight: two with
+        bytes, one waiting. Each bracket carries its own elapsed
+        time, computed from ``{pid}_start_ts`` vs the supplied
+        ``now``.
         """
+        base_ts = 1000.0
+        now = base_ts + 4.0
         s = {
             "running_pids": ["rate-limiter", "moe-dense", "wireframes"],
-            "rate-limiter_first_tok_ts": 1.5,
+            "rate-limiter_first_tok_ts": base_ts,
             "rate-limiter_bytes_received": 64,     # 16 tok
-            # moe-dense has no first_tok_ts -> pre-stream aggregate
-            "wireframes_first_tok_ts": 2.0,
-            "wireframes_bytes_received": 128,      # 32 tok
+            "rate-limiter_start_ts": base_ts,
+            "moe-dense_start_ts": base_ts,
+            "wireframes_first_tok_ts": base_ts,
+            "wireframes_bytes_received": 128,    # 32 tok
+            "wireframes_start_ts": base_ts,
         }
         plugins = [
             self._plugin("rate-limiter", streaming=True),
             self._plugin("moe-dense", streaming=True),
             self._plugin("wireframes", streaming=True),
         ]
-        out = ai_benchmark._build_live_indicators(s, plugins)
+        out = ai_benchmark._build_live_indicators(s, plugins, now=now)
         self.assertEqual(
             out,
-            "[rate-limiter: 16 tok] [wireframes: 32 tok] [pre-stream: 1]",
+            "[rate-limiter: 16 tok (4s)] [moe-dense: waiting 4s] [wireframes: 32 tok (4s)]",
         )
 
-    def test_user_example_output_two_streaming_six_pre_stream(self):
-        """Reproduces the user's conceptual example with the
-        renamed aggregate label: two streaming plugins showing tok
-        counts, followed by the ``[pre-stream: 6]`` aggregate for
-        six other plugins still waiting for first chunk.
+    def test_user_example_output_two_streaming_six_waiting(self):
+        """Reproduces the user's conceptual example with per-plugin
+        elapsed timing: two streaming plugins showing tok counts,
+        followed by six other plugins each showing ``waiting`` with
+        their own elapsed time.
         """
+        base_ts = 1000.0
+        now = base_ts + 6.0
         waiting_pids = [f"plugin-waiting-{i}" for i in range(6)]
         s = {
             "running_pids": [
@@ -480,46 +478,59 @@ class TestBuildLiveIndicators(unittest.TestCase):
                 "software-architecture",
                 *waiting_pids,
             ],
-            "rate-limiter_first_tok_ts": 1.5,
+            "rate-limiter_first_tok_ts": base_ts,
             "rate-limiter_bytes_received": 64,            # 16 tok
-            "software-architecture_first_tok_ts": 2.0,
-            "software-architecture_bytes_received": 608,   # 152 tok
-            # waiting_pids get no first_tok_ts -> pre-stream aggregate
+            "rate-limiter_start_ts": base_ts,
+            "software-architecture_first_tok_ts": base_ts,
+            "software-architecture_bytes_received": 608,  # 152 tok
+            "software-architecture_start_ts": base_ts,
         }
+        for pid in waiting_pids:
+            s[f"{pid}_start_ts"] = base_ts
         plugins = [self._plugin(p, streaming=True) for p in s["running_pids"]]
-        out = ai_benchmark._build_live_indicators(s, plugins)
-        self.assertEqual(
-            out,
-            "[rate-limiter: 16 tok] [software-architecture: 152 tok] [pre-stream: 6]",
+        out = ai_benchmark._build_live_indicators(s, plugins, now=now)
+        expected = (
+            "[rate-limiter: 16 tok (6s)] "
+            "[software-architecture: 152 tok (6s)] "
+            + " ".join(f"[plugin-waiting-{i}: waiting 6s]" for i in range(6))
         )
+        self.assertEqual(out, expected)
 
-    def test_non_streaming_plugin_in_flight_is_omitted(self):
-        """A non-streaming-capable plugin in flight does NOT get a
-        bracket indicator here -- the table cell already shows
-        ``[requested]`` per-cell, and the live footer doesn't
-        surface a glyph when we cannot observe the transport state.
+    def test_non_streaming_plugin_in_flight_is_included(self):
+        """Non-streaming-capable plugins now appear in the live
+        footer with ``requested <e>s`` because their elapsed wait
+        time is observable and useful, even though the transport
+        does not stream.
         """
+        base_ts = 1000.0
+        now = base_ts + 4.0
         s = {
             "running_pids": ["rate-limiter", "structured-output"],
-            "rate-limiter_first_tok_ts": 1.5,
-            "rate-limiter_bytes_received": 64,        # 16 tok
+            "rate-limiter_first_tok_ts": base_ts,
+            "rate-limiter_bytes_received": 64,  # 16 tok
+            "rate-limiter_start_ts": base_ts,
+            "structured-output_start_ts": base_ts,
         }
         plugins = [
             self._plugin("rate-limiter", streaming=True),
             self._plugin("structured-output", streaming=False),
         ]
-        out = ai_benchmark._build_live_indicators(s, plugins)
-        self.assertEqual(out, "[rate-limiter: 16 tok]")
+        out = ai_benchmark._build_live_indicators(s, plugins, now=now)
+        self.assertEqual(
+            out,
+            "[rate-limiter: 16 tok (4s)] [structured-output: requested 4s]",
+        )
 
     def test_plugin_not_in_running_pids_is_excluded(self):
         """A plugin that completed (not in running_pids) and a
         plugin that never ran (also not in running_pids) are both
         excluded. The output is determined solely by running_pids.
         """
+        base_ts = 1000.0
+        now = base_ts + 2.0
         s = {
             "running_pids": ["rate-limiter"],
-            "rate-limiter_first_tok_ts": 0,           # still waiting
-            "rate-limiter_bytes_received": 0,
+            "rate-limiter_start_ts": base_ts,
             # These are defined but plugins NOT in running_pids:
             "completed_plugin_first_tok_ts": 5.0,
             "completed_plugin_bytes_received": 200,
@@ -531,10 +542,8 @@ class TestBuildLiveIndicators(unittest.TestCase):
             self._plugin("wireframes", streaming=True),
             self._plugin("completed_plugin", streaming=True),
         ]
-        out = ai_benchmark._build_live_indicators(s, plugins)
-        # rate-limiter is in flight but no first_tok + no bytes ->
-        # counted in [pre-stream: K] aggregate.
-        self.assertEqual(out, "[pre-stream: 1]")
+        out = ai_benchmark._build_live_indicators(s, plugins, now=now)
+        self.assertEqual(out, "[rate-limiter: waiting 2s]")
 
     def test_empty_running_pids_returns_empty_string(self):
         """No in-flight plugins -> empty string. The caller
@@ -543,41 +552,50 @@ class TestBuildLiveIndicators(unittest.TestCase):
         """
         s = {"running_pids": []}
         plugins = [self._plugin("any"), self._plugin("other")]
-        self.assertEqual(ai_benchmark._build_live_indicators(s, plugins), "")
+        self.assertEqual(ai_benchmark._build_live_indicators(s, plugins, now=1000.0), "")
 
-    def test_only_pre_stream_returns_aggregate(self):
+    def test_only_waiting_returns_per_plugin_waiting(self):
         """All in-flight streaming-capable plugins have no first
-        token + no bytes yet -> output is just the single
-        ``[pre-stream: K]`` aggregate. No per-plugin entries appear.
+        token + no bytes yet -> output is one ``waiting <e>s`` entry
+        per plugin (no aggregate bucket).
         """
+        base_ts = 1000.0
+        now = base_ts + 3.0
         s = {
             "running_pids": ["rate-limiter", "wireframes", "moe-dense"],
-            # No first_tok_ts or bytes for any.
         }
+        for pid in s["running_pids"]:
+            s[f"{pid}_start_ts"] = base_ts
         plugins = [self._plugin(p, streaming=True) for p in s["running_pids"]]
-        out = ai_benchmark._build_live_indicators(s, plugins)
-        self.assertEqual(out, "[pre-stream: 3]")
+        out = ai_benchmark._build_live_indicators(s, plugins, now=now)
+        self.assertEqual(
+            out,
+            "[rate-limiter: waiting 3s] [wireframes: waiting 3s] [moe-dense: waiting 3s]",
+        )
 
-    def test_streaming_fts_but_no_bytes_omitted_from_output(self):
+    def test_streaming_first_chunk_but_no_bytes_shows_waiting(self):
         """Rare transient: first_tok_ts is set but bytes_received
         is still 0 (just landed first-tok, no delta has accumulated
-        yet). The plugin is silently omitted -- emitting
+        yet). The footer shows ``waiting <e>s`` -- emitting
         ``[name: 0 tok]`` would be visually noisy and the per-cell
-        [streaming] already conveys "just started streaming" without
-        duplicating that into the live footer.
+        [streaming] already conveys "just started streaming".
         """
+        base_ts = 1000.0
+        now = base_ts + 2.0
         s = {
             "running_pids": ["rate-limiter", "wireframes"],
-            "rate-limiter_first_tok_ts": 1.5,
-            "rate-limiter_bytes_received": 64,    # 16 tok
-            "wireframes_first_tok_ts": 2.0,        # ft but no bytes
+            "rate-limiter_first_tok_ts": base_ts,
+            "rate-limiter_bytes_received": 64,  # 16 tok
+            "rate-limiter_start_ts": base_ts,
+            "wireframes_first_tok_ts": base_ts,
+            "wireframes_start_ts": base_ts,
         }
         plugins = [
             self._plugin("rate-limiter", streaming=True),
             self._plugin("wireframes", streaming=True),
         ]
-        out = ai_benchmark._build_live_indicators(s, plugins)
-        self.assertEqual(out, "[rate-limiter: 16 tok]")
+        out = ai_benchmark._build_live_indicators(s, plugins, now=now)
+        self.assertEqual(out, "[rate-limiter: 16 tok (2s)] [wireframes: waiting 2s]")
 
 if __name__ == "__main__":
     unittest.main()

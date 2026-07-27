@@ -3,6 +3,7 @@ import json
 import os
 import tempfile
 import threading
+import time
 import unittest
 
 from plugins import discover_plugins
@@ -627,6 +628,26 @@ class TestBenchmarkState(unittest.TestCase):
             state.snapshot()["m1"]["rate-limiter_bytes_received"], 0,
             "start_plugin_run must reset bytes_received on each dispatch"
         )
+
+    def test_start_plugin_run_resets_start_ts(self):
+        """``start_plugin_run`` records a fresh per-plugin dispatch
+        timestamp in ``{pid}_start_ts`` and overwrites any stale value
+        from a previous dispatch. This is what lets the live table's
+        ``[streaming - Ns]`` / ``[requested - Ns]`` brackets reset to
+        zero for each plugin instead of growing for the whole model.
+        """
+        state = self.module.BenchmarkState({"m1": "Default"}, ["rate-limiter"])
+        state.start_plugin_run("m1", "rate-limiter")
+        first_ts = state.snapshot()["m1"]["rate-limiter_start_ts"]
+        self.assertGreater(first_ts, 0,
+                           "start_plugin_run must set a positive start_ts")
+        # Simulate a small delay, then re-dispatch the same plugin.
+        time.sleep(0.01)
+        state.finish_plugin_run("m1", "rate-limiter")
+        state.start_plugin_run("m1", "rate-limiter")
+        second_ts = state.snapshot()["m1"]["rate-limiter_start_ts"]
+        self.assertGreater(second_ts, first_ts,
+                           "start_plugin_run must reset start_ts on each dispatch")
 
     def test_start_plugin_run_resets_first_tok_ts(self):
         """Mirror of the bytes/first_chunk_seen reset: a retry
