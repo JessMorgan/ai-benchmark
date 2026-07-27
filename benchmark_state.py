@@ -42,6 +42,13 @@ class BenchmarkState:
                 "attempt_start": 0,
                 "last_error": "",
                 "phase_detail": "",
+                # In-flight plugin task ids; canonical source-of-truth for the
+                # live TUI's "[waiting]"/"[streaming]" cells and the table's
+                # yellow highlight. ``__init__`` sets this to ``[]``; the
+                # runtime tracks it via ``start_plugin_run`` / ``finish_plugin_run``
+                # and ``load_state`` clears it on resume (no plugin task is
+                # actually running until a worker picks the task up).
+                "running_pids": [],
             }
             for pid in plugin_ids:
                 self._model_info[name][f"{pid}_score"] = None
@@ -52,6 +59,41 @@ class BenchmarkState:
     def update(self, model_name, **kwargs):
         with self._lock:
             self._model_info[model_name].update(kwargs)
+
+    def start_plugin_run(self, model_name, pid):
+        """Atomically mark a plugin task as in-flight on this model.
+
+        Sets ``running_pids`` to include ``pid`` and the model's
+        ``status`` to canonical ``"running"``. With parallel plugin
+        threads (max_workers > 1), multiple pids accumulate; the
+        ``finish_plugin_run`` call when the task returns drops just
+        that pid. Lock is per-instance so concurrent calls from any
+        number of workers execute atomically.
+        """
+        with self._lock:
+            info = self._model_info[model_name]
+            cur = list(info.get("running_pids") or [])
+            if pid not in cur:
+                cur.append(pid)
+            info["running_pids"] = cur
+            info["status"] = "running"
+
+    def finish_plugin_run(self, model_name, pid):
+        """Atomically clear a plugin task's in-flight marker on this model.
+
+        Removes ``pid`` from ``running_pids`` but leaves ``status``
+        alone; the outer task (``run_model``) commits the final
+        ``completed`` / ``failed`` / ``pending`` status once all
+        in-flight plugin tasks have resolved. The brief "finalising"
+        window between the last plugin finishing and the outer status
+        update is therefore rendered as ``status="running"`` with
+        ``running_pids=[]`` -- an unambiguous, momentary snapshot.
+        """
+        with self._lock:
+            info = self._model_info[model_name]
+            cur = [p for p in (info.get("running_pids") or []) if p != pid]
+            info["running_pids"] = cur
+            # Status intentionally untouched; see docstring.
 
     def add_result(self, result):
         with self._lock:
@@ -124,6 +166,26 @@ class BenchmarkState:
             latest_by_model[r["model"]] = r
         for name, info in saved_info.items():
             if name in state._model_info:
+                # Strip transient in-flight state on resume: no plugin task
+                # is actually running until a worker picks the task up, so
+                # carrying stale ``running_pids`` forward causes phantom
+                # "[waiting]" cells and a false-yellow highlight in the
+                # live TUI. The migration used to *preserve* this state,
+                # but that assumption broke once the visual-layer read
+                # ``running_pids`` as the source-of-truth.
+                info.pop("running_pids", None)
+                saved_status = info.get("status")
+                # Normalise both legacy "running_<pid>" pid-suffix strings
+                # AND the canonical "running" status to "pending" so the
+                # worker re-promotes them when the task is actually picked
+                # up. This is a behaviour change from the prior
+                # migration (which kept status="running" + running_pids
+                # populated), justified by the phantom-state bug.
+                if saved_status == "running" or (
+                    isinstance(saved_status, str)
+                    and saved_status.startswith("running_")
+                ):
+                    info["status"] = "pending"
                 # Merge saved values into the fully-initialized default dict.
                 # This keeps backward compatibility with older state files that
                 # may be missing newer keys (e.g. phase_detail, attempt).

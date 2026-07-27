@@ -204,5 +204,174 @@ class TestBenchmarkState(unittest.TestCase):
             self.assertEqual(snap["model-a"]["status"], "completed")
 
 
+    def test_start_plugin_run_sets_running_status_and_pid(self):
+        """start_plugin_run promotes the model to in-flight with the canonical
+        status="running" form AND records the pid in ``running_pids`` so the
+        live TUI's "[waiting]"/"[streaming]" cells and yellow highlight both
+        fire correctly. The previous pid-suffix status string only worked
+        for the live-panel filter; ``running_pids`` is the canonical source
+        of truth for everything else.
+        """
+        models = {"model-a": "Source1"}
+        state = self.module.BenchmarkState(models, self.plugin_ids)
+        state.start_plugin_run("model-a", "rate-limiter")
+        snap = state.snapshot()
+        self.assertEqual(snap["model-a"]["status"], "running")
+        self.assertIn("rate-limiter", snap["model-a"]["running_pids"])
+
+    def test_start_plugin_run_is_idempotent_on_same_pid(self):
+        """Calling start_plugin_run twice with the same pid does not duplicate
+        the entry in ``running_pids`` -- otherwise the table would render
+        duplicate "[waiting]" cells and the per-model thread count would be
+        wrong for plugins that the runtime touches multiple times.
+        """
+        models = {"model-a": "Source1"}
+        state = self.module.BenchmarkState(models, self.plugin_ids)
+        state.start_plugin_run("model-a", "rate-limiter")
+        state.start_plugin_run("model-a", "rate-limiter")
+        self.assertEqual(state.snapshot()["model-a"]["running_pids"], ["rate-limiter"])
+
+    def test_start_plugin_run_accumulates_concurrent_pids(self):
+        """With parallel plugin threads (max_workers > 1), ``running_pids``
+        accumulates one entry per in-flight plugin. The previous pid-suffix
+        status approach lost all but the most-recent plugin's marker because
+        status was overwritten; the list form preserves them all so each
+        plugin's cell can render its own "[waiting]" independently.
+        """
+        models = {"model-a": "Source1"}
+        state = self.module.BenchmarkState(models, self.plugin_ids)
+        state.start_plugin_run("model-a", "rate-limiter")
+        state.start_plugin_run("model-a", "moe-dense")
+        state.start_plugin_run("model-a", "wireframes")
+        self.assertEqual(
+            state.snapshot()["model-a"]["running_pids"],
+            ["rate-limiter", "moe-dense", "wireframes"],
+        )
+
+    def test_finish_plugin_run_removes_pid_but_leaves_status(self):
+        """finish_plugin_run removes the pid from ``running_pids`` but does
+        NOT touch ``status`` -- the outer task commits the final
+        "completed"/"failed"/"pending" once all in-flight plugins resolve.
+        The brief finalising window with status="running" + running_pids=[]
+        is unambiguous and matches the snap a TUI reader would expect.
+        """
+        models = {"model-a": "Source1"}
+        state = self.module.BenchmarkState(models, self.plugin_ids)
+        state.start_plugin_run("model-a", "rate-limiter")
+        state.start_plugin_run("model-a", "moe-dense")
+        state.finish_plugin_run("model-a", "rate-limiter")
+        snap = state.snapshot()
+        self.assertEqual(snap["model-a"]["running_pids"], ["moe-dense"])
+        # Status stays "running" until the outer task commits a final value.
+        self.assertEqual(snap["model-a"]["status"], "running")
+
+    def test_finish_plugin_run_clears_empty_list(self):
+        """When the last in-flight plugin finishes, ``running_pids`` is
+        emptied. The TUI's live-panel filter (``s.get("running_pids")``)
+        therefore drops the model out of "Live:" the moment its last plugin
+        thread returns.
+        """
+        models = {"model-a": "Source1"}
+        state = self.module.BenchmarkState(models, self.plugin_ids)
+        state.start_plugin_run("model-a", "rate-limiter")
+        state.finish_plugin_run("model-a", "rate-limiter")
+        snap = state.snapshot()
+        self.assertEqual(snap["model-a"]["running_pids"], [])
+        self.assertEqual(snap["model-a"]["status"], "running")
+
+    def test_finish_plugin_run_no_op_for_unknown_pid(self):
+        """finish_plugin_run is a no-op when the pid wasn't tracked --
+        protects against the rare case where finish is called without a
+        matching start (e.g. worker thread cancelled before start_plugin_run
+        completed). Idempotency keeps the live panel honest.
+        """
+        models = {"model-a": "Source1"}
+        state = self.module.BenchmarkState(models, self.plugin_ids)
+        state.start_plugin_run("model-a", "rate-limiter")
+        state.finish_plugin_run("model-a", "does-not-exist")
+        self.assertEqual(
+            state.snapshot()["model-a"]["running_pids"], ["rate-limiter"])
+
+    def test_load_state_clears_stale_running_pids(self):
+        """Regression test: a saved state with stale ``running_pids`` (from
+        a previously interrupted run) must NOT carry those pids forward --
+        carrying them forward causes phantom "[waiting]" cells in the live
+        TUI even though no plugin task is actually running on resume.
+        """
+        models = {"model-a": "Source1"}
+        state = self.module.BenchmarkState(models, self.plugin_ids)
+        state.update("model-a",
+                     status="running",
+                     running_pids=["rate-limiter", "moe-dense"])
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, "state.json")
+            state.save_state(path)
+            loaded = self.module.BenchmarkState.load_state(
+                path, models, self.plugin_ids)
+            snap = loaded.snapshot()
+            self.assertEqual(snap["model-a"]["running_pids"], [])
+            # The fresh worker will re-promote this to "running" when the
+            # task is actually picked up.
+
+    def test_load_state_normalizes_legacy_running_pid_status_to_pending(self):
+        """A saved state with the legacy pid-suffix ``"running_<pid>"``
+        status (from the pre-``start_plugin_run`` writes) is normalised to
+        ``"pending"`` on resume. Previously the migration preserved the
+        status + populated ``running_pids`` -- which is what produced the
+        phantom yellow highlight deepseek-r1-distill case. Stripping both
+        fields on load gives the worker a clean slate to re-promote.
+        """
+        models = {"model-a": "Source1"}
+        state = self.module.BenchmarkState(models, self.plugin_ids)
+        state.update("model-a", status="running_wireframes")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, "state.json")
+            state.save_state(path)
+            loaded = self.module.BenchmarkState.load_state(
+                path, models, self.plugin_ids)
+            snap = loaded.snapshot()
+            self.assertEqual(snap["model-a"]["status"], "pending")
+            self.assertEqual(snap["model-a"]["running_pids"], [])
+
+    def test_load_state_normalizes_canonical_running_status_to_pending(self):
+        """A saved state with ``status="running"`` (the post-fix canonical
+        in-flight form) is also normalised to ``"pending"`` on resume -- a
+        previously-interrupted worker thread is not magically running again
+        after the process restarts, so the new run starts fresh.
+        """
+        models = {"model-a": "Source1"}
+        state = self.module.BenchmarkState(models, self.plugin_ids)
+        state.update("model-a", status="running")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, "state.json")
+            state.save_state(path)
+            loaded = self.module.BenchmarkState.load_state(
+                path, models, self.plugin_ids)
+            snap = loaded.snapshot()
+            self.assertEqual(snap["model-a"]["status"], "pending")
+            self.assertEqual(snap["model-a"]["running_pids"], [])
+
+    def test_load_state_preserves_non_in_flight_statuses(self):
+        """Sanity test: the load_state migration only touches the in-flight
+        cases ("running" / "running_<pid>"). Non-in-flight statuses
+        ("completed", "failed", "pending") survive the migration unchanged
+        so the completed-count / failed-reset behavior is unaffected.
+        """
+        models = {"model-a": "Source1", "model-b": "Source2", "model-c": "Source1"}
+        state = self.module.BenchmarkState(models, self.plugin_ids)
+        state.update("model-a", status="completed")
+        state.update("model-b", status="failed")
+        state.update("model-c", status="pending")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, "state.json")
+            state.save_state(path)
+            loaded = self.module.BenchmarkState.load_state(
+                path, models, self.plugin_ids)
+            snap = loaded.snapshot()
+            self.assertEqual(snap["model-a"]["status"], "completed")
+            self.assertEqual(snap["model-b"]["status"], "pending")  # rerun default
+            self.assertEqual(snap["model-c"]["status"], "pending")
+
+
 if __name__ == "__main__":
     unittest.main()

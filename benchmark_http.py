@@ -33,6 +33,74 @@ def close_active_requests():
                 pass
 
 
+# HTTP 429 activity tracked for the TUI live status section. Keyed by
+# ``(source, model)`` so the dashboard can tell the operator not only
+# *that* a source is in backoff but also *which* model is blocked on it.
+# All mutations and reads happen under ``_429_lock``.
+_429_lock = threading.Lock()
+_429_stats: dict = {
+    # Total number of times any request entered a 429 backoff sleep this run.
+    "total_retries": 0,
+    # Map ``(source, model) -> {wake_ts, attempts, max_attempts}``. Entries
+    # are inserted when a sleep begins and removed when it ends (cleanly or
+    # via Ctrl+C). ``wake_ts`` is an absolute ``time.time()`` value so the
+    # TUI can render a countdown without holding the lock while sleeping.
+    "sleeping": {},
+}
+
+
+def get_active_request_count() -> int:
+    """Return the number of in-flight HTTP responses across the run.
+
+    Used by the TUI to show how many concurrent requests are outstanding so
+    operators can correlate a slow model row with the actual request count.
+    """
+    with _active_requests_lock:
+        return len(_active_requests)
+
+
+def get_429_stats() -> dict:
+    """Return a thread-safe snapshot of HTTP 429 retry/backoff state.
+
+    The snapshot is decoupled from the internal ``_429_stats`` dict so a
+    caller iterating over ``sleeping`` cannot observe a half-removed entry
+    torn by a concurrent sleep completion. ``sleeping`` keys are strings
+    of the form ``"source|model"`` for JSON-friendly consumption.
+    """
+    with _429_lock:
+        sleeping = {}
+        for (src, model), info in _429_stats["sleeping"].items():
+            sleeping[f"{src}|{model}"] = dict(info)
+        return {
+            "total_retries": _429_stats["total_retries"],
+            "sleeping": sleeping,
+        }
+
+
+def reset_429_stats():
+    """Reset 429 activity tracking. Intended for unit tests only."""
+    global _429_stats
+    with _429_lock:
+        _429_stats = {"total_retries": 0, "sleeping": {}}
+
+
+def _set_429_sleep(source, model, wake_ts, attempts, max_attempts):
+    """Record that ``(source, model)`` is entering a 429 backoff sleep."""
+    with _429_lock:
+        _429_stats["total_retries"] += 1
+        _429_stats["sleeping"][(source, model)] = {
+            "wake_ts": wake_ts,
+            "attempts": attempts,
+            "max_attempts": max_attempts,
+        }
+
+
+def _clear_429_sleep(source, model):
+    """Remove a ``(source, model)`` entry from the 429 sleeping set, if any."""
+    with _429_lock:
+        _429_stats["sleeping"].pop((source, model), None)
+
+
 def fetch_models_v1(base_url, api_key=None):
     """Call GET {base_url}/v1/models and return a list of model IDs."""
     url = base_url.rstrip("/") + "/v1/models"
@@ -191,9 +259,21 @@ def _post_request_context(source_config, source, body, timeout, stream, log_path
 
             with _active_requests_lock:
                 _active_requests.add(resp)
-            watchdog = threading.Timer(timeout, resp.close)
-            watchdog.daemon = True
-            watchdog.start()
+            # Guard ``resp.close`` against ``None``/non-Response objects
+            # (e.g. mocks whose side_effect yields a function rather than
+            # a Response). Without this guard the ``Timer`` constructor
+            # itself fails — not 30s later when the timer fires — so the
+            # thread crashes during ``__enter__`` and the test fixture
+            # never sees the response. The ``finally`` below already
+            # tolerates ``watchdog is None`` (early return path skips it
+            # entirely).
+            close_fn = getattr(resp, "close", None)
+            if callable(close_fn):
+                watchdog = threading.Timer(timeout, close_fn)
+                watchdog.daemon = True
+                watchdog.start()
+            else:
+                watchdog = None
 
             if resp.status_code != 429:
                 # Success or non-429 error: yield to caller; outer ``finally``
@@ -261,6 +341,18 @@ def _post_request_context(source_config, source, body, timeout, stream, log_path
                     f"# HTTP 429; sleeping {delay:.1f}s "
                     f"(attempt {attempt + 1}/{max_retries + 1})", log_label)
 
+            # Publish 429 state for the TUI live status section. We do this
+            # AFTER the log entry so the operator can correlate the two,
+            # and we always clear it in a finally block below so Ctrl+C
+            # cannot leave a stale "sleeping" marker on screen. ``source``
+            # and the model name come from the function args / request body
+            # so the dashboard can attribute the sleep to a specific source.
+            attempts_done = attempt + 1
+            max_attempts = max_retries + 1
+            model = body.get("model", "?")
+            wake_ts = time.time() + delay
+            _set_429_sleep(source, model, wake_ts, attempts_done, max_attempts)
+
             # Tear down the current response before sleeping so we don't
             # leak the connection or hold a watchdog reference.
             try:
@@ -281,12 +373,15 @@ def _post_request_context(source_config, source, body, timeout, stream, log_path
             # Without it we ``time.sleep`` (the previous version accidentally
             # short-circuited the wait and never slept, which made Retry-After
             # / backoff tests flake on 0.0s runs).
-            if stop_event is not None:
-                if stop_event.wait(delay):
-                    yield None, "Cancelled", curl_cmd
-                    return
-            else:
-                time.sleep(delay)
+            try:
+                if stop_event is not None:
+                    if stop_event.wait(delay):
+                        yield None, "Cancelled", curl_cmd
+                        return
+                else:
+                    time.sleep(delay)
+            finally:
+                _clear_429_sleep(source, model)
     finally:
         if watchdog is not None:
             try:

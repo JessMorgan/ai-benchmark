@@ -604,14 +604,28 @@ def _run_plugins(target_name, api_model, source, state, active_plugins, plugins_
 
     def run_one(plugin):
         pid = plugin.id
-        state.update(target_name, status=f"running_{pid}")
-        result, err = _run_plugin_task(target_name, api_model, source, plugin, source_config,
-                                       timeout, token_levels, session_seed, log_file,
-                                       global_cfg or {}, stop_event=stop_event,
-                                       save_responses=save_responses,
-                                       output_dir=output_dir,
-                                       system_prompt=system_prompt,
-                                       is_agent=is_agent)
+        # Track in-flight plugin tasks via the canonical ``running_pids``
+        # list (not a pid-suffix status string) so the live TUI can render
+        # each plugin's "[waiting]"/"[streaming]" cell and the table's
+        # yellow highlight for parallel plugin threads (max_workers > 1).
+        # The previous ``state.update(target_name, status=f"running_{pid}")``
+        # write left ``running_pids`` empty, which silently broke every
+        # downstream visualisation that read it.
+        state.start_plugin_run(target_name, pid)
+        try:
+            result, err = _run_plugin_task(target_name, api_model, source, plugin, source_config,
+                                           timeout, token_levels, session_seed, log_file,
+                                           global_cfg or {}, stop_event=stop_event,
+                                           save_responses=save_responses,
+                                           output_dir=output_dir,
+                                           system_prompt=system_prompt,
+                                           is_agent=is_agent)
+        finally:
+            # Clear the in-flight marker even on exception/cancellation so
+            # parallel plugins aren't stranded in the running list when one
+            # of them raises. ``status`` is committed by the outer caller
+            # (``run_model``) once all plugins resolve.
+            state.finish_plugin_run(target_name, pid)
         with lock:
             results[pid] = result
             if err:
