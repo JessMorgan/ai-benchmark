@@ -91,6 +91,16 @@ class BenchmarkState:
                 # in ``start_plugin_run`` to drop carry-over from a
                 # previous dispatch.
                 self._model_info[name][f"{pid}_first_chunk_seen"] = False
+                # Timestamp of the first SSE non-empty delta, set in the
+                # same atomic write as the flag flip. The live-footer
+                # renderer (``_build_live_indicators``) reads this field
+                # to switch the per-plugin live indicator from the
+                # aggregate ``[pre-stream: K]`` bucket to the per-plugin
+                # ``[<pid>: N tok]`` form. Default 0 so the reader can
+                # tell a "no chunk has landed yet" snapshot from a real
+                # timestamp; reset in ``start_plugin_run`` to drop
+                # carry-over from a previous dispatch.
+                self._model_info[name][f"{pid}_first_tok_ts"] = 0
 
     def update(self, model_name, **kwargs):
         with self._lock:
@@ -125,6 +135,7 @@ class BenchmarkState:
             # each entry to ``_run_plugins``).
             info[f"{pid}_bytes_received"] = 0
             info[f"{pid}_first_chunk_seen"] = False
+            info[f"{pid}_first_tok_ts"] = 0
 
     def add_bytes_received(self, model_name, pid, n_bytes):
         """Atomically accumulate streaming bytes for a plugin task.
@@ -140,6 +151,21 @@ class BenchmarkState:
         so the caller can detect a programming error immediately rather
         than silently drop bytes.
 
+        Self-check (``RuntimeError``): if bytes are about to be added
+        while ``{pid}_first_chunk_seen`` is still ``False``, the
+        SSE-layer caller forgot to fire ``mark_first_chunk_seen`` on
+        the first delta. This is the wiring contract: every code path
+        that adds bytes MUST have already flipped the marker -- the
+        cell renderer (and any future ticker consumer) cannot switch
+        from the estimate branch ([streaming - est. ~N tok]) to the
+        real counter branch ([streaming - N tok]) without the marker.
+        We raise loudly here so the drift fails the test suite (and
+        the live run) the moment a future caller forgets the hook,
+        rather than silently keeping the bracket stuck on the
+        estimate path indefinitely. The check is inside ``self._lock``
+        so a concurrent ``mark_first_chunk_seen`` cannot interleave
+        between the read and the increment.
+
         Note: this method does NOT auto-fire ``mark_first_chunk_seen``;
         the SSE parse loop calls the marker independently so transport
         events (handshake ack, first delta, structured-error ack etc.)
@@ -149,11 +175,18 @@ class BenchmarkState:
         if not n_bytes:
             return
         with self._lock:
-            key = f"{pid}_bytes_received"
             info = self._model_info[model_name]
+            if not info.get(f"{pid}_first_chunk_seen"):
+                raise RuntimeError(
+                    f"add_bytes_received({model_name!r}, {pid!r}, ...) called "
+                    f"before mark_first_chunk_seen -- SSE parse layer forgot "
+                    f"to fire the first-chunk marker. This is a wiring bug; "
+                    f"see benchmark_core._run_plugin_task's on_chunk closure."
+                )
+            key = f"{pid}_bytes_received"
             info[key] = (info.get(key) or 0) + n_bytes
 
-    def mark_first_chunk_seen(self, model_name, pid):
+    def mark_first_chunk_seen(self, model_name, pid, ts=None):
         """Atomically mark that a first streaming chunk has arrived for
         a plugin task.
 
@@ -167,6 +200,20 @@ class BenchmarkState:
         positive, the cell shows the real ``[streaming - N tok]``
         counter.
 
+        The optional ``ts`` parameter atomically writes
+        ``{pid}_first_tok_ts`` ONLY on the False -> True transition
+        (i.e. the very first call that flips the flag). Subsequent
+        calls preserve the original timestamp -- the live footer
+        ``_build_live_indicators`` consumer needs the FIRST chunk's
+        timestamp to compute "time-to-first-token" correctly, not
+        whichever delta happens to be the Nth. ``ts`` is ``None``
+        for backward compatibility with the bool-only contract
+        (callers that don't care about the timer can skip it). The
+        ``first_tok_ts`` write happens INSIDE the same ``self._lock``
+        read-then-write window so a concurrent state reader never sees
+        flag=True and ``first_tok_ts``=0 (which would render the per-
+        plugin live indicator with no timestamp anchor).
+
         Decoupled from ``add_bytes_received`` so SSE-layer callers can
         flip the flag on whatever transport event constitutes "the
         response has actually begun" (first parsed delta, first
@@ -176,7 +223,10 @@ class BenchmarkState:
         with self._lock:
             info = self._model_info[model_name]
             flag_key = f"{pid}_first_chunk_seen"
+            was_false = not info[flag_key]
             info[flag_key] = True
+            if was_false and ts is not None:
+                info[f"{pid}_first_tok_ts"] = ts
 
     def finish_plugin_run(self, model_name, pid):
         """Atomically clear a plugin task's in-flight marker on this model.

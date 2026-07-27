@@ -380,8 +380,27 @@ def _run_plugin_task(target_name, api_model, source, plugin, source_config, time
             # completion ``count_tokens(text) = len(text) / 4`` estimator
             # exactly -- a CJK chunk would otherwise show 3x as many
             # "tokens" during streaming as it does after completion.
-            on_chunk = lambda delta: state.add_bytes_received(
-                target_name, pid, len(delta))
+            #
+            # The closure fires ``mark_first_chunk_seen`` AND
+            # ``add_bytes_received`` on every non-empty delta --
+            # ``mark_first_chunk_seen`` is idempotent (it only writes
+            # ``first_tok_ts`` on the False -> True transition, so
+            # subsequent calls preserve the original timestamp); the
+            # closure doesn't need a local "fired" flag because the
+            # state method owns the gate. This satisfies both
+            # downstream consumers: the cell renderer's
+            # ``[streaming - N tok]`` real-counter form needs
+            # ``first_chunk_seen=True`` (set on first delta),
+            # and the live footer's ``[<pid>: N tok]`` per-plugin
+            # indicator needs ``first_tok_ts > 0`` (also set on first
+            # delta). ``stream_request`` itself only invokes the
+            # callback when ``len(text) > prev_text_len`` i.e. on a
+            # non-empty content delta -- role-only / heartbeat /
+            # ``[DONE]`` / malformed-JSON lines are filtered out
+            # inside ``_parse_sse_line`` and never reach us here.
+            def on_chunk(delta):
+                state.mark_first_chunk_seen(target_name, pid, ts=time.time())
+                state.add_bytes_received(target_name, pid, len(delta))
 
             text, first_tok, stream_end, serr, sfr, _usage = stream_request(
                 source_config, timeout, api_model, source, prompt, max_tok,

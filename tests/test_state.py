@@ -381,10 +381,15 @@ class TestBenchmarkState(unittest.TestCase):
 
         Verifies the new plumbing for the live TUI's
         ``[streaming - N tok]`` cell + ``[name: N tok]`` live
-        footer entry.
+        footer entry. Marks the first chunk first so the new
+        self-check (``add_bytes_received`` raises
+        ``RuntimeError`` if bytes arrive before the SSE layer
+        fired ``mark_first_chunk_seen``) doesn't fire on the
+        concurrent worker threads below.
         """
         state = self.module.BenchmarkState({"m1": "Default"}, ["rate-limiter"])
         state.start_plugin_run("m1", "rate-limiter")
+        state.mark_first_chunk_seen("m1", "rate-limiter")
         N_THREADS = 8
         PER_THREAD = 50
         N_PER_CALL = 16  # bytes per call
@@ -404,13 +409,59 @@ class TestBenchmarkState(unittest.TestCase):
                          f"expected {expected} after {N_THREADS}x{PER_THREAD}x{N_PER_CALL} adds, "
                          f"got {snap['rate-limiter_bytes_received']}")
 
-    def test_add_bytes_received_ignores_falsy_n(self):
-        """Falsy ``n_bytes`` (None, 0, "") is silently ignored so a
-        stray zero-size delta from the SSE layer cannot overwrite the
-        accumulated counter to 0.
+    def test_add_bytes_received_raises_if_first_chunk_seen_not_fired(self):
+        """``add_bytes_received`` is wired to fail loudly if the SSE
+        parse layer forgot to call ``mark_first_chunk_seen`` on the
+        first delta. The check is the runtime self-check that protects
+        against the cell renderer getting stuck on the
+        ``[streaming - est. ~N tok]`` estimate branch when the real
+        counter is actually arriving. Without this RuntimeError the
+        drift would only surface visually -- the operator would see
+        estimates that never converge to real byte counts.
         """
         state = self.module.BenchmarkState({"m1": "Default"}, ["rate-limiter"])
         state.start_plugin_run("m1", "rate-limiter")
+        # Default state: first_chunk_seen is False. The mark has not
+        # been fired, so any add_bytes_received call must raise.
+        self.assertEqual(
+            state.snapshot()["m1"]["rate-limiter_first_chunk_seen"], False)
+        with self.assertRaises(RuntimeError) as cm:
+            state.add_bytes_received("m1", "rate-limiter", 16)
+        self.assertIn("mark_first_chunk_seen", str(cm.exception),
+                      "RuntimeError message must cite the missing hook")
+        self.assertIn("rate-limiter", str(cm.exception),
+                      "RuntimeError message should reference the pid for debuggability")
+        # Bytes counter must NOT have grown -- the assertion aborts
+        # before the increment.
+        snap = state.snapshot()["m1"]
+        self.assertEqual(snap["rate-limiter_bytes_received"], 0,
+                         "RuntimeError must fire before the bytes write commits")
+
+    def test_add_bytes_received_succeeds_after_mark_first_chunk_seen(self):
+        """Sanity pair to ``test_add_bytes_received_raises_if_first_chunk_seen_not_fired``:
+        once ``mark_first_chunk_seen`` has fired (the SSE parse layer
+        hooks the flag on the first non-empty delta), the bytes
+        accumulator accepts writes normally. This pins both halves of
+        the contract inside the same test class so a regression in
+        either direction shows up next to the other.
+        """
+        state = self.module.BenchmarkState({"m1": "Default"}, ["rate-limiter"])
+        state.start_plugin_run("m1", "rate-limiter")
+        state.mark_first_chunk_seen("m1", "rate-limiter")
+        # First write after marker: should succeed.
+        state.add_bytes_received("m1", "rate-limiter", 64)  # 64 chars -> 16 tok
+        self.assertEqual(state.snapshot()["m1"]["rate-limiter_bytes_received"], 64)
+
+    def test_add_bytes_received_ignores_falsy_n(self):
+        """Falsy ``n_bytes`` (None, 0, "") is silently ignored so a
+        stray zero-size delta from the SSE layer cannot overwrite the
+        accumulated counter to 0. Mark the first chunk first so the
+        new self-check (``add_bytes_received`` raises when the marker
+        is False) doesn't fire during the 128-byte seeding call.
+        """
+        state = self.module.BenchmarkState({"m1": "Default"}, ["rate-limiter"])
+        state.start_plugin_run("m1", "rate-limiter")
+        state.mark_first_chunk_seen("m1", "rate-limiter")
         state.add_bytes_received("m1", "rate-limiter", 128)  # 128 bytes
         state.add_bytes_received("m1", "rate-limiter", 0)
         state.add_bytes_received("m1", "rate-limiter", None)
@@ -422,10 +473,13 @@ class TestBenchmarkState(unittest.TestCase):
         """``start_plugin_run`` zeroes the bytes counter so a retry
         dispatch doesn't show stale bytes from the previous (now-
         finished) attempt. Mirrors the existing reset semantics for
-        ``attempt_start``.
+        ``attempt_start``. Mark the first chunk first so the bytes
+        write below doesn't trip the new ``add_bytes_received``
+        self-check.
         """
         state = self.module.BenchmarkState({"m1": "Default"}, ["rate-limiter"])
         state.start_plugin_run("m1", "rate-limiter")
+        state.mark_first_chunk_seen("m1", "rate-limiter")
         state.add_bytes_received("m1", "rate-limiter", 500)
         self.assertEqual(state.snapshot()["m1"]["rate-limiter_bytes_received"], 500)
         # End the first attempt and re-dispatch.
@@ -458,6 +512,53 @@ class TestBenchmarkState(unittest.TestCase):
         snap = state.snapshot()["m1"]
         self.assertEqual(snap["rate-limiter_first_chunk_seen"], False)
         self.assertEqual(snap["wireframes_first_chunk_seen"], False)
+
+    def test_first_tok_ts_default_is_zero(self):
+        """Every plugin gets a ``first_tok_ts`` field of ``0`` in the
+        default model_info dict so the live-footer's
+        ``_build_live_indicators`` reader can tell "no chunk has
+        landed yet" (0) from a real timestamp (positive float) without
+        a ``KeyError``. Default 0 (not None) cleanly drives the
+        positive-timestamp gating the renderer uses to switch from
+        the ``[pre-stream: K]`` aggregate to the per-plugin
+        ``[<pid>: N tok]`` form.
+        """
+        state = self.module.BenchmarkState(
+            {"m1": "Default"}, ["rate-limiter", "wireframes"]
+        )
+        snap = state.snapshot()["m1"]
+        self.assertEqual(snap["rate-limiter_first_tok_ts"], 0)
+        self.assertEqual(snap["wireframes_first_tok_ts"], 0)
+
+    def test_mark_first_chunk_seen_writes_first_tok_ts_only_on_first_flip(self):
+        """``mark_first_chunk_seen(model, pid, ts=T)`` writes
+        ``{pid}_first_tok_ts = T`` ONLY on the False -> True
+        transition -- subsequent calls preserve the original
+        timestamp. This is the contract the live-footer's
+        ``_build_live_indicators`` relies on: time-to-first-token
+        is anchored at the actual first delta, not whichever delta
+        happens to be the Nth that fires the closure. Without
+        the gate, the timestamp could drift later on every chunk
+        and the cell-vs-footer time delta would grow misleadingly.
+        """
+        state = self.module.BenchmarkState({"m1": "Default"}, ["rate-limiter"])
+        # First call (False -> True): ts SHOULD be written.
+        state.mark_first_chunk_seen("m1", "rate-limiter", ts=1000.5)
+        self.assertEqual(state.snapshot()["m1"]["rate-limiter_first_tok_ts"], 1000.5,
+                         "First mark_first_chunk_seen with ts= must write the timestamp")
+        # Second call (already True): the NEW ts must NOT be written.
+        state.mark_first_chunk_seen("m1", "rate-limiter", ts=2000.5)
+        self.assertEqual(state.snapshot()["m1"]["rate-limiter_first_tok_ts"], 1000.5,
+                         "Subsequent mark_first_chunk_seen calls must preserve the original ts")
+        # Third call without ts (back-compat path): timestamp unchanged.
+        state.mark_first_chunk_seen("m1", "rate-limiter")
+        self.assertEqual(state.snapshot()["m1"]["rate-limiter_first_tok_ts"], 1000.5)
+        # Back-compat: ts=None (no ts passed) does not overwrite.
+        # This pins the bool-only contract from before the field existed.
+        state = self.module.BenchmarkState({"m1": "Default"}, ["rate-limiter"])
+        state.mark_first_chunk_seen("m1", "rate-limiter")  # no ts arg
+        self.assertEqual(state.snapshot()["m1"]["rate-limiter_first_tok_ts"], 0,
+                         "When ts is omitted the timestamp must stay at its default")
 
     def test_mark_first_chunk_seen_flips_flag_and_is_idempotent(self):
         """``mark_first_chunk_seen`` flips the per-plugin flag from
@@ -526,6 +627,31 @@ class TestBenchmarkState(unittest.TestCase):
             "start_plugin_run must reset bytes_received on each dispatch"
         )
 
+    def test_start_plugin_run_resets_first_tok_ts(self):
+        """Mirror of the bytes/first_chunk_seen reset: a retry
+        dispatch must also zero ``first_tok_ts`` so the live
+        footer's time-to-first-token calculation is anchored at
+        the new attempt's first delta, not the previous attempt's
+        timestamp. Without this reset, the live footer would show
+        ``[<pid>: N tok]`` with an old timestamp, falsely implying
+        a TTFT that didn't actually happen in this run.
+        """
+        state = self.module.BenchmarkState({"m1": "Default"}, ["rate-limiter"])
+        state.start_plugin_run("m1", "rate-limiter")
+        # Capture a real-feeling ts; the value itself doesn't matter.
+        state.mark_first_chunk_seen("m1", "rate-limiter", ts=12345.67)
+        self.assertEqual(
+            state.snapshot()["m1"]["rate-limiter_first_tok_ts"], 12345.67
+        )
+        # End the first attempt and re-dispatch.
+        state.finish_plugin_run("m1", "rate-limiter")
+        state.start_plugin_run("m1", "rate-limiter")
+        self.assertEqual(
+            state.snapshot()["m1"]["rate-limiter_first_tok_ts"], 0,
+            "start_plugin_run must zero first_tok_ts on each dispatch "
+            "so the live footer doesn't anchor TTFT on the previous attempt"
+        )
+
     def test_tps_estimate_class_attribute_default(self):
         """The ``BenchmarkState.tps_estimate`` class attribute
         defaults to a realistic tokens/sec rate so the estimate
@@ -565,6 +691,34 @@ class TestBenchmarkState(unittest.TestCase):
             self.assertEqual(
                 snap["rate-limiter_first_chunk_seen"], False,
                 "missing first_chunk_seen key in legacy state file must default to False"
+            )
+
+    def test_load_state_backfills_first_tok_ts_default(self):
+        """Mirror of ``test_load_state_backfills_first_chunk_seen_default``:
+        older state files lacking ``{pid}_first_tok_ts`` resolve to
+        ``0`` on ``load_state`` so the live footer can read the field
+        without a ``KeyError``. Backward-compat guard.
+        """
+        state = self.module.BenchmarkState({"m1": "Default"}, ["rate-limiter"])
+        state.update("m1", status="completed")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, "state.json")
+            state.save_state(path)
+            with open(path) as f:
+                data = json.load(f)
+            # Strip the new key to simulate a pre-field state file.
+            for info in data.get("model_info", {}).values():
+                info.pop("rate-limiter_first_tok_ts", None)
+            with open(path, "w") as f:
+                json.dump(data, f)
+            loaded = self.module.BenchmarkState.load_state(
+                path, {"m1": "Default"}, ["rate-limiter"]
+            )
+            snap = loaded.snapshot()["m1"]
+            self.assertEqual(
+                snap["rate-limiter_first_tok_ts"], 0,
+                "missing first_tok_ts key in legacy state file must default to 0 "
+                "so the live footer treats it as 'no chunk landed yet'"
             )
 
 if __name__ == "__main__":

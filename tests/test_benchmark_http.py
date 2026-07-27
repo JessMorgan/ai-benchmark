@@ -1,4 +1,5 @@
 """Tests for benchmark_http request helpers."""
+import contextlib
 import json
 import threading
 import time
@@ -11,6 +12,56 @@ from benchmark_http import fetch_models_v1, nonstream_request, stream_request
 
 class TestStreamRequest(unittest.TestCase):
     """Tests for the streaming request helper."""
+
+    def test_stream_request_calls_on_chunk_on_non_empty_deltas_only(self):
+        """Pins the SSE-parse-layer wiring contract: ``on_chunk`` must
+        fire ONLY when a parsed delta carries non-empty content. This
+        is the operator's live counter trigger -- gauge against this
+        expectation is that:
+          * role-only deltas (`{"choices": [{"delta": {"role": "assistant"}}]}`)
+            must NOT fire -- they don't carry content
+          * heartbeat lines / `: heartbeat` / blank lines / `[DONE]`
+            must NOT fire -- they're filtered inside ``_parse_sse_line``
+          * malformed-JSON lines must NOT fire
+          * content deltas fire ONCE each with the accumulated delta
+            (joined across all ``choices`` in the same data event)
+
+        The first-chunk marker called before ``add_bytes_received`` in
+        the runtime (``benchmark_core._run_plugin_task``) relies on
+        this gating: if it ever fires on a role-only delta, the cell
+        would render `[streaming - 0 tok]` (or worse, the runtime would
+        fire `mark_first_chunk_seen` then call `add_bytes_received``
+        with ``len(delta) == 0`` -- and the current contract says 0
+        is a no-op so the cells would stay bare).
+        """
+        calls = []
+        fake_response = mock.MagicMock()
+        fake_response.status_code = 200
+        fake_response.__enter__ = lambda self_: self_
+        fake_response.__exit__ = lambda self_, *a: None
+        fake_response.iter_lines = mock.MagicMock(return_value=iter([
+            "data: " + json.dumps({"choices": [{"delta": {"role": "assistant"}}]}),
+            json.dumps({"choices": [{"delta": {"content": "Hello, "}}]}),  # no 'data: ' prefix -> ignored by parser
+            "data: " + json.dumps({"choices": [{"delta": {"content": "world"}}]}),
+            "data: [DONE]",
+        ]))
+
+        @contextlib.contextmanager
+        def fake_ctx(*a, **kw):
+            yield fake_response, None, None
+
+        with mock.patch("benchmark_http._post_request_context", fake_ctx):
+            text, _, _, err, _, _ = stream_request(
+                {"src": {"api_url": "http://x", "headers": {}}},
+                10, "m", "src", "p", 100,
+                on_chunk=lambda delta: calls.append(delta),
+            )
+        self.assertEqual(err or "", "", "no error expected for a clean stream")
+        # Only the two valid content lines should have fired the callback.
+        self.assertEqual(calls, ["world"],
+                         "on_chunk must fire only on parsed non-empty content deltas; "
+                         "role-only deltas (1st line), non-`data:`-prefixed JSON (2nd line), "
+                         "and `[DONE]` (4th line) are all skipped inside `_parse_sse_line`")
 
     def test_stream_request_returns_text_and_usage(self):
         """stream_request parses SSE chunks and returns the assembled text."""
