@@ -459,37 +459,43 @@ class TestBenchmarkState(unittest.TestCase):
         self.assertEqual(snap["rate-limiter_first_chunk_seen"], False)
         self.assertEqual(snap["wireframes_first_chunk_seen"], False)
 
-    def test_mark_first_chunk_seen_flips_flag_atomically(self):
+    def test_mark_first_chunk_seen_flips_flag_and_is_idempotent(self):
         """``mark_first_chunk_seen`` flips the per-plugin flag from
-        ``False`` -> ``True`` and is observable through subsequent
-        snapshots (used by the live TUI's ``[streaming - N tok]``
-        cell path to switch from the estimate form to the real
-        counter).
+        ``False`` -> ``True`` (used by the live TUI's
+        ``[streaming - N tok]`` cell path to switch from the
+        estimate form to the real counter) and is idempotent under
+        repeated calls -- the flag never regresses to ``False``
+        within a single dispatch (cross-dispatch reset is owned
+        by ``start_plugin_run``). Repeated calls also don't error
+        -- the SSE parse loop may fire the marker on multiple
+        events (first parsed delta, first non-heartbeat byte, etc.)
+        and each call must be a no-op rather than a programming
+        error.
+
+        Distinct regression markers (single-set AND repeat-set) are
+        folded into one test because the repeat path subsumes the
+        single-flip path: if the flag regressed on the 2nd call,
+        the 3rd-call check would catch it; if the 1st call didn't
+        flip it, the post-1st-call check would catch it. Keeping
+        them in one test keeps the regression surface compact.
         """
         state = self.module.BenchmarkState({"m1": "Default"}, ["rate-limiter"])
+        # (1) Default-state: flag starts False.
         self.assertEqual(
             state.snapshot()["m1"]["rate-limiter_first_chunk_seen"], False
         )
+        # (2) First call flips the flag.
         state.mark_first_chunk_seen("m1", "rate-limiter")
         self.assertEqual(
             state.snapshot()["m1"]["rate-limiter_first_chunk_seen"], True
         )
-
-    def test_mark_first_chunk_seen_is_idempotent(self):
-        """Repeated ``mark_first_chunk_seen`` calls stay ``True`` --
-        the flag never regresses to ``False`` within a single
-        dispatch (cross-dispatch reset is owned by
-        ``start_plugin_run``). Repeated calls also don't error --
-        the SSE parse loop may fire the marker on multiple events
-        (first parsed delta, first non-heartbeat byte, etc.) and
-        each call must be a no-op rather than a programming error.
-        """
-        state = self.module.BenchmarkState({"m1": "Default"}, ["rate-limiter"])
-        state.mark_first_chunk_seen("m1", "rate-limiter")
+        # (3) Subsequent calls stay True (idempotent, no regression).
         state.mark_first_chunk_seen("m1", "rate-limiter")
         state.mark_first_chunk_seen("m1", "rate-limiter")
         self.assertEqual(
-            state.snapshot()["m1"]["rate-limiter_first_chunk_seen"], True
+            state.snapshot()["m1"]["rate-limiter_first_chunk_seen"], True,
+            "mark_first_chunk_seen must be idempotent: subsequent calls "
+            "stay True once flipped"
         )
 
     def test_start_plugin_run_resets_first_chunk_seen(self):

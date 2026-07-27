@@ -207,10 +207,14 @@ class TestPluginCellBlock(unittest.TestCase):
         # Bare "[streaming]" must NOT appear after substituting out
         # the enriched indicator -- the cell shows the tok-counter
         # form, not the bare bracket. The cells read
-        # ``first_chunk_seen`` (bool) rather than the legacy
-        # ``first_tok_ts`` (timestamp) -- ``mark_first_chunk_seen``
-        # is the canonical hook the SSE parse layer fires when the
-        # first chunk lands.
+        # The cells here read ``first_chunk_seen`` (bool). The
+        # ``first_tok_ts`` (timestamp) field is NOT legacy -- it
+        # is still actively read by the live-footer consumer
+        # (``_build_live_indicators``), with distinct semantics
+        # (timestamp vs bool). ``mark_first_chunk_seen`` is the
+        # canonical hook the SSE parse layer fires when the first
+        # chunk lands; setting it here triggers the real
+        # ``[streaming - N tok]`` cellular branch.
         leftover = block.replace("[streaming - 16 tok]", "")
         self.assertNotIn("[streaming]", leftover,
                          "cell should enrich to [streaming - N tok] when bytes accumulate")
