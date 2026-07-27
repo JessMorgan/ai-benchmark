@@ -305,7 +305,7 @@ def _plugin_cell_block(pid, s, p, sleeping_remaining):
                 # Live streaming with progress: show the incremental
                 # tok count so the operator sees rate-of-arrival
                 # instead of a static "[streaming]" until the response
-                # finishes. UTF-8 bytes // 4 matches the
+                # finishes. chars // 4 matches the
                 # ``count_tokens`` estimator in ``benchmark_core``;
                 # using bytes here would show huge numbers that are
                 # harder to scan than 3- or 4-digit tok counts.
@@ -483,7 +483,7 @@ def _build_live_indicators(s, active_plugins):
         bytes_received = s.get(f"{pid}_bytes_received", 0) or 0
         if ft and bytes_received:
             # Live streaming with progress: per-plugin tok count
-            # (UTF-8 bytes // 4 matches the ``count_tokens`` estimator).
+            # (chars // 4 matches the ``count_tokens`` estimator).
             parts.append(f"[{pid}: {bytes_received // 4} tok]")
         elif not ft:
             # In flight but no first token yet -- counted in the
