@@ -429,8 +429,17 @@ def _parse_sse_line(line, first_tok, text, finish_reason, usage):
 
 def stream_request(source_config, timeout, model, source, prompt, max_tokens=2048,
                    log_path=None, log_label=None, session_seed=0, temperature=None,
-                   drop_params=None, stop_event=None, system_prompt=None):
-    """Make a streaming chat-completion request and return parsed results."""
+                   drop_params=None, stop_event=None, system_prompt=None,
+                   on_chunk=None):
+    """Make a streaming chat-completion request and return parsed results.
+
+    ``on_chunk`` (optional) is called once per parsed SSE delta with the new
+    text accumulated in that iteration, so callers (notably the live TUI)
+    can update per-plugin byte/tok counts as tokens arrive instead of
+    waiting for the full response. Exceptions raised by ``on_chunk`` are
+    swallowed so a buggy observer cannot abort the stream read -- the TUI
+    is a display concern, not a correctness concern.
+    """
     start = time.time()
     first_tok = None
     text = ""
@@ -443,6 +452,7 @@ def stream_request(source_config, timeout, model, source, prompt, max_tokens=204
                                stop_event=stop_event) as (resp, err, curl_cmd):
         if err:
             return text, first_tok, time.time(), err, finish_reason, usage
+        prev_text_len = 0
         for line in resp.iter_lines(decode_unicode=True):
             if stop_event and stop_event.is_set():
                 error = "Cancelled"
@@ -453,6 +463,20 @@ def stream_request(source_config, timeout, model, source, prompt, max_tokens=204
                 line, first_tok, text, finish_reason, usage)
             if done:
                 break
+            # Notify the caller of the delta accumulated in this
+            # iteration. We compute the delta from ``text`` length so a
+            # single SSE data event that pumps multiple ``choices`` deltas
+            # still produces one observer call with the joined delta,
+            # which keeps the callback rate proportional to wall-clock
+            # arrivals rather than choice array sizes.
+            if on_chunk is not None and len(text) > prev_text_len:
+                delta = text[prev_text_len:]
+                prev_text_len = len(text)
+                try:
+                    on_chunk(delta)
+                except Exception:
+                    # A buggy observer must not abort the stream read.
+                    pass
         error = _check_total_timeout(start, timeout, error, finish_reason)
         _log_response(log_path, curl_cmd, text, log_label)
     return text, first_tok, time.time(), error, finish_reason, usage

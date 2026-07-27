@@ -370,13 +370,27 @@ def _run_plugin_task(target_name, api_model, source, plugin, source_config, time
         attempt_start = time.time()
 
         if plugin.supports_streaming:
+            # Per-SSE-delta observer so the live TUI can show a
+            # streaming tok ticker ([streaming - N tok] cell +
+            # "[name: N tok]" live-footer entry). The callback runs
+            # under ``stream_request``'s loop on the worker thread; a
+            # buggy observer is swallowed inside ``stream_request`` so
+            # it cannot abort the stream read. We measure CHARACTERS
+            # (not UTF-8 bytes) so the live ticker matches the post-
+            # completion ``count_tokens(text) = len(text) / 4`` estimator
+            # exactly -- a CJK chunk would otherwise show 3x as many
+            # "tokens" during streaming as it does after completion.
+            on_chunk = lambda delta: state.add_bytes_received(
+                target_name, pid, len(delta))
+
             text, first_tok, stream_end, serr, sfr, _usage = stream_request(
                 source_config, timeout, api_model, source, prompt, max_tok,
                 log_path=log_file,
                 log_label=f"{plugin.name} (Streaming, attempt {attempt + 1})",
                 session_seed=session_seed, temperature=temperature,
                 drop_params=drop_params, stop_event=stop_event,
-                system_prompt=system_prompt)
+                system_prompt=system_prompt,
+                on_chunk=on_chunk)
 
             if serr or first_tok is None:
                 text, nsusage, ns_time, nserr, nsfr = nonstream_request(

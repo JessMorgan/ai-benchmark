@@ -55,6 +55,14 @@ class BenchmarkState:
                 self._model_info[name][f"{pid}_tps"] = None
                 self._model_info[name][f"{pid}_response_time"] = None
                 self._model_info[name][f"{pid}_output_tokens"] = None
+                # Streaming byte counter for in-flight plugins; incremented
+                # via ``add_bytes_received`` per SSE delta by the runtime.
+                # Starts at 0; ``start_plugin_run`` resets it on each
+                # dispatch so retry runs don't carry a stale count.
+                # ``finish_plugin_run`` leaves it in place (post-flight
+                # cells fall back to the standard 5-cell results layout,
+                # so this transient is harmless).
+                self._model_info[name][f"{pid}_bytes_received"] = 0
 
     def update(self, model_name, **kwargs):
         with self._lock:
@@ -68,7 +76,9 @@ class BenchmarkState:
         threads (max_workers > 1), multiple pids accumulate; the
         ``finish_plugin_run`` call when the task returns drops just
         that pid. Lock is per-instance so concurrent calls from any
-        number of workers execute atomically.
+        number of workers execute atomically. Also zeroes
+        ``f"{pid}_bytes_received"`` so a retry run doesn't surface a
+        stale streaming byte count from the previous dispatch.
         """
         with self._lock:
             info = self._model_info[model_name]
@@ -77,6 +87,33 @@ class BenchmarkState:
                 cur.append(pid)
             info["running_pids"] = cur
             info["status"] = "running"
+            # Reset the per-plugin streaming byte counter so a retry
+            # dispatch doesn't carry forward the count from the
+            # previous (now-finished) attempt. This mirrors the
+            # dispatch-time reset (``attempt_start`` is rewritten on
+            # each entry to ``_run_plugins``).
+            info[f"{pid}_bytes_received"] = 0
+
+    def add_bytes_received(self, model_name, pid, n_bytes):
+        """Atomically accumulate streaming bytes for a plugin task.
+
+        Called once per parsed SSE delta by ``stream_request`` via an
+        ``on_chunk`` callback installed in ``_run_plugin_task``. The
+        bytes counter drives the table cell's ``[streaming - N tok]``
+        bracket status and the live footer's ``[name: N tok]`` entries
+        -- the operator gets a live "ticker" feel instead of a static
+        "[streaming]" until the full response arrives. Falsy ``n_bytes``
+        (None, 0, "") are ignored to avoid spurious zero-add writes; an
+        unknown model/pid raises ``KeyError`` (Python standard behaviour)
+        so the caller can detect a programming error immediately rather
+        than silently drop bytes.
+        """
+        if not n_bytes:
+            return
+        with self._lock:
+            key = f"{pid}_bytes_received"
+            info = self._model_info[model_name]
+            info[key] = (info.get(key) or 0) + n_bytes
 
     def finish_plugin_run(self, model_name, pid):
         """Atomically clear a plugin task's in-flight marker on this model.

@@ -158,41 +158,95 @@ class TestPluginCellBlock(unittest.TestCase):
         self.assertEqual(block[-5:], "    -",
                          "st column is '-' post-flight regardless of stream state")
 
+    def test_streaming_plugin_shows_tok_count_after_bytes_accumulate(self):
+        """Once the streaming callback has accumulated chars (mocked
+        here as a stored counter), the cell shows
+        ``[streaming - N tok]`` where N is chars // 4 (matching the
+        ``count_tokens`` estimator + ``benchmark_core.add_bytes_received``
+        which counts chars, not bytes, so live and completion numbers
+        align for ASCII=CJK=emoji alike). The indicator gives the
+        operator a wall-clock ticker on the in-flight progress.
+        """
+        s = {
+            "running_pids": ["rate-limiter"],
+            "rate-limiter_first_tok_ts": 1234.5,
+            "rate-limiter_bytes_received": 64,  # 64 // 4 = 16 tok
+        }
+        block = ai_benchmark._plugin_cell_block(
+            "rate-limiter", s, self.p_streaming, None)
+        self.assertIn("[streaming - 16 tok]", block)
+        self.assertNotIn("[waiting]", block)
+        # Bare "[streaming]" must NOT appear after substituting out
+        # the new indicator -- the cell shows the enriched status,
+        # not the legacy no-counter form.
+        leftover = block.replace("[streaming - 16 tok]", "")
+        self.assertNotIn("[streaming]", leftover,
+                         "cell should enrich to [streaming - N tok] when bytes accumulate")
+
+    def test_streaming_plugin_keeps_bare_streaming_before_first_byte(self):
+        """If first_tok_ts is set but bytes_received is 0 (just
+        landed first-tok event but no delta has accumulated yet),
+        keep the legacy ``[streaming]`` form rather than showing
+        ``[streaming - 0 tok]`` (which would be visually noisy and
+        duplicate the rare ``ft > 0 but no bytes`` edge case).
+        """
+        s = {
+            "running_pids": ["rate-limiter"],
+            "rate-limiter_first_tok_ts": 1234.5,
+            "rate-limiter_bytes_received": 0,
+        }
+        block = ai_benchmark._plugin_cell_block(
+            "rate-limiter", s, self.p_streaming, None)
+        self.assertIn("[streaming]", block)
+        self.assertNotIn("tok", block,
+                         "no bytes yet -> don't show 0-tok indicator")
+
 
 class TestBuildLiveIndicators(unittest.TestCase):
     """Tests for ``_build_live_indicators`` in ai-benchmark.py.
 
     The helper feeds the per-model row of the live TUI's ``Live:``
-    section. It must show ALL streaming-capable plugins in
-    ``running_pids`` (not just the first), in ``running_pids``
-    insertion order, comma-separated; non-streaming plugins are
-    omitted so we never lie about a transport detail we cannot
-    observe. With parallel plugin threads (``max_workers > 1``) a
+    section. With parallel plugin threads (``max_workers > 1``), a
     model can be running several streaming plugins simultaneously;
-    the operator needs to see every active thread's state.
+    the operator needs to see every per-thread streaming state AND
+    a single aggregate count of plugins still waiting for their
+    first token.
 
-    Example expected output for three in-flight streaming plugins:
-        ``"rate-limiter (stream), moe-dense (wait), wireframes (stream)"``
+    Format requirements:
+    * Space-separated ``"[<pid>: <N> tok]"`` entries in
+      ``running_pids`` insertion order for streaming plugins with
+      bytes accumulated.
+    * Trailing ``"[waiting: K]"`` aggregate (count of streaming-
+      capable in-flight plugins with no first_tok_ts yet).
+    * Non-streaming in-flight plugins are omitted entirely (the
+      table cell already shows ``[in flight]`` per-cell, and we have
+      no transport state to report for them in the footer).
+    * Empty running_pids -> empty string.
+    * Plugin in running_pids with ft > 0 but bytes_received == 0
+      is silently omitted (rare transient; nothing useful to show).
+
+    Example expected output for two streaming + 1 waiting:
+        ``"[rate-limiter: 16 tok] [software-architecture: 152 tok] [waiting: 1]"``
     """
 
     @staticmethod
     def _plugin(pid, *, streaming=True):
         return type("P", (), {"id": pid, "supports_streaming": streaming})()
 
-    def test_multiple_streaming_plugins_all_shown_in_running_pids_order(self):
-        """With three streaming-capable plugins in flight, each one's
-        ``(stream)`` or ``(wait)`` indicator appears in the output, in
-        the order the pids appear in ``running_pids``. The format is
-        ``"<pid1> (stream), <pid2> (wait), <pid3> (stream)"``.
+    def test_two_streaming_plugins_and_one_waiting_in_running_pids_order(self):
+        """With three streaming-capable plugins in flight -- two
+        streaming with bytes and one waiting -- the per-plugin tok
+        entries appear in ``running_pids`` insertion order, followed
+        by a single ``[waiting: K]`` aggregate. Demonstrates the
+        new format end-to-end.
         """
         s = {
-            # running_pids is the source-of-truth insertion order;
-            # rate-limiter started first, wireframes second, moe-dense
-            # last (the order matches the user's example output).
             "running_pids": ["rate-limiter", "moe-dense", "wireframes"],
             "rate-limiter_first_tok_ts": 1.5,
-            # moe-dense deliberately has no first_tok_ts -> wait branch
+            "rate-limiter_bytes_received": 64,     # 16 tok
+            # moe-dense has no first_tok_ts -> waiting aggregate
             "wireframes_first_tok_ts": 2.0,
+            "wireframes_bytes_received": 128,      # 32 tok
         }
         plugins = [
             self._plugin("rate-limiter", streaming=True),
@@ -202,40 +256,67 @@ class TestBuildLiveIndicators(unittest.TestCase):
         out = ai_benchmark._build_live_indicators(s, plugins)
         self.assertEqual(
             out,
-            "rate-limiter (stream), moe-dense (wait), wireframes (stream)",
+            "[rate-limiter: 16 tok] [wireframes: 32 tok] [waiting: 1]",
+        )
+
+    def test_user_example_output_two_streaming_six_waiting(self):
+        """Reproduces the user's exact example verbatim: two
+        streaming plugins showing tok counts, followed by the
+        ``[waiting: 6]`` aggregate for six other plugins still
+        waiting for first token.
+        """
+        waiting_pids = [f"plugin-waiting-{i}" for i in range(6)]
+        s = {
+            "running_pids": [
+                "rate-limiter",
+                "software-architecture",
+                *waiting_pids,
+            ],
+            "rate-limiter_first_tok_ts": 1.5,
+            "rate-limiter_bytes_received": 64,            # 16 tok
+            "software-architecture_first_tok_ts": 2.0,
+            "software-architecture_bytes_received": 608,   # 152 tok
+            # waiting_pids get no first_tok_ts -> waiting aggregate
+        }
+        plugins = [self._plugin(p, streaming=True) for p in s["running_pids"]]
+        out = ai_benchmark._build_live_indicators(s, plugins)
+        self.assertEqual(
+            out,
+            "[rate-limiter: 16 tok] [software-architecture: 152 tok] [waiting: 6]",
         )
 
     def test_non_streaming_plugin_in_flight_is_omitted(self):
-        """A non-streaming-capable plugin (e.g. ``structured-output``)
-        that is in flight does NOT get a ``(stream)/(wait)`` glyph --
-        we cannot observe its transport state so we don't add a
-        misleading indicator to the row.
+        """A non-streaming-capable plugin in flight does NOT get a
+        bracket indicator here -- the table cell already shows
+        ``[in flight]`` per-cell, and the live footer doesn't
+        surface a glyph when we cannot observe the transport state.
         """
         s = {
             "running_pids": ["rate-limiter", "structured-output"],
             "rate-limiter_first_tok_ts": 1.5,
+            "rate-limiter_bytes_received": 64,        # 16 tok
         }
         plugins = [
             self._plugin("rate-limiter", streaming=True),
             self._plugin("structured-output", streaming=False),
         ]
         out = ai_benchmark._build_live_indicators(s, plugins)
-        self.assertEqual(out, "rate-limiter (stream)")
+        self.assertEqual(out, "[rate-limiter: 16 tok]")
 
     def test_plugin_not_in_running_pids_is_excluded(self):
-        """A plugin that completed (no longer in ``running_pids``) and a
-        plugin that never ran (also not in ``running_pids``) are both
-        excluded from the indicator string. Only ids in
-        ``running_pids`` are iterated.
+        """A plugin that completed (not in running_pids) and a
+        plugin that never ran (also not in running_pids) are both
+        excluded. The output is determined solely by running_pids.
         """
         s = {
-            # completed_plugin ran but finished -- not in running_pids
-            # wireframes never started -- not in running_pids
             "running_pids": ["rate-limiter"],
-            "rate-limiter_first_tok_ts": 0,  # still waiting, no first token
-            # These would shape up as (stream)/(stream) if shown:
+            "rate-limiter_first_tok_ts": 0,           # still waiting
+            "rate-limiter_bytes_received": 0,
+            # These are defined but plugins NOT in running_pids:
             "completed_plugin_first_tok_ts": 5.0,
+            "completed_plugin_bytes_received": 200,
             "wireframes_first_tok_ts": 3.0,
+            "wireframes_bytes_received": 100,
         }
         plugins = [
             self._plugin("rate-limiter", streaming=True),
@@ -243,29 +324,52 @@ class TestBuildLiveIndicators(unittest.TestCase):
             self._plugin("completed_plugin", streaming=True),
         ]
         out = ai_benchmark._build_live_indicators(s, plugins)
-        self.assertEqual(out, "rate-limiter (wait)")
+        # rate-limiter is in flight but no first_tok + no bytes ->
+        # counted in [waiting: K] aggregate.
+        self.assertEqual(out, "[waiting: 1]")
 
     def test_empty_running_pids_returns_empty_string(self):
         """No in-flight plugins -> empty string. The caller
-        (``_render_live_activity``) skips the ``"  <indicators>"``
-        prefix when the result is empty.
+        (``_render_live_activity``) skips the prefix when the result
+        is empty.
         """
         s = {"running_pids": []}
         plugins = [self._plugin("any"), self._plugin("other")]
         self.assertEqual(ai_benchmark._build_live_indicators(s, plugins), "")
 
-    def test_all_non_streaming_returns_empty_string(self):
-        """All in-flight plugins are non-streaming -> empty string.
-        We don't surface any glyph on rows whose transport state we
-        cannot observe, even when running_pids has entries.
+    def test_only_waiting_returns_aggregate(self):
+        """All in-flight streaming-capable plugins have no first
+        token + no bytes yet -> output is just the single
+        ``[waiting: K]`` aggregate. No per-plugin entries appear.
         """
-        s = {"running_pids": ["structured-output", "tool-calling"]}
-        plugins = [
-            self._plugin("structured-output", streaming=False),
-            self._plugin("tool-calling", streaming=False),
-        ]
-        self.assertEqual(ai_benchmark._build_live_indicators(s, plugins), "")
+        s = {
+            "running_pids": ["rate-limiter", "wireframes", "moe-dense"],
+            # No first_tok_ts or bytes for any.
+        }
+        plugins = [self._plugin(p, streaming=True) for p in s["running_pids"]]
+        out = ai_benchmark._build_live_indicators(s, plugins)
+        self.assertEqual(out, "[waiting: 3]")
 
+    def test_streaming_fts_but_no_bytes_omitted_from_output(self):
+        """Rare transient: first_tok_ts is set but bytes_received
+        is still 0 (just landed first-tok, no delta has accumulated
+        yet). The plugin is silently omitted -- emitting
+        ``[name: 0 tok]`` would be visually noisy and the per-cell
+        [streaming] already conveys "just started streaming" without
+        duplicating that into the live footer.
+        """
+        s = {
+            "running_pids": ["rate-limiter", "wireframes"],
+            "rate-limiter_first_tok_ts": 1.5,
+            "rate-limiter_bytes_received": 64,    # 16 tok
+            "wireframes_first_tok_ts": 2.0,        # ft but no bytes
+        }
+        plugins = [
+            self._plugin("rate-limiter", streaming=True),
+            self._plugin("wireframes", streaming=True),
+        ]
+        out = ai_benchmark._build_live_indicators(s, plugins)
+        self.assertEqual(out, "[rate-limiter: 16 tok]")
 
 if __name__ == "__main__":
     unittest.main()

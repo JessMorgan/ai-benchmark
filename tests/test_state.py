@@ -2,6 +2,7 @@
 import json
 import os
 import tempfile
+import threading
 import unittest
 
 from plugins import discover_plugins
@@ -372,6 +373,76 @@ class TestBenchmarkState(unittest.TestCase):
             self.assertEqual(snap["model-b"]["status"], "pending")  # rerun default
             self.assertEqual(snap["model-c"]["status"], "pending")
 
+
+    def test_add_bytes_received_accumulates_atomically(self):
+        """Repeated calls to ``add_bytes_received`` from concurrent
+        threads accumulate the byte counter monotonically without
+        losing increments (lock correctness).
+
+        Verifies the new plumbing for the live TUI's
+        ``[streaming - N tok]`` cell + ``[name: N tok]`` live
+        footer entry.
+        """
+        state = self.module.BenchmarkState({"m1": "Default"}, ["rate-limiter"])
+        state.start_plugin_run("m1", "rate-limiter")
+        N_THREADS = 8
+        PER_THREAD = 50
+        N_PER_CALL = 16  # bytes per call
+        expected = N_THREADS * PER_THREAD * N_PER_CALL
+
+        def worker():
+            for _ in range(PER_THREAD):
+                state.add_bytes_received("m1", "rate-limiter", N_PER_CALL)
+
+        threads = [threading.Thread(target=worker) for _ in range(N_THREADS)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        snap = state.snapshot()["m1"]
+        self.assertEqual(snap["rate-limiter_bytes_received"], expected,
+                         f"expected {expected} after {N_THREADS}x{PER_THREAD}x{N_PER_CALL} adds, "
+                         f"got {snap['rate-limiter_bytes_received']}")
+
+    def test_add_bytes_received_ignores_falsy_n(self):
+        """Falsy ``n_bytes`` (None, 0, "") is silently ignored so a
+        stray zero-size delta from the SSE layer cannot overwrite the
+        accumulated counter to 0.
+        """
+        state = self.module.BenchmarkState({"m1": "Default"}, ["rate-limiter"])
+        state.start_plugin_run("m1", "rate-limiter")
+        state.add_bytes_received("m1", "rate-limiter", 128)  # 128 bytes
+        state.add_bytes_received("m1", "rate-limiter", 0)
+        state.add_bytes_received("m1", "rate-limiter", None)
+        state.add_bytes_received("m1", "rate-limiter", "")
+        snap = state.snapshot()["m1"]
+        self.assertEqual(snap["rate-limiter_bytes_received"], 128)
+
+    def test_start_plugin_run_resets_bytes_received(self):
+        """``start_plugin_run`` zeroes the bytes counter so a retry
+        dispatch doesn't show stale bytes from the previous (now-
+        finished) attempt. Mirrors the existing reset semantics for
+        ``attempt_start``.
+        """
+        state = self.module.BenchmarkState({"m1": "Default"}, ["rate-limiter"])
+        state.start_plugin_run("m1", "rate-limiter")
+        state.add_bytes_received("m1", "rate-limiter", 500)
+        self.assertEqual(state.snapshot()["m1"]["rate-limiter_bytes_received"], 500)
+        # End the first attempt and re-dispatch.
+        state.finish_plugin_run("m1", "rate-limiter")
+        state.start_plugin_run("m1", "rate-limiter")
+        self.assertEqual(state.snapshot()["m1"]["rate-limiter_bytes_received"], 0,
+                         "start_plugin_run must zero bytes_received on each dispatch")
+
+    def test_bytes_received_default_is_zero(self):
+        """Every plugin gets a ``bytes_received`` field of 0 in the
+        default model_info dict so the renderer can read it without a
+        ``KeyError`` (matching the pattern of ``_score`` etc.).
+        """
+        state = self.module.BenchmarkState({"m1": "Default"}, ["rate-limiter", "wireframes"])
+        snap = state.snapshot()["m1"]
+        self.assertEqual(snap["rate-limiter_bytes_received"], 0)
+        self.assertEqual(snap["wireframes_bytes_received"], 0)
 
 if __name__ == "__main__":
     unittest.main()

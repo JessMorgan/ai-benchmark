@@ -257,7 +257,18 @@ def _plugin_cell_block(pid, s, p, sleeping_remaining):
     if in_flight:
         if p.supports_streaming:
             ft = s.get(f"{pid}_first_tok_ts", 0) or 0
-            text = "[streaming]" if ft else "[waiting]"
+            bytes_received = s.get(f"{pid}_bytes_received", 0) or 0
+            if ft and bytes_received:
+                # Live streaming with progress: show the incremental
+                # tok count so the operator sees rate-of-arrival
+                # instead of a static "[streaming]" until the response
+                # finishes. UTF-8 bytes // 4 matches the
+                # ``count_tokens`` estimator in ``benchmark_core``;
+                # using bytes here would show huge numbers that are
+                # harder to scan than 3- or 4-digit tok counts.
+                text = f"[streaming - {bytes_received // 4} tok]"
+            else:
+                text = "[streaming]" if ft else "[waiting]"
         else:
             # ``[running]`` would collide with the model's status column
             # glyph for ``status="running"``; ``[in flight]`` is the
@@ -385,15 +396,18 @@ def _source_abbr(source_abbrevs, source):
 
 
 def _build_live_indicators(s, active_plugins):
-    """Build the comma-separated streaming-capable-plugin indicator string for a
-    model's live-activity row.
+    """Build the space-separated live-activity indicator string for a
+    model's "Live:" footer row.
 
     Iterates ``s["running_pids"]`` in insertion order and emits one
-    ``"<pid> (stream)"`` or ``"<pid> (wait)"`` per streaming-capable
-    plugin (decided by ``pid.first_tok_ts`` > 0). Non-streaming
-    plugins are omitted so we never lie about a transport detail we
-    cannot observe. Plugins that completed are no longer in
-    ``running_pids`` -- they fall out of the loop naturally.
+    ``"[<pid>: <N> tok]"`` per streaming in-flight plugin (decided by
+    ``pid_first_tok_ts`` > 0 AND ``bytes_received`` > 0). Plugins in
+    flight with NO first token yet contribute to a single trailing
+    ``"[waiting: K]"`` aggregate rather than per-name entries -- this
+    keeps the row readable when 5+ streaming plugins are queueing for
+    their first chunk. Non-streaming plugins are omitted entirely (we
+    cannot observe a transport detail for them and the table cell
+    already shows ``[in flight]`` per-cell).
 
     With parallel plugin threads (``max_workers > 1``), a model can
     carry several streaming-capable plugins in flight at once; this
@@ -401,20 +415,35 @@ def _build_live_indicators(s, active_plugins):
     one (the previous single-indicator choice hid active thread state
     from the operator).
 
-    Returns ``""`` when no streaming-capable plugin is in flight.
+    Returns ``""`` when no observable plugin is in flight.
 
-    Example output (three in-flight streaming plugins):
-        ``"rate-limiter (stream), moe-dense (wait), wireframes (stream)"``
+    Example output (two in-flight streaming plugins + 1 waiting):
+        ``"[rate-limiter: 16 tok] [software-architecture: 152 tok] [waiting: 1]"``
     """
     running_pids = s.get("running_pids") or []
     parts = []
+    waiting_count = 0
     for pid in running_pids:
         plugin = next((p for p in active_plugins if p.id == pid), None)
         if plugin is None or not plugin.supports_streaming:
             continue
         ft = s.get(f"{pid}_first_tok_ts", 0) or 0
-        parts.append(f"{pid} (stream)" if ft else f"{pid} (wait)")
-    return ", ".join(parts)
+        bytes_received = s.get(f"{pid}_bytes_received", 0) or 0
+        if ft and bytes_received:
+            # Live streaming with progress: per-plugin tok count
+            # (UTF-8 bytes // 4 matches the ``count_tokens`` estimator).
+            parts.append(f"[{pid}: {bytes_received // 4} tok]")
+        elif not ft:
+            # In flight but no first token yet -- counted in the
+            # trailing aggregate so a single "[waiting: K]" tells the
+            # operator how many plugins are queueing for their first
+            # chunk without listing every name twice.
+            waiting_count += 1
+        # ft > 0 but no bytes: rare transient (just landed first-tok
+        # event but no delta has accumulated yet) -- skip silently.
+    if waiting_count > 0:
+        parts.append(f"[waiting: {waiting_count}]")
+    return " ".join(parts)
 
 
 def _render_live_activity(stdscr, max_x, max_y, snap, source_abbrevs, live_models,
