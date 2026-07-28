@@ -59,9 +59,27 @@ stderr so the operator knows the state file is out-of-sync.
 
 The agent executing this skill should:
 
-1. **Write the embedded script below** to a temporary file
-   (e.g., `/tmp/purge-results.py`) so it can be run repeatedly with
-   different flags.
+1. **Extract the embedded script below** to a temporary file
+   (e.g., `/tmp/purge-results.py`) so it can be run repeatedly
+   with different filters. Use this `awk` extraction rather than
+   strict `sed` markdown-fence matching — the range
+   ``#!/usr/bin/env python3`` ... ``if __name__ == "__main__":``
+   tolerates shell-quoting, heredoc, and fence-indent variations
+   that the naive ``sed -n '/^```python$/,/^```$/p'`` regex misses
+   in practice (the SKILL.md's fences can be re-rendered through
+   intermediate formats that strip their column-0 anchor). The
+   shebang is stable wherever the script is dropped, and the
+   script always ends with the closing fence of the
+   ``\`\`\`python``` block, so extracting from the shebang and
+   exiting just before the closing fence (rather than matching
+   a body anchor that drops the trailing ``main()`` call) is
+   bullet-proof and preserves the runnable script verbatim:
+
+```bash
+awk '/^#!\/usr\/bin\/env python3/{f=1} f && /^```/{exit} f' \
+    .agents/skills/purge-results/SKILL.md > /tmp/purge-results.py
+```
+
 2. Run it with the appropriate flags.
 
 ```bash
