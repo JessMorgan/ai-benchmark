@@ -411,7 +411,7 @@ class TestDropParams(unittest.TestCase):
         def fake_stream_request(source_config, timeout, model, source, prompt, max_tokens=2048,
                                 log_path=None, log_label=None, session_seed=0, temperature=None,
                                 drop_params=None, stop_event=None, system_prompt=None,
-                                on_chunk=None):
+                                on_chunk=None, pid=None, on_retry=None):
             # Simulate two SSE deltas; the closure should fire once per delta.
             for delta in ["Hello, ", "world"]:
                 if on_chunk is not None:
@@ -434,6 +434,176 @@ class TestDropParams(unittest.TestCase):
         self.assertEqual(result["rate-limiter_output_tokens"], 3)
 
 
+
+
+class TestNonStreamingPluginRetry(unittest.TestCase):
+    """Regression tests for the ``on_retry`` closure-scope bug that
+    previously raised ``UnboundLocalError`` on every
+    ``supports_streaming=False`` plugin (``code-review``, ``moe-dense``,
+    ``structured-output``).
+
+    Bug history: ``def on_retry():`` was defined *inside* the
+    ``if plugin.supports_streaming:`` branch of
+    ``benchmark_core._run_plugin_task``. Python's static scope analysis
+    treats the name as local for the entire function, so the alternative
+    ``else`` branch's
+    ``nonstream_request(... on_retry=on_retry)`` evaluated a name that
+    had never been bound, raising:
+
+        ``UnboundLocalError: cannot access local variable 'on_retry'
+        where it is not associated with a value``
+
+    The bug surfaces at CALL-TIME kwargs evaluation -- not inside the
+    request function or the retry callback -- which is why every model
+    that ran a supports_streaming=False plugin failed the run for
+    ~every model in the affected benchmark.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.module = load_benchmark_module()
+        cls.plugins = discover_plugins()
+
+    def _nonstreaming_plugin(self):
+        candidates = [p for p in self.plugins if p.id == "structured-output"]
+        self.assertEqual(
+            len(candidates), 1,
+            "structured-output plugin must be present for this regression test",
+        )
+        return candidates[0]
+
+    def test_run_plugin_task_nonstreaming_plugin_binds_on_retry(self):
+        """A successful ``_run_plugin_task`` call with a
+        ``supports_streaming=False`` plugin must NOT raise
+        ``UnboundLocalError`` at the kwargs evaluation of
+        ``nonstream_request(... on_retry=on_retry)``.
+
+        If the closure is mis-scoped (defined inside
+        ``if plugin.supports_streaming:``), Python raises the error
+        before ``nonstream_request`` is even called -- so a single
+        clean run of a non-streaming plugin is sufficient to catch the
+        regression.
+        """
+        plugin = self._nonstreaming_plugin()
+        source_config = {
+            "Local": {
+                "api_url": "http://localhost:11434/chat/completions",
+                "headers": {},
+            }
+        }
+        state = self.module.BenchmarkState({"dummy-model": "Local"}, [plugin.id])
+
+        with mock.patch.object(
+            self.module, "nonstream_request",
+            return_value=("", {}, 0.1, None, "stop"),
+        ):
+            # Will raise UnboundLocalError if ``on_retry`` is not bound
+            # before the call site below.
+            result, err = self.module._run_plugin_task(
+                "dummy-model", "dummy-model", "Local", plugin, source_config,
+                timeout=1, token_levels=[100], session_seed=12345,
+                log_file=None, global_cfg={}, state=state,
+            )
+
+        # Empty response correctly scores 0 -- we only assert no
+        # exception was raised at the kwargs evaluation.
+        self.assertIsNone(err)
+        self.assertEqual(result["structured-output_score"], 0.0)
+
+    def test_run_plugin_task_nonstreaming_429_retry_fires_on_retry(self):
+        """End-to-end: a 429 retry on a non-streaming plugin still
+        fires ``state.start_plugin_run`` again -- not just at plugin
+        dispatch time. This pins both the closure-scope fix AND the
+        per-request elapsed reset wiring for supports_streaming=False
+        plugins.
+        """
+        plugin = self._nonstreaming_plugin()
+        source_config = {
+            "Local": {
+                "api_url": "http://localhost:11434/chat/completions",
+                "headers": {},
+                "max_429_retries": 1,
+                "backoff_seconds": 0.01,
+                "backoff_factor": 1.0,
+                "max_backoff_seconds": 1.0,
+            }
+        }
+        state = self.module.BenchmarkState({"dummy-model": "Local"}, [plugin.id])
+
+        # Track every ``start_plugin_run`` call -- both the plugin
+        # dispatch (one per plugin) and the per-429-retry reset.
+        start_calls = []
+        real_start = state.start_plugin_run
+
+        def tracking_start(target_name, pid, **kwargs):
+            start_calls.append((target_name, pid))
+            return real_start(target_name, pid, **kwargs)
+
+        state.start_plugin_run = tracking_start
+
+        # 429 on attempt 1, 200 on attempt 2 -- with a tiny backoff so
+        # the test stays sub-second.
+        class _Resp429:
+            status_code = 429
+            text = "rate limited"
+            headers = {}
+
+            def close(self):
+                pass
+
+        def _mk_200():
+            _body = {
+                "choices": [
+                    {"message": {"content": "{}"}, "finish_reason": "stop"}
+                ],
+                "usage": {},
+            }
+
+            class _Resp200:
+                status_code = 200
+                text = json.dumps(_body)
+                headers = {}
+                body = _body
+
+                def iter_content(self, chunk_size=8192):
+                    return [json.dumps(self.body).encode()]
+
+                def json(self):
+                    return self.body
+
+                def close(self):
+                    pass
+
+            return _Resp200()
+
+        with mock.patch(
+            "requests.post", side_effect=[_Resp429(), _mk_200()],
+        ):
+            result, err = self.module._run_plugin_task(
+                "dummy-model", "dummy-model", "Local", plugin, source_config,
+                timeout=5, token_levels=[100], session_seed=12345,
+                log_file=None, global_cfg={}, state=state,
+            )
+
+        self.assertIsNone(err)
+        # ``_run_plugins`` calls ``start_plugin_run`` once at dispatch
+        # (outside ``_run_plugin_task`` -- not visible to this test's
+        # wrapping); the on_retry closure is the only path inside
+        # ``_run_plugin_task`` that re-fires it. With max_429_retries=1
+        # we expect exactly one on_retry invocation -- if a future
+        # refactor fires it twice (or zero times for non-streaming
+        # plugins) we want a loud failure.
+        retry_callback_firings = [
+            (t, p) for (t, p) in start_calls
+            if (t, p) == ("dummy-model", plugin.id)
+        ]
+        self.assertEqual(
+            retry_callback_firings,
+            [("dummy-model", plugin.id)],
+            f"on_retry closure must fire exactly once on a single 429 "
+            f"retry for non-streaming plugins; "
+            f"saw start_calls={start_calls!r}",
+        )
 
 
 class TestSeedCLI(unittest.TestCase):
@@ -722,6 +892,82 @@ class TestRunInfo(unittest.TestCase):
             with open(run_info_path, "r", encoding="utf-8") as f:
                 self.assertEqual(json.load(f)["status"], "running")
 
+    def test_run_info_includes_backoff_429(self):
+        """A completed run writes backoff_429 metadata to run-info.json.
+
+        This integration test verifies the schema is written even when no
+        429 retries occur (the common empty case). Non-empty aggregation is
+        covered in ``tests.test_benchmark_http``.
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_path = os.path.join(tmpdir, "config.yaml")
+            output_dir = os.path.join(tmpdir, "output")
+            with open(config_path, "w") as f:
+                f.write(f"output_dir: {output_dir}\n")
+
+            result = subprocess.run(
+                [sys.executable, "ai-benchmark.py", "--config", config_path],
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+            run_info_path = os.path.join(output_dir, "run-info.json")
+            self.assertTrue(os.path.isfile(run_info_path))
+            with open(run_info_path, "r", encoding="utf-8") as f:
+                run_info = json.load(f)
+
+            self.assertIn("backoff_429", run_info)
+            self.assertEqual(run_info["backoff_429"]["total_retries"], 0)
+            self.assertEqual(run_info["backoff_429"]["per_plugin"], {})
+
+    def test_run_info_backoff_429_populated(self):
+        """run-info.json reflects populated 429 plugin statistics."""
+        project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        with tempfile.TemporaryDirectory() as tmpdir:
+            script = os.path.join(tmpdir, "write_run_info.py")
+            run_info_path = os.path.join(tmpdir, "run-info.json")
+            with open(script, "w", encoding="utf-8") as f:
+                f.write(
+                    "import importlib.util\n"
+                    "import json\n"
+                    "import os\n"
+                    "import sys\n"
+                    f"sys.path.insert(0, {project_root!r})\n"
+                    "import benchmark_http\n"
+                    "\n"
+                    "# Simulate a run that saw some 429 retries.\n"
+                    "benchmark_http._429_stats['total_retries'] = 3\n"
+                    "benchmark_http._429_stats['plugin_stats']['rate-limiter'] = "
+                    "{'retries': 2, 'total_sleep_time': 45.5}\n"
+                    "benchmark_http._429_stats['plugin_stats']['moe-dense'] = "
+                    "{'retries': 1, 'total_sleep_time': 12.0}\n"
+                    "\n"
+                    "spec = importlib.util.spec_from_file_location("
+                    "    'ai_benchmark', os.path.abspath('ai-benchmark.py'))\n"
+                    "ai = importlib.util.module_from_spec(spec)\n"
+                    "spec.loader.exec_module(ai)\n"
+                    "run_info = ai._inject_429_stats({})\n"
+                    f"ai._write_run_info({tmpdir!r}, run_info)\n"
+                    f"print(open({run_info_path!r}).read())\n"
+                )
+            result = subprocess.run(
+                [sys.executable, script],
+                capture_output=True,
+                text=True,
+                cwd=project_root,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            run_info = json.loads(result.stdout)
+            self.assertEqual(run_info["backoff_429"]["total_retries"], 3)
+            self.assertEqual(
+                run_info["backoff_429"]["per_plugin"],
+                {
+                    "rate-limiter": {"retries": 2, "total_sleep_time": 45.5},
+                    "moe-dense": {"retries": 1, "total_sleep_time": 12.0},
+                },
+            )
+
 
 class TestPerPluginTemperature(unittest.TestCase):
     def test_plugin_temperature_from_config(self):
@@ -867,6 +1113,208 @@ class TestCLIRetryOn429(unittest.TestCase):
         _apply_http_retry_default(cfg, retry_on_429=False)
         self.assertEqual(cfg["sources"]["Local"]["max_429_retries"], 0)
         self.assertEqual(cfg["sources"]["Remote"]["max_429_retries"], 4)
+
+
+class TestRetryResetsStartTimestamp(unittest.TestCase):
+    """A 429 retry should reset the per-plugin start timestamp so the TUI
+    shows elapsed time for the current request, not cumulative time across
+    earlier failed attempts and backoff sleeps."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.module = load_benchmark_module()
+        cls.plugins = discover_plugins()
+
+    def test_429_retry_calls_start_plugin_run_again(self):
+        plugins = [p for p in self.plugins if p.id == "rate-limiter"]
+        models = {"dummy-model": "Local"}
+        state = self.module.BenchmarkState(models, [p.id for p in plugins])
+        source_config = {
+            "Local": {
+                "api_url": "http://localhost:11434/chat/completions",
+                "headers": {},
+                "max_429_retries": 1,
+                "backoff_seconds": 0.01,
+                "backoff_factor": 1.0,
+                "max_backoff_seconds": 1.0,
+            }
+        }
+
+        class _Mock429:
+            status_code = 429
+            text = "rate limited"
+            headers = {}
+
+            def close(self):
+                pass
+
+        class _Mock200:
+            status_code = 200
+
+            def iter_lines(self, decode_unicode=False):
+                yield "data: " + json.dumps({
+                    "choices": [{"delta": {"content": "ok"}, "finish_reason": "stop"}],
+                })
+                yield "data: [DONE]"
+
+            def iter_content(self, chunk_size=8192):
+                yield json.dumps({
+                    "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
+                }).encode("utf-8")
+
+            def close(self):
+                pass
+
+        start_calls = []
+        original_start = state.start_plugin_run
+
+        def tracking_start(model_name, pid):
+            start_calls.append((time.monotonic(), model_name, pid))
+            return original_start(model_name, pid)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with mock.patch.object(state, "start_plugin_run", side_effect=tracking_start):
+                with mock.patch("requests.post", side_effect=[_Mock429(), _Mock200()]):
+                    self.module.run_model(
+                        "dummy-model", "Local", state, plugins, source_config,
+                        timeout=5, token_levels=[100], output_dir=tmpdir,
+                        session_seed=0, global_cfg={},
+                    )
+
+        self.assertEqual(len(start_calls), 2,
+                         "start_plugin_run should fire once at dispatch and once on retry")
+        self.assertGreater(start_calls[1][0], start_calls[0][0])
+        # The state snapshot should reflect the final (retry) start timestamp.
+        snap = state.snapshot()["dummy-model"]
+        self.assertGreaterEqual(snap["rate-limiter_start_ts"], start_calls[0][0])
+
+
+class TestStreamPartialTextKept(unittest.TestCase):
+    """Regression tests for the silent-overwrite bug in
+    ``benchmark_core._run_plugin_task`` where streaming could accumulate
+    tens of thousands of characters and yet ``_output_tokens`` was
+    still recorded as ``1``.
+
+    Root cause: when ``stream_request`` returned a non-empty
+    ``serr`` (eg ``"Total timeout (...) exceeded"`` from
+    ``_check_total_timeout``) AND the request genuinely had streamed
+    many K chars but not finished, the streaming-fallback branch
+    UNCONDITIONALLY called ``nonstream_request`` and reassigned
+    ``text`` to whatever it returned. A non-stream retry from a
+    "thinking" model that already streamed 40 K chars will likely
+    come back empty (the model has nothing buffered to repeat),
+    and ``count_tokens("")`` floors to ``max(1, 0 / 4) = 1`` -- so
+    a ~40 K-char observation collapsed to a 1-token placeholder
+    record. Operator's kimi-dev observation: streamed 10 K tokens
+    over 2 000 s then timed out, but the persisted result showed
+    ``_output_tokens = 1``.
+
+    Fix: only fall through to the non-streaming retry when
+    streaming produced nothing useful (no ``first_tok`` AND empty
+    ``text``). If either the first chunk landed or any characters
+    accumulated, KEEP the streamed text and let
+    ``count_tokens(text)`` measure the real partial stream.
+    ``stream_ok`` flips to ``False`` so downstream visualisations
+    can flag the partial stream explicitly.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.module = load_benchmark_module()
+        cls.plugins = discover_plugins()
+
+    def _streaming_plugin(self):
+        candidates = [p for p in self.plugins if p.id == "rate-limiter"]
+        self.assertEqual(
+            len(candidates), 1,
+            "rate-limiter must be discovered as a streaming-capable plugin",
+        )
+        return candidates[0]
+
+    def test_stream_timeout_partial_text_keeps_streamed_output_tokens(self):
+        """``count_tokens`` of a 40 K-char streamed timeout on rate-limiter
+        must record 10 000 tokens, NOT the pre-fix ``1``-token floor.
+        """
+        plugin = self._streaming_plugin()
+        source_config = {
+            "Local": {
+                "api_url": "http://localhost:11434/chat/completions",
+                "headers": {},
+            }
+        }
+        state = self.module.BenchmarkState({"dummy-model": "Local"}, [plugin.id])
+
+        streamed_text = "a" * 40000  # 40 K chars -> 10 K tokens by len/4.
+
+        with mock.patch.object(
+            self.module, "stream_request",
+            return_value=(
+                streamed_text, 1.0, 2000.0,
+                "Total timeout (2000s) exceeded",
+                "length", {},
+            ),
+        ):
+            with mock.patch.object(
+                self.module, "nonstream_request",
+            ) as mock_nonstream:
+                result, err = self.module._run_plugin_task(
+                    "dummy-model", "dummy-model", "Local", plugin, source_config,
+                    timeout=1, token_levels=[100], session_seed=12345,
+                    log_file=None, global_cfg={}, state=state,
+                )
+
+        self.assertIsNone(err)
+        # The streamed text was kept -- output_tokens reflects the real
+        # streamed length, NOT ``count_tokens("")`` = 1. State-side
+        # mirroring happens in ``_run_plugins`` (post-future write);
+        # ``_run_plugin_task``'s contract is the result dict + per-SSE
+        # state counters (which we don't drive here because the mock
+        # doesn't fire ``on_chunk``).
+        self.assertEqual(result["rate-limiter_output_tokens"], 10000)
+        self.assertFalse(result["rate-limiter_stream_ok"])
+        # Truncation semantics are NOT the bug here -- the kimi-dev
+        # operator observation is about output_tokens collapsing to 1,
+        # not about the truncation flag. The conditional ``sfr ->
+        # truncated`` path is exercised by the legacy ``test_run_plugin_task_streaming_callback_updates_state``.
+        # The non-stream retry MUST NOT have been called -- if it had,
+        # the pre-fix path would have clobbered ``text`` with the
+        # (empty) nonstream response and recorded 1 token.
+        mock_nonstream.assert_not_called()
+
+    def test_stream_failure_with_no_content_falls_back_to_nonstream(self):
+        """When streaming failed at connect time (no first chunk, no
+        text), the non-stream fallback IS still called -- the
+        pre-fix path remains for genuinely-empty streaming failures.
+        """
+        plugin = self._streaming_plugin()
+        source_config = {
+            "Local": {
+                "api_url": "http://localhost:11434/chat/completions",
+                "headers": {},
+            }
+        }
+        state = self.module.BenchmarkState({"dummy-model": "Local"}, [plugin.id])
+
+        # 3 000 chars from a successful nonstream retry -> 750 tokens.
+        nonstream_text = "x" * 3000
+        with mock.patch.object(
+            self.module, "stream_request",
+            return_value=("", None, 1.0, "connection refused", None, {}),
+        ):
+            with mock.patch.object(
+                self.module, "nonstream_request",
+                return_value=(nonstream_text, {}, 0.1, None, "stop"),
+            ) as mock_nonstream:
+                result, err = self.module._run_plugin_task(
+                    "dummy-model", "dummy-model", "Local", plugin, source_config,
+                    timeout=1, token_levels=[100], session_seed=12345,
+                    log_file=None, global_cfg={}, state=state,
+                )
+
+        self.assertIsNone(err)
+        self.assertEqual(result["rate-limiter_output_tokens"], 750)
+        self.assertFalse(result["rate-limiter_stream_ok"])
+        mock_nonstream.assert_called_once()
 
 
 if __name__ == "__main__":

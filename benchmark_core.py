@@ -369,6 +369,15 @@ def _run_plugin_task(target_name, api_model, source, plugin, source_config, time
             return None, "Cancelled"
         attempt_start = time.time()
 
+        # MUST be defined above both branches -- Python scope analysis
+        # binds ``on_retry`` as a local for the entire function because of
+        # this ``def``, so the ``else`` branch below would otherwise raise
+        # ``UnboundLocalError`` evaluating its ``on_retry=on_retry`` kwarg
+        # for every supports_streaming=False plugin. Reset per-plugin
+        # timing on every 429 retry to keep the elapsed display honest.
+        def on_retry():
+            state.start_plugin_run(target_name, pid)
+
         if plugin.supports_streaming:
             # Per-SSE-delta observer so the live TUI can show a
             # streaming tok ticker ([streaming - N tok] cell +
@@ -409,22 +418,46 @@ def _run_plugin_task(target_name, api_model, source, plugin, source_config, time
                 session_seed=session_seed, temperature=temperature,
                 drop_params=drop_params, stop_event=stop_event,
                 system_prompt=system_prompt,
-                on_chunk=on_chunk)
+                on_chunk=on_chunk, pid=pid, on_retry=on_retry)
 
             if serr or first_tok is None:
-                text, nsusage, ns_time, nserr, nsfr = nonstream_request(
-                    source_config, timeout, api_model, source, prompt, max_tok,
-                    log_path=log_file,
-                    log_label=f"{plugin.name} (Non-Streaming, attempt {attempt + 1})",
-                    session_seed=session_seed, temperature=temperature,
-                    drop_params=drop_params, stop_event=stop_event,
-                    system_prompt=system_prompt)
-                if nserr:
-                    return None, f"Stream: {serr or 'no tokens'}. Nostream: {nserr}"
-                stream_ok = False
-                response_time = round(ns_time, 1)
-                gen_time = ns_time
-                truncated = (nsfr == "length")
+                # Streaming attempt failed. If the stream actually opened
+                # (``first_tok`` set) OR accumulated ANY characters, KEEP
+                # the streamed text instead of clobbering it with a
+                # non-streaming retry. A non-stream retry from a
+                # "thinking" model that already streamed 40 K chars will
+                # likely return empty, and ``count_tokens("")`` floors to
+                # 1 -- which collapses a real ~40 K-char observation
+                # into a 1-token placeholder record (operator reported
+                # kimi-dev streaming 10 K tokens over 2 000 s then
+                # "giving up" with ``_output_tokens = 1``). Only fall
+                # through to non-streaming when streaming produced
+                # nothing useful; that branch keeps the original
+                # behaviour of trying once more to get a response when
+                # streaming never opened at all.
+                if first_tok is not None or len(text) > 0:
+                    # Trust the streamed ``stream_end`` and ``first_tok``
+                    # for timing. ``stream_ok`` flips to False because
+                    # the request didn't complete normally; ``truncated``
+                    # reports ``sfr == "length"``.
+                    response_time = round(stream_end - attempt_start, 1)
+                    gen_time = stream_end - first_tok if first_tok else 0
+                    truncated = (sfr == "length")
+                    stream_ok = False
+                else:
+                    text, nsusage, ns_time, nserr, nsfr = nonstream_request(
+                        source_config, timeout, api_model, source, prompt, max_tok,
+                        log_path=log_file,
+                        log_label=f"{plugin.name} (Non-Streaming, attempt {attempt + 1})",
+                        session_seed=session_seed, temperature=temperature,
+                        drop_params=drop_params, stop_event=stop_event,
+                        system_prompt=system_prompt, pid=pid, on_retry=on_retry)
+                    if nserr:
+                        return None, f"Stream: {serr or 'no tokens'}. Nostream: {nserr}"
+                    stream_ok = False
+                    response_time = round(ns_time, 1)
+                    gen_time = ns_time
+                    truncated = (nsfr == "length")
             else:
                 stream_ok = True
                 response_time = round(stream_end - attempt_start, 1)
@@ -437,7 +470,8 @@ def _run_plugin_task(target_name, api_model, source, plugin, source_config, time
                 log_label=f"{plugin.name} (attempt {attempt + 1})",
                 session_seed=session_seed, temperature=temperature,
                 drop_params=drop_params, stop_event=stop_event,
-                system_prompt=system_prompt)
+                system_prompt=system_prompt, pid=pid, on_retry=on_retry)
+
             if gen_err:
                 return None, gen_err
             stream_ok = False
@@ -515,6 +549,16 @@ def _run_plugin_task(target_name, api_model, source, plugin, source_config, time
         if score_error is not None:
             meta["error"] = score_error
             meta["traceback"] = score_traceback_text
+        # ``stream_error`` is the streaming-layer failure reason when
+        # the partial-stream branch (kept-streamed-text on ``serr``)
+        # fired. Operators inspecting a meta.json whose ``stream_ok``
+        # is False / ``output_tokens`` looks low / ``truncated`` is
+        # False get an explicit ``timeout``/``Read timed out``/etc.
+        # reason here, rather than having to grep the per-request log.
+        # Recorded for streaming-capable plugins only (non-streaming
+        # plugins cannot produce ``serr``).
+        if plugin.supports_streaming and serr is not None:
+            meta["stream_error"] = serr
         try:
             with open(meta_path, "w", encoding="utf-8") as f:
                 json.dump(meta, f, indent=2, default=str)
