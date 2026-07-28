@@ -510,41 +510,45 @@ class TestPluginCellBlock(unittest.TestCase):
     def test_in_flight_streaming_plugin_thinking_only_shows_think_tok(self):
         """Thinking-capable plugin in flight with first chunk seen
         AND reasoning_content accumulated but ZERO content bytes:
-        cells show ``[streaming - N think-tok]`` so the operator
-        can distinguish thinking-phase data from "no first chunk
-        yet" / pure content-streaming. The ``think-tok`` suffix
-        labels the counter as reasoning tokens (not final-answer
-        tokens) so a deepseek-r1 / Qwen3 / o1-style stream that
-        has produced 2 000 chars of reasoning_content but no
-        primary content yet shows a real ticking widget.
-        Once primary content starts flowing (bytes_received > 0],
-        the content counter form ``[streaming - N tok]`` takes
-        over -- see ``test_thinking_then_content_handoff_to_content_counter``.
+        cells show the compact ``[thinking - N tok]`` form so the
+        operator can distinguish thinking-phase data from "no first
+        chunk yet" / pure content-streaming. The ``thinking`` keyword
+        (rather than the verbose ``[streaming - N think-tok]``
+        suffix) was chosen so the operator sees the keyword as the
+        disambiguator, allowing a seamless hand-off to the
+        content-counter ``[streaming - N tok]`` once primary content
+        starts flowing -- see
+        ``test_thinking_then_content_handoff_to_content_counter``.
+        The previous ``assertNotIn("tok]", ...)`` guard no longer
+        applies (the new form's suffix is literally ``tok]``); we
+        now strip the new bracket and assert that no
+        ``[streaming -`` content-counter bracket remains.
         """
         s = {
             "running_pids": ["rate-limiter"],
             "rate-limiter_first_chunk_seen": True,
             "rate-limiter_bytes_received": 0,                       # no content yet
-            "rate-limiter_thinking_bytes_received": 200,            # 50 think-tok
+            "rate-limiter_thinking_bytes_received": 200,            # 50 tok
         }
         block = ai_benchmark._plugin_cell_block(
             "rate-limiter", s, self.p_streaming, None)
-        self.assertIn("[streaming - 50 think-tok]", block,
+        self.assertIn("[thinking - 50 tok]", block,
                       "thinking-only cell should show "
-                      "[streaming - N think-tok] with reasoning chars // 4")
-        # The content counter form must NOT appear yet (bytes is 0
-        # by definition in this branch, so the 200 reasoning chars
-        # do not get counted as content).
-        replaced = block.replace("think-tok", "")
-        self.assertNotIn("tok]", replaced,
-                         "thinking-only cell should NOT include a "
+                      "[thinking - N tok] with reasoning chars // 4")
+        # Strip the expected bracket; what remains MUST NOT show a
+        # *content* counter (``[streaming -``) because
+        # ``bytes_received = 0`` by definition in this branch (the
+        # 200 reasoning chars do not get counted as content).
+        leftover = block.replace("[thinking - 50 tok]", "")
+        self.assertNotIn("[streaming -", leftover,
+                         "thinking-only cell MUST NOT include a "
                          "content counter (no content bytes yet)")
-        # And we still want the bare [streaming] form gone so the
-        # operator sees the ticking widget rather than the no-data
-        # placeholder.
-        self.assertNotIn("[streaming]", block.replace("[streaming - 50 think-tok]", ""),
-                         "thinking-only cell should NOT show bare [streaming] "
-                         "(reasoning bytes have accumulated)")
+        # Bare ``[streaming]`` should also be absent so the
+        # operator sees the ticking widget rather than the
+        # ``no-data`` placeholder.
+        self.assertNotIn("[streaming]", leftover,
+                         "thinking-only cell should NOT show bare "
+                         "[streaming] (reasoning bytes have accumulated)")
 
     def test_thinking_then_content_handoff_to_content_counter(self):
         """Once both thinking and content are accumulating, the
@@ -552,13 +556,16 @@ class TestPluginCellBlock(unittest.TestCase):
         the operator's eye tracks the final-answer token count
         rather than the chain-of-thought length -- exactly as the
         post-completion ``count_tokens(text)`` estimator reports
-        for the final answer.
+        for the final answer. The thinking-phase bracket flips
+        from ``[thinking - N tok]`` to ``[streaming - N tok]``
+        purely on the keyword change so there is no prefix churn
+        in the cell.
         """
         s = {
             "running_pids": ["rate-limiter"],
             "rate-limiter_first_chunk_seen": True,
             "rate-limiter_bytes_received": 64,                       # 16 tok
-            "rate-limiter_thinking_bytes_received": 200,             # 50 think-tok
+            "rate-limiter_thinking_bytes_received": 200,             # 50 tok
         }
         block = ai_benchmark._plugin_cell_block(
             "rate-limiter", s, self.p_streaming, None)
@@ -785,12 +792,16 @@ class TestBuildLiveIndicators(unittest.TestCase):
     def test_thinking_only_live_indicator_with_elapsed(self):
         """Thinking-capable plugin in flight with first chunk seen
         AND ``reasoning_content`` accumulated but ZERO content bytes:
-        the live footer shows ``[<pid>: N think-tok (e s)]`` so the
-        operator can tell data IS arriving on a deepseek-r1 / Qwen3 /
-        o1-style run before primary content starts flowing. Falls
-        through to the content counter form once content bytes arrive,
-        and to ``[<pid>: waiting N s]`` when neither counter is
-        positive. Falls through to ``[<pid>: requested N s]`` for
+        the live footer shows ``[<pid>: thinking N tok (e s)]`` so
+        the operator can tell data IS arriving on a deepseek-r1 /
+        Qwen3 / o1-style run BEFORE primary content starts flowing.
+        The compact ``thinking`` keyword (vs. the verbose
+        ``[<pid>: N think-tok (e s)]``) keeps the bracket short
+        AND uses the keyword as the disambiguator so a seamless
+        hand-off to ``[<pid>: N tok (e s)]`` happens without any
+        prefix churn once primary content starts. Falls through to
+        ``[<pid>: waiting <e s>]`` when neither counter is
+        positive and to ``[<pid>: requested <e s>]`` for
         non-streaming plugins.
         """
         base_ts = 1000.0
@@ -799,12 +810,12 @@ class TestBuildLiveIndicators(unittest.TestCase):
             "running_pids": ["rate-limiter"],
             "rate-limiter_first_tok_ts": base_ts,
             "rate-limiter_bytes_received": 0,                  # no content yet
-            "rate-limiter_thinking_bytes_received": 196,       # 49 think-tok
+            "rate-limiter_thinking_bytes_received": 196,       # 49 tok
             "rate-limiter_start_ts": base_ts,
         }
         plugins = [self._plugin("rate-limiter", streaming=True)]
         out = ai_benchmark._build_live_indicators(s, plugins, now=now)
-        self.assertEqual(out, "[rate-limiter: 49 think-tok (7s)]")
+        self.assertEqual(out, "[rate-limiter: thinking 49 tok (7s)]")
 
     def test_thinking_then_content_live_handoff_to_tok_counter(self):
         """Once both thinking AND content are accumulating, the live
@@ -818,7 +829,7 @@ class TestBuildLiveIndicators(unittest.TestCase):
             "running_pids": ["rate-limiter"],
             "rate-limiter_first_tok_ts": base_ts,
             "rate-limiter_bytes_received": 64,                # 16 tok
-            "rate-limiter_thinking_bytes_received": 196,       # 49 think-tok
+            "rate-limiter_thinking_bytes_received": 196,       # 49 tok
             "rate-limiter_start_ts": base_ts,
         }
         plugins = [self._plugin("rate-limiter", streaming=True)]

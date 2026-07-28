@@ -382,20 +382,22 @@ def _plugin_cell_block(pid, s, p, sleeping_lookup=None):
                 # recorded a first chunk (via ``mark_first_chunk_seen``)
                 # and accumulated ``reasoning_content`` deltas, but
                 # PRIMARY ``content`` is still empty. Render the
-                # parallel ``[streaming - N think-tok]`` form so the
-                # operator can see data IS arriving on a deepseek-r1 /
-                # Qwen3 / o1-style stream rather than confusing it
-                # with "no first chunk yet". The ``think-tok`` token
-                # suffix distinguishes reasoning from final-content
-                # reads (the operator leans on the operator's mental
-                # model: "thinking content is chain-of-thought,
-                # tok counts are NOT final-answer tokens"). chars //
-                # 4 matches the post-completion ``count_tokens``
-                # estimator (and matches the streaming content
-                # counter branch above) so the live number is the
-                # number the post-completion ``<thinking>...</thinking>`
-                # file shows for ``.think.txt`` length / 4.
-                text = f"[streaming - {thinking_bytes // 4} think-tok]"
+                # compact ``[thinking - N tok]`` form so the operator
+                # can see data IS arriving on a deepseek-r1 / Qwen3 /
+                # o1-style stream rather than confusing it with "no
+                # first chunk yet". The ``thinking`` keyword
+                # disambiguates from the post-content ``[streaming -
+                # N tok]`` cell on the same row -- the operator's
+                # eye reads the keyword, not the prefix, so once
+                # primary content starts flowing the cell flips to
+                # the content-counter form (``[streaming - N tok]``)
+                # without any prefix churn. chars // 4 matches the
+                # post-completion ``count_tokens`` estimator (and
+                # matches the streaming content counter branch
+                # above) so the live number is the number the
+                # post-completion ``.think.txt`` file shows for
+                # length / 4.
+                text = f"[thinking - {thinking_bytes // 4} tok]"
             else:
                 # Pre-chunk state (no first chunk yet OR first
                 # chunk seen with bytes still 0, the rare
@@ -599,19 +601,21 @@ def _build_live_indicators(s, active_plugins, *, now=None):
             parts.append(f"[{pid}: {bytes_received // 4} tok ({elapsed}s)]")
         elif plugin.supports_streaming and ft and thinking_bytes:
             # Thinking-phase-only live indicator. Parallel to the
-            # ``[streaming - N think-tok]`` cell form: a thinking-capable
+            # ``[thinking - N tok]`` cell form: a thinking-capable
             # model that has produced reasoning_content but not yet
-            # primary content surfaces as ``[<pid>: N think-tok (e s)]``
+            # primary content surfaces as ``[<pid>: thinking N tok (e s)]``
             # so the operator can tell data IS arriving on a
-            # deepseek-r1 / Qwen3 / o1-style stream. The
-            # ``think-tok`` token suffix distinguishes reasoning from
-            # final-content reads (operators lean on the mental model:
-            # "thinking is chain-of-thought, not final-answer tokens").
-            # Falls through to ``[waiting <e s]`` once both bytes
-            # counters and the first-chunk flag are zero (the
-            # "actually waiting for the first byte" transient) or to
-            # ``[requested <e s]`` for non-streaming plugins.
-            parts.append(f"[{pid}: {thinking_bytes // 4} think-tok ({elapsed}s)]")
+            # deepseek-r1 / Qwen3 / o1-style stream. The leading
+            # ``thinking`` keyword disambiguates from the post-content
+            # ``[<pid>: N tok (e s)]`` entry on the same line, so
+            # operators can scan the keyword first and the bracket
+            # flips cleanly to the content-counter form once primary
+            # content starts flowing. Falls through to
+            # ``[<pid>: waiting <e s>]`` once both byte counters and
+            # the first-chunk flag are zero (the "actually waiting
+            # for the first byte" transient) or to
+            # ``[<pid>: requested <e s>]`` for non-streaming plugins.
+            parts.append(f"[{pid}: thinking {thinking_bytes // 4} tok ({elapsed}s)]")
         elif plugin.supports_streaming:
             parts.append(f"[{pid}: waiting {elapsed}s]")
         else:
