@@ -410,6 +410,25 @@ def _run_plugin_task(target_name, api_model, source, plugin, source_config, time
             def on_chunk(delta):
                 state.mark_first_chunk_seen(target_name, pid, ts=time.time())
                 state.add_bytes_received(target_name, pid, len(delta))
+            # Parallel reasoning/thinking callback for thinking-capable
+            # models. Fires once per parsed SSE ``reasoning_content``
+            # delta so the live TUI can show a tokenised ticker before
+            # primary ``content`` starts flowing -- the thinking phase
+            # of a deepseek-r1 / Qwen3 / o1-style stream is otherwise
+            # indistinguishable from "no first token yet" because
+            # ``content`` is still empty. The closure shares the same
+            # ``mark_first_chunk_seen`` gate as ``on_chunk`` so the
+            # ``first chunk seen`` flag fires on the first reasoning
+            # delta (operators do not need to distinguish "first
+            # thinking chunk" from "first content chunk" as separate
+            # gates -- they only need to know the response has begun).
+            # ``add_thinking_bytes_received`` runs the parallel
+            # wiring self-check the same way ``add_bytes_received``
+            # does, so a wiring bug fails fast at first delta.
+
+            def on_think_chunk(think_delta):
+                state.mark_first_chunk_seen(target_name, pid, ts=time.time())
+                state.add_thinking_bytes_received(target_name, pid, len(think_delta))
 
             text, think_text, first_tok, stream_end, serr, sfr, _usage = stream_request(
                 source_config, timeout, api_model, source, prompt, max_tok,
@@ -418,7 +437,7 @@ def _run_plugin_task(target_name, api_model, source, plugin, source_config, time
                 session_seed=session_seed, temperature=temperature,
                 drop_params=drop_params, stop_event=stop_event,
                 system_prompt=system_prompt,
-                on_chunk=on_chunk, pid=pid, on_retry=on_retry)
+                on_chunk=on_chunk, on_think_chunk=on_think_chunk, pid=pid, on_retry=on_retry)
 
             if serr or first_tok is None:
                 # Streaming attempt failed. If the stream actually opened

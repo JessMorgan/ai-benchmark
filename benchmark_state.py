@@ -90,6 +90,21 @@ class BenchmarkState:
                 # timestamp; reset in ``start_plugin_run`` to drop
                 # carry-over from a previous dispatch.
                 self._model_info[name][f"{pid}_first_tok_ts"] = 0
+                # Parallel reasoning/thinking byte counter incremented
+                # via ``add_thinking_bytes_received`` per SSE
+                # ``reasoning_content`` delta. Distinct from
+                # ``{pid}_bytes_received`` (which counts PRIMARY
+                # ``content`` only) so the live TUI can show a real
+                # ticker on the thinking-only phase of a deepseek-r1 /
+                # Qwen3 / o1-style stream BEFORE the response's main
+                # content begins flowing. The cell renderer reads this
+                # counter to switch from ``[streaming - Ns]`` to
+                # ``[streaming - N think-tok]`` once reasoning deltas
+                # have accumulated but no content chunk has yet landed.
+                # Default 0 so the renderer can read it without a
+                # ``KeyError``; reset in ``start_plugin_run`` to drop
+                # carry-over from a previous dispatch.
+                self._model_info[name][f"{pid}_thinking_bytes_received"] = 0
 
     def update(self, model_name, **kwargs):
         with self._lock:
@@ -125,6 +140,14 @@ class BenchmarkState:
             info[f"{pid}_bytes_received"] = 0
             info[f"{pid}_first_chunk_seen"] = False
             info[f"{pid}_first_tok_ts"] = 0
+            # Reset the parallel thinking/reasoning byte counter so a
+            # retry dispatch doesn't carry forward the previous
+            # attempt's accumulated ``reasoning_content`` length.
+            # Without this reset, a 429 retry on a thinking model would
+            # resume the live TUI's ``[streaming - N think-tok]``
+            # ticker at the N from the failed dispatch when the retry
+            # hadn't yet produced any thinking content.
+            info[f"{pid}_thinking_bytes_received"] = 0
             # Per-plugin dispatch timestamp so the live TUI can show
             # wall-clock seconds since *this* plugin's request started,
             # rather than the model-level timer which grows for the
@@ -179,6 +202,49 @@ class BenchmarkState:
                     f"see benchmark_core._run_plugin_task's on_chunk closure."
                 )
             key = f"{pid}_bytes_received"
+            info[key] = (info.get(key) or 0) + n_bytes
+
+    def add_thinking_bytes_received(self, model_name, pid, n_bytes):
+        """Atomically accumulate streaming reasoning/thinking bytes for
+        a plugin task.
+
+        Parallel to ``add_bytes_received`` but specifically for the
+        ``reasoning_content`` chunks emitted by thinking-capable
+        models BEFORE primary ``content`` starts flowing. Called once
+        per parsed SSE ``reasoning_content`` delta by ``stream_request``
+        via the ``on_think_chunk`` closure installed in
+        ``_run_plugin_task``. The parallel counter drives the live
+        TUI's ``[streaming - N think-tok]`` cell form and the live
+        footer's ``[<pid>: N think-tok (e s)]`` indicator so the
+        operator gets a real ticking widget on the thinking-only
+        phase (a deepseek-r1 / Qwen3 / o1-style stream that has
+        produced 2 000 chars of ``reasoning_content`` but zero chars
+        of ``content`` shows a tokenised readout, not a seconds-only
+        placeholder).
+
+        Shares the same ``mark_first_chunk_seen`` wiring check as
+        ``add_bytes_received`` -- the words "the request has begun"
+        apply equally to the first ``reasoning_content`` delta as to
+        the first ``content`` delta, so we reuse the same flag (set
+        in the same atomic write as the bytes increment). Operators
+        do not need to distinguish "first thinking delta arrived" from
+        "first content delta arrived" as separate gates; they only
+        need to know the response has begun.
+        Falsy ``n_bytes`` and unknown model/pid behave identically to
+        ``add_bytes_received``.
+        """
+        if not n_bytes:
+            return
+        with self._lock:
+            info = self._model_info[model_name]
+            if not info.get(f"{pid}_first_chunk_seen"):
+                raise RuntimeError(
+                    f"add_thinking_bytes_received({model_name!r}, {pid!r}, ...) called "
+                    f"before mark_first_chunk_seen -- SSE parse layer forgot "
+                    f"to fire the first-chunk marker. This is a wiring bug; "
+                    f"see benchmark_core._run_plugin_task's on_think_chunk closure."
+                )
+            key = f"{pid}_thinking_bytes_received"
             info[key] = (info.get(key) or 0) + n_bytes
 
     def mark_first_chunk_seen(self, model_name, pid, ts=None):

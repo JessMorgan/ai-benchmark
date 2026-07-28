@@ -475,7 +475,7 @@ def _parse_sse_line(line, first_tok, text, think_text, finish_reason, usage):
 def stream_request(source_config, timeout, model, source, prompt, max_tokens=2048,
                    log_path=None, log_label=None, session_seed=0, temperature=None,
                    drop_params=None, stop_event=None, system_prompt=None,
-                   on_chunk=None, pid=None, on_retry=None):
+                   on_chunk=None, on_think_chunk=None, pid=None, on_retry=None):
     """Make a streaming chat-completion request and return parsed results.
 
     Returns a 7-tuple ``(text, think_text, first_tok, stream_end, error, finish_reason, usage)``.
@@ -504,6 +504,7 @@ def stream_request(source_config, timeout, model, source, prompt, max_tokens=204
         if err:
             return text, think_text, first_tok, time.time(), err, finish_reason, usage
         prev_text_len = 0
+        prev_think_len = 0
         for line in resp.iter_lines(decode_unicode=True):
             if stop_event and stop_event.is_set():
                 error = "Cancelled"
@@ -514,7 +515,7 @@ def stream_request(source_config, timeout, model, source, prompt, max_tokens=204
                 line, first_tok, text, think_text, finish_reason, usage)
             if done:
                 break
-            # Notify the caller of the delta accumulated in this
+            # Notify the caller of the content delta accumulated in this
             # iteration. We compute the delta from ``text`` length so a
             # single SSE data event that pumps multiple ``choices`` deltas
             # still produces one observer call with the joined delta,
@@ -525,6 +526,26 @@ def stream_request(source_config, timeout, model, source, prompt, max_tokens=204
                 prev_text_len = len(text)
                 try:
                     on_chunk(delta)
+                except Exception:
+                    # A buggy observer must not abort the stream read.
+                    pass
+            # Parallel reasoning / thinking callback. The thinking
+            # counter increments independently of the content counter so
+            # a deepseek-r1 / Qwen3 / o1-style stream that emits 2 000
+            # chars of ``reasoning_content`` BEFORE ``content`` shows a
+            # real ticking ``[streaming - N think-tok]`` rather than
+            # the seconds-only ``[streaming - Ns]`` placeholder
+            # during the entire thinking phase. The ``prev_think_len``
+            # tracking parallels ``prev_text_len``; a non-thinking model
+            # never produces a non-empty ``think_delta`` so the
+            # branch is a no-op for them. Same exception-swallowing
+            # contract as ``on_chunk`` so a buggy observer cannot
+            # abort the stream read.
+            if on_think_chunk is not None and len(think_text) > prev_think_len:
+                think_delta = think_text[prev_think_len:]
+                prev_think_len = len(think_text)
+                try:
+                    on_think_chunk(think_delta)
                 except Exception:
                     # A buggy observer must not abort the stream read.
                     pass

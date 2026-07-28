@@ -366,9 +366,10 @@ def _plugin_cell_block(pid, s, p, sleeping_lookup=None):
         if p.supports_streaming:
             first_chunk_seen = bool(s.get(f"{pid}_first_chunk_seen", False))
             bytes_received = s.get(f"{pid}_bytes_received", 0) or 0
+            thinking_bytes = s.get(f"{pid}_thinking_bytes_received", 0) or 0
             if first_chunk_seen and bytes_received:
-                # Real counter: first chunk is in AND bytes have
-                # accumulated. chars // 4 matches the
+                # Real counter: first chunk is in AND content bytes
+                # have accumulated. chars // 4 matches the
                 # ``count_tokens`` estimator in ``benchmark_core``;
                 # this is NOT an estimate -- the operator sees the
                 # exact tok count the post-completion calculation
@@ -376,6 +377,25 @@ def _plugin_cell_block(pid, s, p, sleeping_lookup=None):
                 # edge cases). No ``~`` marker is needed because
                 # this byte-derived counter is genuinely real.
                 text = f"[streaming - {bytes_received // 4} tok]"
+            elif first_chunk_seen and thinking_bytes:
+                # Thinking-phase-only cell: the SSE parse layer has
+                # recorded a first chunk (via ``mark_first_chunk_seen``)
+                # and accumulated ``reasoning_content`` deltas, but
+                # PRIMARY ``content`` is still empty. Render the
+                # parallel ``[streaming - N think-tok]`` form so the
+                # operator can see data IS arriving on a deepseek-r1 /
+                # Qwen3 / o1-style stream rather than confusing it
+                # with "no first chunk yet". The ``think-tok`` token
+                # suffix distinguishes reasoning from final-content
+                # reads (the operator leans on the operator's mental
+                # model: "thinking content is chain-of-thought,
+                # tok counts are NOT final-answer tokens"). chars //
+                # 4 matches the post-completion ``count_tokens``
+                # estimator (and matches the streaming content
+                # counter branch above) so the live number is the
+                # number the post-completion ``<thinking>...</thinking>`
+                # file shows for ``.think.txt`` length / 4.
+                text = f"[streaming - {thinking_bytes // 4} think-tok]"
             else:
                 # Pre-chunk state (no first chunk yet OR first
                 # chunk seen with bytes still 0, the rare
@@ -574,8 +594,24 @@ def _build_live_indicators(s, active_plugins, *, now=None):
         elapsed = int(now - start_ts) if start_ts else 0
         ft = s.get(f"{pid}_first_tok_ts", 0) or 0
         bytes_received = s.get(f"{pid}_bytes_received", 0) or 0
+        thinking_bytes = s.get(f"{pid}_thinking_bytes_received", 0) or 0
         if plugin.supports_streaming and ft and bytes_received:
             parts.append(f"[{pid}: {bytes_received // 4} tok ({elapsed}s)]")
+        elif plugin.supports_streaming and ft and thinking_bytes:
+            # Thinking-phase-only live indicator. Parallel to the
+            # ``[streaming - N think-tok]`` cell form: a thinking-capable
+            # model that has produced reasoning_content but not yet
+            # primary content surfaces as ``[<pid>: N think-tok (e s)]``
+            # so the operator can tell data IS arriving on a
+            # deepseek-r1 / Qwen3 / o1-style stream. The
+            # ``think-tok`` token suffix distinguishes reasoning from
+            # final-content reads (operators lean on the mental model:
+            # "thinking is chain-of-thought, not final-answer tokens").
+            # Falls through to ``[waiting <e s]`` once both bytes
+            # counters and the first-chunk flag are zero (the
+            # "actually waiting for the first byte" transient) or to
+            # ``[requested <e s]`` for non-streaming plugins.
+            parts.append(f"[{pid}: {thinking_bytes // 4} think-tok ({elapsed}s)]")
         elif plugin.supports_streaming:
             parts.append(f"[{pid}: waiting {elapsed}s]")
         else:

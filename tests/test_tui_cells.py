@@ -507,6 +507,91 @@ class TestPluginCellBlock(unittest.TestCase):
                          "below-threshold non-streaming should not carry an elapsed suffix")
 
 
+    def test_in_flight_streaming_plugin_thinking_only_shows_think_tok(self):
+        """Thinking-capable plugin in flight with first chunk seen
+        AND reasoning_content accumulated but ZERO content bytes:
+        cells show ``[streaming - N think-tok]`` so the operator
+        can distinguish thinking-phase data from "no first chunk
+        yet" / pure content-streaming. The ``think-tok`` suffix
+        labels the counter as reasoning tokens (not final-answer
+        tokens) so a deepseek-r1 / Qwen3 / o1-style stream that
+        has produced 2 000 chars of reasoning_content but no
+        primary content yet shows a real ticking widget.
+        Once primary content starts flowing (bytes_received > 0],
+        the content counter form ``[streaming - N tok]`` takes
+        over -- see ``test_thinking_then_content_handoff_to_content_counter``.
+        """
+        s = {
+            "running_pids": ["rate-limiter"],
+            "rate-limiter_first_chunk_seen": True,
+            "rate-limiter_bytes_received": 0,                       # no content yet
+            "rate-limiter_thinking_bytes_received": 200,            # 50 think-tok
+        }
+        block = ai_benchmark._plugin_cell_block(
+            "rate-limiter", s, self.p_streaming, None)
+        self.assertIn("[streaming - 50 think-tok]", block,
+                      "thinking-only cell should show "
+                      "[streaming - N think-tok] with reasoning chars // 4")
+        # The content counter form must NOT appear yet (bytes is 0
+        # by definition in this branch, so the 200 reasoning chars
+        # do not get counted as content).
+        replaced = block.replace("think-tok", "")
+        self.assertNotIn("tok]", replaced,
+                         "thinking-only cell should NOT include a "
+                         "content counter (no content bytes yet)")
+        # And we still want the bare [streaming] form gone so the
+        # operator sees the ticking widget rather than the no-data
+        # placeholder.
+        self.assertNotIn("[streaming]", block.replace("[streaming - 50 think-tok]", ""),
+                         "thinking-only cell should NOT show bare [streaming] "
+                         "(reasoning bytes have accumulated)")
+
+    def test_thinking_then_content_handoff_to_content_counter(self):
+        """Once both thinking and content are accumulating, the
+        content counter takes over (``[streaming - N tok]``) so
+        the operator's eye tracks the final-answer token count
+        rather than the chain-of-thought length -- exactly as the
+        post-completion ``count_tokens(text)`` estimator reports
+        for the final answer.
+        """
+        s = {
+            "running_pids": ["rate-limiter"],
+            "rate-limiter_first_chunk_seen": True,
+            "rate-limiter_bytes_received": 64,                       # 16 tok
+            "rate-limiter_thinking_bytes_received": 200,             # 50 think-tok
+        }
+        block = ai_benchmark._plugin_cell_block(
+            "rate-limiter", s, self.p_streaming, None)
+        self.assertIn("[streaming - 16 tok]", block,
+                      "content present -> cell hands off to [streaming - N tok]")
+        # The thinking-only counter must NOT appear when content has
+        # also started (otherwise the operator would see TWO ticking
+        # widgets and not know which one to read).
+        self.assertNotIn("think-tok]", block,
+                         "once content arrives the cell shows ONLY "
+                         "the content counter")
+
+    def test_in_flight_streaming_plugin_no_first_chunk_no_thinking_keeps_bare(self):
+        """If ``mark_first_chunk_seen`` is False AND ``thinking_bytes``
+        is 0 (early in the request -- no reasoning delta yet either),
+        keep the bare ``[streaming]`` form. The thinking-only
+        branch fires only AFTER at least one delta has landed.
+        """
+        s = {
+            "running_pids": ["rate-limiter"],
+            "rate-limiter_first_chunk_seen": False,
+            "rate-limiter_bytes_received": 0,
+            "rate-limiter_thinking_bytes_received": 0,
+        }
+        block = ai_benchmark._plugin_cell_block(
+            "rate-limiter", s, self.p_streaming, None)
+        self.assertIn("[streaming]", block)
+        # No ``think-tok`` count when no delta has landed yet
+        # (the thinking counter is structurally meaningless at
+        # ``first_chunk_seen=False``).
+        self.assertNotIn("think-tok", block)
+
+
 class TestBuildLiveIndicators(unittest.TestCase):
     """Tests for ``_build_live_indicators`` in ai-benchmark.py.
 
@@ -696,6 +781,67 @@ class TestBuildLiveIndicators(unittest.TestCase):
         ]
         out = ai_benchmark._build_live_indicators(s, plugins, now=now)
         self.assertEqual(out, "[rate-limiter: 16 tok (2s)] [wireframes: waiting 2s]")
+
+    def test_thinking_only_live_indicator_with_elapsed(self):
+        """Thinking-capable plugin in flight with first chunk seen
+        AND ``reasoning_content`` accumulated but ZERO content bytes:
+        the live footer shows ``[<pid>: N think-tok (e s)]`` so the
+        operator can tell data IS arriving on a deepseek-r1 / Qwen3 /
+        o1-style run before primary content starts flowing. Falls
+        through to the content counter form once content bytes arrive,
+        and to ``[<pid>: waiting N s]`` when neither counter is
+        positive. Falls through to ``[<pid>: requested N s]`` for
+        non-streaming plugins.
+        """
+        base_ts = 1000.0
+        now = base_ts + 7.0
+        s = {
+            "running_pids": ["rate-limiter"],
+            "rate-limiter_first_tok_ts": base_ts,
+            "rate-limiter_bytes_received": 0,                  # no content yet
+            "rate-limiter_thinking_bytes_received": 196,       # 49 think-tok
+            "rate-limiter_start_ts": base_ts,
+        }
+        plugins = [self._plugin("rate-limiter", streaming=True)]
+        out = ai_benchmark._build_live_indicators(s, plugins, now=now)
+        self.assertEqual(out, "[rate-limiter: 49 think-tok (7s)]")
+
+    def test_thinking_then_content_live_handoff_to_tok_counter(self):
+        """Once both thinking AND content are accumulating, the live
+        footer hands off to the content counter form (mirrors the
+        cell-renderer handoff in
+        ``test_thinking_then_content_handoff_to_content_counter``).
+        """
+        base_ts = 1000.0
+        now = base_ts + 5.0
+        s = {
+            "running_pids": ["rate-limiter"],
+            "rate-limiter_first_tok_ts": base_ts,
+            "rate-limiter_bytes_received": 64,                # 16 tok
+            "rate-limiter_thinking_bytes_received": 196,       # 49 think-tok
+            "rate-limiter_start_ts": base_ts,
+        }
+        plugins = [self._plugin("rate-limiter", streaming=True)]
+        out = ai_benchmark._build_live_indicators(s, plugins, now=now)
+        self.assertEqual(out, "[rate-limiter: 16 tok (5s)]")
+
+    def test_no_first_chunk_no_thinking_falls_back_to_waiting(self):
+        """Sanity check: if no first chunk has landed AND thinking
+        bytes is 0 (a deepseek-r1 run BEFORE the first reasoning
+        delta has arrived), the live footer still shows the legacy
+        ``[<pid>: waiting N s]`` form -- we do NOT fake a
+        ``think-tok`` count from epoch 0.
+        """
+        base_ts = 1000.0
+        now = base_ts + 4.0
+        s = {
+            "running_pids": ["rate-limiter"],
+            "rate-limiter_start_ts": base_ts,
+        }
+        plugins = [self._plugin("rate-limiter", streaming=True)]
+        out = ai_benchmark._build_live_indicators(s, plugins, now=now)
+        self.assertEqual(out, "[rate-limiter: waiting 4s]")
+
 
 if __name__ == "__main__":
     unittest.main()

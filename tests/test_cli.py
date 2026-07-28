@@ -310,6 +310,68 @@ class TestSaveResponses(unittest.TestCase):
             self.assertIsInstance(meta["rubric"], list)
             self.assertTrue(all("name" in item and "max" in item and "earned" in item and "missed" in item for item in meta["rubric"]))
 
+    def test_save_responses_with_thinking_writes_three_files(self):
+        """When the model returns thinking content, all three response-file
+        variants are written:
+
+        * ``.txt`` — joined form with ``<thinking>…</thinking>`` markers
+          followed by the final content.
+        * ``.think.txt`` — pure thinking content only.
+        * ``.content.txt`` — pure final content without thinking markers.
+
+        The existing ``test_save_responses_writes_prompt_and_response_files``
+        pins the empty-think-text (non-thinking model) path where
+        ``.think.txt`` is NOT created and ``.txt == .content.txt``. This test
+        pins the opposite: non-empty thinking content produces all three
+        distinct files.
+        """
+        plugins = [p for p in self.plugins if p.id == "rate-limiter"]
+        models = {"dummy-model": "Local"}
+        state = self.module.BenchmarkState(models, [p.id for p in plugins])
+        source_config = {"Local": {"api_url": "http://localhost:11434/chat/completions", "headers": {}, "plugin_thread_limit": 1}}
+
+        final_content = "This is the final answer."
+        thinking = "Let me think through this step by step.\nFirst, I need to understand the problem.\nThen I can craft a solution."
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with mock.patch.object(
+                self.module, "stream_request", return_value=(final_content, thinking, 1.0, 1.5, None, "stop", {})
+            ):
+                with mock.patch.object(
+                    self.module, "nonstream_request", return_value=(final_content, thinking, {}, 0.1, None, "stop")
+                ):
+                    self.module.run_model(
+                        "dummy-model", "Local", state, plugins, source_config,
+                        timeout=1, token_levels=[100], output_dir=tmpdir,
+                        session_seed=12345, global_cfg={},
+                        save_responses=True,
+                    )
+
+            responses_dir = os.path.join(tmpdir, "responses", "dummy-model")
+            response_path = os.path.join(responses_dir, "rate-limiter.txt")
+            think_path = os.path.join(responses_dir, "rate-limiter.think.txt")
+            content_path = os.path.join(responses_dir, "rate-limiter.content.txt")
+
+            # All three files must exist when thinking content is non-empty.
+            self.assertTrue(os.path.isfile(response_path))
+            self.assertTrue(os.path.isfile(think_path))
+            self.assertTrue(os.path.isfile(content_path))
+
+            with open(response_path, "r", encoding="utf-8") as f:
+                response_content = f.read()
+            with open(think_path, "r", encoding="utf-8") as f:
+                think_content = f.read()
+            with open(content_path, "r", encoding="utf-8") as f:
+                content_content = f.read()
+
+            # .txt = <thinking>\n{think_text}\n</thinking>\n\n{final_content}
+            expected_joined = f"<thinking>\n{thinking}\n</thinking>\n\n{final_content}"
+            self.assertEqual(response_content, expected_joined)
+            # .think.txt = pure thinking content
+            self.assertEqual(think_content, thinking)
+            # .content.txt = pure final content (no thinking markers)
+            self.assertEqual(content_content, final_content)
+
     def test_save_responses_disabled_does_not_write_files(self):
         plugins = [p for p in self.plugins if p.id == "rate-limiter"]
         models = {"dummy-model": "Local"}
@@ -421,8 +483,22 @@ class TestDropParams(unittest.TestCase):
         def fake_stream_request(source_config, timeout, model, source, prompt, max_tokens=2048,
                                 log_path=None, log_label=None, session_seed=0, temperature=None,
                                 drop_params=None, stop_event=None, system_prompt=None,
-                                on_chunk=None, pid=None, on_retry=None):
+                                on_chunk=None, on_think_chunk=None, pid=None, on_retry=None):
             # Simulate two SSE deltas; the closure should fire once per delta.
+            # ``on_think_chunk`` is the parallel reasoning-content
+            # callback added to make the live TUI's per-plugin
+            # thinking-phase ticker (``[streaming - N think-tok]``
+            # cell + ``[<pid>: N think-tok (...s)]`` live footer)
+            # increment on SSE ``reasoning_content`` deltas. The mock
+            # signature advertises it so the produced
+            # ``_run_plugin_task`` call site (which always passes
+            # ``on_think_chunk=on_think_chunk`` for streaming plugins)
+            # does not blow up with a `TypeError: unexpected keyword
+            # argument`. The mock itself never produces a reasoning
+            # delta (input is plain content) so the closure sits
+            # idle -- the production code path's reasoning-counter
+            # increment is exercised in
+            # ``tests/test_tui_cells.test_in_flight_streaming_plugin_thinking_only_shows_think_tok``.
             for delta in ["Hello, ", "world"]:
                 if on_chunk is not None:
                     on_chunk(delta)
