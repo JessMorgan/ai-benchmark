@@ -171,7 +171,8 @@ class TestAgentHTTPRequest(unittest.TestCase):
 
         def fake_nonstream(source_config, timeout, model, source, prompt, max_tokens=2048,
                            log_path=None, log_label=None, session_seed=0, temperature=None,
-                           drop_params=None, stop_event=None, system_prompt=None):
+                           drop_params=None, stop_event=None, system_prompt=None,
+                           pid=None, on_retry=None):
             captured["body"] = {
                 "model": model,
                 "messages": [],

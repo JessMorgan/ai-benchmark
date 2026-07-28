@@ -37,6 +37,7 @@ from benchmark_http import (
     close_active_requests,
     get_429_stats,
     get_active_request_count,
+    reset_429_stats,
 )
 from plugins import discover_plugins, format_plugin_list
 from shell_completion import generate_shell_completion
@@ -72,6 +73,22 @@ def _write_run_info(output_dir, run_info):
         print(f"⚠️  Could not write run-info.json: {e}", file=sys.stderr)
 
 
+def _inject_429_stats(run_info):
+    """Add the current 429 backoff statistics to a run-info dict."""
+    backoff_429 = get_429_stats()
+    run_info["backoff_429"] = {
+        "total_retries": backoff_429.get("total_retries", 0),
+        "per_plugin": {
+            pid: {
+                "retries": stats["retries"],
+                "total_sleep_time": stats["total_sleep_time"],
+            }
+            for pid, stats in backoff_429.get("plugin_stats", {}).items()
+        },
+    }
+    return run_info
+
+
 def _wr(stdscr, max_x, max_y, y, x, text, attr=0):
     """Write text to the curses screen, bounded by the terminal size."""
     if not (0 <= y < max_y and 0 <= x < max_x):
@@ -101,10 +118,13 @@ def _fallback_tui_loop(state, stop_event, session_seed=None):
         seed_info = f"Seed: {session_seed}  |  " if session_seed is not None else ""
         http_threads = get_active_request_count()
         backoff_429 = get_429_stats()
-        sleeping_count = len(backoff_429.get("sleeping", {}))
+        sleeping_model_count = len({
+            tuple(key.rsplit("|", 1)[0].split("|", 1))
+            for key in (backoff_429.get("sleeping") or {})
+        })
         parts = [
             f"{seed_info}🔄 {active} active  |  ✅ {done}/{total} completed"
-            f"  |  HTTP: {http_threads}  |  429⏸ {sleeping_count}"
+            f"  |  HTTP: {http_threads}  |  429⏸ {sleeping_model_count}"
         ]
         for name, s in snap.items():
             if s.get("running_pids"):
@@ -151,14 +171,14 @@ def _handle_tui_input(stdscr, scroll_y, scroll_x, max_row_offset, visible_rows, 
 
 def _render_header_and_summary(stdscr, max_x, max_y, snap, done, total, running, queued, pending,
                                 scroll_y, visible_rows, total_models, session_seed,
-                                http_threads, sleeping_count):
+                                http_threads, sleeping_model_count):
     """Render the top header and summary statistics.
 
     ``http_threads`` is the count of in-flight HTTP responses (the wall-clock
-    \"parallelism ceiling\" the network is asked to carry). ``sleeping_count``
-    is the number of ``(source, model)`` pairs currently paused in a 429
-    backoff window \u2014 seeing this rise is how an operator notices that the
-    benchmark is rate-limited rather than making progress.
+    \"parallelism ceiling\" the network is asked to carry).    ``sleeping_model_count`` is the number of unique ``(source, model)`` pairs
+    currently paused in a 429 backoff window \u2014 seeing this rise is how an
+    operator notices that the benchmark is rate-limited rather than making
+    progress.
     """
     from datetime import datetime
     ts = datetime.now().strftime('%H:%M:%S')
@@ -174,7 +194,7 @@ def _render_header_and_summary(stdscr, max_x, max_y, snap, done, total, running,
                f"Active: {len(running)}  |  "
                f"Queued: {len(queued + pending)}"
                f"  |  HTTP: {http_threads}"
-               f"  |  429\u23f8 {sleeping_count}"
+               f"  |  429\u23f8 {sleeping_model_count}"
                f"{err_indicator}"
                f"  |  \u2191\u2193 rows {scroll_y + 1}-{min(total_models, scroll_y + visible_rows)}/{total_models}"
                f"  |  \u2190\u2192 cols")
@@ -261,7 +281,7 @@ def _elapsed_suffix(start_ts, threshold=_ELAPSED_THRESHOLD_S):
     return ""
 
 
-def _plugin_cell_block(pid, s, p, sleeping_remaining):
+def _plugin_cell_block(pid, s, p, sleeping_lookup=None):
     """Render a single per-model cell block for one plugin.
 
     The block is always ``PLUGIN_BLOCK_WIDTH`` (32) chars wide so it can
@@ -321,21 +341,27 @@ def _plugin_cell_block(pid, s, p, sleeping_remaining):
     streaming-glyph column (``st``) was deleted as redundant (see the
     ``PLUGIN_BLOCK_WIDTH`` block comment).
 
-    ``sleeping_remaining`` is the integer seconds remaining for the
-    model's source/model entry in the 429 sleeping map, or ``None`` if
-    the model is not currently 429-sleeping. The 429 message takes
-    priority over the per-plugin status because the operator cares more
-    about the wall-clock backoff than the per-plugin transport detail.
+    ``sleeping_lookup`` is a mapping from ``(source, api_model, pid)``
+    to sleep info (``wake_ts``, ``attempts``, ``max_attempts``). It is
+    used to show a per-plugin ``[429 sleeping Xs]`` bracket only for the
+    plugin that is actually in backoff. The 429 message takes priority
+    over the per-plugin transport status because the operator cares more
+    about the wall-clock backoff than whether the plugin is streaming.
     """
     in_flight = pid in (s.get("running_pids") or [])
-    if sleeping_remaining is not None:
-        text = f"[429 sleeping {sleeping_remaining}s]"
-        return f"{text:^{PLUGIN_BLOCK_WIDTH}}"
     # Per-plugin dispatch timestamp. Newer state records it via
     # ``start_plugin_run``; older state files may lack it, so fall
     # back to the legacy model-level ``attempt_start`` for graceful
     # backward compat.
     start_ts = s.get(f"{pid}_start_ts") or s.get("attempt_start") or 0
+    source = s.get("source")
+    api_model = s.get("api_model")
+    if in_flight and sleeping_lookup:
+        sleep_info = sleeping_lookup.get((source, api_model, pid))
+        if sleep_info is not None:
+            remaining = max(0, int(round(sleep_info["wake_ts"] - time.time())))
+            text = f"[429 sleeping {remaining}s]"
+            return f"{text:^{PLUGIN_BLOCK_WIDTH}}"
     if in_flight:
         if p.supports_streaming:
             first_chunk_seen = bool(s.get(f"{pid}_first_chunk_seen", False))
@@ -386,13 +412,14 @@ def _plugin_cell_block(pid, s, p, sleeping_remaining):
 
 
 def _format_model_row(name, s, display_idx, active_plugins, source_abbrevs,
-                      sleeping_remaining=None):
+                      sleeping_lookup=None):
     """Format a single model row into frozen and plugin strings.
 
-    ``sleeping_remaining`` is the integer seconds the (source, model)
-    pair is expected to remain in 429 backoff. Passed through to
-    ``_plugin_cell_block`` so the entire per-model row reflects the
-    same wall-clock status that the live-activity footer reports.
+    ``sleeping_lookup`` maps ``(source, api_model, pid)`` to sleep info
+    (with ``wake_ts``, ``attempts``, ``max_attempts``) so that a plugin
+    cell can render its own per-plugin ``[429 sleeping Xs]`` bracket.
+    Only the plugin that is actually in backoff is shown as sleeping;
+    completed plugins keep their numeric results.
     """
     sv = s["status"]
     status_ch = {"pending": "\u23f3", "queued": "\u23f3",
@@ -413,12 +440,11 @@ def _format_model_row(name, s, display_idx, active_plugins, source_abbrevs,
     frozen = f"{display_idx:>3}  {src_ab:<3} {model_disp:<18}  {status_ch:<3}"
 
     # Each plugin contributes exactly one 32-char block (merged status
-    # Each plugin contributes exactly one 32-char block (merged status
     # OR standard 5-cell results) so ``plugin_str`` has the same total
     # length and column geometry as before. Joins the per-plugin blocks
     # with single spaces, matching the existing column-join pattern.
     plugin_parts = [
-        _plugin_cell_block(p.id, s, p, sleeping_remaining)
+        _plugin_cell_block(p.id, s, p, sleeping_lookup=sleeping_lookup)
         for p in active_plugins
     ]
     plugin_str = " ".join(plugin_parts)
@@ -430,10 +456,10 @@ def _render_model_rows(stdscr, max_x, max_y, snap_items, active_plugins, source_
                        sleeping_lookup):
     """Render the scrollable model status table.
 
-    ``sleeping_lookup`` maps ``(source_name, api_model) -> sleep info``
-    (with ``wake_ts``, ``attempts``, ``max_attempts``) so per-model 429
+    ``sleeping_lookup`` maps ``(source_name, api_model, pid) -> sleep info``
+    (with ``wake_ts``, ``attempts``, ``max_attempts``) so per-plugin 429
     backoff state can be folded into each plugin cell via the
-    ``[429 sleeping Xs]`` bracket status. Models whose key is absent
+    ``[429 sleeping Xs]`` bracket status. Plugins whose key is absent
     render normally without the indicator.
     """
     total_models = len(snap_items)
@@ -445,13 +471,9 @@ def _render_model_rows(stdscr, max_x, max_y, snap_items, active_plugins, source_
         display_idx = abs_idx + 1
         src_name = s.get("source")
         api_model = s.get("api_model", name)
-        sleep_info = sleeping_lookup.get((src_name, api_model))
-        sleeping_remaining = None
-        if sleep_info is not None:
-            sleeping_remaining = max(0, int(round(sleep_info["wake_ts"] - time.time())))
         frozen, plugin_str = _format_model_row(
             name, s, display_idx, active_plugins, source_abbrevs,
-            sleeping_remaining=sleeping_remaining,
+            sleeping_lookup=sleeping_lookup,
         )
         visible_plugin = plugin_str[scroll_x:scroll_x + max(0, max_x - frozen_width - 1)]
         line = frozen + " " + visible_plugin
@@ -492,6 +514,21 @@ def _source_abbr(source_abbrevs, source):
     if source is None:
         return "???"
     return str(source)[:3] or "???"
+
+
+def _build_sleeping_lookup(backoff_429):
+    """Convert the flat ``get_429_stats`` sleeping map into a per-plugin lookup.
+
+    ``backoff_429`` is the dict returned by ``get_429_stats``. Its sleeping
+    keys are strings of the form ``"source|model|pid"``. This helper splits
+    them into ``(source, api_model, pid)`` tuples so the table renderer can
+    look up the exact plugin's backoff state in O(1).
+    """
+    sleeping_lookup = {}
+    for key, info in (backoff_429.get("sleeping") or {}).items():
+        src, model, pid = key.split("|", 2)
+        sleeping_lookup[(src, model, pid)] = info
+    return sleeping_lookup
 
 
 def _build_live_indicators(s, active_plugins, *, now=None):
@@ -547,18 +584,18 @@ def _build_live_indicators(s, active_plugins, *, now=None):
 
 
 def _render_live_activity(stdscr, max_x, max_y, snap, source_abbrevs, live_models,
-                          live_top, live_height, log_top, active_plugins, backoff_429):
-    """Render running models + 429-sleeping models in the live area.
+                          live_top, live_height, log_top, active_plugins, sleeping_lookup):
+    """Render running models + 429-sleeping plugins in the live area.
 
-    Layout (rows counted from ``live_top`` upward):
+    ``sleeping_lookup`` maps ``(source, api_model, pid)`` to sleep info so
+    the live footer can show each 429-backoff plugin individually. Layout
+    (rows counted from ``live_top`` upward):
 
       0      ``Live:``  (header)
-      1..    one row per running model whose source is NOT in 429 backoff
+      1..    one row per running model
       ?      ``429 Sleeping:``  (optional header)
-      ?..    one row per ``(source, model)`` currently in a 429 backoff sleep
+      ?..    one row per ``(source, model, pid)`` currently in a 429 backoff sleep
 
-    Models that are simultaneously running and 429-sleeping are rendered
-    only in the Sleeping section so a single backoff is never counted twice.
     The streaming/waiting indicator (``(stream)`` / ``(wait)``) is shown for
     any running plugin that supports streaming \u2014 for non-streaming plugins,
     the indicator is omitted so we never lie about a transport detail we
@@ -568,28 +605,11 @@ def _render_live_activity(stdscr, max_x, max_y, snap, source_abbrevs, live_model
     _wr(stdscr, max_x, max_y, live_row, 0, "Live:", curses.A_BOLD)
     live_row += 1
 
-    sleeping_lookup = {}
-    for key, info in (backoff_429.get("sleeping") or {}).items():
-        src, _, model_id = key.partition("|")
-        sleeping_lookup[(src, model_id)] = info
-
-    # Partition live_models into (running-only) and (running + 429 sleeping)
-    # in a single pass. Models that are both running and 429-sleeping are
-    # rendered only in the Sleeping section so a single backoff is never
-    # counted twice on the operator's screen.
-    running_rows = []
-    sleeping_rows = []
-    for nm in live_models:
-        s = snap.get(nm) or {}
-        src_name = s.get("source")
-        api_model = s.get("api_model", nm)
-        sleep_info = sleeping_lookup.get((src_name, api_model))
-        if sleep_info is not None:
-            sleeping_rows.append((src_name, api_model, sleep_info))
-        else:
-            running_rows.append((nm, s))
-
-    for nm, s in running_rows:
+    # Live models are rendered with their per-plugin indicators; any plugin
+    # currently in 429 backoff is also listed separately below so the operator
+    # sees both the model's active thread state and the per-plugin backoff
+    # countdown.
+    for nm, s in ((nm, snap.get(nm) or {}) for nm in live_models):
         if live_row >= log_top:
             break
         src_ab = _source_abbr(source_abbrevs, s.get("source"))
@@ -608,16 +628,16 @@ def _render_live_activity(stdscr, max_x, max_y, snap, source_abbrevs, live_model
         _wr(stdscr, max_x, max_y, live_row, 0, msg)
         live_row += 1
 
-    if sleeping_rows and live_row + 1 < log_top:
+    if sleeping_lookup and live_row + 1 < log_top:
         _wr(stdscr, max_x, max_y, live_row, 0, "429 Sleeping:", curses.A_BOLD)
         live_row += 1
-        for src_name, api_model, info in sleeping_rows:
+        for (src_name, api_model, pid), info in sleeping_lookup.items():
             if live_row >= log_top:
                 break
             src_ab = _source_abbr(source_abbrevs, src_name)
             wake_ts = info["wake_ts"]
             remaining = max(0, int(round(wake_ts - time.time())))
-            msg = (f" \U0001f4a4 [{src_ab}] {api_model[:36]}  "
+            msg = (f" \U0001f4a4 [{src_ab}] {api_model[:36]} ({pid}) "
                    f"[429 {info['attempts']}/{info['max_attempts']} {remaining}s]")
             _wr(stdscr, max_x, max_y, live_row, 0, msg)
             live_row += 1
@@ -742,20 +762,17 @@ def tui_main(state, stop_event, num_sources, active_plugins, session_seed=None):
                 http_threads = get_active_request_count()
                 backoff_429 = get_429_stats()
                 sleeping_count = len(backoff_429.get("sleeping", {}))
-                # Per-model 429 lookup keyed by ``(source, api_model)``
-                # so each row can fold its backoff countdown into the
-                # model-row plugin cells (the ``[429 sleeping Xs]``
-                # bracket status). Models whose key is absent render
+                # Per-plugin 429 lookup keyed by ``(source, api_model, pid)``
+                # so each plugin cell can fold its own backoff countdown
+                # into the model row. Plugins whose key is absent render
                 # normally without the indicator.
-                sleeping_lookup = {}
-                for key, info in (backoff_429.get("sleeping") or {}).items():
-                    src_name, _, api_model = key.partition("|")
-                    sleeping_lookup[(src_name, api_model)] = info
+                sleeping_lookup = _build_sleeping_lookup(backoff_429)
+                sleeping_model_count = len({(src, model) for (src, model, _pid) in sleeping_lookup})
 
                 _render_header_and_summary(
                     stdscr, max_x, max_y, snap, done, total, running, queued, pending,
                     scroll_y, VISIBLE_ROWS, len(snap), session_seed,
-                    http_threads, sleeping_count
+                    http_threads, sleeping_model_count
                 )
 
                 plugin_hdr = _render_table_headings(
@@ -779,7 +796,7 @@ def tui_main(state, stop_event, num_sources, active_plugins, session_seed=None):
 
                 _render_live_activity(
                     stdscr, max_x, max_y, snap, source_abbrevs, running,
-                    LIVE_TOP, LIVE_HEIGHT, LOG_TOP, active_plugins, backoff_429
+                    LIVE_TOP, LIVE_HEIGHT, LOG_TOP, active_plugins, sleeping_lookup
                 )
 
                 _render_recent_errors(stdscr, max_x, max_y, state, LOG_TOP, FOOTER_LINE)
@@ -1039,10 +1056,11 @@ def main():
         shutil.copy2(config_path, os.path.join(output_dir, os.path.basename(config_path)))
     except Exception as e:
         print(f"⚠️  Could not copy config file to output directory: {e}", file=sys.stderr)
-
     state = None
     worker_errors = 0
     interrupted = False
+    reset_429_stats()
+
     run_info = {
         "config_file": config_path,
         "cli_args": vars(args),
@@ -1269,6 +1287,7 @@ def main():
         run_info["worker_errors"] = worker_errors
         if run_info["status"] == "running":
             run_info["status"] = "completed"
+        _inject_429_stats(run_info)
         _write_run_info(output_dir, run_info)
 
 

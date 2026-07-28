@@ -4,12 +4,15 @@ This module contains the low-level request logic (streaming and non-streaming)
 used by ``benchmark_core.py``. Keeping it separate makes ``benchmark_core.py"
 smaller and makes the request helpers easier to test and reason about.
 """
+import copy
 import email.utils
 import json
 import os
 import random
+import sys
 import threading
 import time
+import traceback
 from contextlib import contextmanager
 from datetime import datetime, timezone
 
@@ -34,18 +37,21 @@ def close_active_requests():
 
 
 # HTTP 429 activity tracked for the TUI live status section. Keyed by
-# ``(source, model)`` so the dashboard can tell the operator not only
-# *that* a source is in backoff but also *which* model is blocked on it.
+# ``(source, model, pid)`` so the dashboard can tell the operator not only
+# *that* a source/model is in backoff but also *which* plugin is blocked.
 # All mutations and reads happen under ``_429_lock``.
 _429_lock = threading.Lock()
 _429_stats: dict = {
     # Total number of times any request entered a 429 backoff sleep this run.
     "total_retries": 0,
-    # Map ``(source, model) -> {wake_ts, attempts, max_attempts}``. Entries
+    # Map ``(source, model, pid) -> {wake_ts, attempts, max_attempts}``. Entries
     # are inserted when a sleep begins and removed when it ends (cleanly or
     # via Ctrl+C). ``wake_ts`` is an absolute ``time.time()`` value so the
     # TUI can render a countdown without holding the lock while sleeping.
     "sleeping": {},
+    # Aggregate per-plugin retry statistics for post-run analysis.
+    # ``pid -> {"retries": int, "total_sleep_time": float}``.
+    "plugin_stats": {},
 }
 
 
@@ -65,15 +71,16 @@ def get_429_stats() -> dict:
     The snapshot is decoupled from the internal ``_429_stats`` dict so a
     caller iterating over ``sleeping`` cannot observe a half-removed entry
     torn by a concurrent sleep completion. ``sleeping`` keys are strings
-    of the form ``"source|model"`` for JSON-friendly consumption.
+    of the form ``"source|model|pid"`` for JSON-friendly consumption.
     """
     with _429_lock:
         sleeping = {}
-        for (src, model), info in _429_stats["sleeping"].items():
-            sleeping[f"{src}|{model}"] = dict(info)
+        for (src, model, pid), info in _429_stats["sleeping"].items():
+            sleeping[f"{src}|{model}|{pid}"] = dict(info)
         return {
             "total_retries": _429_stats["total_retries"],
             "sleeping": sleeping,
+            "plugin_stats": copy.deepcopy(_429_stats["plugin_stats"]),
         }
 
 
@@ -81,24 +88,31 @@ def reset_429_stats():
     """Reset 429 activity tracking. Intended for unit tests only."""
     global _429_stats
     with _429_lock:
-        _429_stats = {"total_retries": 0, "sleeping": {}}
+        _429_stats = {"total_retries": 0, "sleeping": {}, "plugin_stats": {}}
 
 
-def _set_429_sleep(source, model, wake_ts, attempts, max_attempts):
-    """Record that ``(source, model)`` is entering a 429 backoff sleep."""
+def _set_429_sleep(source, model, pid, wake_ts, attempts, max_attempts, delay):
+    """Record that ``(source, model, pid)`` is entering a 429 backoff sleep."""
     with _429_lock:
         _429_stats["total_retries"] += 1
-        _429_stats["sleeping"][(source, model)] = {
+        _429_stats["sleeping"][(source, model, pid)] = {
             "wake_ts": wake_ts,
             "attempts": attempts,
             "max_attempts": max_attempts,
         }
+        plugin_id = pid or "?"
+        p_stats = _429_stats["plugin_stats"].setdefault(plugin_id, {
+            "retries": 0,
+            "total_sleep_time": 0.0,
+        })
+        p_stats["retries"] += 1
+        p_stats["total_sleep_time"] += float(delay)
 
 
-def _clear_429_sleep(source, model):
-    """Remove a ``(source, model)`` entry from the 429 sleeping set, if any."""
+def _clear_429_sleep(source, model, pid):
+    """Remove a ``(source, model, pid)`` entry from the 429 sleeping set, if any."""
     with _429_lock:
-        _429_stats["sleeping"].pop((source, model), None)
+        _429_stats["sleeping"].pop((source, model, pid), None)
 
 
 def fetch_models_v1(base_url, api_key=None):
@@ -126,10 +140,11 @@ def build_curl_cmd(model, prompt, max_tokens, stream, api_url, headers, system_p
         "max_tokens": max_tokens,
         "stream": stream
     }, ensure_ascii=False)
+    auth_header = f"  -H 'Authorization: {headers.get('Authorization', '')}' \\\n" if headers.get("Authorization") else ""
     return (
         f"curl -s -X POST '{api_url}' \\\n"
-        f"  -H 'Authorization: Bearer {headers['Authorization']}' \\\n"
-        f"  -H 'Content-Type: {headers['Content-Type']}' \\\n"
+        f"{auth_header}"
+        f"  -H 'Content-Type: {headers.get('Content-Type', 'application/json')}' \\\n"
         f"  -d '{data}'"
     )
 
@@ -183,13 +198,18 @@ def _build_request_body(model, prompt, max_tokens, session_seed, temperature, dr
 
 @contextmanager
 def _post_request_context(source_config, source, body, timeout, stream, log_path, log_label,
-                          stop_event=None):
+                          stop_event=None, pid=None, on_retry=None):
     """Make a POST request and yield the response, handling cleanup.
 
     Yields a tuple of ``(response, error, curl_cmd)``. ``response`` is the
     requests Response object on success, or ``None`` if an error occurred
     before or during the request. Cleanup (watchdog cancellation, active
     request tracking removal, response close) is performed automatically.
+
+    ``pid`` identifies the plugin making the request so that 429 backoff
+    state can be tracked per-plugin rather than per-model. ``on_retry`` is
+    an optional callable invoked at the start of each retry attempt (after
+    the first) so the caller can reset per-request timing/bookkeeping.
 
     HTTP 429 is retried with exponential backoff + jitter up to
     ``max_429_retries`` times per source. Defaults (``backoff_seconds=30``,
@@ -239,12 +259,30 @@ def _post_request_context(source_config, source, body, timeout, stream, log_path
     except (TypeError, ValueError):
         max_backoff = 300.0
 
+    plugin_id = pid or "?"
     try:
         for attempt in range(max_retries + 1):
             # Cancellation check before each request attempt.
             if stop_event is not None and stop_event.is_set():
                 yield None, "Cancelled", curl_cmd
                 return
+
+            # Give the caller a chance to reset per-request bookkeeping
+            # (e.g. the plugin start timestamp) at the beginning of each
+            # retry. The first attempt already started at dispatch time.
+            if attempt > 0 and on_retry is not None:
+                try:
+                    on_retry()
+                except Exception as exc:
+                    # A buggy observer must not abort the retry loop, but
+                    # swallowing it silently makes state bugs hard to find.
+                    try:
+                        sys.stderr.write(
+                            f"benchmark_http: on_retry observer failed: {exc}\n"
+                        )
+                        traceback.print_exc(file=sys.stderr)
+                    except Exception:
+                        pass
 
             try:
                 resp = requests.post(
@@ -351,7 +389,7 @@ def _post_request_context(source_config, source, body, timeout, stream, log_path
             max_attempts = max_retries + 1
             model = body.get("model", "?")
             wake_ts = time.time() + delay
-            _set_429_sleep(source, model, wake_ts, attempts_done, max_attempts)
+            _set_429_sleep(source, model, plugin_id, wake_ts, attempts_done, max_attempts, delay)
 
             # Tear down the current response before sleeping so we don't
             # leak the connection or hold a watchdog reference.
@@ -381,7 +419,7 @@ def _post_request_context(source_config, source, body, timeout, stream, log_path
                 else:
                     time.sleep(delay)
             finally:
-                _clear_429_sleep(source, model)
+                _clear_429_sleep(source, model, plugin_id)
     finally:
         if watchdog is not None:
             try:
@@ -430,7 +468,7 @@ def _parse_sse_line(line, first_tok, text, finish_reason, usage):
 def stream_request(source_config, timeout, model, source, prompt, max_tokens=2048,
                    log_path=None, log_label=None, session_seed=0, temperature=None,
                    drop_params=None, stop_event=None, system_prompt=None,
-                   on_chunk=None):
+                   on_chunk=None, pid=None, on_retry=None):
     """Make a streaming chat-completion request and return parsed results.
 
     ``on_chunk`` (optional) is called once per parsed SSE delta with the new
@@ -449,7 +487,7 @@ def stream_request(source_config, timeout, model, source, prompt, max_tokens=204
     body = _build_request_body(model, prompt, max_tokens, session_seed, temperature, drop_params,
                                stream=True, system_prompt=system_prompt)
     with _post_request_context(source_config, source, body, timeout, True, log_path, log_label,
-                               stop_event=stop_event) as (resp, err, curl_cmd):
+                               stop_event=stop_event, pid=pid, on_retry=on_retry) as (resp, err, curl_cmd):
         if err:
             return text, first_tok, time.time(), err, finish_reason, usage
         prev_text_len = 0
@@ -495,7 +533,8 @@ def _read_response_body(resp, stop_event):
 
 def nonstream_request(source_config, timeout, model, source, prompt, max_tokens=2048,
                       log_path=None, log_label=None, session_seed=0, temperature=None,
-                      drop_params=None, stop_event=None, system_prompt=None):
+                      drop_params=None, stop_event=None, system_prompt=None,
+                      pid=None, on_retry=None):
     """Make a non-streaming chat-completion request and return parsed results."""
     start = time.time()
     error = None
@@ -506,7 +545,7 @@ def nonstream_request(source_config, timeout, model, source, prompt, max_tokens=
                                stream=False, system_prompt=system_prompt)
     raw_resp_text = None
     with _post_request_context(source_config, source, body, timeout, False, log_path, log_label,
-                               stop_event=stop_event) as (resp, err, curl_cmd):
+                               stop_event=stop_event, pid=pid, on_retry=on_retry) as (resp, err, curl_cmd):
         if err:
             return text, usage, time.time() - start, err, finish_reason
         raw_resp_text, read_error = _read_response_body(resp, stop_event)

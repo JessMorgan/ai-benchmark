@@ -7,7 +7,7 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from unittest import mock
 
-from benchmark_http import fetch_models_v1, nonstream_request, stream_request
+from benchmark_http import fetch_models_v1, get_429_stats, nonstream_request, stream_request
 
 
 class TestStreamRequest(unittest.TestCase):
@@ -373,6 +373,134 @@ class TestRateLimitRetries(unittest.TestCase):
         self.assertLess(elapsed, 0.1, "must not sleep when stop_event is set")
         # Pre-loop cancellation short-circuits before any HTTP request fires.
         self.assertEqual(mp.call_count, 0)
+
+    def test_429_tracks_per_plugin_pid(self):
+        """When a plugin request hits 429, the sleeping key includes the pid."""
+        cfg = self._cfg(max_429_retries=1)
+        sequence = [self._mock_429(), self._mock_200("ok")]
+        captured = {}
+
+        def record_set(source, model, pid, wake_ts, attempts, max_attempts, delay):
+            captured["key"] = (source, model, pid)
+
+        with mock.patch("benchmark_http._set_429_sleep", side_effect=record_set):
+            with mock.patch("requests.post", side_effect=sequence):
+                text, _, _, err, _, _ = stream_request(
+                    cfg, timeout=5, model="m", source="Local",
+                    prompt="hi", max_tokens=10, pid="rate-limiter",
+                )
+        self.assertEqual(err, None)
+        self.assertEqual(text, "ok")
+        self.assertEqual(captured["key"], ("Local", "m", "rate-limiter"))
+
+    def test_429_tracks_per_plugin_stats(self):
+        """get_429_stats returns aggregate retry attempts and sleep time per plugin."""
+        from benchmark_http import get_429_stats, reset_429_stats, _set_429_sleep
+
+        reset_429_stats()
+        self.addCleanup(reset_429_stats)
+        # Simulate two 429 sleeps for the same plugin, one for another plugin.
+        _set_429_sleep("Local", "m1", "rate-limiter", time.time() + 0.1, 1, 3, 0.5)
+        _set_429_sleep("Local", "m1", "rate-limiter", time.time() + 0.2, 2, 3, 1.5)
+        _set_429_sleep("Local", "m2", "json-formatter", time.time() + 0.3, 1, 3, 2.0)
+
+        stats = get_429_stats()
+        self.assertEqual(stats["total_retries"], 3)
+        per_plugin = stats["plugin_stats"]
+        self.assertEqual(per_plugin["rate-limiter"]["retries"], 2)
+        self.assertEqual(per_plugin["rate-limiter"]["total_sleep_time"], 2.0)
+        self.assertEqual(per_plugin["json-formatter"]["retries"], 1)
+        self.assertEqual(per_plugin["json-formatter"]["total_sleep_time"], 2.0)
+
+    def test_429_retry_resets_per_request_elapsed(self):
+        """Each retry attempt resets the per-request start timestamp so the
+        TUI shows elapsed time for the current request, not cumulative
+        time across all attempts and sleeps."""
+        cfg = self._cfg(max_429_retries=1, backoff_seconds=0.01,
+                         backoff_factor=1.0, max_backoff_seconds=1.0)
+        sequence = [self._mock_429(), self._mock_200("ok")]
+        retry_calls = []
+
+        def on_retry():
+            retry_calls.append(time.monotonic())
+
+        start = time.monotonic()
+        with mock.patch("requests.post", side_effect=sequence):
+            text, _, _, err, _, _ = stream_request(
+                cfg, timeout=5, model="m", source="Local",
+                prompt="hi", max_tokens=10, pid="rate-limiter",
+                on_retry=on_retry,
+            )
+        elapsed = time.monotonic() - start
+        self.assertEqual(err, None)
+        self.assertEqual(text, "ok")
+        # The retry callback should fire exactly once, between the first
+        # request and the retry, after the 429 sleep.
+        self.assertEqual(len(retry_calls), 1, "on_retry must fire once per retry")
+        self.assertGreater(retry_calls[0], start)
+        self.assertLess(retry_calls[0], start + elapsed)
+
+    def test_429_retry_fires_for_nonstream(self):
+        """Non-streaming requests also invoke on_retry when they retry."""
+        retry_calls = []
+        source_config = {
+            "Local": {
+                "api_url": "http://x",
+                "headers": {},
+                "max_429_retries": 1,
+                "backoff_seconds": 0.01,
+                "backoff_factor": 1.0,
+                "max_backoff_seconds": 1.0,
+            }
+        }
+
+        class _Resp429:
+            status_code = 429
+            text = "rate limited"
+            headers = {}
+
+            def close(self):
+                pass
+
+        def _mk_200():
+            _body = {
+                "choices": [
+                    {"message": {"content": "ok"}, "finish_reason": "stop"}
+                ],
+                "usage": {},
+            }
+
+            class _Resp200:
+                status_code = 200
+                text = json.dumps(_body)
+                headers = {}
+                body = _body
+
+                def iter_content(self, chunk_size=8192):
+                    return [json.dumps(self.body).encode()]
+
+                def json(self):
+                    return self.body
+
+                def close(self):
+                    pass
+
+            return _Resp200()
+
+        from benchmark_http import nonstream_request
+
+        with mock.patch("requests.post", side_effect=[_Resp429(), _mk_200()]):
+            nonstream_request(
+                source_config,
+                timeout=5,
+                model="m",
+                source="Local",
+                prompt="hi",
+                max_tokens=10,
+                on_retry=lambda: retry_calls.append(True),
+            )
+
+        self.assertEqual(len(retry_calls), 1, "on_retry must fire once per retry")
 
 
 class TestSystemPrompt(unittest.TestCase):

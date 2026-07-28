@@ -54,8 +54,18 @@ class TestPluginCellBlock(unittest.TestCase):
         ]
         for s, sleeping_remaining in cases:
             with self.subTest(s=s, sleeping_remaining=sleeping_remaining):
+                kwargs = {}
+                if sleeping_remaining is not None:
+                    s = {**s, "source": "Local", "api_model": "model-a"}
+                    kwargs["sleeping_lookup"] = {
+                        ("Local", "model-a", "rate-limiter"): {
+                            "wake_ts": time.time() + sleeping_remaining,
+                            "attempts": 1,
+                            "max_attempts": 3,
+                        }
+                    }
                 block = ai_benchmark._plugin_cell_block(
-                    "rate-limiter", s, self.p_streaming, sleeping_remaining)
+                    "rate-limiter", s, self.p_streaming, **kwargs)
                 self.assertEqual(len(block), ai_benchmark.PLUGIN_BLOCK_WIDTH)
 
     def test_queued_no_results_shows_dash_placeholders(self):
@@ -124,38 +134,128 @@ class TestPluginCellBlock(unittest.TestCase):
         self.assertNotIn("[streaming]", block)
 
     def test_429_sleep_overrides_in_flight_status(self):
-        """If the model is in a 429 backoff, the bracket text shows the
+        """If this plugin is in a 429 backoff, the bracket text shows the
         countdown regardless of per-plugin transport state -- the
         operator cares more about wall-clock backoff than the per-
         plugin status."""
         s = {
+            "source": "Local",
+            "api_model": "model-a",
             "running_pids": ["rate-limiter"],
             "rate-limiter_first_tok_ts": 1234.5,  # would otherwise be [streaming]
         }
+        sleeping_lookup = {
+            ("Local", "model-a", "rate-limiter"): {
+                "wake_ts": time.time() + 24,
+                "attempts": 1,
+                "max_attempts": 3,
+            }
+        }
         block = ai_benchmark._plugin_cell_block(
-            "rate-limiter", s, self.p_streaming, sleeping_remaining=24)
+            "rate-limiter", s, self.p_streaming, sleeping_lookup=sleeping_lookup)
         self.assertIn("[429 sleeping 24s]", block)
         self.assertNotIn("[streaming]", block,
                          "429 must override the per-plugin streaming label")
         self.assertNotIn("[requested]", block,
                          "429 must override the per-plugin requested label")
 
-    def test_429_sleep_when_not_in_flight_still_shows_bracket(self):
-        """Even when running_pids is empty the 429 indicator still
-        renders -- if the inner ``_post_request_context`` has cleared
-        the pid at the moment the snapshot is taken, the model-level
-        sleep counter is still the operator's primary signal."""
+    def test_429_sleep_not_shown_for_completed_plugins(self):
+        """A plugin that already has results is not in flight, so its
+        cell should keep its numeric results even when another plugin
+        for the same model is 429-sleeping."""
+        s = {
+            "source": "Local",
+            "api_model": "model-a",
+            "running_pids": ["wireframes"],
+            "rate-limiter_score": 95.0,
+            "rate-limiter_output_tokens": 123,
+            "rate-limiter_response_time": 45.6,
+            "rate-limiter_tps": 2.5,
+        }
+        sleeping_lookup = {
+            ("Local", "model-a", "wireframes"): {
+                "wake_ts": time.time() + 7,
+                "attempts": 1,
+                "max_attempts": 3,
+            }
+        }
         block = ai_benchmark._plugin_cell_block(
-            "rate-limiter", {"running_pids": []}, self.p_streaming, 7)
-        self.assertIn("[429 sleeping 7s]", block)
+            "rate-limiter", s, self.p_streaming, sleeping_lookup=sleeping_lookup)
+        self.assertNotIn("[429 sleeping", block,
+                         "completed plugin cell must not inherit another plugin's 429 status")
+        self.assertIn("95.0", block)
 
     def test_429_sleep_clamps_at_zero_seconds(self):
         """A wake_ts in the past clamps to ``0`` so the bracket stays
         well-formed rather than rendering a negative duration."""
+        s = {
+            "source": "Local",
+            "api_model": "model-a",
+            "running_pids": ["rate-limiter"],
+        }
+        sleeping_lookup = {
+            ("Local", "model-a", "rate-limiter"): {
+                "wake_ts": time.time() - 1.0,
+                "attempts": 2,
+                "max_attempts": 3,
+            }
+        }
         block = ai_benchmark._plugin_cell_block(
-            "rate-limiter", {"running_pids": ["rate-limiter"]},
-            self.p_streaming, sleeping_remaining=0)
+            "rate-limiter", s, self.p_streaming, sleeping_lookup=sleeping_lookup)
         self.assertIn("[429 sleeping 0s]", block)
+
+    def test_429_sleep_only_for_matching_pid(self):
+        """Only the plugin that triggered the 429 shows the sleep
+        bracket; another in-flight plugin for the same model keeps its
+        normal streaming/requested indicator."""
+        s = {
+            "source": "Local",
+            "api_model": "model-a",
+            "running_pids": ["rate-limiter", "wireframes"],
+            "wireframes_first_chunk_seen": True,
+            "wireframes_bytes_received": 64,
+        }
+        sleeping_lookup = {
+            ("Local", "model-a", "rate-limiter"): {
+                "wake_ts": time.time() + 12,
+                "attempts": 1,
+                "max_attempts": 3,
+            }
+        }
+        rl_block = ai_benchmark._plugin_cell_block(
+            "rate-limiter", s, self.p_streaming, sleeping_lookup=sleeping_lookup)
+        wf_block = ai_benchmark._plugin_cell_block(
+            "wireframes", s, self.p_streaming, sleeping_lookup=sleeping_lookup)
+        self.assertIn("[429 sleeping 12s]", rl_block)
+        self.assertIn("[streaming - 16 tok]", wf_block)
+        self.assertNotIn("429 sleeping", wf_block)
+
+    def test_429_sleep_per_plugin_has_different_remaining(self):
+        """Each plugin has its own wake_ts, so the countdown shown in the
+        table differs per-plugin."""
+        s = {
+            "source": "Local",
+            "api_model": "model-a",
+            "running_pids": ["rate-limiter", "moe-dense"],
+        }
+        sleeping_lookup = {
+            ("Local", "model-a", "rate-limiter"): {
+                "wake_ts": time.time() + 5,
+                "attempts": 1,
+                "max_attempts": 3,
+            },
+            ("Local", "model-a", "moe-dense"): {
+                "wake_ts": time.time() + 55,
+                "attempts": 2,
+                "max_attempts": 3,
+            },
+        }
+        rl_block = ai_benchmark._plugin_cell_block(
+            "rate-limiter", s, self.p_streaming, sleeping_lookup=sleeping_lookup)
+        md_block = ai_benchmark._plugin_cell_block(
+            "moe-dense", s, self.p_streaming, sleeping_lookup=sleeping_lookup)
+        self.assertIn("[429 sleeping 5s]", rl_block)
+        self.assertIn("[429 sleeping 55s]", md_block)
 
     def test_completed_plugin_shows_numeric_results(self):
         """A plugin whose task has finished shows the standard 4-cell
