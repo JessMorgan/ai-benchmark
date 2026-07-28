@@ -438,31 +438,38 @@ def _post_request_context(source_config, source, body, timeout, stream, log_path
                 pass
 
 
-def _parse_sse_line(line, first_tok, text, finish_reason, usage):
+def _parse_sse_line(line, first_tok, text, think_text, finish_reason, usage):
     """Parse a single Server-Sent Events line and update streaming state.
 
-    Returns a tuple of ``(first_tok, text, finish_reason, usage, done)``.
+    Returns a tuple of ``(first_tok, text, think_text, finish_reason, usage, done)``.
     ``done`` is True when the ``[DONE]`` sentinel is encountered.
+
+    ``think_text`` accumulates ``reasoning_content`` from SSE deltas so
+    thinking-capable models' chain-of-thought is preserved separately from
+    the final content. Models that don't emit ``reasoning_content`` leave
+    ``think_text`` unchanged (empty string).
     """
     if not line.startswith("data: "):
-        return first_tok, text, finish_reason, usage, False
+        return first_tok, text, think_text, finish_reason, usage, False
     payload = line[6:]
     if payload.strip() == "[DONE]":
-        return first_tok, text, finish_reason, usage, True
+        return first_tok, text, think_text, finish_reason, usage, True
     try:
         data = json.loads(payload)
     except json.JSONDecodeError:
-        return first_tok, text, finish_reason, usage, False
+        return first_tok, text, think_text, finish_reason, usage, False
     if first_tok is None:
         first_tok = time.time()
     for ch in data.get("choices", []):
-        text += ch.get("delta", {}).get("content", "")
+        delta = ch.get("delta", {})
+        text += delta.get("content", "")
+        think_text += delta.get("reasoning_content", "")
         fr = ch.get("finish_reason")
         if fr:
             finish_reason = fr
     if "usage" in data:
         usage = data["usage"]
-    return first_tok, text, finish_reason, usage, False
+    return first_tok, text, think_text, finish_reason, usage, False
 
 
 def stream_request(source_config, timeout, model, source, prompt, max_tokens=2048,
@@ -470,6 +477,11 @@ def stream_request(source_config, timeout, model, source, prompt, max_tokens=204
                    drop_params=None, stop_event=None, system_prompt=None,
                    on_chunk=None, pid=None, on_retry=None):
     """Make a streaming chat-completion request and return parsed results.
+
+    Returns a 7-tuple ``(text, think_text, first_tok, stream_end, error, finish_reason, usage)``.
+    ``think_text`` contains any reasoning/thinking content emitted by
+    thinking-capable models (conversational ``reasoning_content`` field from
+    SSE deltas). For standard models it is an empty string.
 
     ``on_chunk`` (optional) is called once per parsed SSE delta with the new
     text accumulated in that iteration, so callers (notably the live TUI)
@@ -481,6 +493,7 @@ def stream_request(source_config, timeout, model, source, prompt, max_tokens=204
     start = time.time()
     first_tok = None
     text = ""
+    think_text = ""
     error = None
     finish_reason = None
     usage = {}
@@ -489,7 +502,7 @@ def stream_request(source_config, timeout, model, source, prompt, max_tokens=204
     with _post_request_context(source_config, source, body, timeout, True, log_path, log_label,
                                stop_event=stop_event, pid=pid, on_retry=on_retry) as (resp, err, curl_cmd):
         if err:
-            return text, first_tok, time.time(), err, finish_reason, usage
+            return text, think_text, first_tok, time.time(), err, finish_reason, usage
         prev_text_len = 0
         for line in resp.iter_lines(decode_unicode=True):
             if stop_event and stop_event.is_set():
@@ -497,8 +510,8 @@ def stream_request(source_config, timeout, model, source, prompt, max_tokens=204
                 break
             if not line:
                 continue
-            first_tok, text, finish_reason, usage, done = _parse_sse_line(
-                line, first_tok, text, finish_reason, usage)
+            first_tok, text, think_text, finish_reason, usage, done = _parse_sse_line(
+                line, first_tok, text, think_text, finish_reason, usage)
             if done:
                 break
             # Notify the caller of the delta accumulated in this
@@ -517,7 +530,7 @@ def stream_request(source_config, timeout, model, source, prompt, max_tokens=204
                     pass
         error = _check_total_timeout(start, timeout, error, finish_reason)
         _log_response(log_path, curl_cmd, text, log_label)
-    return text, first_tok, time.time(), error, finish_reason, usage
+    return text, think_text, first_tok, time.time(), error, finish_reason, usage
 
 
 def _read_response_body(resp, stop_event):
@@ -535,10 +548,17 @@ def nonstream_request(source_config, timeout, model, source, prompt, max_tokens=
                       log_path=None, log_label=None, session_seed=0, temperature=None,
                       drop_params=None, stop_event=None, system_prompt=None,
                       pid=None, on_retry=None):
-    """Make a non-streaming chat-completion request and return parsed results."""
+    """Make a non-streaming chat-completion request and return parsed results.
+
+    Returns a 6-tuple ``(text, think_text, usage, gen_time, error, finish_reason)``.
+    ``think_text`` contains any reasoning/thinking content from the API
+    response (``message.reasoning_content`` field). For standard models it
+    is an empty string.
+    """
     start = time.time()
     error = None
     text = ""
+    think_text = ""
     usage = {}
     finish_reason = None
     body = _build_request_body(model, prompt, max_tokens, session_seed, temperature, drop_params,
@@ -547,14 +567,15 @@ def nonstream_request(source_config, timeout, model, source, prompt, max_tokens=
     with _post_request_context(source_config, source, body, timeout, False, log_path, log_label,
                                stop_event=stop_event, pid=pid, on_retry=on_retry) as (resp, err, curl_cmd):
         if err:
-            return text, usage, time.time() - start, err, finish_reason
+            return text, think_text, usage, time.time() - start, err, finish_reason
         raw_resp_text, read_error = _read_response_body(resp, stop_event)
         if read_error:
-            return text, usage, time.time() - start, read_error, finish_reason
+            return text, think_text, usage, time.time() - start, read_error, finish_reason
         data = json.loads(raw_resp_text)
         text = data["choices"][0]["message"]["content"]
+        think_text = data["choices"][0]["message"].get("reasoning_content", "")
         usage = data.get("usage", {})
         finish_reason = data.get("choices", [{}])[0].get("finish_reason")
         _log_response(log_path, curl_cmd, raw_resp_text, log_label)
     error = _check_total_timeout(start, timeout, error, finish_reason)
-    return text, usage, time.time() - start, error, finish_reason
+    return text, think_text, usage, time.time() - start, error, finish_reason

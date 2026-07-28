@@ -94,13 +94,13 @@ class TestPluginExecutionMode(unittest.TestCase):
         state = self.module.BenchmarkState(models, [p.id for p in plugins])
         source_config = {"Local": {"api_url": "http://localhost:11434/chat/completions", "headers": {}, "plugin_thread_limit": 1}}
 
-        with mock.patch.object(self.module, "stream_request", return_value=("", None, 0, "connection refused", None, {})):
-            with mock.patch.object(self.module, "nonstream_request", return_value=("", {}, 0.1, "connection refused", None)):
-                self.module.run_model(
-                    "dummy-model", "Local", state, plugins, source_config,
-                    timeout=1, token_levels=[100], output_dir="/tmp/benchmark-test",
-                    session_seed=0, global_cfg={},
-                )
+        with mock.patch.object(self.module, "stream_request", return_value=("", "", None, 0, "connection refused", None, {})):
+                with mock.patch.object(self.module, "nonstream_request", return_value=("", "", {}, 0.1, "connection refused", None)):
+                    self.module.run_model(
+                        "dummy-model", "Local", state, plugins, source_config,
+                        timeout=1, token_levels=[100], output_dir="/tmp/benchmark-test",
+                        session_seed=0, global_cfg={},
+                    )
 
         snap = state.snapshot()["dummy-model"]
         self.assertIn(snap["status"], ("completed", "failed"))
@@ -111,8 +111,8 @@ class TestPluginExecutionMode(unittest.TestCase):
         state = self.module.BenchmarkState(models, [p.id for p in plugins])
         source_config = {"Local": {"api_url": "http://localhost:11434/chat/completions", "headers": {}, "plugin_thread_limit": 0}}
 
-        with mock.patch.object(self.module, "stream_request", return_value=("", None, 0, "connection refused", None, {})):
-            with mock.patch.object(self.module, "nonstream_request", return_value=("", {}, 0.1, "connection refused", None)):
+        with mock.patch.object(self.module, "stream_request", return_value=("", "", None, 0, "connection refused", None, {})):
+            with mock.patch.object(self.module, "nonstream_request", return_value=("", "", {}, 0.1, "connection refused", None)):
                 self.module.run_model(
                     "dummy-model", "Local", state, plugins, source_config,
                     timeout=1, token_levels=[100], output_dir="/tmp/benchmark-test",
@@ -128,8 +128,8 @@ class TestPluginExecutionMode(unittest.TestCase):
         state = self.module.BenchmarkState(models, [p.id for p in plugins])
         source_config = {"Local": {"api_url": "http://localhost:11434/chat/completions", "headers": {}, "plugin_thread_limit": 2}}
 
-        with mock.patch.object(self.module, "stream_request", return_value=("", None, 0, "connection refused", None, {})):
-            with mock.patch.object(self.module, "nonstream_request", return_value=("", {}, 0.1, "connection refused", None)):
+        with mock.patch.object(self.module, "stream_request", return_value=("", "", None, 0, "connection refused", None, {})):
+            with mock.patch.object(self.module, "nonstream_request", return_value=("", "", {}, 0.1, "connection refused", None)):
                 self.module.run_model(
                     "dummy-model", "Local", state, plugins, source_config,
                     timeout=1, token_levels=[100], output_dir="/tmp/benchmark-test",
@@ -252,10 +252,10 @@ class TestSaveResponses(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmpdir:
             with mock.patch.object(
-                self.module, "stream_request", return_value=(expected_response, 1.0, 1.5, None, "stop", {})
+                self.module, "stream_request", return_value=(expected_response, "", 1.0, 1.5, None, "stop", {})
             ):
                 with mock.patch.object(
-                    self.module, "nonstream_request", return_value=(expected_response, {}, 0.1, None, "stop")
+                    self.module, "nonstream_request", return_value=(expected_response, "", {}, 0.1, None, "stop")
                 ):
                     self.module.run_model(
                         "dummy-model", "Local", state, plugins, source_config,
@@ -267,17 +267,27 @@ class TestSaveResponses(unittest.TestCase):
             responses_dir = os.path.join(tmpdir, "responses", "dummy-model")
             prompt_path = os.path.join(responses_dir, "rate-limiter.prompt.txt")
             response_path = os.path.join(responses_dir, "rate-limiter.txt")
+            think_path = os.path.join(responses_dir, "rate-limiter.think.txt")
+            content_path = os.path.join(responses_dir, "rate-limiter.content.txt")
 
             self.assertTrue(os.path.isfile(prompt_path))
             self.assertTrue(os.path.isfile(response_path))
+            # No think_text was returned by the mock, so .think.txt must NOT
+            # be written (only created when thinking content is non-empty).
+            self.assertFalse(os.path.isfile(think_path))
+            self.assertTrue(os.path.isfile(content_path))
 
             with open(prompt_path, "r", encoding="utf-8") as f:
                 prompt_content = f.read()
             with open(response_path, "r", encoding="utf-8") as f:
                 response_content = f.read()
+            with open(content_path, "r", encoding="utf-8") as f:
+                content_content = f.read()
 
             self.assertEqual(prompt_content, plugins[0].get_prompt())
             self.assertEqual(response_content, expected_response)
+            # Without thinking, .txt and .content.txt are identical.
+            self.assertEqual(content_content, expected_response)
 
             meta_path = os.path.join(responses_dir, "rate-limiter.meta.json")
             self.assertTrue(os.path.isfile(meta_path))
@@ -308,10 +318,10 @@ class TestSaveResponses(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmpdir:
             with mock.patch.object(
-                self.module, "stream_request", return_value=("response", 1.0, 1.5, None, "stop", {})
+                self.module, "stream_request", return_value=("response", "", 1.0, 1.5, None, "stop", {})
             ):
                 with mock.patch.object(
-                    self.module, "nonstream_request", return_value=("response", {}, 0.1, None, "stop")
+                    self.module, "nonstream_request", return_value=("response", "", {}, 0.1, None, "stop")
                 ):
                     self.module.run_model(
                         "dummy-model", "Local", state, plugins, source_config,
@@ -416,10 +426,10 @@ class TestDropParams(unittest.TestCase):
             for delta in ["Hello, ", "world"]:
                 if on_chunk is not None:
                     on_chunk(delta)
-            return "Hello, world", 1.0, 1.5, None, "stop", {}
+            return "Hello, world", "", 1.0, 1.5, None, "stop", {}
 
         with mock.patch.object(self.module, "stream_request", side_effect=fake_stream_request):
-            with mock.patch.object(self.module, "nonstream_request", return_value=("", {}, 0.1, "no tokens", "stop")):
+            with mock.patch.object(self.module, "nonstream_request", return_value=("", "", {}, 0.1, "no tokens", "stop")):
                 result, err = self.module._run_plugin_task(
                     "dummy-model", "dummy-model", "Local", plugins[0], source_config,
                     timeout=1, token_levels=[100], session_seed=12345,
@@ -495,7 +505,7 @@ class TestNonStreamingPluginRetry(unittest.TestCase):
 
         with mock.patch.object(
             self.module, "nonstream_request",
-            return_value=("", {}, 0.1, None, "stop"),
+            return_value=("", "", {}, 0.1, None, "stop"),
         ):
             # Will raise UnboundLocalError if ``on_retry`` is not bound
             # before the call site below.
@@ -667,7 +677,7 @@ class TestStopEventInterruption(unittest.TestCase):
         with mock.patch("requests.post", side_effect=fake_post):
             thread = threading.Thread(target=set_stop_after_delay)
             thread.start()
-            text, first_tok, stream_end, err, finish_reason, usage = self.module.stream_request(
+            text, think_text, first_tok, stream_end, err, finish_reason, usage = self.module.stream_request(
                 source_config, timeout=5, model="m", source="Local",
                 prompt="hello", max_tokens=10, stop_event=stop_event,
             )
@@ -702,7 +712,7 @@ class TestStopEventInterruption(unittest.TestCase):
         with mock.patch("requests.post", side_effect=fake_post):
             thread = threading.Thread(target=set_stop_after_delay)
             thread.start()
-            text, usage, gen_time, err, finish_reason = self.module.nonstream_request(
+            text, think_text, usage, gen_time, err, finish_reason = self.module.nonstream_request(
                 source_config, timeout=5, model="m", source="Local",
                 prompt="hello", max_tokens=10, stop_event=stop_event,
             )
@@ -1249,7 +1259,7 @@ class TestStreamPartialTextKept(unittest.TestCase):
         with mock.patch.object(
             self.module, "stream_request",
             return_value=(
-                streamed_text, 1.0, 2000.0,
+                streamed_text, "", 1.0, 2000.0,
                 "Total timeout (2000s) exceeded",
                 "length", {},
             ),
@@ -1299,11 +1309,11 @@ class TestStreamPartialTextKept(unittest.TestCase):
         nonstream_text = "x" * 3000
         with mock.patch.object(
             self.module, "stream_request",
-            return_value=("", None, 1.0, "connection refused", None, {}),
+            return_value=("", "", None, 1.0, "connection refused", None, {}),
         ):
             with mock.patch.object(
                 self.module, "nonstream_request",
-                return_value=(nonstream_text, {}, 0.1, None, "stop"),
+                return_value=(nonstream_text, "", {}, 0.1, None, "stop"),
             ) as mock_nonstream:
                 result, err = self.module._run_plugin_task(
                     "dummy-model", "dummy-model", "Local", plugin, source_config,

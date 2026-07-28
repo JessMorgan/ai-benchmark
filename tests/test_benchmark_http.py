@@ -51,7 +51,7 @@ class TestStreamRequest(unittest.TestCase):
             yield fake_response, None, None
 
         with mock.patch("benchmark_http._post_request_context", fake_ctx):
-            text, _, _, err, _, _ = stream_request(
+            text, _, _, _, err, _, _ = stream_request(
                 {"src": {"api_url": "http://x", "headers": {}}},
                 10, "m", "src", "p", 100,
                 on_chunk=lambda delta: calls.append(delta),
@@ -84,7 +84,7 @@ class TestStreamRequest(unittest.TestCase):
                 pass
 
         with mock.patch("requests.post", return_value=MockResponse()):
-            text, first_tok, stream_end, err, finish_reason, usage = stream_request(
+            text, think_text, first_tok, stream_end, err, finish_reason, usage = stream_request(
                 source_config, timeout=5, model="m", source="Local",
                 prompt="hi", max_tokens=10,
             )
@@ -120,7 +120,7 @@ class TestStreamRequest(unittest.TestCase):
         with mock.patch("requests.post", return_value=SlowMockResponse()):
             thread = threading.Thread(target=set_stop_after_delay)
             thread.start()
-            text, first_tok, stream_end, err, finish_reason, usage = stream_request(
+            text, think_text, first_tok, stream_end, err, finish_reason, usage = stream_request(
                 source_config, timeout=5, model="m", source="Local",
                 prompt="hi", max_tokens=10, stop_event=stop_event,
             )
@@ -151,7 +151,7 @@ class TestNonstreamRequest(unittest.TestCase):
                 pass
 
         with mock.patch("requests.post", return_value=MockResponse()):
-            text, usage, gen_time, err, finish_reason = nonstream_request(
+            text, think_text, usage, gen_time, err, finish_reason = nonstream_request(
                 source_config, timeout=5, model="m", source="Local",
                 prompt="hi", max_tokens=10,
             )
@@ -184,7 +184,7 @@ class TestNonstreamRequest(unittest.TestCase):
         with mock.patch("requests.post", return_value=SlowMockResponse()):
             thread = threading.Thread(target=set_stop_after_delay)
             thread.start()
-            text, usage, gen_time, err, finish_reason = nonstream_request(
+            text, think_text, usage, gen_time, err, finish_reason = nonstream_request(
                 source_config, timeout=5, model="m", source="Local",
                 prompt="hi", max_tokens=10, stop_event=stop_event,
             )
@@ -245,7 +245,7 @@ class TestRateLimitRetries(unittest.TestCase):
         cfg = self._cfg(max_429_retries=2)
         sequence = [self._mock_429(), self._mock_429(), self._mock_200("hello")]
         with mock.patch("requests.post", side_effect=sequence) as mp:
-            text, _, _, err, _, _ = stream_request(
+            text, _, _, _, err, _, _ = stream_request(
                 cfg, timeout=5, model="m", source="Local",
                 prompt="hi", max_tokens=10,
             )
@@ -258,7 +258,7 @@ class TestRateLimitRetries(unittest.TestCase):
         cfg = self._cfg(max_429_retries=2)
         sequence = [self._mock_429()] * 3  # 2 retries + 1 final attempt
         with mock.patch("requests.post", side_effect=sequence):
-            text, _, _, err, _, _ = stream_request(
+            text, _, _, _, err, _, _ = stream_request(
                 cfg, timeout=5, model="m", source="Local",
                 prompt="hi", max_tokens=10,
             )
@@ -269,7 +269,7 @@ class TestRateLimitRetries(unittest.TestCase):
         """Explicit ``max_429_retries: 0`` is opt-out — fail fast on first 429."""
         cfg = self._cfg(max_429_retries=0)
         with mock.patch("requests.post", side_effect=[self._mock_429()]) as mp:
-            text, _, _, err, _, _ = stream_request(
+            text, _, _, _, err, _, _ = stream_request(
                 cfg, timeout=5, model="m", source="Local",
                 prompt="hi", max_tokens=10,
             )
@@ -282,7 +282,7 @@ class TestRateLimitRetries(unittest.TestCase):
             "api_url": "http://localhost/chat/completions", "headers": {}}}
         sequence = [self._mock_429(), self._mock_429(), self._mock_200()]
         with mock.patch("requests.post", side_effect=sequence) as mp:
-            text, _, _, err, _, _ = stream_request(
+            text, _, _, _, err, _, _ = stream_request(
                 cfg_no_opt, timeout=5, model="m", source="Local",
                 prompt="hi", max_tokens=10,
             )
@@ -301,7 +301,7 @@ class TestRateLimitRetries(unittest.TestCase):
         start = time.monotonic()
         with mock.patch("requests.post",
                         side_effect=[self._mock_429(retry_after=0.5), self._mock_200()]):
-            text, _, _, err, _, _ = stream_request(
+            text, _, _, _, err, _, _ = stream_request(
                 cfg, timeout=5, model="m", source="Local",
                 prompt="hi", max_tokens=10,
             )
@@ -321,7 +321,7 @@ class TestRateLimitRetries(unittest.TestCase):
         start = time.monotonic()
         with mock.patch("requests.post",
                         side_effect=[self._mock_429(retry_after=future), self._mock_200()]):
-            text, _, _, err, _, _ = stream_request(
+            text, _, _, _, err, _, _ = stream_request(
                 cfg, timeout=5, model="m", source="Local",
                 prompt="hi", max_tokens=10,
             )
@@ -344,7 +344,7 @@ class TestRateLimitRetries(unittest.TestCase):
         start = time.monotonic()
         with mock.patch("requests.post",
                         side_effect=[self._mock_429(), self._mock_429(), self._mock_200()]):
-            text, _, _, err, _, _ = stream_request(
+            text, _, _, _, err, _, _ = stream_request(
                 cfg, timeout=5, model="m", source="Local",
                 prompt="hi", max_tokens=10,
             )
@@ -364,7 +364,7 @@ class TestRateLimitRetries(unittest.TestCase):
         cfg = self._cfg(max_429_retries=2)
         start = time.monotonic()
         with mock.patch("requests.post", side_effect=[self._mock_429()]) as mp:
-            text, _, _, err, _, _ = stream_request(
+            text, _, _, _, err, _, _ = stream_request(
                 cfg, timeout=5, model="m", source="Local",
                 prompt="hi", max_tokens=10, stop_event=stop,
             )
@@ -385,7 +385,7 @@ class TestRateLimitRetries(unittest.TestCase):
 
         with mock.patch("benchmark_http._set_429_sleep", side_effect=record_set):
             with mock.patch("requests.post", side_effect=sequence):
-                text, _, _, err, _, _ = stream_request(
+                text, _, _, _, err, _, _ = stream_request(
                     cfg, timeout=5, model="m", source="Local",
                     prompt="hi", max_tokens=10, pid="rate-limiter",
                 )
@@ -426,7 +426,7 @@ class TestRateLimitRetries(unittest.TestCase):
 
         start = time.monotonic()
         with mock.patch("requests.post", side_effect=sequence):
-            text, _, _, err, _, _ = stream_request(
+            text, _, _, _, err, _, _ = stream_request(
                 cfg, timeout=5, model="m", source="Local",
                 prompt="hi", max_tokens=10, pid="rate-limiter",
                 on_retry=on_retry,

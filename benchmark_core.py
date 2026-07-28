@@ -411,7 +411,7 @@ def _run_plugin_task(target_name, api_model, source, plugin, source_config, time
                 state.mark_first_chunk_seen(target_name, pid, ts=time.time())
                 state.add_bytes_received(target_name, pid, len(delta))
 
-            text, first_tok, stream_end, serr, sfr, _usage = stream_request(
+            text, think_text, first_tok, stream_end, serr, sfr, _usage = stream_request(
                 source_config, timeout, api_model, source, prompt, max_tok,
                 log_path=log_file,
                 log_label=f"{plugin.name} (Streaming, attempt {attempt + 1})",
@@ -445,7 +445,7 @@ def _run_plugin_task(target_name, api_model, source, plugin, source_config, time
                     truncated = (sfr == "length")
                     stream_ok = False
                 else:
-                    text, nsusage, ns_time, nserr, nsfr = nonstream_request(
+                    text, think_text, nsusage, ns_time, nserr, nsfr = nonstream_request(
                         source_config, timeout, api_model, source, prompt, max_tok,
                         log_path=log_file,
                         log_label=f"{plugin.name} (Non-Streaming, attempt {attempt + 1})",
@@ -464,7 +464,7 @@ def _run_plugin_task(target_name, api_model, source, plugin, source_config, time
                 gen_time = stream_end - first_tok if first_tok else 0
                 truncated = (sfr == "length")
         else:
-            text, usage, gen_time, gen_err, gen_fr = nonstream_request(
+            text, think_text, usage, gen_time, gen_err, gen_fr = nonstream_request(
                 source_config, timeout, api_model, source, prompt, max_tok,
                 log_path=log_file,
                 log_label=f"{plugin.name} (attempt {attempt + 1})",
@@ -499,15 +499,42 @@ def _run_plugin_task(target_name, api_model, source, plugin, source_config, time
     if save_responses and output_dir:
         responses_dir = os.path.join(output_dir, "responses", sanitize_filename(target_name))
         os.makedirs(responses_dir, exist_ok=True)
+        # 1. Prompt file (unchanged).
         prompt_path = os.path.join(responses_dir, f"{plugin.id}.prompt.txt")
-        response_path = os.path.join(responses_dir, f"{plugin.id}.txt")
         try:
             with open(prompt_path, "w", encoding="utf-8") as f:
                 f.write(prompt)
         except OSError:
             pass
+        # 2. Joined response — final content, with any thinking content wrapped
+        #    in ``<thinking>...</thinking>`` markers so operators can distinguish
+        #    the model's chain-of-thought from its final answer without needing
+        #    a separate viewer. When there is no thinking content the file is
+        #    identical to the previous version (pure final content).
+        if think_text:
+            joined = f"<thinking>\n{think_text}\n</thinking>\n\n{text}"
+        else:
+            joined = text
+        response_path = os.path.join(responses_dir, f"{plugin.id}.txt")
         try:
             with open(response_path, "w", encoding="utf-8") as f:
+                f.write(joined)
+        except OSError:
+            pass
+        # 3. Thinking-only file (only created when thinking content exists).
+        if think_text:
+            think_path = os.path.join(responses_dir, f"{plugin.id}.think.txt")
+            try:
+                with open(think_path, "w", encoding="utf-8") as f:
+                    f.write(think_text)
+            except OSError:
+                pass
+        # 4. Content-only file — pure final content without thinking markers.
+        #    Identical to the original ``{plugin.id}.txt`` format from before
+        #    thinking-content separation was added.
+        content_path = os.path.join(responses_dir, f"{plugin.id}.content.txt")
+        try:
+            with open(content_path, "w", encoding="utf-8") as f:
                 f.write(text)
         except OSError:
             pass
