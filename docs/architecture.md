@@ -47,7 +47,7 @@ This document describes the high-level design of AI Benchmark.
    - `_run_plugins()` uses `ThreadPoolExecutor` with `plugin_thread_limit` workers.
    - Each plugin task calls `_run_plugin_task()`.
    - HTTP tasks call `stream_request()` or `nonstream_request()`.
-   - OpenCode tasks call the subprocess adapter with `opencode run --format plain`, capture stdout/stderr separately, and score stdout as the final response.
+   - OpenCode tasks call the subprocess adapter with `opencode run --format json`, capture stdout/stderr separately, extract the final assistant answer from the NDJSON event stream, and score it as the response.
 
 5. **Scoring**
    - Plugin `score()` evaluates the response.
@@ -69,7 +69,9 @@ State is saved to `benchmark_state.json` after each model and on shutdown. The s
 
 ## OpenCode Runner
 
-OpenCode is optional and is never required for the default HTTP mode. When selected, startup checks `shutil.which("opencode")`, resolves every configured target to `{slugified source}/{api_model}`, projects source URL/auth/model settings into a generated config, and stores that config under the OpenCode output namespace. Existing agent system prompts are registered as OpenCode agents and passed separately from each plugin prompt. The generated config is retained intentionally; operators must protect the output directory because it contains resolved credentials.
+OpenCode is optional and is never required for the default HTTP mode. When selected, startup checks `shutil.which("opencode")` and runs a capability preflight (`opencode run --help`): the CLI must expose `--model`/`--format`/`--agent` and advertise the `json` format choice, otherwise the run fails fast with a clear error. The runner resolves every configured target to `{slugified source}/{api_model}`, projects source URL/auth/model settings into a generated config, and stores that config under the OpenCode output namespace. Existing agent system prompts are registered as OpenCode agents and passed separately from each plugin prompt. The generated config is retained intentionally; operators must protect the output directory because it contains resolved credentials.
+
+Each OpenCode task runs `opencode run --model <mapped> --format json <prompt>` in an isolated subprocess. The `json` format emits one NDJSON event per line; `_extract_final_text()` joins the `text` events (the model's final answer parts) and surfaces `error` events as failures. Model entries in the generated config always set both `limit.context` and `limit.output` — OpenCode's schema rejects a `limit` object that omits `context`. The context value is inferred from the benchmark model id's `-NNk`/`-NNm` suffix with a conservative fallback, and the output value comes from `token_levels`.
 
 OpenCode has buffered final-output semantics in this adapter. Direct HTTP streaming metrics such as TTFT are not fabricated for OpenCode; its response time and estimated output-token count are recorded instead. Timeouts and cancellation terminate the subprocess group where supported.
 

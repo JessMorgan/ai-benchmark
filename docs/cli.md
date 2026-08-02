@@ -133,6 +133,10 @@ python ai-benchmark.py --runner both --save-responses
 
 OpenCode mode generates and retains `<output_dir>/opencode/opencode.generated.json` from the loaded benchmark sources. The file contains resolved authentication values, is written with restrictive permissions where supported, and should be treated as a secret-bearing artifact. OpenCode responses and logs are stored below `<output_dir>/opencode/`; HTTP artifacts are stored below `<output_dir>/http/`. Results include a runner column so the two variants remain distinguishable, and resume reuses results only for the same runner.
 
+Startup preflight validates the installed OpenCode CLI before any work is scheduled: the executable must be on `PATH`, `opencode run --help` must advertise the `--model`/`--format`/`--agent` options, and `--format` must list `json` as a choice. An unsupported CLI fails fast with a clear error instead of failing every task at runtime.
+
+Each OpenCode task is invoked as `opencode run --model <slugified-source>/<api_model> --format json <prompt>`. The adapter uses the `json` event-stream format (the only machine-readable choice; `plain` is not a valid value) and extracts the final assistant answer from the NDJSON `text` events, so the scored response is the model's final answer without TUI/ANSI noise. Generated configs set both `limit.context` (inferred from the model id's `-NNk`/`-NNm` suffix, e.g. `-128k`) and `limit.output` (from `token_levels`), because OpenCode rejects provider models whose `limit` omits `context`.
+
 The OpenCode model mapping is deterministic: the source name is lowercased and strictly slugified, then joined with the resolved API model as `{slugified-source}/{api_model}`. Existing slashes in `api_model` are preserved.
 
 ### Discover models from an API
