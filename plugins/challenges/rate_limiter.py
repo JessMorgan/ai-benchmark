@@ -12,7 +12,7 @@ class RateLimiterPlugin(BenchmarkTaskPlugin):
 
     @property
     def version(self):
-        return "0.1.0"
+        return "0.2.0"
 
     @property
     def name(self):
@@ -121,4 +121,4 @@ class RateLimiterPlugin(BenchmarkTaskPlugin):
         return rubric.results()
 
     def score(self, response_text):
-        return self.evaluate(response_text)[0]
+        return self.evaluate(response_text).score

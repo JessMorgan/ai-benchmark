@@ -13,7 +13,9 @@ class TestRateLimiterScoring(unittest.TestCase):
         self.assertEqual(self.plugin.score(""), 0.0)
 
     def test_evaluate_returns_rubric(self):
-        score, rubric = self.plugin.evaluate("class TokenBucket:\n    pass")
+        evaluation = self.plugin.evaluate("class TokenBucket:\n    pass")
+        score = evaluation.score
+        rubric = evaluation.rubric
         self.assertIsInstance(score, float)
         self.assertIsInstance(rubric, list)
         self.assertTrue(all("name" in item and "max" in item and "earned" in item and "missed" in item for item in rubric))

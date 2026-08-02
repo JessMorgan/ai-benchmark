@@ -14,6 +14,7 @@ from benchmark_http import (
     get_429_stats,
     nonstream_request,
     stream_request,
+    PostRequestResult,
 )
 
 
@@ -85,15 +86,15 @@ class TestStreamRequest(unittest.TestCase):
 
         @contextlib.contextmanager
         def fake_ctx(*a, **kw):
-            yield fake_response, None, None
+            yield PostRequestResult(fake_response, None, None)
 
         with mock.patch("benchmark_http._post_request_context", fake_ctx):
-            text, _, _, _, err, _, _ = stream_request(
+            result = stream_request(
                 {"src": {"api_url": "http://x", "headers": {}}},
                 10, "m", "src", "p", 100,
                 on_chunk=lambda delta: calls.append(delta),
             )
-        self.assertEqual(err or "", "", "no error expected for a clean stream")
+        self.assertEqual(result.error or "", "", "no error expected for a clean stream")
         # Only the two valid content lines should have fired the callback.
         self.assertEqual(calls, ["world"],
                          "on_chunk must fire only on parsed non-empty content deltas; "
@@ -121,16 +122,16 @@ class TestStreamRequest(unittest.TestCase):
                 pass
 
         with mock.patch("requests.post", return_value=MockResponse()):
-            text, think_text, first_tok, stream_end, err, finish_reason, usage = stream_request(
+            result = stream_request(
                 source_config, timeout=5, model="m", source="Local",
                 prompt="hi", max_tokens=10,
             )
 
 
-        self.assertEqual(err, None)
-        self.assertEqual(text, "Hello world")
-        self.assertEqual(finish_reason, "stop")
-        self.assertEqual(usage, {"prompt_tokens": 1, "completion_tokens": 1})
+        self.assertEqual(result.error, None)
+        self.assertEqual(result.text, "Hello world")
+        self.assertEqual(result.finish_reason, "stop")
+        self.assertEqual(result.usage, {"prompt_tokens": 1, "completion_tokens": 1})
 
     def test_stream_request_respects_stop_event(self):
         """stream_request returns 'Cancelled' when stop_event is set mid-stream."""
@@ -157,13 +158,13 @@ class TestStreamRequest(unittest.TestCase):
         with mock.patch("requests.post", return_value=SlowMockResponse()):
             thread = threading.Thread(target=set_stop_after_delay)
             thread.start()
-            text, think_text, first_tok, stream_end, err, finish_reason, usage = stream_request(
+            result = stream_request(
                 source_config, timeout=5, model="m", source="Local",
                 prompt="hi", max_tokens=10, stop_event=stop_event,
             )
             thread.join()
 
-        self.assertEqual(err, "Cancelled")
+        self.assertEqual(result.error, "Cancelled")
 
 
 class TestNonstreamRequest(unittest.TestCase):
@@ -188,15 +189,15 @@ class TestNonstreamRequest(unittest.TestCase):
                 pass
 
         with mock.patch("requests.post", return_value=MockResponse()):
-            text, think_text, usage, gen_time, err, finish_reason = nonstream_request(
+            result = nonstream_request(
                 source_config, timeout=5, model="m", source="Local",
                 prompt="hi", max_tokens=10,
             )
 
-        self.assertEqual(err, None)
-        self.assertEqual(text, "Hello world")
-        self.assertEqual(finish_reason, "stop")
-        self.assertEqual(usage, {"prompt_tokens": 1, "completion_tokens": 2})
+        self.assertEqual(result.error, None)
+        self.assertEqual(result.text, "Hello world")
+        self.assertEqual(result.finish_reason, "stop")
+        self.assertEqual(result.usage, {"prompt_tokens": 1, "completion_tokens": 2})
 
     def test_nonstream_request_respects_stop_event(self):
         """nonstream_request returns 'Cancelled' when stop_event is set mid-read."""
@@ -221,13 +222,13 @@ class TestNonstreamRequest(unittest.TestCase):
         with mock.patch("requests.post", return_value=SlowMockResponse()):
             thread = threading.Thread(target=set_stop_after_delay)
             thread.start()
-            text, think_text, usage, gen_time, err, finish_reason = nonstream_request(
+            result = nonstream_request(
                 source_config, timeout=5, model="m", source="Local",
                 prompt="hi", max_tokens=10, stop_event=stop_event,
             )
             thread.join()
 
-        self.assertEqual(err, "Cancelled")
+        self.assertEqual(result.error, "Cancelled")
 
 
 class TestRateLimitRetries(unittest.TestCase):
@@ -282,12 +283,12 @@ class TestRateLimitRetries(unittest.TestCase):
         cfg = self._cfg(max_429_retries=2)
         sequence = [self._mock_429(), self._mock_429(), self._mock_200("hello")]
         with mock.patch("requests.post", side_effect=sequence) as mp:
-            text, _, _, _, err, _, _ = stream_request(
+            result = stream_request(
                 cfg, timeout=5, model="m", source="Local",
                 prompt="hi", max_tokens=10,
             )
-        self.assertEqual(err, None)
-        self.assertEqual(text, "hello")
+        self.assertEqual(result.error, None)
+        self.assertEqual(result.text, "hello")
         self.assertEqual(mp.call_count, 3)
 
     def test_429_exhausted_returns_error_string(self):
@@ -295,23 +296,23 @@ class TestRateLimitRetries(unittest.TestCase):
         cfg = self._cfg(max_429_retries=2)
         sequence = [self._mock_429()] * 3  # 2 retries + 1 final attempt
         with mock.patch("requests.post", side_effect=sequence):
-            text, _, _, _, err, _, _ = stream_request(
+            result = stream_request(
                 cfg, timeout=5, model="m", source="Local",
                 prompt="hi", max_tokens=10,
             )
-        self.assertEqual(text, "")
-        self.assertIn("HTTP 429: ", err)
+        self.assertEqual(result.text, "")
+        self.assertIn("HTTP 429: ", result.error)
 
     def test_max_429_retries_zero_disables_retry(self):
         """Explicit ``max_429_retries: 0`` is opt-out — fail fast on first 429."""
         cfg = self._cfg(max_429_retries=0)
         with mock.patch("requests.post", side_effect=[self._mock_429()]) as mp:
-            text, _, _, _, err, _, _ = stream_request(
+            result = stream_request(
                 cfg, timeout=5, model="m", source="Local",
                 prompt="hi", max_tokens=10,
             )
         self.assertEqual(mp.call_count, 1, "max_429_retries=0 must not retry")
-        self.assertIn("HTTP 429: ", err)
+        self.assertIn("HTTP 429: ", result.error)
 
     def test_default_max_429_retries_is_two(self):
         """When no per-source config is supplied, the default is 2 retries."""
@@ -319,13 +320,13 @@ class TestRateLimitRetries(unittest.TestCase):
             "api_url": "http://localhost/chat/completions", "headers": {}}}
         sequence = [self._mock_429(), self._mock_429(), self._mock_200()]
         with mock.patch("requests.post", side_effect=sequence) as mp:
-            text, _, _, _, err, _, _ = stream_request(
+            result = stream_request(
                 cfg_no_opt, timeout=5, model="m", source="Local",
                 prompt="hi", max_tokens=10,
             )
         self.assertEqual(mp.call_count, 3, "default config: 3 attempts -> success on 3rd mock")
-        self.assertEqual(err, None)
-        self.assertEqual(text, "ok")
+        self.assertEqual(result.error, None)
+        self.assertEqual(result.text, "ok")
 
     def test_retry_after_header_beats_computed_delay(self):
         """Retry-After: 0.5s must beat the computed 0.01s floor.
@@ -338,12 +339,12 @@ class TestRateLimitRetries(unittest.TestCase):
         start = time.monotonic()
         with mock.patch("requests.post",
                         side_effect=[self._mock_429(retry_after=0.5), self._mock_200()]):
-            text, _, _, _, err, _, _ = stream_request(
+            result = stream_request(
                 cfg, timeout=5, model="m", source="Local",
                 prompt="hi", max_tokens=10,
             )
         elapsed = time.monotonic() - start
-        self.assertEqual(err, None)
+        self.assertEqual(result.error, None)
         self.assertGreaterEqual(elapsed, 0.45,
                                 f"Retry-After:0.5s should beat the 0.01s floor; got {elapsed:.2f}s")
         self.assertLess(elapsed, 1.0,
@@ -358,12 +359,12 @@ class TestRateLimitRetries(unittest.TestCase):
         start = time.monotonic()
         with mock.patch("requests.post",
                         side_effect=[self._mock_429(retry_after=future), self._mock_200()]):
-            text, _, _, _, err, _, _ = stream_request(
+            result = stream_request(
                 cfg, timeout=5, model="m", source="Local",
                 prompt="hi", max_tokens=10,
             )
         elapsed = time.monotonic() - start
-        self.assertEqual(err, None)
+        self.assertEqual(result.error, None)
         # HTTP-date ~5s ahead, no jitter because Retry-After present.
         self.assertGreaterEqual(elapsed, 4.0,
                                 f"HTTP-date Retry-After:~5s should be ~5s; got {elapsed:.2f}s")
@@ -381,12 +382,12 @@ class TestRateLimitRetries(unittest.TestCase):
         start = time.monotonic()
         with mock.patch("requests.post",
                         side_effect=[self._mock_429(), self._mock_429(), self._mock_200()]):
-            text, _, _, _, err, _, _ = stream_request(
+            result = stream_request(
                 cfg, timeout=5, model="m", source="Local",
                 prompt="hi", max_tokens=10,
             )
         elapsed = time.monotonic() - start
-        self.assertEqual(err, None)
+        self.assertEqual(result.error, None)
         # delay #1 ~= 0.012s (jitter 0.8-1.2x), delay #2 ~= 0.10s.
         # Without growth both come to ~0.024s; with growth total ~0.10-0.13s.
         self.assertGreaterEqual(elapsed, 0.05,
@@ -401,12 +402,12 @@ class TestRateLimitRetries(unittest.TestCase):
         cfg = self._cfg(max_429_retries=2)
         start = time.monotonic()
         with mock.patch("requests.post", side_effect=[self._mock_429()]) as mp:
-            text, _, _, _, err, _, _ = stream_request(
+            result = stream_request(
                 cfg, timeout=5, model="m", source="Local",
                 prompt="hi", max_tokens=10, stop_event=stop,
             )
         elapsed = time.monotonic() - start
-        self.assertEqual(err, "Cancelled")
+        self.assertEqual(result.error, "Cancelled")
         self.assertLess(elapsed, 0.1, "must not sleep when stop_event is set")
         # Pre-loop cancellation short-circuits before any HTTP request fires.
         self.assertEqual(mp.call_count, 0)
@@ -422,12 +423,12 @@ class TestRateLimitRetries(unittest.TestCase):
 
         with mock.patch("benchmark_http._set_429_sleep", side_effect=record_set):
             with mock.patch("requests.post", side_effect=sequence):
-                text, _, _, _, err, _, _ = stream_request(
+                result = stream_request(
                     cfg, timeout=5, model="m", source="Local",
                     prompt="hi", max_tokens=10, pid="rate-limiter",
                 )
-        self.assertEqual(err, None)
-        self.assertEqual(text, "ok")
+        self.assertEqual(result.error, None)
+        self.assertEqual(result.text, "ok")
         self.assertEqual(captured["key"], ("Local", "m", "rate-limiter"))
 
     def test_429_tracks_per_plugin_stats(self):
@@ -463,14 +464,14 @@ class TestRateLimitRetries(unittest.TestCase):
 
         start = time.monotonic()
         with mock.patch("requests.post", side_effect=sequence):
-            text, _, _, _, err, _, _ = stream_request(
+            result = stream_request(
                 cfg, timeout=5, model="m", source="Local",
                 prompt="hi", max_tokens=10, pid="rate-limiter",
                 on_retry=on_retry,
             )
         elapsed = time.monotonic() - start
-        self.assertEqual(err, None)
-        self.assertEqual(text, "ok")
+        self.assertEqual(result.error, None)
+        self.assertEqual(result.text, "ok")
         # The retry callback should fire exactly once, between the first
         # request and the retry, after the 429 sleep.
         self.assertEqual(len(retry_calls), 1, "on_retry must fire once per retry")

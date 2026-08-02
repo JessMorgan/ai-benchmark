@@ -11,6 +11,8 @@ from unittest import mock
 
 from plugins import discover_plugins
 from tests.utils import load_benchmark_module, MockResponse
+from benchmark_http import NonStreamResult, StreamResult
+from benchmark_plugin import PluginTaskResult
 
 
 class TestCLIArgs(unittest.TestCase):
@@ -94,8 +96,8 @@ class TestPluginExecutionMode(unittest.TestCase):
         state = self.module.BenchmarkState(models, [p.id for p in plugins])
         source_config = {"Local": {"api_url": "http://localhost:11434/chat/completions", "headers": {}, "plugin_thread_limit": 1}}
 
-        with mock.patch.object(self.module, "stream_request", return_value=("", "", None, 0, "connection refused", None, {})):
-                with mock.patch.object(self.module, "nonstream_request", return_value=("", "", {}, 0.1, "connection refused", None)):
+        with mock.patch.object(self.module, "stream_request", return_value=StreamResult("", "", None, 0, "connection refused", None, {})):
+                with mock.patch.object(self.module, "nonstream_request", return_value=NonStreamResult("", "", {}, 0.1, "connection refused", None)):
                     self.module.run_model(
                         "dummy-model", "Local", state, plugins, source_config,
                         timeout=1, token_levels=[100], output_dir="/tmp/benchmark-test",
@@ -111,8 +113,8 @@ class TestPluginExecutionMode(unittest.TestCase):
         state = self.module.BenchmarkState(models, [p.id for p in plugins])
         source_config = {"Local": {"api_url": "http://localhost:11434/chat/completions", "headers": {}, "plugin_thread_limit": 0}}
 
-        with mock.patch.object(self.module, "stream_request", return_value=("", "", None, 0, "connection refused", None, {})):
-            with mock.patch.object(self.module, "nonstream_request", return_value=("", "", {}, 0.1, "connection refused", None)):
+        with mock.patch.object(self.module, "stream_request", return_value=StreamResult("", "", None, 0, "connection refused", None, {})):
+            with mock.patch.object(self.module, "nonstream_request", return_value=NonStreamResult("", "", {}, 0.1, "connection refused", None)):
                 self.module.run_model(
                     "dummy-model", "Local", state, plugins, source_config,
                     timeout=1, token_levels=[100], output_dir="/tmp/benchmark-test",
@@ -128,8 +130,8 @@ class TestPluginExecutionMode(unittest.TestCase):
         state = self.module.BenchmarkState(models, [p.id for p in plugins])
         source_config = {"Local": {"api_url": "http://localhost:11434/chat/completions", "headers": {}, "plugin_thread_limit": 2}}
 
-        with mock.patch.object(self.module, "stream_request", return_value=("", "", None, 0, "connection refused", None, {})):
-            with mock.patch.object(self.module, "nonstream_request", return_value=("", "", {}, 0.1, "connection refused", None)):
+        with mock.patch.object(self.module, "stream_request", return_value=StreamResult("", "", None, 0, "connection refused", None, {})):
+            with mock.patch.object(self.module, "nonstream_request", return_value=NonStreamResult("", "", {}, 0.1, "connection refused", None)):
                 self.module.run_model(
                     "dummy-model", "Local", state, plugins, source_config,
                     timeout=1, token_levels=[100], output_dir="/tmp/benchmark-test",
@@ -155,14 +157,14 @@ class TestPartialPluginFailure(unittest.TestCase):
 
         def fake_run_plugin_task(target_name, api_model, source, plugin, *args, **kwargs):
             if plugin.id == "rate-limiter":
-                return {
+                return PluginTaskResult({
                     "rate-limiter_score": 5,
                     "rate-limiter_response_time": 1.2,
                     "rate-limiter_output_tokens": 100,
                     "rate-limiter_tps": 50.0,
                     "rate-limiter_stream_ok": True,
-                }, None
-            return None, "connection refused"
+                }, None)
+            return PluginTaskResult(None, "connection refused")
 
         with mock.patch.object(self.module, "_run_plugin_task", side_effect=fake_run_plugin_task):
             self.module.run_model(
@@ -213,14 +215,14 @@ class TestPartialPluginFailure(unittest.TestCase):
         def fake_run_plugin_task(target_name, api_model, source, plugin, *args, **kwargs):
             calls.append(plugin.id)
             if plugin.id == "moe-dense":
-                return {
+                return PluginTaskResult({
                     "moe-dense_score": 7,
                     "moe-dense_response_time": 2.0,
                     "moe-dense_output_tokens": 200,
                     "moe-dense_tps": 100.0,
                     "moe-dense_stream_ok": True,
-                }, None
-            return None, "should not be called"
+                }, None)
+            return PluginTaskResult(None, "should not be called")
 
         with mock.patch.object(self.module, "_run_plugin_task", side_effect=fake_run_plugin_task):
             self.module.run_model(
@@ -252,10 +254,10 @@ class TestSaveResponses(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmpdir:
             with mock.patch.object(
-                self.module, "stream_request", return_value=(expected_response, "", 1.0, 1.5, None, "stop", {})
+                self.module, "stream_request", return_value=StreamResult(expected_response, "", 1.0, 1.5, None, "stop", {})
             ):
                 with mock.patch.object(
-                    self.module, "nonstream_request", return_value=(expected_response, "", {}, 0.1, None, "stop")
+                    self.module, "nonstream_request", return_value=NonStreamResult(expected_response, "", {}, 0.1, None, "stop")
                 ):
                     self.module.run_model(
                         "dummy-model", "Local", state, plugins, source_config,
@@ -335,10 +337,10 @@ class TestSaveResponses(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmpdir:
             with mock.patch.object(
-                self.module, "stream_request", return_value=(final_content, thinking, 1.0, 1.5, None, "stop", {})
+                self.module, "stream_request", return_value=StreamResult(final_content, thinking, 1.0, 1.5, None, "stop", {})
             ):
                 with mock.patch.object(
-                    self.module, "nonstream_request", return_value=(final_content, thinking, {}, 0.1, None, "stop")
+                    self.module, "nonstream_request", return_value=NonStreamResult(final_content, thinking, {}, 0.1, None, "stop")
                 ):
                     self.module.run_model(
                         "dummy-model", "Local", state, plugins, source_config,
@@ -380,10 +382,10 @@ class TestSaveResponses(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmpdir:
             with mock.patch.object(
-                self.module, "stream_request", return_value=("response", "", 1.0, 1.5, None, "stop", {})
+                self.module, "stream_request", return_value=StreamResult("response", "", 1.0, 1.5, None, "stop", {})
             ):
                 with mock.patch.object(
-                    self.module, "nonstream_request", return_value=("response", "", {}, 0.1, None, "stop")
+                    self.module, "nonstream_request", return_value=NonStreamResult("response", "", {}, 0.1, None, "stop")
                 ):
                     self.module.run_model(
                         "dummy-model", "Local", state, plugins, source_config,
@@ -502,22 +504,22 @@ class TestDropParams(unittest.TestCase):
             for delta in ["Hello, ", "world"]:
                 if on_chunk is not None:
                     on_chunk(delta)
-            return "Hello, world", "", 1.0, 1.5, None, "stop", {}
+            return StreamResult("Hello, world", "", 1.0, 1.5, None, "stop", {})
 
         with mock.patch.object(self.module, "stream_request", side_effect=fake_stream_request):
-            with mock.patch.object(self.module, "nonstream_request", return_value=("", "", {}, 0.1, "no tokens", "stop")):
-                result, err = self.module._run_plugin_task(
+            with mock.patch.object(self.module, "nonstream_request", return_value=NonStreamResult("", "", {}, 0.1, "no tokens", "stop")):
+                task_result = self.module._run_plugin_task(
                     "dummy-model", "dummy-model", "Local", plugins[0], source_config,
                     timeout=1, token_levels=[100], session_seed=12345,
                     log_file=None, global_cfg={}, state=state,
                 )
 
-        self.assertIsNone(err)
+        self.assertIsNone(task_result.error)
         snap = state.snapshot()["dummy-model"]
         self.assertTrue(snap["rate-limiter_first_chunk_seen"])
         # "Hello, " (7) + "world" (5) = 12 chars -> 12 // 4 = 3 tok
         self.assertEqual(snap["rate-limiter_bytes_received"], 12)
-        self.assertEqual(result["rate-limiter_output_tokens"], 3)
+        self.assertEqual(task_result.result["rate-limiter_output_tokens"], 3)
 
 
 
@@ -581,11 +583,11 @@ class TestNonStreamingPluginRetry(unittest.TestCase):
 
         with mock.patch.object(
             self.module, "nonstream_request",
-            return_value=("", "", {}, 0.1, None, "stop"),
+            return_value=NonStreamResult("", "", {}, 0.1, None, "stop"),
         ):
             # Will raise UnboundLocalError if ``on_retry`` is not bound
             # before the call site below.
-            result, err = self.module._run_plugin_task(
+            task_result = self.module._run_plugin_task(
                 "dummy-model", "dummy-model", "Local", plugin, source_config,
                 timeout=1, token_levels=[100], session_seed=12345,
                 log_file=None, global_cfg={}, state=state,
@@ -593,8 +595,8 @@ class TestNonStreamingPluginRetry(unittest.TestCase):
 
         # Empty response correctly scores 0 -- we only assert no
         # exception was raised at the kwargs evaluation.
-        self.assertIsNone(err)
-        self.assertEqual(result["structured-output_score"], 0.0)
+        self.assertIsNone(task_result.error)
+        self.assertEqual(task_result.result["structured-output_score"], 0.0)
 
     def test_run_plugin_task_nonstreaming_429_retry_fires_on_retry(self):
         """End-to-end: a 429 retry on a non-streaming plugin still
@@ -665,13 +667,13 @@ class TestNonStreamingPluginRetry(unittest.TestCase):
         with mock.patch(
             "requests.post", side_effect=[_Resp429(), _mk_200()],
         ):
-            result, err = self.module._run_plugin_task(
+            task_result = self.module._run_plugin_task(
                 "dummy-model", "dummy-model", "Local", plugin, source_config,
                 timeout=5, token_levels=[100], session_seed=12345,
                 log_file=None, global_cfg={}, state=state,
             )
 
-        self.assertIsNone(err)
+        self.assertIsNone(task_result.error)
         # ``_run_plugins`` calls ``start_plugin_run`` once at dispatch
         # (outside ``_run_plugin_task`` -- not visible to this test's
         # wrapping); the on_retry closure is the only path inside
@@ -753,13 +755,13 @@ class TestStopEventInterruption(unittest.TestCase):
         with mock.patch("requests.post", side_effect=fake_post):
             thread = threading.Thread(target=set_stop_after_delay)
             thread.start()
-            text, think_text, first_tok, stream_end, err, finish_reason, usage = self.module.stream_request(
+            request_result = self.module.stream_request(
                 source_config, timeout=5, model="m", source="Local",
                 prompt="hello", max_tokens=10, stop_event=stop_event,
             )
             thread.join()
 
-        self.assertEqual(err, "Cancelled")
+        self.assertEqual(request_result.error, "Cancelled")
 
     def test_nonstream_request_respects_stop_event(self):
         """nonstream_request returns 'Cancelled' when stop_event is set mid-read."""
@@ -788,13 +790,13 @@ class TestStopEventInterruption(unittest.TestCase):
         with mock.patch("requests.post", side_effect=fake_post):
             thread = threading.Thread(target=set_stop_after_delay)
             thread.start()
-            text, think_text, usage, gen_time, err, finish_reason = self.module.nonstream_request(
+            request_result = self.module.nonstream_request(
                 source_config, timeout=5, model="m", source="Local",
                 prompt="hello", max_tokens=10, stop_event=stop_event,
             )
             thread.join()
 
-        self.assertEqual(err, "Cancelled")
+        self.assertEqual(request_result.error, "Cancelled")
 
 
 class TestScriptedMode(unittest.TestCase):
@@ -1348,8 +1350,7 @@ class TestStreamPartialTextKept(unittest.TestCase):
         streamed_text = "a" * 40000  # 40 K chars -> 10 K tokens by len/4.
 
         with mock.patch.object(
-            self.module, "stream_request",
-            return_value=(
+            self.module, "stream_request",                return_value=StreamResult(
                 streamed_text, "", 1.0, 2000.0,
                 "Total timeout (2000s) exceeded",
                 "length", {},
@@ -1358,13 +1359,13 @@ class TestStreamPartialTextKept(unittest.TestCase):
             with mock.patch.object(
                 self.module, "nonstream_request",
             ) as mock_nonstream:
-                result, err = self.module._run_plugin_task(
+                task_result = self.module._run_plugin_task(
                     "dummy-model", "dummy-model", "Local", plugin, source_config,
                     timeout=1, token_levels=[100], session_seed=12345,
                     log_file=None, global_cfg={}, state=state,
                 )
 
-        self.assertIsNone(err)
+        self.assertIsNone(task_result.error)
         # The streamed text was kept -- output_tokens reflects the real
         # streamed length, NOT the empty-response value ``count_tokens("")`` = 0.
         # State-side
@@ -1372,8 +1373,8 @@ class TestStreamPartialTextKept(unittest.TestCase):
         # ``_run_plugin_task``'s contract is the result dict + per-SSE
         # state counters (which we don't drive here because the mock
         # doesn't fire ``on_chunk``).
-        self.assertEqual(result["rate-limiter_output_tokens"], 10000)
-        self.assertFalse(result["rate-limiter_stream_ok"])
+        self.assertEqual(task_result.result["rate-limiter_output_tokens"], 10000)
+        self.assertFalse(task_result.result["rate-limiter_stream_ok"])
         # Truncation semantics are NOT the bug here -- the kimi-dev
         # operator observation is about output_tokens collapsing to 1,
         # not about the truncation flag. The conditional ``sfr ->
@@ -1400,22 +1401,21 @@ class TestStreamPartialTextKept(unittest.TestCase):
         # 3 000 chars from a successful nonstream retry -> 750 tokens.
         nonstream_text = "x" * 3000
         with mock.patch.object(
-            self.module, "stream_request",
-            return_value=("", "", None, 1.0, "connection refused", None, {}),
+            self.module, "stream_request",                return_value=StreamResult("", "", None, 1.0, "connection refused", None, {}),
         ):
             with mock.patch.object(
                 self.module, "nonstream_request",
-                return_value=(nonstream_text, "", {}, 0.1, None, "stop"),
+                return_value=NonStreamResult(nonstream_text, "", {}, 0.1, None, "stop"),
             ) as mock_nonstream:
-                result, err = self.module._run_plugin_task(
+                task_result = self.module._run_plugin_task(
                     "dummy-model", "dummy-model", "Local", plugin, source_config,
                     timeout=1, token_levels=[100], session_seed=12345,
                     log_file=None, global_cfg={}, state=state,
                 )
 
-        self.assertIsNone(err)
-        self.assertEqual(result["rate-limiter_output_tokens"], 750)
-        self.assertFalse(result["rate-limiter_stream_ok"])
+        self.assertIsNone(task_result.error)
+        self.assertEqual(task_result.result["rate-limiter_output_tokens"], 750)
+        self.assertFalse(task_result.result["rate-limiter_stream_ok"])
         mock_nonstream.assert_called_once()
 
 

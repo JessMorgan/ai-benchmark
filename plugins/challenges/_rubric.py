@@ -1,5 +1,8 @@
 """Shared rubric helper for challenge plugins."""
 import re
+from typing import Any
+
+from benchmark_plugin import EvaluationResult
 
 
 class Rubric:
@@ -13,7 +16,7 @@ class Rubric:
 
     def __init__(self, max_score: float):
         self.max_score = max_score
-        self.criteria: list[dict] = []
+        self.criteria: list[dict[str, Any]] = []
         self.total = 0.0
 
     def add_criterion(self, name: str, max_points: float, earned: float):
@@ -50,7 +53,7 @@ class Rubric:
                 earned += points
         self.add_criterion(name, max_points, earned)
 
-    def results(self) -> tuple[float, list[dict]]:
-        """Return the final score and the rubric list."""
+    def results(self) -> EvaluationResult:
+        """Return the final score and the rubric list as named fields."""
         final_score = round(min(self.total, self.max_score), 1)
-        return final_score, self.criteria
+        return EvaluationResult(final_score, self.criteria)

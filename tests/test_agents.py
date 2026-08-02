@@ -8,6 +8,8 @@ from unittest import mock
 from benchmark_core import resolve_targets
 from plugins import discover_plugins
 from tests.utils import load_benchmark_module
+from benchmark_http import NonStreamResult, StreamResult
+from benchmark_plugin import PluginTaskResult
 
 
 class TestResolveTargets(unittest.TestCase):
@@ -106,13 +108,13 @@ class TestAgentMetadata(unittest.TestCase):
         source_config = {"Local": {"api_url": "http://localhost:11434/chat/completions", "headers": {}, "plugin_thread_limit": 1}}
 
         def fake_run_plugin_task(target_name, api_model, source, plugin, *args, **kwargs):
-            return {
+            return PluginTaskResult({
                 f"{plugin.id}_score": 5.0,
                 f"{plugin.id}_response_time": 1.0,
                 f"{plugin.id}_output_tokens": 100,
                 f"{plugin.id}_tps": 50.0,
                 f"{plugin.id}_stream_ok": True,
-            }, None
+            }, None)
 
         with mock.patch.object(self.module, "_run_plugin_task", side_effect=fake_run_plugin_task):
             self.module.run_model(
@@ -140,13 +142,13 @@ class TestAgentMetadata(unittest.TestCase):
         source_config = {"Local": {"api_url": "http://localhost:11434/chat/completions", "headers": {}, "plugin_thread_limit": 1}}
 
         def fake_run_plugin_task(target_name, api_model, source, plugin, *args, **kwargs):
-            return {
+            return PluginTaskResult({
                 f"{plugin.id}_score": 5.0,
                 f"{plugin.id}_response_time": 1.0,
                 f"{plugin.id}_output_tokens": 100,
                 f"{plugin.id}_tps": 50.0,
                 f"{plugin.id}_stream_ok": True,
-            }, None
+            }, None)
 
         with mock.patch.object(self.module, "_run_plugin_task", side_effect=fake_run_plugin_task):
             self.module.run_model(
@@ -180,11 +182,11 @@ class TestAgentHTTPRequest(unittest.TestCase):
             if system_prompt:
                 captured["body"]["messages"].append({"role": "system", "content": system_prompt})
             captured["body"]["messages"].append({"role": "user", "content": prompt})
-            return "ok", "", {}, 0.1, None, "stop"
+            return NonStreamResult("ok", "", {}, 0.1, None, "stop")
 
         state = module.BenchmarkState({"my-agent": "Local"}, ["rate-limiter"])
         with mock.patch.object(module, "nonstream_request", side_effect=fake_nonstream):
-            with mock.patch.object(module, "stream_request", return_value=("", "", None, 0, "no tokens", None, {})):
+            with mock.patch.object(module, "stream_request", return_value=StreamResult("", "", None, 0, "no tokens", None, {})):
                 module._run_plugin_task(
                     "my-agent", "underlying-model", "Local", plugins[0], source_config,
                     timeout=1, token_levels=[100], session_seed=12345,

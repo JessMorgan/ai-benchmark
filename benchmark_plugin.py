@@ -1,5 +1,23 @@
-"""Abstract base classes for AI benchmark plugins."""
+"""Abstract base classes and typed contracts for AI benchmark plugins."""
 import abc
+from dataclasses import dataclass
+from typing import Any
+
+
+@dataclass(frozen=True)
+class EvaluationResult:
+    """Score and rubric breakdown returned by a task plugin."""
+
+    score: float
+    rubric: list[dict[str, Any]]
+
+
+@dataclass(frozen=True)
+class PluginTaskResult:
+    """Outcome of running one benchmark task."""
+
+    result: dict[str, Any] | None
+    error: str | None
 
 
 class BenchmarkOutputPlugin(abc.ABC):
@@ -109,12 +127,11 @@ class BenchmarkTaskPlugin(abc.ABC):
         """Score the model's response and return a float."""
         ...
 
-    def evaluate(self, response_text: str) -> tuple[float, list[dict]]:
+    def evaluate(self, response_text: str) -> EvaluationResult:
         """Score the model's response and return a detailed rubric.
 
-        Returns a tuple of ``(score, rubric)`` where ``rubric`` is a list of
-        dictionaries describing each graded criterion. Plugins may override
-        this method to provide a breakdown; the default implementation
-        returns ``(self.score(response_text), [])`` for backward compatibility.
+        Returns an :class:`EvaluationResult` containing the score and a list
+        of dictionaries describing each graded criterion. Plugins may override
+        this method to provide a breakdown.
         """
-        return self.score(response_text), []
+        return EvaluationResult(self.score(response_text), [])

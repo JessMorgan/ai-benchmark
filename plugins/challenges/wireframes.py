@@ -1,7 +1,7 @@
 """Wireframe creation benchmark task for frontend/UX design capability."""
 import re
 
-from benchmark_plugin import BenchmarkTaskPlugin
+from benchmark_plugin import BenchmarkTaskPlugin, EvaluationResult
 from plugins.challenges._rubric import Rubric
 
 
@@ -68,7 +68,7 @@ class WireframesPlugin(BenchmarkTaskPlugin):
 
     @property
     def version(self):
-        return "0.2.0"
+        return "0.3.0"
 
     @property
     def name(self):
@@ -117,7 +117,7 @@ class WireframesPlugin(BenchmarkTaskPlugin):
     def evaluate(self, response_text):
         t = response_text
         if not t or not t.strip():
-            return 0.0, []
+            return EvaluationResult(0.0, [])
 
         rubric = Rubric(self.max_score)
 
@@ -231,4 +231,4 @@ class WireframesPlugin(BenchmarkTaskPlugin):
         return rubric.results()
 
     def score(self, response_text):
-        return self.evaluate(response_text)[0]
+        return self.evaluate(response_text).score

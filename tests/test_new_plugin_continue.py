@@ -6,6 +6,7 @@ from unittest import mock
 
 from plugins import discover_plugins
 from tests.utils import load_benchmark_module
+from benchmark_plugin import PluginTaskResult
 
 
 class TestNewPluginContinue(unittest.TestCase):
@@ -46,14 +47,14 @@ class TestNewPluginContinue(unittest.TestCase):
             def fake_run_plugin_task(target_name, api_model, source, plugin, *args, **kwargs):
                 calls.append(plugin.id)
                 if plugin.id == "moe-dense":
-                    return {
+                    return PluginTaskResult({
                         "moe-dense_score": 7.0,
                         "moe-dense_response_time": 2.0,
                         "moe-dense_output_tokens": 200,
                         "moe-dense_tps": 100.0,
                         "moe-dense_stream_ok": False,
-                    }, None
-                return None, "should not be called"
+                    }, None)
+                return PluginTaskResult(None, "should not be called")
 
             with mock.patch.object(self.module, "_run_plugin_task", side_effect=fake_run_plugin_task):
                 self.module.run_model(
@@ -99,12 +100,12 @@ class TestNewPluginContinue(unittest.TestCase):
             def fake_run_plugin_task(target_name, api_model, source, plugin, *args, **kwargs):
                 plugin_calls.setdefault(target_name, []).append(plugin.id)
                 if plugin.id == "moe-dense":
-                    return {
+                    return PluginTaskResult({
                         "moe-dense_score": 7.0, "moe-dense_response_time": 2.0,
                         "moe-dense_output_tokens": 200, "moe-dense_tps": 100.0,
                         "moe-dense_stream_ok": False,
-                    }, None
-                return None, "should not be called"
+                    }, None)
+                return PluginTaskResult(None, "should not be called")
 
             with mock.patch.object(self.module, "_run_plugin_task", side_effect=fake_run_plugin_task):
                 for name in models:
@@ -200,13 +201,13 @@ class TestNewPluginContinue(unittest.TestCase):
 
             def fake_run_plugin_task(target_name, api_model, source, plugin, *args, **kwargs):
                 run_calls.append(plugin.id)
-                return {
+                return PluginTaskResult({
                     f"{plugin.id}_score": 9.0,
                     f"{plugin.id}_response_time": 1.0,
                     f"{plugin.id}_output_tokens": 50,
                     f"{plugin.id}_tps": 25.0,
                     f"{plugin.id}_stream_ok": True,
-                }, None
+                }, None)
 
             with mock.patch.object(self.module, "_run_plugin_task", side_effect=fake_run_plugin_task):
                 self.module.run_model(

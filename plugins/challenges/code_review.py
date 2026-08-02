@@ -2,7 +2,7 @@
 import json
 import re
 
-from benchmark_plugin import BenchmarkTaskPlugin
+from benchmark_plugin import BenchmarkTaskPlugin, EvaluationResult
 from plugins.challenges._rubric import Rubric
 
 
@@ -13,7 +13,7 @@ class CodeReviewPlugin(BenchmarkTaskPlugin):
 
     @property
     def version(self):
-        return "0.2.0"
+        return "0.3.0"
 
     @property
     def name(self):
@@ -83,7 +83,7 @@ class CodeReviewPlugin(BenchmarkTaskPlugin):
     def evaluate(self, response_text):
         descriptions = self._extract_descriptions(response_text)
         if not descriptions:
-            return 0.0, []
+            return EvaluationResult(0.0, [])
 
         combined = " ".join(descriptions)
         rubric = Rubric(self.max_score)
@@ -133,4 +133,4 @@ class CodeReviewPlugin(BenchmarkTaskPlugin):
         return rubric.results()
 
     def score(self, response_text):
-        return self.evaluate(response_text)[0]
+        return self.evaluate(response_text).score

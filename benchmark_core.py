@@ -16,6 +16,7 @@ from benchmark_http import (  # noqa: F401
     stream_request,
     nonstream_request,
 )
+from benchmark_plugin import PluginTaskResult
 from benchmark_outputs import (  # noqa: F401
     _save_outputs,
     gen_csv,
@@ -337,15 +338,15 @@ def generate_config_from_api(base_url, api_key=None):
 def _run_plugin_task(target_name, api_model, source, plugin, source_config, timeout,
                      token_levels, session_seed, log_file, global_cfg, state,
                      stop_event=None, save_responses=False, output_dir=None,
-                     system_prompt=None, is_agent=False):
-    """Run a single plugin task for a model or agent. Returns (result_dict, error)."""
+                     system_prompt=None, is_agent=False) -> PluginTaskResult:
+    """Run a single plugin task and return named result/error fields."""
     pid = plugin.id
     cfg = source_config.get(source)
     if cfg is None:
-        return None, f"Unknown source '{source}' — not in SOURCE_CONFIG"
+        return PluginTaskResult(None, f"Unknown source '{source}' — not in SOURCE_CONFIG")
 
     if stop_event and stop_event.is_set():
-        return None, "Cancelled"
+        return PluginTaskResult(None, "Cancelled")
 
     prompt = plugin.get_prompt()
     temperature = plugin.get_temperature(global_cfg or {})
@@ -366,7 +367,7 @@ def _run_plugin_task(target_name, api_model, source, plugin, source_config, time
 
     for attempt, max_tok in enumerate(token_levels):
         if stop_event and stop_event.is_set():
-            return None, "Cancelled"
+            return PluginTaskResult(None, "Cancelled")
         attempt_start = time.time()
 
         # MUST be defined above both branches -- Python scope analysis
@@ -430,7 +431,7 @@ def _run_plugin_task(target_name, api_model, source, plugin, source_config, time
                 state.mark_first_chunk_seen(target_name, pid, ts=time.time())
                 state.add_thinking_bytes_received(target_name, pid, len(think_delta))
 
-            text, think_text, first_tok, stream_end, serr, sfr, _usage = stream_request(
+            stream_result = stream_request(
                 source_config, timeout, api_model, source, prompt, max_tok,
                 log_path=log_file,
                 log_label=f"{plugin.name} (Streaming, attempt {attempt + 1})",
@@ -438,6 +439,12 @@ def _run_plugin_task(target_name, api_model, source, plugin, source_config, time
                 drop_params=drop_params, stop_event=stop_event,
                 system_prompt=system_prompt,
                 on_chunk=on_chunk, on_think_chunk=on_think_chunk, pid=pid, on_retry=on_retry)
+            text = stream_result.text
+            think_text = stream_result.think_text
+            first_tok = stream_result.first_tok
+            stream_end = stream_result.stream_end
+            serr = stream_result.error
+            sfr = stream_result.finish_reason
 
             if serr or first_tok is None:
                 # Streaming attempt failed. If the stream actually opened
@@ -464,15 +471,21 @@ def _run_plugin_task(target_name, api_model, source, plugin, source_config, time
                     truncated = (sfr == "length")
                     stream_ok = False
                 else:
-                    text, think_text, nsusage, ns_time, nserr, nsfr = nonstream_request(
+                    nonstream_result = nonstream_request(
                         source_config, timeout, api_model, source, prompt, max_tok,
                         log_path=log_file,
                         log_label=f"{plugin.name} (Non-Streaming, attempt {attempt + 1})",
                         session_seed=session_seed, temperature=temperature,
                         drop_params=drop_params, stop_event=stop_event,
                         system_prompt=system_prompt, pid=pid, on_retry=on_retry)
+                    text = nonstream_result.text
+                    think_text = nonstream_result.think_text
+                    nsusage = nonstream_result.usage
+                    ns_time = nonstream_result.gen_time
+                    nserr = nonstream_result.error
+                    nsfr = nonstream_result.finish_reason
                     if nserr:
-                        return None, f"Stream: {serr or 'no tokens'}. Nostream: {nserr}"
+                        return PluginTaskResult(None, f"Stream: {serr or 'no tokens'}. Nostream: {nserr}")
                     stream_ok = False
                     response_time = round(ns_time, 1)
                     gen_time = ns_time
@@ -483,16 +496,22 @@ def _run_plugin_task(target_name, api_model, source, plugin, source_config, time
                 gen_time = stream_end - first_tok if first_tok else 0
                 truncated = (sfr == "length")
         else:
-            text, think_text, usage, gen_time, gen_err, gen_fr = nonstream_request(
+            nonstream_result = nonstream_request(
                 source_config, timeout, api_model, source, prompt, max_tok,
                 log_path=log_file,
                 log_label=f"{plugin.name} (attempt {attempt + 1})",
                 session_seed=session_seed, temperature=temperature,
                 drop_params=drop_params, stop_event=stop_event,
                 system_prompt=system_prompt, pid=pid, on_retry=on_retry)
+            text = nonstream_result.text
+            think_text = nonstream_result.think_text
+            usage = nonstream_result.usage
+            gen_time = nonstream_result.gen_time
+            gen_err = nonstream_result.error
+            gen_fr = nonstream_result.finish_reason
 
             if gen_err:
-                return None, gen_err
+                return PluginTaskResult(None, gen_err)
             stream_ok = False
             response_time = round(gen_time, 1)
             truncated = (gen_fr == "length")
@@ -562,15 +581,16 @@ def _run_plugin_task(target_name, api_model, source, plugin, source_config, time
     # ``meta.json`` sidecar — only ``prompt.txt`` and ``<plugin>.txt``
     # survived, which forced debuggers to rebuild the failure by hand. We
     # now catch every exception, persist the ``error`` + ``traceback``
-    # fields alongside the metrics that WERE successfully gathered, and
-    # surface the same ``(None, err_str)`` fail signature as the streaming
-    # failure path.
+    # fields alongside the metrics that WERE successfully gathered, and    #    surface the same named ``PluginTaskResult`` failure contract as the
+    #    streaming failure path.
     score = "fail"
     rubric = []
     score_error = None
     score_traceback_text = None
     try:
-        score, rubric = plugin.evaluate(text)
+        evaluation = plugin.evaluate(text)
+        score = evaluation.score
+        rubric = evaluation.rubric
     except Exception as exc:
         score_error = f"plugin.evaluate raised {type(exc).__name__}: {exc}"
         score_traceback_text = traceback.format_exc()
@@ -612,7 +632,7 @@ def _run_plugin_task(target_name, api_model, source, plugin, source_config, time
             pass
 
     if score_error is not None:
-        return None, score_error
+        return PluginTaskResult(None, score_error)
 
     result = {
         f"{pid}_score": score,
@@ -624,7 +644,7 @@ def _run_plugin_task(target_name, api_model, source, plugin, source_config, time
         f"{pid}_repeating": repeating,
         f"{pid}_stream_ok": stream_ok,
     }
-    return result, None
+    return PluginTaskResult(result, None)
 
 
 def run_model(model_name, source, state, active_plugins, source_config, timeout,
@@ -736,7 +756,7 @@ def _run_plugins(target_name, api_model, source, state, active_plugins, plugins_
         # downstream visualisation that read it.
         state.start_plugin_run(target_name, pid)
         try:
-            result, err = _run_plugin_task(target_name, api_model, source, plugin, source_config,
+            task_result = _run_plugin_task(target_name, api_model, source, plugin, source_config,
                                            timeout, token_levels, session_seed, log_file,
                                            global_cfg or {}, state=state,
                                            stop_event=stop_event,
@@ -744,6 +764,8 @@ def _run_plugins(target_name, api_model, source, state, active_plugins, plugins_
                                            output_dir=output_dir,
                                            system_prompt=system_prompt,
                                            is_agent=is_agent)
+            result = task_result.result
+            err = task_result.error
         finally:
             # Clear the in-flight marker even on exception/cancellation so
             # parallel plugins aren't stranded in the running list when one

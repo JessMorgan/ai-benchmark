@@ -2,7 +2,7 @@
 import json
 import re
 
-from benchmark_plugin import BenchmarkTaskPlugin
+from benchmark_plugin import BenchmarkTaskPlugin, EvaluationResult
 from plugins.challenges._rubric import Rubric
 
 try:
@@ -18,7 +18,7 @@ class StructuredOutputPlugin(BenchmarkTaskPlugin):
 
     @property
     def version(self):
-        return "0.2.0"
+        return "0.3.0"
 
     @property
     def name(self):
@@ -282,13 +282,15 @@ class StructuredOutputPlugin(BenchmarkTaskPlugin):
             earned = 0.0
         rubric.add_criterion("No placeholder values", 2.0, earned)
 
-        score, criteria = rubric.results()
+        evaluation = rubric.results()
+        score = evaluation.score
+        criteria = evaluation.rubric
         if has_explanatory_text:
             score = round(max(score - 0.5, 0.0), 1)
-        return score, criteria
+        return EvaluationResult(score, criteria)
 
     def score(self, response_text):
-        return self.evaluate(response_text)[0]
+        return self.evaluate(response_text).score
 
     def _collect_leaf_values(self, obj, out):
         """Recursively collect leaf values for placeholder checking."""

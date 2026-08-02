@@ -15,9 +15,80 @@ import threading
 import time
 import traceback
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import datetime, timezone
+from typing import Any, Callable, Iterator, Optional
 
 import requests
+
+
+@dataclass(frozen=True)
+class PostRequestResult:
+    """Outcome yielded by the HTTP request context manager."""
+
+    response: Optional[requests.Response]
+    error: Optional[str]
+    curl_cmd: Optional[str]
+
+
+@dataclass(frozen=True)
+class SSEParseResult:
+    """Updated state after parsing one SSE line."""
+
+    first_tok: Optional[float]
+    text: str
+    think_text: str
+    finish_reason: Optional[str]
+    usage: dict[str, Any]
+    done: bool
+
+
+@dataclass(frozen=True)
+class StreamResult:
+    """Structured result returned by :func:`stream_request`."""
+
+    text: str
+    think_text: str
+    first_tok: Optional[float]
+    stream_end: float
+    error: Optional[str]
+    finish_reason: Optional[str]
+    usage: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class NonStreamResult:
+    """Structured result returned by :func:`nonstream_request`."""
+
+    text: str
+    think_text: str
+    usage: dict[str, Any]
+    gen_time: float
+    error: Optional[str]
+    finish_reason: Optional[str]
+
+
+@dataclass(frozen=True)
+class ResponseBodyResult:
+    """Result of reading a non-streaming response body."""
+
+    text: Optional[str]
+    error: Optional[str]
+
+
+@dataclass(frozen=True)
+class _StreamLineError:
+    """Internal sentinel for an exception raised while reading SSE lines."""
+
+    error: str
+
+
+def _safe_iter_lines(resp: requests.Response):
+    """Yield SSE lines while converting iterator failures to a sentinel."""
+    try:
+        yield from resp.iter_lines(decode_unicode=True)
+    except Exception as exc:
+        yield _StreamLineError(f"{type(exc).__name__}: {exc}")
 
 
 _log_lock = threading.Lock()
@@ -204,10 +275,10 @@ def _build_request_body(model, prompt, max_tokens, session_seed, temperature, dr
 
 @contextmanager
 def _post_request_context(source_config, source, body, timeout, stream, log_path, log_label,
-                          stop_event=None, pid=None, on_retry=None):
+                          stop_event=None, pid=None, on_retry=None) -> Iterator[PostRequestResult]:
     """Make a POST request and yield the response, handling cleanup.
 
-    Yields a tuple of ``(response, error, curl_cmd)``. ``response`` is the
+    Yields a :class:`PostRequestResult`. ``response`` is the
     requests Response object on success, or ``None`` if an error occurred
     before or during the request. Cleanup (watchdog cancellation, active
     request tracking removal, response close) is performed automatically.
@@ -270,7 +341,7 @@ def _post_request_context(source_config, source, body, timeout, stream, log_path
         for attempt in range(max_retries + 1):
             # Cancellation check before each request attempt.
             if stop_event is not None and stop_event.is_set():
-                yield None, "Cancelled", curl_cmd
+                yield PostRequestResult(None, "Cancelled", curl_cmd)
                 return
 
             # Give the caller a chance to reset per-request bookkeeping
@@ -298,7 +369,7 @@ def _post_request_context(source_config, source, body, timeout, stream, log_path
                 error = f"{type(e).__name__}: {e}"
                 if log_path and curl_cmd:
                     log_request_entry(log_path, curl_cmd, f"ERROR: {error}", log_label)
-                yield None, error, curl_cmd
+                yield PostRequestResult(None, error, curl_cmd)
                 return
 
             with _active_requests_lock:
@@ -328,9 +399,9 @@ def _post_request_context(source_config, source, body, timeout, stream, log_path
                         log_request_entry(
                             log_path, curl_cmd,
                             f"HTTP {resp.status_code}: {resp.text[:500]}", log_label)
-                    yield None, error, curl_cmd
+                    yield PostRequestResult(None, error, curl_cmd)
                 else:
-                    yield resp, None, curl_cmd
+                    yield PostRequestResult(resp, None, curl_cmd)
                 return
 
             # HTTP 429 — decide whether to surface or retry.
@@ -341,7 +412,7 @@ def _post_request_context(source_config, source, body, timeout, stream, log_path
                     log_request_entry(
                         log_path, curl_cmd,
                         f"HTTP {resp.status_code}: {resp.text[:500]}", log_label)
-                yield None, error, curl_cmd
+                yield PostRequestResult(None, error, curl_cmd)
                 return
 
             # Compute retry-after delay: exponential backoff with Retry-After
@@ -420,7 +491,7 @@ def _post_request_context(source_config, source, body, timeout, stream, log_path
             try:
                 if stop_event is not None:
                     if stop_event.wait(delay):
-                        yield None, "Cancelled", curl_cmd
+                        yield PostRequestResult(None, "Cancelled", curl_cmd)
                         return
                 else:
                     time.sleep(delay)
@@ -444,11 +515,13 @@ def _post_request_context(source_config, source, body, timeout, stream, log_path
                 pass
 
 
-def _parse_sse_line(line, first_tok, text, think_text, finish_reason, usage):
+def _parse_sse_line(line: str, first_tok: Optional[float], text: str,
+                    think_text: str, finish_reason: Optional[str],
+                    usage: dict[str, Any]) -> SSEParseResult:
     """Parse a single Server-Sent Events line and update streaming state.
 
-    Returns a tuple of ``(first_tok, text, think_text, finish_reason, usage, done)``.
-    ``done`` is True when the ``[DONE]`` sentinel is encountered.
+    Returns an :class:`SSEParseResult`. ``done`` is True when the ``[DONE]``
+    sentinel is encountered.
 
     ``think_text`` accumulates ``reasoning_content`` from SSE deltas so
     thinking-capable models' chain-of-thought is preserved separately from
@@ -456,14 +529,14 @@ def _parse_sse_line(line, first_tok, text, think_text, finish_reason, usage):
     ``think_text`` unchanged (empty string).
     """
     if not line.startswith("data: "):
-        return first_tok, text, think_text, finish_reason, usage, False
+        return SSEParseResult(first_tok, text, think_text, finish_reason, usage, False)
     payload = line[6:]
     if payload.strip() == "[DONE]":
-        return first_tok, text, think_text, finish_reason, usage, True
+        return SSEParseResult(first_tok, text, think_text, finish_reason, usage, True)
     try:
         data = json.loads(payload)
     except json.JSONDecodeError:
-        return first_tok, text, think_text, finish_reason, usage, False
+        return SSEParseResult(first_tok, text, think_text, finish_reason, usage, False)
     if first_tok is None:
         first_tok = time.time()
     for ch in data.get("choices", []):
@@ -475,16 +548,20 @@ def _parse_sse_line(line, first_tok, text, think_text, finish_reason, usage):
             finish_reason = fr
     if "usage" in data:
         usage = data["usage"]
-    return first_tok, text, think_text, finish_reason, usage, False
+    return SSEParseResult(first_tok, text, think_text, finish_reason, usage, False)
 
 
 def stream_request(source_config, timeout, model, source, prompt, max_tokens=2048,
                    log_path=None, log_label=None, session_seed=0, temperature=None,
                    drop_params=None, stop_event=None, system_prompt=None,
-                   on_chunk=None, on_think_chunk=None, pid=None, on_retry=None):
+                   on_chunk: Optional[Callable[[str], None]] = None,
+                   on_think_chunk: Optional[Callable[[str], None]] = None,
+                   pid: Optional[str] = None,
+                   on_retry: Optional[Callable[[], None]] = None) -> StreamResult:
     """Make a streaming chat-completion request and return parsed results.
 
-    Returns a 7-tuple ``(text, think_text, first_tok, stream_end, error, finish_reason, usage)``.
+    Returns a :class:`StreamResult` with named fields for the assembled text,
+    timing, finish reason, usage, and any transport error.
     ``think_text`` contains any reasoning/thinking content emitted by
     thinking-capable models (conversational ``reasoning_content`` field from
     SSE deltas). For standard models it is an empty string.
@@ -506,20 +583,37 @@ def stream_request(source_config, timeout, model, source, prompt, max_tokens=204
     body = _build_request_body(model, prompt, max_tokens, session_seed, temperature, drop_params,
                                stream=True, system_prompt=system_prompt)
     with _post_request_context(source_config, source, body, timeout, True, log_path, log_label,
-                               stop_event=stop_event, pid=pid, on_retry=on_retry) as (resp, err, curl_cmd):
-        if err:
-            return text, think_text, first_tok, time.time(), err, finish_reason, usage
+                               stop_event=stop_event, pid=pid, on_retry=on_retry) as request:
+        if request.error:
+            return StreamResult(text, think_text, first_tok, time.time(),
+                                request.error, finish_reason, usage)
+        resp = request.response
+        if resp is None:
+            return StreamResult(text, think_text, first_tok, time.time(),
+                                "HTTP request returned no response", finish_reason, usage)
         prev_text_len = 0
         prev_think_len = 0
-        for line in resp.iter_lines(decode_unicode=True):
+        for line in _safe_iter_lines(resp):
+            if isinstance(line, _StreamLineError):
+                error = line.error
+                break
             if stop_event and stop_event.is_set():
                 error = "Cancelled"
                 break
             if not line:
                 continue
-            first_tok, text, think_text, finish_reason, usage, done = _parse_sse_line(
-                line, first_tok, text, think_text, finish_reason, usage)
-            if done:
+            try:
+                parsed = _parse_sse_line(
+                    line, first_tok, text, think_text, finish_reason, usage)
+            except Exception as exc:
+                error = f"SSE parse error: {type(exc).__name__}: {exc}"
+                break
+            first_tok = parsed.first_tok
+            text = parsed.text
+            think_text = parsed.think_text
+            finish_reason = parsed.finish_reason
+            usage = parsed.usage
+            if parsed.done:
                 break
             # Notify the caller of the content delta accumulated in this
             # iteration. We compute the delta from ``text`` length so a
@@ -556,28 +650,36 @@ def stream_request(source_config, timeout, model, source, prompt, max_tokens=204
                     # A buggy observer must not abort the stream read.
                     pass
         error = _check_total_timeout(start, timeout, error, finish_reason)
-        _log_response(log_path, curl_cmd, text, log_label)
-    return text, think_text, first_tok, time.time(), error, finish_reason, usage
+        _log_response(log_path, request.curl_cmd, text, log_label)
+    return StreamResult(text, think_text, first_tok, time.time(), error,
+                        finish_reason, usage)
 
 
-def _read_response_body(resp, stop_event):
+def _read_response_body(resp: requests.Response, stop_event) -> ResponseBodyResult:
     """Read a non-streaming response body in chunks, honouring cancellation."""
     chunks = []
-    for chunk in resp.iter_content(chunk_size=8192):
-        if stop_event and stop_event.is_set():
-            return None, "Cancelled"
-        if chunk:
-            chunks.append(chunk)
-    return b"".join(chunks).decode("utf-8", errors="replace"), None
+    try:
+        for chunk in resp.iter_content(chunk_size=8192):
+            if stop_event and stop_event.is_set():
+                return ResponseBodyResult(None, "Cancelled")
+            if chunk:
+                chunks.append(chunk)
+    except Exception as exc:
+        return ResponseBodyResult(None, f"{type(exc).__name__}: {exc}")
+    return ResponseBodyResult(
+        b"".join(chunks).decode("utf-8", errors="replace"), None
+    )
 
 
 def nonstream_request(source_config, timeout, model, source, prompt, max_tokens=2048,
                       log_path=None, log_label=None, session_seed=0, temperature=None,
                       drop_params=None, stop_event=None, system_prompt=None,
-                      pid=None, on_retry=None):
+                      pid: Optional[str] = None,
+                      on_retry: Optional[Callable[[], None]] = None) -> NonStreamResult:
     """Make a non-streaming chat-completion request and return parsed results.
 
-    Returns a 6-tuple ``(text, think_text, usage, gen_time, error, finish_reason)``.
+    Returns a :class:`NonStreamResult` with named fields for response text,
+    timing, finish reason, usage, and any transport error.
     ``think_text`` contains any reasoning/thinking content from the API
     response (``message.reasoning_content`` field). For standard models it
     is an empty string.
@@ -592,17 +694,30 @@ def nonstream_request(source_config, timeout, model, source, prompt, max_tokens=
                                stream=False, system_prompt=system_prompt)
     raw_resp_text = None
     with _post_request_context(source_config, source, body, timeout, False, log_path, log_label,
-                               stop_event=stop_event, pid=pid, on_retry=on_retry) as (resp, err, curl_cmd):
-        if err:
-            return text, think_text, usage, time.time() - start, err, finish_reason
-        raw_resp_text, read_error = _read_response_body(resp, stop_event)
-        if read_error:
-            return text, think_text, usage, time.time() - start, read_error, finish_reason
-        data = json.loads(raw_resp_text)
-        text = data["choices"][0]["message"]["content"]
-        think_text = data["choices"][0]["message"].get("reasoning_content", "")
-        usage = data.get("usage", {})
-        finish_reason = data.get("choices", [{}])[0].get("finish_reason")
-        _log_response(log_path, curl_cmd, raw_resp_text, log_label)
+                               stop_event=stop_event, pid=pid, on_retry=on_retry) as request:
+        if request.error:
+            return NonStreamResult(text, think_text, usage, time.time() - start,
+                                    request.error, finish_reason)
+        if request.response is None:
+            return NonStreamResult(text, think_text, usage, time.time() - start,
+                                   "HTTP request returned no response", finish_reason)
+        response = _read_response_body(request.response, stop_event)
+        if response.error:
+            return NonStreamResult(text, think_text, usage, time.time() - start,
+                                   response.error, finish_reason)
+        raw_resp_text = response.text
+        if raw_resp_text is None:
+            return NonStreamResult(text, think_text, usage, time.time() - start,
+                                   "Empty response body", finish_reason)
+        try:
+            data = json.loads(raw_resp_text)
+            text = data["choices"][0]["message"]["content"]
+            think_text = data["choices"][0]["message"].get("reasoning_content", "")
+            usage = data.get("usage", {})
+            finish_reason = data.get("choices", [{}])[0].get("finish_reason")
+        except (json.JSONDecodeError, KeyError, IndexError, TypeError) as exc:
+            error = f"Invalid completion response: {type(exc).__name__}: {exc}"
+        _log_response(log_path, request.curl_cmd, raw_resp_text, log_label)
     error = _check_total_timeout(start, timeout, error, finish_reason)
-    return text, think_text, usage, time.time() - start, error, finish_reason
+    return NonStreamResult(text, think_text, usage, time.time() - start,
+                           error, finish_reason)

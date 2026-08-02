@@ -1,7 +1,7 @@
 """Product Requirements Document (PRD) creation benchmark task."""
 import re
 
-from benchmark_plugin import BenchmarkTaskPlugin
+from benchmark_plugin import BenchmarkTaskPlugin, EvaluationResult
 from plugins.challenges._rubric import Rubric
 
 
@@ -12,7 +12,7 @@ class PRDCreationPlugin(BenchmarkTaskPlugin):
 
     @property
     def version(self):
-        return "0.1.0"
+        return "0.2.0"
 
     @property
     def name(self):
@@ -59,7 +59,7 @@ class PRDCreationPlugin(BenchmarkTaskPlugin):
     def evaluate(self, response_text):
         t = response_text
         if not t or not t.strip():
-            return 0.0, []
+            return EvaluationResult(0.0, [])
 
         rubric = Rubric(self.max_score)
 
@@ -171,4 +171,4 @@ class PRDCreationPlugin(BenchmarkTaskPlugin):
         return rubric.results()
 
     def score(self, response_text):
-        return self.evaluate(response_text)[0]
+        return self.evaluate(response_text).score

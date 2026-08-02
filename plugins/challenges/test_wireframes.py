@@ -196,7 +196,9 @@ class TestWireframesScoring(unittest.TestCase):
             "## 5️⃣ Screen: Settings\n"
             "ascii diagram\n"
         )
-        score, rubric = self.plugin.evaluate(text)
+        evaluation = self.plugin.evaluate(text)
+        score = evaluation.score
+        rubric = evaluation.rubric
         self.assertIsInstance(score, float)
         self.assertGreater(score, 0.0)
         screens = self._screen_criterion(rubric)
@@ -213,8 +215,8 @@ class TestWireframesScoring(unittest.TestCase):
             "## 100 mixed-case section header\n\n"
             "## 200 another section\n\n"
         )
-        _, rubric = self.plugin.evaluate(text)
-        screens = self._screen_criterion(rubric)
+        evaluation = self.plugin.evaluate(text)
+        screens = self._screen_criterion(evaluation.rubric)
         self.assertEqual(screens["earned"], 0.0)
 
     def test_regression_no_screens_no_unbound_error(self):
@@ -222,8 +224,8 @@ class TestWireframesScoring(unittest.TestCase):
         must NOT raise UnboundLocalError on the ``earned`` variable.
         """
         text = "Lorem ipsum dolor sit amet, consectetur adipiscing elit."
-        _, rubric = self.plugin.evaluate(text)
-        screens = self._screen_criterion(rubric)
+        evaluation = self.plugin.evaluate(text)
+        screens = self._screen_criterion(evaluation.rubric)
         self.assertEqual(screens["earned"], 0.0)
 
     def test_regression_saved_failing_response_no_longer_crashes(self):
@@ -244,7 +246,9 @@ class TestWireframesScoring(unittest.TestCase):
             self.skipTest(f"saved failing response not on disk: {repro_path}")
         with open(repro_path, encoding="utf-8") as f:
             text = f.read()
-        score, rubric = self.plugin.evaluate(text)
+        evaluation = self.plugin.evaluate(text)
+        score = evaluation.score
+        rubric = evaluation.rubric
         self.assertIsInstance(score, (int, float))
         # The response has 5 well-formed screens; we should now earn more
         # than just the default 0.0 on the screen-count criterion.
