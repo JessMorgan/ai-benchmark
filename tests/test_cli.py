@@ -1055,6 +1055,20 @@ class TestRunInfo(unittest.TestCase):
             )
 
 
+class TestTokenCounting(unittest.TestCase):
+    """Tests for the character-based completion-token estimator."""
+
+    def test_empty_response_has_zero_tokens(self):
+        from benchmark_core import count_tokens
+
+        self.assertEqual(count_tokens(""), 0)
+
+    def test_non_empty_response_keeps_four_char_estimate(self):
+        from benchmark_core import count_tokens
+
+        self.assertEqual(count_tokens("12345678"), 2)
+
+
 class TestPerPluginTemperature(unittest.TestCase):
     def test_plugin_temperature_from_config(self):
         from benchmark_core import parse_plugin_temperatures
@@ -1289,7 +1303,8 @@ class TestStreamPartialTextKept(unittest.TestCase):
     ``text`` to whatever it returned. A non-stream retry from a
     "thinking" model that already streamed 40 K chars will likely
     come back empty (the model has nothing buffered to repeat),
-    and ``count_tokens("")`` floors to ``max(1, 0 / 4) = 1`` -- so
+    and ``count_tokens("")`` now returns ``0`` instead of a one-token
+    placeholder -- so
     a ~40 K-char observation collapsed to a 1-token placeholder
     record. Operator's kimi-dev observation: streamed 10 K tokens
     over 2 000 s then timed out, but the persisted result showed
@@ -1351,7 +1366,8 @@ class TestStreamPartialTextKept(unittest.TestCase):
 
         self.assertIsNone(err)
         # The streamed text was kept -- output_tokens reflects the real
-        # streamed length, NOT ``count_tokens("")`` = 1. State-side
+        # streamed length, NOT the empty-response value ``count_tokens("")`` = 0.
+        # State-side
         # mirroring happens in ``_run_plugins`` (post-future write);
         # ``_run_plugin_task``'s contract is the result dict + per-SSE
         # state counters (which we don't drive here because the mock

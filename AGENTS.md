@@ -98,8 +98,8 @@ LAST entry per model.
    `status="completed"`. The `purge-results` skill
    (`.agents/skills/purge-results/SKILL.md`) automates this. Never delete
    `responses/*.txt` — regenerated on next run.
-3. **Output_Tokens == 1 means EMPTY response.** `count_tokens(text) = max(1, len(text)/4)`
-   floors to 1 when `text` is empty. Single-token entries in `results.csv`
+3. **Output_Tokens == 0 means EMPTY response.** `count_tokens(text) = max(0, len(text)/4)`
+   returns 0 when `text` is empty. Zero-token entries in `results.csv`
    are uniformly 0-byte `.txt` files — model timed out or connection dropped
    silent (no streaming heartbeat reached).
 4. **HTTP 429 cleanup-before-sleep invariant.** `_post_request_context`

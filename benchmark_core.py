@@ -28,7 +28,7 @@ from benchmark_state import BenchmarkState  # noqa: F401
 
 
 def count_tokens(text):
-    return max(1, len(text) / 4)
+    return max(0, len(text) / 4)
 
 
 def is_repeating(text, min_seq=80, repeats=3):
@@ -386,7 +386,7 @@ def _run_plugin_task(target_name, api_model, source, plugin, source_config, time
             # buggy observer is swallowed inside ``stream_request`` so
             # it cannot abort the stream read. We measure CHARACTERS
             # (not UTF-8 bytes) so the live ticker matches the post-
-            # completion ``count_tokens(text) = len(text) / 4`` estimator
+            # completion ``count_tokens(text) = max(0, len(text) / 4)`` estimator
             # exactly -- a CJK chunk would otherwise show 3x as many
             # "tokens" during streaming as it does after completion.
             #
@@ -445,8 +445,8 @@ def _run_plugin_task(target_name, api_model, source, plugin, source_config, time
                 # the streamed text instead of clobbering it with a
                 # non-streaming retry. A non-stream retry from a
                 # "thinking" model that already streamed 40 K chars will
-                # likely return empty, and ``count_tokens("")`` floors to
-                # 1 -- which collapses a real ~40 K-char observation
+                # likely return empty, and ``count_tokens("")`` now correctly returns
+                # 0 rather than a one-token placeholder.
                 # into a 1-token placeholder record (operator reported
                 # kimi-dev streaming 10 K tokens over 2 000 s then
                 # "giving up" with ``_output_tokens = 1``). Only fall
