@@ -3,7 +3,14 @@ import os
 import tempfile
 import unittest
 
-from plugins import discover_plugins, discover_output_plugins, format_plugin_list, _discover_plugins_in_dir
+from plugins import (
+    PluginDiscoveryError,
+    _discover_plugins_in_dir,
+    discover_output_plugins,
+    discover_plugins,
+    format_plugin_list,
+    plugin_inventory,
+)
 from benchmark_plugin import BenchmarkTaskPlugin
 
 
@@ -11,32 +18,107 @@ class TestPluginDiscovery(unittest.TestCase):
     def test_discovers_all_builtin_plugins(self):
         plugins = discover_plugins()
         ids = [p.id for p in plugins]
-        self.assertIn("rate-limiter", ids)
-        self.assertIn("moe-dense", ids)
-        self.assertIn("tool-calling", ids)
-        self.assertIn("orchestration", ids)
-        self.assertIn("code-review", ids)
-        self.assertIn("structured-output", ids)
-        self.assertIn("multi-step", ids)
-        self.assertIn("prd-creation", ids)
-        self.assertIn("wireframes", ids)
-        self.assertIn("software-architecture", ids)
+        self.assertEqual(
+            ids,
+            [
+                "code-review",
+                "debug-traversal",
+                "error-recovery",
+                "moe-dense",
+                "multi-step",
+                "multi-turn-conversation",
+                "orchestration",
+                "prd-creation",
+                "rate-limiter",
+                "software-architecture",
+                "structured-output",
+                "tool-calling",
+                "wireframes",
+            ],
+        )
 
     def test_plugins_have_required_metadata(self):
         plugins = discover_plugins()
+        inventory = plugin_inventory(plugins)
+        self.assertEqual([entry["id"] for entry in inventory], [p.id for p in plugins])
         for p in plugins:
             self.assertTrue(p.id)
             self.assertTrue(p.version)
             self.assertTrue(p.name)
             self.assertGreater(p.max_score, 0)
+            self.assertIsInstance(p.supports_streaming, bool)
+
+    def test_discovery_rejects_duplicate_ids(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            source = (
+                "from benchmark_plugin import BenchmarkTaskPlugin\n"
+                "class Plugin(BenchmarkTaskPlugin):\n"
+                "    @property\n"
+                "    def id(self): return 'duplicate'\n"
+                "    @property\n"
+                "    def version(self): return '1.0.0'\n"
+                "    @property\n"
+                "    def name(self): return 'Plugin'\n"
+                "    @property\n"
+                "    def max_score(self): return 1\n"
+                "    def get_prompt(self): return ''\n"
+                "    def get_temperature(self, global_config): return None\n"
+                "    def score(self, response_text): return 0\n"
+            )
+            for name in ("a.py", "b.py"):
+                with open(os.path.join(tmpdir, name), "w") as f:
+                    f.write(source.replace("class Plugin", f"class Plugin{name[0].upper()}"))
+            with self.assertRaises(PluginDiscoveryError) as ctx:
+                _discover_plugins_in_dir(tmpdir, "duplicate_test", BenchmarkTaskPlugin)
+            self.assertIn("Duplicate plugin id", str(ctx.exception))
+
+    def test_discovery_rejects_invalid_streaming_metadata(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            plugin_path = os.path.join(tmpdir, "bad_streaming.py")
+            with open(plugin_path, "w") as f:
+                f.write(
+                    "from benchmark_plugin import BenchmarkTaskPlugin\n"
+                    "class BadStreaming(BenchmarkTaskPlugin):\n"
+                    "    id = 'bad-streaming'\n"
+                    "    version = '1.0.0'\n"
+                    "    name = 'Bad'\n"
+                    "    max_score = 1\n"
+                    "    supports_streaming = 'yes'\n"
+                    "    def get_prompt(self): return ''\n"
+                    "    def get_temperature(self, global_config): return None\n"
+                    "    def score(self, response_text): return 0\n"
+                )
+            with self.assertRaises(PluginDiscoveryError) as ctx:
+                _discover_plugins_in_dir(tmpdir, "bad_streaming_test", BenchmarkTaskPlugin)
+            self.assertIn("supports_streaming must be a boolean", str(ctx.exception))
+
+    def test_discovery_rejects_invalid_metadata(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            plugin_path = os.path.join(tmpdir, "bad_metadata.py")
+            with open(plugin_path, "w") as f:
+                f.write(
+                    "from benchmark_plugin import BenchmarkTaskPlugin\n"
+                    "class BadMetadata(BenchmarkTaskPlugin):\n"
+                    "    id = ''\n"
+                    "    version = '1.0.0'\n"
+                    "    name = 'Bad'\n"
+                    "    max_score = 1\n"
+                    "    def get_prompt(self): return ''\n"
+                    "    def get_temperature(self, global_config): return None\n"
+                    "    def score(self, response_text): return 0\n"
+                )
+            with self.assertRaises(PluginDiscoveryError) as ctx:
+                _discover_plugins_in_dir(tmpdir, "bad_metadata_test", BenchmarkTaskPlugin)
+            self.assertIn("id must be a non-empty string", str(ctx.exception))
 
     def test_whitelist_filters_plugins(self):
         plugins = discover_plugins(whitelist=["rate-limiter"])
         self.assertEqual([p.id for p in plugins], ["rate-limiter"])
 
     def test_blacklist_filters_plugins(self):
+        all_ids = {p.id for p in discover_plugins()}
         plugins = discover_plugins(blacklist=["moe-dense"])
-        self.assertEqual([p.id for p in plugins], ["code-review", "multi-step", "orchestration", "prd-creation", "rate-limiter", "software-architecture", "structured-output", "tool-calling", "wireframes"])
+        self.assertEqual({p.id for p in plugins}, all_ids - {"moe-dense"})
 
     def test_whitelist_and_blacklist_mutually_exclusive(self):
         with self.assertRaises(ValueError):
@@ -85,6 +167,12 @@ class TestPluginDiscovery(unittest.TestCase):
                 )
             with self.assertRaises(RuntimeError):
                 _discover_plugins_in_dir(tmpdir, "testpkg", BenchmarkTaskPlugin)
+
+    def test_output_plugins_have_required_metadata(self):
+        for plugin in discover_output_plugins():
+            self.assertTrue(plugin.id)
+            self.assertTrue(plugin.name)
+            self.assertTrue(plugin.extension)
 
     def test_discover_output_plugins_basic(self):
         plugins = discover_output_plugins()

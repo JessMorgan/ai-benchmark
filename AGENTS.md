@@ -13,7 +13,7 @@ to know what to grep first.
 - **`benchmark_plugin.py`** — abstract base classes (`BenchmarkTaskPlugin`, `BenchmarkOutputPlugin`).
 - **`benchmark_outputs.py`** — `gen_markdown / gen_csv / gen_html / gen_pdf`.
 - **`shell_completion.py`** — `--generate-shell-completion`.
-- **`plugins/challenges/`** — 10 task plugins; auto-discovered. **`plugins/outputs/`** — md/csv/html/pdf output plugins.
+- **`plugins/challenges/`** — 13 task plugins; auto-discovered and metadata-validated. **`plugins/outputs/`** — md/csv/html/pdf output plugins.
 - **`tests/`** — unittest suite. **`requirements.txt`** — runtime deps.
 
 ## Smoke / test commands (no API key needed)
@@ -71,11 +71,12 @@ LAST entry per model.
   prompt; `.meta.json` includes the rubric breakdown and `error`/`traceback`
   if `plugin.evaluate()` crashed.
 
-## Built-in plugins (10)
+## Built-in plugins (13)
 
-`code-review`, `moe-dense`, `multi-step`, `orchestration`, `prd-creation`,
-`rate-limiter`, `software-architecture`, `structured-output`, `tool-calling`,
-`wireframes`. Three (`code-review`, `moe-dense`, `structured-output`) set
+`code-review`, `debug-traversal`, `error-recovery`, `moe-dense`, `multi-step`,
+`multi-turn-conversation`, `orchestration`, `prd-creation`, `rate-limiter`,
+`software-architecture`, `structured-output`, `tool-calling`, `wireframes`.
+Three (`code-review`, `moe-dense`, `structured-output`) set
 `supports_streaming=False` — they go through the **non-streaming**
 `_post_request_context` path.
 

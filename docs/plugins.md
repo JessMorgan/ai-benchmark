@@ -6,16 +6,19 @@ AI Benchmark uses a plugin architecture. Each plugin defines a benchmark task, a
 
 | ID | Name | Max Score | Streaming |
 |---|---|---|---|
-| `rate-limiter` | Rate Limiter | 20 | Yes |
-| `moe-dense` | MoE vs Dense | 15 | No |
 | `code-review` | Code Review | 15 | No |
-| `orchestration` | Orchestration & Workflow | 16 | Yes |
-| `tool-calling` | Tool Calling Agent | 25 | Yes |
-| `structured-output` | Structured Output | 20 | No |
+| `debug-traversal` | Debug Traversal | 20 | Yes |
+| `error-recovery` | Error Recovery | 20 | Yes |
+| `moe-dense` | MoE vs Dense | 17 | No |
 | `multi-step` | Multi-Step Instructions | 20 | Yes |
+| `multi-turn-conversation` | Multi-Turn Conversation | 20 | Yes |
+| `orchestration` | Orchestration & Workflow | 16 | Yes |
 | `prd-creation` | PRD Creation | 20 | Yes |
-| `wireframes` | Wireframes | 20 | Yes |
+| `rate-limiter` | Rate Limiter | 20 | Yes |
 | `software-architecture` | Software Architecture | 20 | Yes |
+| `structured-output` | Structured Output | 20 | No |
+| `tool-calling` | Tool Calling Agent | 25 | Yes |
+| `wireframes` | Wireframes | 20 | Yes |
 
 ## Selecting Plugins
 
@@ -83,6 +86,11 @@ See [Development](./development.md#writing-a-plugin) for a step-by-step guide.
 - [PRD Creation](./plugins/prd-creation.md)
 - [Wireframes](./plugins/wireframes.md)
 - [Software Architecture](./plugins/software-architecture.md)
+
+The three additional challenge plugins (`debug-traversal`, `error-recovery`, and
+`multi-turn-conversation`) are documented by their prompts and rubric metadata
+in the corresponding source modules. Use `python ai-benchmark.py --list-plugins`
+for the authoritative runtime inventory.
 
 ## New Challenge Plugins
 

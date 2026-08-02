@@ -127,14 +127,25 @@ After completion the output directory contains:
 
 ## Plugins
 
-Plugins are discovered automatically from the `plugins/` directory. Each plugin is a Python module containing a `BenchmarkTaskPlugin` subclass. Built-in plugins:
+Plugins are discovered automatically from `plugins/challenges/`. Each plugin is a Python module containing a `BenchmarkTaskPlugin` subclass. Run `python ai-benchmark.py --list-plugins` for the authoritative inventory. The current built-in plugins are:
 
-| ID | Name | Max Score |
-|---|---|---|
-| `rate-limiter` | Concurrent Rate Limiter | 20 |
-| `moe-dense` | MoE vs Dense Architecture | 15 |
+| ID | Name |
+|---|---|
+| `code-review` | Code Review |
+| `debug-traversal` | Debug Traversal |
+| `error-recovery` | Error Recovery |
+| `moe-dense` | MoE vs Dense |
+| `multi-step` | Multi-Step Instructions |
+| `multi-turn-conversation` | Multi-Turn Conversation |
+| `orchestration` | Orchestration & Workflow |
+| `prd-creation` | PRD Creation |
+| `rate-limiter` | Rate Limiter |
+| `software-architecture` | Software Architecture |
+| `structured-output` | Structured Output |
+| `tool-calling` | Tool Calling Agent |
+| `wireframes` | Wireframes |
 
-Each plugin exposes a `version` attribute so results can be correlated to a specific plugin release.
+Each plugin exposes a `version` attribute so results can be correlated to a specific plugin release. Discovery validates required metadata and rejects duplicate IDs before a run starts.
 
 ## Tests & Coverage
 

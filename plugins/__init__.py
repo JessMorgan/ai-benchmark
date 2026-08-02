@@ -4,7 +4,76 @@ import inspect
 import os
 import sys
 
-from benchmark_plugin import BenchmarkTaskPlugin, BenchmarkOutputPlugin
+from benchmark_plugin import BenchmarkOutputPlugin, BenchmarkTaskPlugin
+
+
+class PluginDiscoveryError(RuntimeError):
+    """Raised when a discovered plugin violates the plugin contract."""
+
+
+def _validate_plugin(plugin, path, base_class):
+    """Validate required metadata before exposing a plugin instance."""
+    required = ("id", "name")
+    if base_class is BenchmarkTaskPlugin:
+        required += ("version", "max_score")
+    else:
+        required += ("extension",)
+
+    for attr in required:
+        try:
+            value = getattr(plugin, attr)
+        except Exception as exc:
+            raise PluginDiscoveryError(
+                f"{path}: {type(plugin).__name__} could not provide {attr!r}"
+            ) from exc
+        if attr == "max_score":
+            valid = (
+                isinstance(value, (int, float))
+                and not isinstance(value, bool)
+                and value > 0
+            )
+            expected = "a positive number"
+        else:
+            valid = isinstance(value, str) and bool(value.strip())
+            expected = "a non-empty string"
+        if not valid:
+            raise PluginDiscoveryError(
+                f"{path}: {type(plugin).__name__}.{attr} must be {expected}"
+            )
+
+    if base_class is BenchmarkTaskPlugin:
+        supports_streaming = getattr(plugin, "supports_streaming", True)
+        if not isinstance(supports_streaming, bool):
+            raise PluginDiscoveryError(
+                f"{path}: {type(plugin).__name__}.supports_streaming must be a boolean"
+            )
+
+
+def _validate_unique_ids(plugins, directory):
+    """Reject duplicate IDs so resume/report keys cannot collide."""
+    seen = {}
+    for plugin in plugins:
+        previous = seen.get(plugin.id)
+        if previous is not None:
+            raise PluginDiscoveryError(
+                f"Duplicate plugin id {plugin.id!r} in {directory}: "
+                f"{previous} and {type(plugin).__name__}"
+            )
+        seen[plugin.id] = type(plugin).__name__
+
+
+def _plugin_inventory(plugins):
+    """Return a stable, serializable inventory for CLI/docs/tests."""
+    return [
+        {
+            "id": plugin.id,
+            "name": plugin.name,
+            "version": plugin.version,
+            "max_score": plugin.max_score,
+            "supports_streaming": getattr(plugin, "supports_streaming", True),
+        }
+        for plugin in plugins
+    ]
 
 
 BASE_PLUGIN_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -13,14 +82,18 @@ OUTPUTS_DIR = os.path.join(BASE_PLUGIN_DIR, "outputs")
 
 
 def format_plugin_list(plugins):
-    """Return a formatted table of plugin IDs, names, and versions."""
-    if not plugins:
+    """Return a formatted table generated from validated plugin metadata."""
+    inventory = _plugin_inventory(plugins)
+    if not inventory:
         return "No plugins discovered."
-    id_width = max(len(p.id) for p in plugins)
-    name_width = max(len(p.name) for p in plugins)
+    id_width = max(len(entry["id"]) for entry in inventory)
+    name_width = max(len(entry["name"]) for entry in inventory)
     lines = [f"{'ID':<{id_width}}  {'Name':<{name_width}}  Version"]
-    for p in plugins:
-        lines.append(f"{p.id:<{id_width}}  {p.name:<{name_width}}  {p.version}")
+    for entry in inventory:
+        lines.append(
+            f"{entry['id']:<{id_width}}  {entry['name']:<{name_width}}  "
+            f"{entry['version']}"
+        )
     lines.append("\nUse these IDs with --plugins-whitelist or --plugins-blacklist.")
     return "\n".join(lines)
 
@@ -52,7 +125,7 @@ def _discover_plugins_in_dir(directory, package_name, base_class):
         spec.loader.exec_module(module)
 
         for _name, obj in inspect.getmembers(module, inspect.isclass):
-            if obj is base_class:
+            if obj is base_class or obj.__module__ != module.__name__:
                 continue
             if not issubclass(obj, base_class):
                 continue
@@ -60,8 +133,10 @@ def _discover_plugins_in_dir(directory, package_name, base_class):
                 plugin = obj()
             except Exception as exc:
                 raise RuntimeError(f"Failed to instantiate plugin {obj.__name__}") from exc
+            _validate_plugin(plugin, path, base_class)
             plugins.append(plugin)
 
+    _validate_unique_ids(plugins, directory)
     plugins.sort(key=lambda p: p.id)
     return plugins
 
@@ -89,6 +164,11 @@ def discover_plugins(whitelist=None, blacklist=None):
         plugins = [p for p in plugins if p.id not in blacklist]
 
     return plugins
+
+
+def plugin_inventory(plugins=None):
+    """Return metadata for all discovered challenge plugins."""
+    return _plugin_inventory(plugins if plugins is not None else discover_plugins())
 
 
 def discover_output_plugins(whitelist=None, blacklist=None):
