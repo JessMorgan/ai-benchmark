@@ -9,6 +9,7 @@ import email.utils
 import json
 import os
 import random
+import shlex
 import sys
 import threading
 import time
@@ -140,12 +141,17 @@ def build_curl_cmd(model, prompt, max_tokens, stream, api_url, headers, system_p
         "max_tokens": max_tokens,
         "stream": stream
     }, ensure_ascii=False)
-    auth_header = f"  -H 'Authorization: {headers.get('Authorization', '')}' \\\n" if headers.get("Authorization") else ""
+    auth_value = headers.get("Authorization", "")
+    content_type = headers.get("Content-Type", "application/json")
+    auth_header = (
+        f"  -H {shlex.quote('Authorization: ' + auth_value)} \\\n"
+        if auth_value else ""
+    )
     return (
-        f"curl -s -X POST '{api_url}' \\\n"
+        f"curl -s -X POST {shlex.quote(api_url)} \\\n"
         f"{auth_header}"
-        f"  -H 'Content-Type: {headers.get('Content-Type', 'application/json')}' \\\n"
-        f"  -d '{data}'"
+        f"  -H {shlex.quote('Content-Type: ' + content_type)} \\\n"
+        f"  -d {shlex.quote(data)}"
     )
 
 

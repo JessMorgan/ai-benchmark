@@ -1,13 +1,50 @@
 """Tests for benchmark_http request helpers."""
 import contextlib
 import json
+import shlex
 import threading
 import time
 import unittest
 from datetime import datetime, timedelta, timezone
 from unittest import mock
 
-from benchmark_http import fetch_models_v1, get_429_stats, nonstream_request, stream_request
+from benchmark_http import (
+    build_curl_cmd,
+    fetch_models_v1,
+    get_429_stats,
+    nonstream_request,
+    stream_request,
+)
+
+
+class TestBuildCurlCmd(unittest.TestCase):
+    """Tests for shell-safe curl command generation."""
+
+    def test_payload_round_trips_through_shell_with_special_characters(self):
+        prompt = "It's a test\\nwith \\\"quotes\\\" and 🦄."
+        api_url = "http://localhost/v1/weird'path"
+        headers = {
+            "Authorization": "Bearer it's-secret",
+            "Content-Type": "application/json; profile='custom'",
+        }
+        command = build_curl_cmd(
+            model="test-model",
+            prompt=prompt,
+            max_tokens=10,
+            stream=False,
+            api_url=api_url,
+            headers=headers,
+        )
+
+        parts = shlex.split(command)
+        payload = parts[parts.index("-d") + 1]
+
+        self.assertEqual(parts[parts.index("-X") + 2], api_url)
+        authorization_index = parts.index("Authorization: Bearer it's-secret")
+        self.assertEqual(parts[authorization_index], "Authorization: Bearer it's-secret")
+        content_type_index = parts.index("Content-Type: application/json; profile='custom'")
+        self.assertEqual(parts[content_type_index], "Content-Type: application/json; profile='custom'")
+        self.assertEqual(json.loads(payload)["messages"][0]["content"], prompt)
 
 
 class TestStreamRequest(unittest.TestCase):
