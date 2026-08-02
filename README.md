@@ -11,6 +11,15 @@ Plugins live in the `plugins/` directory. Each plugin defines a prompt, a scorin
 python ai-benchmark.py --dump-default-config > benchmark-config.json
 python ai-benchmark.py
 
+# Run the existing HTTP path explicitly (the default)
+python ai-benchmark.py --runner http
+
+# Run configured models and agents through a pre-installed OpenCode CLI
+python ai-benchmark.py --runner opencode
+
+# Compare OpenCode first, then the existing HTTP path
+python ai-benchmark.py --runner both
+
 # Or discover models from a running server
 python ai-benchmark.py \
   --dump-default-config \
@@ -105,6 +114,7 @@ python ai-benchmark.py [options]
 | `--plugins-whitelist ID [ID ...]` | Run only these plugins |
 | `--plugins-blacklist ID [ID ...]` | Run all plugins except these |
 | `--seed INT` | Fixed random seed for all API requests |
+| `--runner {http,opencode,both}` | Select the existing HTTP runner (default), the pre-installed OpenCode runner, or both (OpenCode first) |
 | `-h, --help` | Show this help message |
 
 ## Resume / Continue
@@ -112,6 +122,14 @@ python ai-benchmark.py [options]
 By default, re-running resumes from where you left off — completed models are skipped, and failed models are retried. Saved state is stored in `benchmark_state.json` inside the output directory and is preserved after completion so you can re-run to retry any failures. New models added to the config between runs are picked up automatically. Use `--restart` to force a clean run.
 
 If the set of active plugins changes between runs, the app detects this and asks whether to **restart** or **continue**. If you continue, newly added plugins are run for models that already completed, and data for removed plugins is preserved but not run again.
+
+## OpenCode runner
+
+OpenCode is an optional runtime dependency. Use `--runner opencode` or `--runner both`; the executable must already be installed and available on `PATH`, and startup fails before benchmark work begins if it is missing. No OpenCode block is added to the benchmark config.
+
+The runner dynamically generates and retains `<output_dir>/opencode/opencode.generated.json` from the loaded sources and resolved API models. Its model names follow `{strictly-slugified-source}/{api_model}`; for example, `Local Server 1` plus `vendor/model-x` becomes `local-server-1/vendor/model-x`. The generated file contains resolved credentials, so protect it and the output directory.
+
+OpenCode and HTTP artifacts are separated under `<output_dir>/opencode/` and `<output_dir>/http/`. Markdown, CSV, HTML, and PDF reports include runner metadata. Resume matching is runner-aware, so an HTTP result is never reused for an OpenCode task.
 
 ## Outputs
 

@@ -17,6 +17,7 @@ from benchmark_http import (  # noqa: F401
     nonstream_request,
 )
 from benchmark_plugin import PluginTaskResult
+from opencode_runner import OpenCodeProcessResult, opencode_model_name, run_process
 from benchmark_outputs import (  # noqa: F401
     _save_outputs,
     gen_csv,
@@ -338,12 +339,17 @@ def generate_config_from_api(base_url, api_key=None):
 def _run_plugin_task(target_name, api_model, source, plugin, source_config, timeout,
                      token_levels, session_seed, log_file, global_cfg, state,
                      stop_event=None, save_responses=False, output_dir=None,
-                     system_prompt=None, is_agent=False) -> PluginTaskResult:
+                     system_prompt=None, is_agent=False, runner="http",
+                     opencode_config_path=None, opencode_model=None,
+                     opencode_agent=None, artifact_target_name=None,
+                     config_target_name=None) -> PluginTaskResult:
     """Run a single plugin task and return named result/error fields."""
     pid = plugin.id
     cfg = source_config.get(source)
-    if cfg is None:
+    if runner == "http" and cfg is None:
         return PluginTaskResult(None, f"Unknown source '{source}' — not in SOURCE_CONFIG")
+    if runner not in ("http", "opencode"):
+        return PluginTaskResult(None, f"Unknown runner {runner!r}")
 
     if stop_event and stop_event.is_set():
         return PluginTaskResult(None, "Cancelled")
@@ -351,7 +357,9 @@ def _run_plugin_task(target_name, api_model, source, plugin, source_config, time
     prompt = plugin.get_prompt()
     temperature = plugin.get_temperature(global_cfg or {})
 
-    raw_model_cfg = (global_cfg or {}).get("models", {}).get(target_name) or (global_cfg or {}).get("agents", {}).get(target_name)
+    config_target_name = config_target_name or target_name
+    raw_model_cfg = ((global_cfg or {}).get("models", {}).get(config_target_name)
+                     or (global_cfg or {}).get("agents", {}).get(config_target_name))
     drop_params = []
     if isinstance(raw_model_cfg, dict):
         drop_params = raw_model_cfg.get("drop_params", [])
@@ -364,6 +372,70 @@ def _run_plugin_task(target_name, api_model, source, plugin, source_config, time
     stream_ok = True
     first_tok = None
     gen_time = 0
+    think_text = ""
+    serr = None
+    sfr = None
+
+    if runner == "opencode":
+        if not opencode_config_path or not opencode_model:
+            return PluginTaskResult(None, "OpenCode runner is missing generated config or model mapping")
+        process_result = run_process(
+            prompt,
+            config_path=opencode_config_path,
+            model=opencode_model,
+            timeout=timeout,
+            agent=opencode_agent,
+            output_dir=output_dir,
+            target_key=artifact_target_name or config_target_name,
+            plugin_id=pid,
+            stop_event=stop_event,
+        )
+        text = process_result.text
+        serr = process_result.error
+        response_time = round(process_result.elapsed, 1)
+        gen_time = process_result.elapsed
+        stream_ok = False
+        if serr:
+            # Preserve a prompt/response/meta sidecar even when OpenCode
+            # fails, so a failed subprocess is diagnosable without having
+            # to reconstruct the invocation from stderr alone.
+            if save_responses and output_dir:
+                responses_dir = os.path.join(
+                    output_dir, "responses",
+                    sanitize_filename(artifact_target_name or config_target_name),
+                )
+                os.makedirs(responses_dir, exist_ok=True)
+                try:
+                    with open(os.path.join(responses_dir, f"{pid}.prompt.txt"), "w", encoding="utf-8") as handle:
+                        handle.write(prompt)
+                    with open(os.path.join(responses_dir, f"{pid}.content.txt"), "w", encoding="utf-8") as handle:
+                        handle.write(text)
+                    with open(os.path.join(responses_dir, f"{pid}.meta.json"), "w", encoding="utf-8") as handle:
+                        json.dump({
+                            "plugin": pid,
+                            "plugin_version": plugin.version,
+                            "target": artifact_target_name or config_target_name,
+                            "model": api_model,
+                            "runner": runner,
+                            "opencode_model": opencode_model,
+                            "is_agent": is_agent,
+                            "system_prompt": system_prompt,
+                            "score": "fail",
+                            "rubric": [],
+                            "response_time": response_time,
+                            "output_tokens": int(count_tokens(text)),
+                            "tps": None,
+                            "seed": session_seed,
+                            "timestamp": datetime.now().isoformat(),
+                            "error": serr,
+                        }, handle, indent=2, default=str)
+                except OSError:
+                    pass
+            return PluginTaskResult(None, serr)
+        output_tokens = int(count_tokens(text))
+        if gen_time > 0:
+            tps = round(output_tokens / gen_time, 2)
+        token_levels = []
 
     for attempt, max_tok in enumerate(token_levels):
         if stop_event and stop_event.is_set():
@@ -516,26 +588,33 @@ def _run_plugin_task(target_name, api_model, source, plugin, source_config, time
             response_time = round(gen_time, 1)
             truncated = (gen_fr == "length")
 
-        est_tok = count_tokens(text)
-        output_tokens = int(est_tok)
-        if gen_time > 0:
-            tps = round(est_tok / gen_time, 2)
+            est_tok = count_tokens(text)
+            output_tokens = int(est_tok)
+            if gen_time > 0:
+                tps = round(est_tok / gen_time, 2)
 
-        if not truncated:
-            break
+            if not truncated:
+                break
 
-        if is_repeating(text):
-            repeating = True
-            break
+            if is_repeating(text):
+                repeating = True
+                break
 
-        if len(text.strip()) < 50:
-            pass
+            if len(text.strip()) < 50:
+                pass
 
-        if attempt < len(token_levels) - 1:
-            pass
+            if attempt < len(token_levels) - 1:
+                pass
+
+    # Compute buffered/partial response metrics uniformly for both transports.
+    # Streaming failures and OpenCode both arrive here without the HTTP
+    # usage-based bookkeeping used by some non-streaming responses.
+    output_tokens = int(count_tokens(text))
+    if gen_time > 0:
+        tps = round(output_tokens / gen_time, 2)
 
     if save_responses and output_dir:
-        responses_dir = os.path.join(output_dir, "responses", sanitize_filename(target_name))
+        responses_dir = os.path.join(output_dir, "responses", sanitize_filename(artifact_target_name or config_target_name))
         os.makedirs(responses_dir, exist_ok=True)
         # 1. Prompt file (unchanged).
         prompt_path = os.path.join(responses_dir, f"{plugin.id}.prompt.txt")
@@ -600,8 +679,10 @@ def _run_plugin_task(target_name, api_model, source, plugin, source_config, time
         meta = {
             "plugin": plugin.id,
             "plugin_version": plugin.version,
-            "target": target_name,
+            "target": artifact_target_name or config_target_name,
             "model": api_model,
+            "runner": runner,
+            "opencode_model": opencode_model,
             "is_agent": is_agent,
             "system_prompt": system_prompt,
             "score": score,
@@ -650,16 +731,24 @@ def _run_plugin_task(target_name, api_model, source, plugin, source_config, time
 def run_model(model_name, source, state, active_plugins, source_config, timeout,
               token_levels, output_dir, session_seed=0, global_cfg=None,
               stop_event=None, save_responses=False, api_model=None,
-              system_prompt=None, is_agent=False):
-    """Run active plugins for one model or agent."""
+              system_prompt=None, is_agent=False, runner="http",
+              opencode_config_path=None, opencode_model=None,
+              opencode_agent=None, display_name=None,
+              config_target_name=None):
+    """Run active plugins for one model or agent through a selected runner."""
     start = time.time()
     target_name = model_name
+    display_name = display_name or target_name
+    config_target_name = config_target_name or display_name
     api_model = api_model or target_name
 
     r = {
-        "model": target_name,
+        "model": display_name,
+        "state_key": target_name,
         "api_model": api_model,
         "source": source,
+        "runner": runner,
+        "opencode_model": opencode_model,
         "is_agent": is_agent,
         "system_prompt": system_prompt,
         "status": "ok",
@@ -673,7 +762,7 @@ def run_model(model_name, source, state, active_plugins, source_config, timeout,
     state.update(target_name, status="queued")
 
     cfg = source_config.get(source)
-    if cfg is None:
+    if runner == "http" and cfg is None:
         r["status"] = "error"
         r["error"] = f"Unknown source '{source}' — not in SOURCE_CONFIG"
         r["total_time"] = round(time.time() - start, 1)
@@ -682,8 +771,9 @@ def run_model(model_name, source, state, active_plugins, source_config, timeout,
         state.log(target_name, r['error'])
         return
 
-    latest = {res["model"]: res for res in state.latest_results()}
-    existing = latest.get(target_name)
+    latest = {(res.get("state_key", res["model"]), res.get("runner", "http")): res
+              for res in state.latest_results()}
+    existing = latest.get((target_name, runner))
 
     plugins_to_run = []
     for plugin in active_plugins:
@@ -725,14 +815,22 @@ def run_model(model_name, source, state, active_plugins, source_config, timeout,
                  stop_event=stop_event,
                  save_responses=save_responses,
                  system_prompt=system_prompt,
-                 is_agent=is_agent)
+                 is_agent=is_agent,
+                 runner=runner,
+                 opencode_config_path=opencode_config_path,
+                 opencode_model=opencode_model,
+                 opencode_agent=opencode_agent,
+                 display_name=display_name,
+                 config_target_name=config_target_name)
 
 
 def _run_plugins(target_name, api_model, source, state, active_plugins, plugins_to_run,
                  source_config, timeout, token_levels, output_dir,
                  session_seed, global_cfg, r, start, max_workers,
                  stop_event=None, save_responses=False, system_prompt=None,
-                 is_agent=False):
+                 is_agent=False, runner="http", opencode_config_path=None,
+                 opencode_model=None, opencode_agent=None, display_name=None,
+                 config_target_name=None):
     """Run plugins for one model using a thread pool of bounded size.
 
     A single-worker pool (``max_workers=1``) is equivalent to sequential
@@ -743,7 +841,7 @@ def _run_plugins(target_name, api_model, source, state, active_plugins, plugins_
     errors = {}
     lock = threading.Lock()
     logs_dir = os.path.join(output_dir, "logs")
-    log_file = os.path.join(logs_dir, f"{sanitize_filename(target_name)}.log")
+    log_file = os.path.join(logs_dir, f"{sanitize_filename(display_name or target_name)}.log")
 
     def run_one(plugin):
         pid = plugin.id
@@ -763,7 +861,13 @@ def _run_plugins(target_name, api_model, source, state, active_plugins, plugins_
                                            save_responses=save_responses,
                                            output_dir=output_dir,
                                            system_prompt=system_prompt,
-                                           is_agent=is_agent)
+                                           is_agent=is_agent,
+                                           runner=runner,
+                                           opencode_config_path=opencode_config_path,
+                                           opencode_model=opencode_model,
+                                           opencode_agent=opencode_agent,
+                                           artifact_target_name=display_name or target_name,
+                                           config_target_name=config_target_name or display_name or target_name)
             result = task_result.result
             err = task_result.error
         finally:

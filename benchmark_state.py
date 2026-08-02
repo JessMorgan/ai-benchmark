@@ -12,20 +12,23 @@ import time
 class BenchmarkState:
     """Thread-safe shared state for parallel benchmark execution."""
 
-    def __init__(self, models, plugin_ids, session_seed=None):
+    def __init__(self, models, plugin_ids, session_seed=None, runner="http"):
         self._lock = threading.Lock()
         self.results = []
         self._model_info = {}
         self._log = []
         self.plugin_ids = list(plugin_ids)
         self.session_seed = session_seed
+        self.runner = runner
         for name, info in models.items():
             if isinstance(info, dict):
                 source = info.get("source", "Default")
                 api_model = info.get("api_model", name)
                 system_prompt = info.get("system_prompt")
                 is_agent = info.get("is_agent", False)
+                info_runner = info.get("runner", runner)
             else:
+                info_runner = runner
                 source = info
                 api_model = name
                 system_prompt = None
@@ -35,6 +38,7 @@ class BenchmarkState:
                 "api_model": api_model,
                 "system_prompt": system_prompt,
                 "is_agent": is_agent,
+                "runner": info_runner,
                 "status": "pending",
                 "ttft": None,
                 "error": None, "elapsed": 0,
@@ -341,6 +345,7 @@ class BenchmarkState:
                 "active_plugins": self.plugin_ids,
                 "plugin_versions": plugin_versions or {},
                 "session_seed": self.session_seed,
+                "runner": self.runner,
             }
         tmp = path + ".tmp"
         try:
@@ -359,7 +364,8 @@ class BenchmarkState:
         with self._lock:
             seen = {}
             for r in self.results:
-                seen[r["model"]] = r
+                key = (r.get("state_key", r["model"]), r.get("runner", "http"))
+                seen[key] = r
             return list(seen.values())
 
     @classmethod
@@ -367,14 +373,16 @@ class BenchmarkState:
         with open(path) as f:
             data = json.load(f)
         session_seed = data.get("session_seed")
-        state = cls(models, plugin_ids, session_seed=session_seed)
+        runner = data.get("runner", "http")
+        state = cls(models, plugin_ids, session_seed=session_seed, runner=runner)
         saved_plugins = data.get("active_plugins", [])
         new_plugins = [pid for pid in plugin_ids if pid not in saved_plugins]
         saved_info = data.get("model_info", {})
         saved_results = data.get("results", [])
         latest_by_model = {}
         for r in saved_results:
-            latest_by_model[r["model"]] = r
+            key = (r.get("state_key", r["model"]), r.get("runner", "http"))
+            latest_by_model[key] = r
         for name, info in saved_info.items():
             if name in state._model_info:
                 # Strip transient in-flight state on resume: no plugin task
@@ -410,7 +418,8 @@ class BenchmarkState:
                     if state._model_info[name].get("status") == "completed":
                         state._model_info[name]["status"] = "pending"
                 elif info.get("status") == "completed":
-                    latest = latest_by_model.get(name)
+                    expected_runner = state._model_info[name].get("runner", runner)
+                    latest = latest_by_model.get((name, expected_runner))
                     if latest is not None:
                         result_plugins = set(latest.get("plugin_versions", {}).keys())
                         if result_plugins and result_plugins.issubset(set(plugin_ids)):

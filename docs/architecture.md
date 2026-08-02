@@ -36,14 +36,18 @@ This document describes the high-level design of AI Benchmark.
    - Create or resume `BenchmarkState`.
    - Build per-source model queues.
 
-3. **Worker Threads**
-   - One thread per source.
-   - Each thread runs `run_model()` for each model in its queue.
+3. **Runner Phases and Worker Threads**
+   - `--runner http` uses the existing direct OpenAI-compatible path.
+   - `--runner opencode` generates one retained OpenCode config and starts one isolated `opencode run` process per target/plugin.
+   - `--runner both` completes the OpenCode phase before starting the HTTP phase.
+   - Each phase uses one thread per source and runs `run_model()` for each target in its queue.
+   - State identities include the configured target and runner, preventing cross-runner resume reuse.
 
 4. **Plugin Execution**
    - `_run_plugins()` uses `ThreadPoolExecutor` with `plugin_thread_limit` workers.
    - Each plugin task calls `_run_plugin_task()`.
-   - `_run_plugin_task()` calls `stream_request()` or `nonstream_request()`.
+   - HTTP tasks call `stream_request()` or `nonstream_request()`.
+   - OpenCode tasks call the subprocess adapter with `opencode run --format plain`, capture stdout/stderr separately, and score stdout as the final response.
 
 5. **Scoring**
    - Plugin `score()` evaluates the response.
@@ -62,6 +66,12 @@ This document describes the high-level design of AI Benchmark.
 - `_log`: recent error log entries
 
 State is saved to `benchmark_state.json` after each model and on shutdown. The saved state stores model sources as plain strings; dict-valued model entries from the config are resolved to their source string before being written.
+
+## OpenCode Runner
+
+OpenCode is optional and is never required for the default HTTP mode. When selected, startup checks `shutil.which("opencode")`, resolves every configured target to `{slugified source}/{api_model}`, projects source URL/auth/model settings into a generated config, and stores that config under the OpenCode output namespace. Existing agent system prompts are registered as OpenCode agents and passed separately from each plugin prompt. The generated config is retained intentionally; operators must protect the output directory because it contains resolved credentials.
+
+OpenCode has buffered final-output semantics in this adapter. Direct HTTP streaming metrics such as TTFT are not fabricated for OpenCode; its response time and estimated output-token count are recorded instead. Timeouts and cancellation terminate the subprocess group where supported.
 
 ## API Request Flow
 
@@ -100,6 +110,9 @@ Output generators handle mixed numeric and string scores defensively to avoid er
 - `ThreadPoolExecutor` runs plugins for a single model.
 
 ## Resume Behavior
+
+Runner identity is part of the persisted result key. A completed HTTP result cannot satisfy an OpenCode run, and vice versa. In `both`, each phase independently skips only its own completed target/plugin results. State and reports retain both variants, while runner-specific response and log artifacts remain under `http/` and `opencode/`.
+
 
 Saved state includes:
 

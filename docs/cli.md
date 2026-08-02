@@ -27,10 +27,11 @@ python ai-benchmark.py [options]
 | `--dump-default-config` | Print a default config template and exit |
 | `--base-url URL` | (with `--dump-default-config`) Discover models from `/v1/models` |
 | `--api-key KEY` | (with `--base-url`) API key for model discovery |
-| `--save-responses` | Save each model's plugin response text to `<output_dir>/responses/` |
+| `--save-responses` | Save each model's plugin response text to the selected runner namespace under `<output_dir>/{http,opencode}/responses/` |
 | `--seed INT` | Fixed random seed for all API requests |
 | `--no-rerun-failed` | Keep failed models as failed on resume (default re-runs them) |
 | `--retry-on-429` / `--no-retry-on-429` | Toggle HTTP-429 retry/backoff globally. Default is **ON**; pass `--no-retry-on-429` to opt out (sources with explicit `max_429_retries` are preserved). See [Configuration Reference](configuration.md#http-429-retry--backoff) for the per-source keys and migration notes. |
+| `--runner {http,opencode,both}` | Select the existing HTTP runner (default), the pre-installed OpenCode CLI runner, or both. In `both`, OpenCode runs first. |
 | `-h, --help` | Show help message |
 
 ## Examples
@@ -109,6 +110,30 @@ python ai-benchmark.py --generate-shell-completion zsh > ~/.zsh/completions/_ai-
 # Fish
 python ai-benchmark.py --generate-shell-completion fish > ~/.config/fish/completions/ai-benchmark.py.fish
 ```
+
+### Select an execution runner
+
+The default runner is the existing OpenAI-compatible HTTP path:
+
+```sh
+python ai-benchmark.py --runner http
+```
+
+To run each configured model and agent through a locally installed OpenCode CLI:
+
+```sh
+python ai-benchmark.py --runner opencode
+```
+
+`opencode` must already be installed and discoverable through `PATH`; the benchmark fails before scheduling work if it is missing. `--runner both` runs the OpenCode phase first and then the HTTP phase:
+
+```sh
+python ai-benchmark.py --runner both --save-responses
+```
+
+OpenCode mode generates and retains `<output_dir>/opencode/opencode.generated.json` from the loaded benchmark sources. The file contains resolved authentication values, is written with restrictive permissions where supported, and should be treated as a secret-bearing artifact. OpenCode responses and logs are stored below `<output_dir>/opencode/`; HTTP artifacts are stored below `<output_dir>/http/`. Results include a runner column so the two variants remain distinguishable, and resume reuses results only for the same runner.
+
+The OpenCode model mapping is deterministic: the source name is lowercased and strictly slugified, then joined with the resolved API model as `{slugified-source}/{api_model}`. Existing slashes in `api_model` are preserved.
 
 ### Discover models from an API
 

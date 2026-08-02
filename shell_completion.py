@@ -21,6 +21,7 @@ def generate_shell_completion(shell, plugins):
         "--base-url",
         "--api-key",
         "--save-responses",
+        "--runner",
     ]
     flag_list = " ".join(flags)
 
@@ -43,6 +44,10 @@ def generate_shell_completion(shell, plugins):
             ;;
         --out)
             COMPREPLY=( $(compgen -d -- "$cur") )
+            return 0
+            ;;
+        --runner)
+            COMPREPLY=( $(compgen -W "http opencode both" -- "$cur") )
             return 0
             ;;
     esac
@@ -77,6 +82,7 @@ _arguments \\
     '--base-url[Base URL for model discovery via /v1/models API]:url:' \\
     '--api-key[API key for model discovery]:key:' \\
     '--save-responses[Save each model\'s plugin response text to <output_dir>/responses/]' \\
+    '--runner[Execution runner]:runner:(http opencode both)' \\
     '*:file:_files'
 
 case \"$state\" in
@@ -103,6 +109,7 @@ esac
             "complete -c ai-benchmark.py -l base-url -F -d 'Base URL for model discovery via /v1/models API'",
             "complete -c ai-benchmark.py -l api-key -F -d 'API key for model discovery'",
             "complete -c ai-benchmark.py -l save-responses -d 'Save each model\\'s plugin response text to <output_dir>/responses/'",
+            "complete -c ai-benchmark.py -l runner -x -a 'http opencode both' -d 'Execution runner'",
         ]
         return "\n".join(lines) + "\n"
 

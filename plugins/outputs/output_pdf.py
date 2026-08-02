@@ -39,8 +39,12 @@ class PDFOutputPlugin(BenchmarkOutputPlugin):
         pdf.cell(0, 6, f"Total: {len(results)}  |  OK: {len(ok)}  |  Failed: {len(results)-len(ok)}{seed_part}", align="C", new_x="LMARGIN", new_y="NEXT")
         pdf.ln(4)
 
-        col_w = [38, 9]
+        has_runner = any(r.get("runner") for r in results)
+        col_w = [32, 9]
         headers = ["Model", "Load"]
+        if has_runner:
+            col_w = [28, 12, 9]
+            headers = ["Model", "Runner", "Load"]
         for p in active_plugins:
             col_w.extend([9, 9, 9, 9])
             headers.extend([f"{p.id[:3].upper()}Rsp", f"{p.id[:3].upper()}TPS", f"{p.id[:3].upper()}Tok", f"{p.id[:3].upper()}Sc"])
@@ -54,7 +58,10 @@ class PDFOutputPlugin(BenchmarkOutputPlugin):
         for r in results:
             tot = _plugin_total_score(r, active_plugins)
             m = "str" if r.get('stream_ok') else "ns"
-            vals = [r['model'][:30], str(r.get('ttft') or '-')]
+            vals = [r['model'][:24 if has_runner else 30]]
+            if has_runner:
+                vals.append(str(r.get("runner", "http")))
+            vals.append(str(r.get('ttft') or '-'))
             for p in active_plugins:
                 vals.extend([
                     str(r.get(f'{p.id}_response_time', '-')),

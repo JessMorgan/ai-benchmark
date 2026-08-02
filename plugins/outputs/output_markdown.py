@@ -36,7 +36,8 @@ class MarkdownOutputPlugin(BenchmarkOutputPlugin):
             "",
         ])
 
-        header = "| # | Model | Load (s) |"
+        has_runner = any(r.get("runner") for r in results)
+        header = "| # | Model | Runner | Load (s) |" if has_runner else "| # | Model | Load (s) |"
         for p in active_plugins:
             header += f" {p.name} Resp (s) | {p.name} TPS | {p.name} Tok | {p.name} Score |"
             if output_dir:
@@ -44,7 +45,7 @@ class MarkdownOutputPlugin(BenchmarkOutputPlugin):
         header += " Total | Time | Mode |"
         lines.append(header)
 
-        sep = "|---|---|---|"
+        sep = "|---|---|---|---|" if has_runner else "|---|---|---|"
         for _p in active_plugins:
             sep += "---|---|---|---|"
             if output_dir:
@@ -55,14 +56,17 @@ class MarkdownOutputPlugin(BenchmarkOutputPlugin):
         for idx, r in enumerate(results, 1):
             tot = _plugin_total_score(r, active_plugins)
             m = "stream" if r.get('stream_ok') else "nostream"
-            row = f"| {idx} | {r['model']} | {r.get('ttft') or '-'} |"
+            runner = r.get("runner", "")
+            row = (f"| {idx} | {r['model']} | {runner} | {r.get('ttft') or '-'} |"
+                   if has_runner else f"| {idx} | {r['model']} | {r.get('ttft') or '-'} |")
             for p in active_plugins:
                 row += (f" {r.get(f'{p.id}_response_time','-')} | "
                         f"{r.get(f'{p.id}_tps','-')} | "
                         f"{r.get(f'{p.id}_output_tokens','-')} | "
                         f"{r.get(f'{p.id}_score','-')} |")
                 if output_dir:
-                    rel_path = f"responses/{sanitize_filename(r['model'])}/{p.id}.txt"
+                    runner_prefix = f"{runner}/" if runner in ("http", "opencode") else ""
+                    rel_path = f"{runner_prefix}responses/{sanitize_filename(r['model'])}/{p.id}.txt"
                     row += f" [view]({rel_path}) |"
             row += f" {tot} | {r['total_time']}s | {m} |"
             lines.append(row)

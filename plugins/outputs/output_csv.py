@@ -22,7 +22,7 @@ class CSVOutputPlugin(BenchmarkOutputPlugin):
     def generate(self, results, active_plugins, output_dir=None, session_seed=None):
         out = io.StringIO()
         w = csv.writer(out)
-        headers = ["Model", "Source", "TTFT_s"]
+        headers = ["Model", "Runner", "Source", "TTFT_s"]
         for p in active_plugins:
             headers.extend([f"{p.id}_Response_s", f"{p.id}_Output_Tokens", f"{p.id}_TPS", f"{p.id}_Score_{int(p.max_score)}"])
         headers.extend(["Total", "Time_s", "Mode", "Status", "Error"])
@@ -31,7 +31,7 @@ class CSVOutputPlugin(BenchmarkOutputPlugin):
         for r in results:
             tot = _plugin_total_score(r, active_plugins)
             m = "stream" if r.get('stream_ok') else "non-streaming"
-            row = [r['model'], r.get('source', ''), r.get('ttft') or '']
+            row = [r['model'], r.get('runner', 'http'), r.get('source', ''), r.get('ttft') or '']
             for p in active_plugins:
                 row.extend([
                     r.get(f"{p.id}_response_time", ''),

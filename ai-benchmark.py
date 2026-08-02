@@ -41,6 +41,11 @@ from benchmark_http import (
 )
 from plugins import discover_plugins, format_plugin_list
 from shell_completion import generate_shell_completion
+from opencode_runner import (
+    generate_config as generate_opencode_config,
+    opencode_model_name,
+    validate_cli as validate_opencode_cli,
+)
 
 DEFAULT_CONFIG_PATH = "benchmark-config.json"
 
@@ -973,6 +978,8 @@ def main():
                         help='Do not re-run models that failed in a previous session')
     parser.add_argument('--scripted', action='store_true',
                         help='Non-interactive mode: never prompt for input; default to continuing runs')
+    parser.add_argument('--runner', choices=['http', 'opencode', 'both'], default='http',
+                        help='Execution runner: http (default), opencode, or both (OpenCode runs first)')
     args = parser.parse_args()
 
     if args.list_plugins:
@@ -1026,10 +1033,32 @@ def main():
         print(f"❌ Model/agent name collision: {', '.join(sorted(collisions))}", file=sys.stderr)
         sys.exit(1)
     targets = resolve_targets(cfg)
+    runner_mode = args.runner
+    if runner_mode in ("opencode", "both"):
+        opencode_binary = shutil.which("opencode")
+        if opencode_binary is None:
+            print("❌ OpenCode runner selected, but 'opencode' was not found on PATH. "
+                  "Install OpenCode before using --runner opencode/both.", file=sys.stderr)
+            sys.exit(1)
+        try:
+            validate_opencode_cli(opencode_binary)
+        except RuntimeError as exc:
+            print(f"❌ OpenCode preflight failed: {exc}", file=sys.stderr)
+            sys.exit(1)
     output_dir = cfg.get("output_dir", "benchmark-results")
     if args.out:
         output_dir = args.out
     state_file = os.path.join(output_dir, "benchmark_state.json")
+
+    # Keep one state identity per (configured target, runner). HTTP retains
+    # the historical target key; OpenCode gets a stable suffix so `both`
+    # can resume and report the two executions independently.
+    state_models = {}
+    for target_name, target_info in targets.items():
+        if runner_mode in ("http", "both"):
+            state_models[target_name] = {**target_info, "runner": "http"}
+        if runner_mode in ("opencode", "both"):
+            state_models[f"{target_name} [opencode]"] = {**target_info, "runner": "opencode"}
 
     timeout = cfg.get("timeout", 600)
     if args.timeout is not None:
@@ -1089,8 +1118,35 @@ def main():
     print(f"🔌 Active plugins: {', '.join(p.name for p in active_plugins)} "
           f"(v{', v'.join(p.version for p in active_plugins)})", file=sys.stderr)
     print(f"📂 Output directory: {output_dir}", file=sys.stderr)
+    print(f"🏃 Runner: {runner_mode}", file=sys.stderr)
 
     os.makedirs(output_dir, exist_ok=True)
+    http_output_dir = os.path.join(output_dir, "http")
+    opencode_output_dir = os.path.join(output_dir, "opencode")
+    if runner_mode in ("http", "both"):
+        os.makedirs(http_output_dir, exist_ok=True)
+    opencode_config_path = None
+    opencode_mappings = {}
+    opencode_agent_ids = {}
+    opencode_projection = None
+    if runner_mode in ("opencode", "both"):
+        try:
+            generated = generate_opencode_config(
+                source_config,
+                targets,
+                os.path.join(opencode_output_dir, "opencode.generated.json"),
+                timeout=timeout,
+                token_levels=token_levels,
+                benchmark_config=cfg,
+                plugin_temperatures=cfg.get("plugin_temperatures"),
+            )
+            opencode_config_path = generated["path"]
+            opencode_mappings = generated["mappings"]
+            opencode_agent_ids = generated["agent_ids"]
+            opencode_projection = generated["projection"]
+        except (OSError, ValueError) as exc:
+            print(f"❌ Could not prepare OpenCode configuration: {exc}", file=sys.stderr)
+            sys.exit(1)
 
     try:
         shutil.copy2(config_path, os.path.join(output_dir, os.path.basename(config_path)))
@@ -1108,11 +1164,14 @@ def main():
         "start_time": datetime.now().isoformat(),
         "end_time": None,
         "status": "running",
-        "total_targets": len(targets),
+        "total_targets": len(targets) * (2 if runner_mode == "both" else 1),
         "completed_targets": 0,
         "worker_errors": 0,
         "session_seed": None,
         "active_plugins": [p.id for p in active_plugins],
+        "runner": runner_mode,
+        "opencode_config": opencode_config_path,
+        "opencode_projection": opencode_projection,
         "targets": list(targets.keys()),
     }
 
@@ -1150,17 +1209,19 @@ def main():
                     choice = _prompt_restart_or_continue(scripted=args.scripted)
                     if choice == "restart":
                         os.remove(state_file)
-                        state = BenchmarkState(targets, plugin_ids)
+                        state = BenchmarkState(state_models, plugin_ids, runner=runner_mode)
                     elif choice == "continue":
                         state = BenchmarkState.load_state(
-                            state_file, targets, plugin_ids,
+                            state_file, state_models, plugin_ids,
                             rerun_failed=not args.no_rerun_failed)
+                        # State may contain results from another runner; retain
+                    # them because identity is carried per model/result.
                         resumed = True
                     else:
                         sys.exit(0)
                 else:
                     state = BenchmarkState.load_state(
-                        state_file, targets, plugin_ids,
+                        state_file, state_models, plugin_ids,
                         rerun_failed=not args.no_rerun_failed)
                     resumed = True
 
@@ -1181,9 +1242,9 @@ def main():
             except Exception as e:
                 print(f"⚠️  Could not load state file ({e}), starting fresh.",
                       file=sys.stderr)
-                state = BenchmarkState(targets, plugin_ids)
+                state = BenchmarkState(state_models, plugin_ids, runner=runner_mode)
         else:
-            state = BenchmarkState(targets, plugin_ids)
+            state = BenchmarkState(state_models, plugin_ids, runner=runner_mode)
 
         # Use the CLI --seed if provided; otherwise preserve the seed from a
         # resumed state so report exports remain consistent.
@@ -1212,59 +1273,11 @@ def main():
 
         total = state.total
 
-        source_queues = {src: [] for src in set(t["source"] for t in targets.values())}
-        for name, info in targets.items():
-            snap = state.snapshot().get(name, {})
-            if snap.get("status") in ("completed",):
-                continue
-            source_queues[info["source"]].append(name)
-
-        source_threads = {}
-        errors_lock = threading.Lock()
-        raw_targets = {}
-        raw_targets.update(cfg.get("models", {}))
-        raw_targets.update(cfg.get("agents", {}))
-
-        def worker(source, model_names):
-            nonlocal worker_errors
-            for model_name in model_names:
-                if stop_event.is_set():
-                    break
-                try:
-                    model_blacklist = get_target_plugins_blacklist(raw_targets, model_name)
-                    model_active_plugins = [p for p in active_plugins if p.id not in model_blacklist]
-                    target_info = targets[model_name]
-                    run_model(model_name, source, state, model_active_plugins, source_config,
-                              timeout, token_levels, output_dir, session_seed=session_seed,
-                              global_cfg=cfg, stop_event=stop_event,
-                              save_responses=args.save_responses,
-                              api_model=target_info["api_model"],
-                              system_prompt=target_info["system_prompt"],
-                              is_agent=target_info["is_agent"])
-                    state.save_state(state_file, plugin_versions=plugin_versions)
-                    _save_outputs(state, output_dir, active_plugins)
-                except Exception as e:
-                    with errors_lock:
-                        worker_errors += 1
-                    print(f"\n❌ Worker exception ({model_name}): {type(e).__name__}: {e}",
-                          file=sys.stderr)
-
-        for source, queue in source_queues.items():
-            if not queue:
-                continue
-            t = threading.Thread(target=worker, args=(source, queue), daemon=True)
-            t.start()
-            source_threads[source] = t
-
         def _join_workers(timeout=None):
-            """Wait for worker threads with an optional timeout.
-
-            Returns True if all workers finished, False if any are still alive.
-            """
+            """Wait for the current phase's source workers."""
             if not source_threads:
                 return True
             if timeout is None:
-                # Poll with short timeouts so Ctrl+C is handled promptly.
                 while any(t.is_alive() for t in source_threads.values()):
                     for t in source_threads.values():
                         t.join(timeout=0.2)
@@ -1273,21 +1286,77 @@ def main():
                 t.join(timeout=timeout / max(len(source_threads), 1))
             return not any(t.is_alive() for t in source_threads.values())
 
-        if not source_threads:
-            print("✅ All models already completed. Nothing to run.", file=sys.stderr)
-        else:
+        phase_runners = ["opencode", "http"] if runner_mode == "both" else [runner_mode]
+        for phase_runner in phase_runners:
+            phase_targets = targets
+            source_queues = {src: [] for src in set(t["source"] for t in phase_targets.values())}
+            for name, info in phase_targets.items():
+                state_key = name if phase_runner == "http" else f"{name} [opencode]"
+                snap = state.snapshot().get(state_key, {})
+                if snap.get("status") in ("completed",):
+                    continue
+                source_queues[info["source"]].append(name)
+
+            source_threads = {}
+            errors_lock = threading.Lock()
+            raw_targets = {}
+            raw_targets.update(cfg.get("models", {}))
+            raw_targets.update(cfg.get("agents", {}))
+
+            def worker(source, model_names, phase_runner=phase_runner):
+                nonlocal worker_errors
+                for model_name in model_names:
+                    if stop_event.is_set():
+                        break
+                    try:
+                        model_blacklist = get_target_plugins_blacklist(raw_targets, model_name)
+                        model_active_plugins = [p for p in active_plugins if p.id not in model_blacklist]
+                        target_info = targets[model_name]
+                        state_key = model_name if phase_runner == "http" else f"{model_name} [opencode]"
+                        phase_output_dir = http_output_dir if phase_runner == "http" else opencode_output_dir
+                        mapped = None
+                        agent_id = None
+                        if phase_runner == "opencode":
+                            mapped = opencode_model_name(target_info["source"], target_info["api_model"])
+                            agent_id = opencode_agent_ids.get(model_name)
+                        phase_state = state
+                        run_model(state_key, target_info["source"], phase_state, model_active_plugins,
+                                  source_config, timeout, token_levels, phase_output_dir,
+                                  session_seed=session_seed, global_cfg=cfg, stop_event=stop_event,
+                                  save_responses=args.save_responses,
+                                  api_model=target_info["api_model"],
+                                  system_prompt=target_info["system_prompt"],
+                                  is_agent=target_info["is_agent"], runner=phase_runner,
+                                  opencode_config_path=opencode_config_path,
+                                  opencode_model=mapped, opencode_agent=agent_id,
+                                  display_name=model_name, config_target_name=model_name)
+                        state.save_state(state_file, plugin_versions=plugin_versions)
+                        _save_outputs(state, output_dir, active_plugins)
+                    except Exception as e:
+                        with errors_lock:
+                            worker_errors += 1
+                        print(f"\\n❌ Worker exception ({model_name}, {phase_runner}): {type(e).__name__}: {e}",
+                              file=sys.stderr)
+
+            for source, queue in source_queues.items():
+                if not queue:
+                    continue
+                t = threading.Thread(target=worker, args=(source, queue), daemon=True)
+                t.start()
+                source_threads[source] = t
+
+            if not source_threads:
+                continue
             try:
                 _join_workers()
             except KeyboardInterrupt:
                 interrupted = True
                 run_info["status"] = "interrupted"
                 stop_event.set()
-                print("\n\n⚠️  Ctrl+C — saving state and shutting down...", file=sys.stderr)
+                print("\\n\\n⚠️  Ctrl+C — saving state and shutting down...", file=sys.stderr)
                 close_active_requests()
-                # Workers are daemon threads, so the process can exit without
-                # waiting for them. Give them a brief grace period to finish
-                # cleanly, but do not block shutdown on a slow I/O call.
                 _join_workers(timeout=1.0)
+                break
 
         stop_event.set()
         # The TUI thread is a daemon, so we don't need to wait for it. A short

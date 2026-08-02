@@ -26,12 +26,15 @@ class HTMLOutputPlugin(BenchmarkOutputPlugin):
             cls = "ok" if r["status"] == "ok" else "fail"
             tot = _plugin_total_score(r, active_plugins)
             m = "str" if r.get('stream_ok') else "ns"
+            runner = r.get("runner", "http")
             cells = (f'<td>{r["model"]}</td>'
+                     f'<td>{html_lib.escape(str(runner))}</td>'
                      f'<td>{r.get("ttft") or "-"}</td>')
             for p in active_plugins:
                 score_val = r.get(f"{p.id}_score", "-")
                 if output_dir:
-                    rel_path = f"responses/{sanitize_filename(r['model'])}/{p.id}.txt"
+                    runner_prefix = f"{runner}/" if runner in ("http", "opencode") else ""
+                    rel_path = f"{runner_prefix}responses/{sanitize_filename(r['model'])}/{p.id}.txt"
                     score_cell = f'<a href="{rel_path}">{score_val}</a>'
                 else:
                     score_cell = f"{score_val}"
@@ -84,7 +87,7 @@ class HTMLOutputPlugin(BenchmarkOutputPlugin):
                         rubric_html += f"<tr><td>{html_lib.escape(str(item['name']))}</td><td>{item['earned']}</td><td>{item['max']}</td><td>{item['missed']}</td></tr>\n"
                     rubric_html += "</table>\n"
 
-        header_cells = "<th>Model</th><th>Load(s)</th>"
+        header_cells = "<th>Model</th><th>Runner</th><th>Load(s)</th>"
         for p in active_plugins:
             header_cells += f"<th>{p.name} Resp(s)</th><th>{p.name} TPS</th><th>{p.name} Tok</th><th>{p.name} Score</th>"
         header_cells += "<th>Total</th><th>Time</th><th>Mode</th><th>Status</th>"
