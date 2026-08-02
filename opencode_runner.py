@@ -20,13 +20,21 @@ from urllib.parse import urlsplit, urlunsplit
 
 OPENCODE_BINARY = "opencode"
 
+# ``opencode run --format`` accepts exactly ``default`` (formatted) or
+# ``json`` (NDJSON event stream).  The adapter uses ``json`` so the final
+# assistant answer can be extracted deterministically without ANSI/UI noise;
+# ``plain`` does not exist in any released CLI and caused every invocation to
+# be rejected with exit status 1.
+OPENCODE_RUN_FORMAT = "json"
+
 
 def validate_cli(binary: str = OPENCODE_BINARY, *, timeout: float = 10) -> None:
     """Validate the minimum non-interactive CLI contract before a run.
 
     The executable's presence is checked by the caller with ``shutil.which``;
     this probe verifies that the installed release exposes the flags used by
-    this adapter without starting a benchmark session.
+    this adapter and that the ``json`` run-format choice is advertised, so an
+    outdated/unsupported CLI fails fast before any benchmark work is started.
     """
     try:
         probe = subprocess.run(
@@ -45,6 +53,11 @@ def validate_cli(binary: str = OPENCODE_BINARY, *, timeout: float = 10) -> None:
     if missing:
         raise RuntimeError(
             "Installed OpenCode CLI is missing required run options: " + ", ".join(missing)
+        )
+    if not re.search(r"choices:[^]]*json", help_text, re.IGNORECASE | re.DOTALL):
+        raise RuntimeError(
+            "Installed OpenCode CLI does not advertise the 'json' run format "
+            f"required for the {OPENCODE_RUN_FORMAT!r} output contract"
         )
 
 
@@ -119,6 +132,25 @@ def _provider_options(source_cfg: Mapping[str, Any]) -> dict[str, Any]:
     return options
 
 
+def _model_context_limit(api_model: str, default: int = 131072) -> int:
+    """Infer an OpenCode context limit from a benchmark model id.
+
+    Benchmark model ids conventionally carry their context window as a
+    ``-NNk`` / ``-NNm`` suffix (e.g. ``qwen3.6:27b-128k``).  OpenCode's
+    provider model schema requires ``limit.context`` whenever ``limit`` is
+    present, so the generated config always writes it; ids without a suffix
+    fall back to a conservative default.
+    """
+    match = re.search(r"-(\d+)([km])(?:$|[^a-z])", api_model, re.IGNORECASE)
+    if match:
+        amount = int(match.group(1))
+        unit = match.group(2).lower()
+        if unit == "k":
+            return amount * 1024
+        return amount * 1024 * 1024
+    return default
+
+
 def _agent_id(target_key: str) -> str:
     value = re.sub(r"[^a-zA-Z0-9_-]+", "-", target_key).strip("-")
     return f"benchmark-{value or 'target'}"
@@ -171,8 +203,12 @@ def generate_config(
                 "models": {},
             }
         model_options: dict[str, Any] = {"name": api_model}
-        if token_levels:
-            model_options["limit"] = {"output": max(token_levels)}
+        # OpenCode requires both ``context`` and ``output`` inside ``limit``;
+        # writing only ``output`` makes the whole config fail validation.
+        model_options["limit"] = {
+            "context": _model_context_limit(api_model),
+            "output": max(token_levels) if token_levels else 16384,
+        }
         providers[provider_id]["models"][api_model] = model_options
 
         if info.get("is_agent") and info.get("system_prompt"):
@@ -237,6 +273,50 @@ def generate_config(
     }
 
 
+def _extract_final_text(stdout: bytes) -> tuple[str, str | None]:
+    """Extract the final assistant answer from ``opencode run --format json``.
+
+    ``--format json`` emits one NDJSON event per line.  Completed assistant
+    text parts arrive as ``{"type": "text", "part": {"type": "text",
+    "text": ..., "time": {"end": ...}}}``; the CLI also emits ``tool_use``,
+    ``step_start``, ``reasoning``, and ``error`` events, none of which carry
+    final answer text.  Concatenate text events in order (the model may emit
+    several parts), and fall back to the raw decoded stdout when the stream is
+    not NDJSON at all.
+
+    Returns ``(text, error)`` where ``error`` is an ``error`` event payload
+    string when the session itself reported one.
+    """
+    text_parts: list[str] = []
+    session_error: str | None = None
+    saw_json = False
+    for line in stdout.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        saw_json = True
+        event_type = event.get("type")
+        if event_type == "text":
+            part = event.get("part") or {}
+            if isinstance(part, dict) and part.get("type") == "text":
+                part_text = part.get("text")
+                if isinstance(part_text, str) and part_text.strip():
+                    text_parts.append(part_text)
+        elif event_type == "error":
+            payload = event.get("error")
+            if isinstance(payload, dict):
+                session_error = payload.get("message") or payload.get("name")
+            elif isinstance(payload, str):
+                session_error = payload
+    if saw_json:
+        return "\n".join(text_parts).strip(), session_error
+    return stdout.decode("utf-8", errors="replace").strip(), None
+
+
 def _terminate_process(process: subprocess.Popen[bytes]) -> None:
     """Terminate OpenCode and its process group where supported."""
     if process.poll() is not None:
@@ -277,7 +357,7 @@ def run_process(
     stop_event: Any = None,
 ) -> OpenCodeProcessResult:
     """Run one isolated OpenCode task and capture stdout/stderr separately."""
-    command = [binary, "run", "--model", model, "--format", "plain"]
+    command = [binary, "run", "--model", model, "--format", OPENCODE_RUN_FORMAT]
     if agent:
         command.extend(["--agent", agent])
     command.append(prompt)
@@ -328,7 +408,7 @@ def run_process(
         if process is not None and process.poll() is None:
             _terminate_process(process)
 
-    text = stdout.decode("utf-8", errors="replace").strip()
+    text, session_error = _extract_final_text(stdout)
     diagnostic = stderr.decode("utf-8", errors="replace")
     elapsed = time.monotonic() - started
     if output_dir:
@@ -336,6 +416,8 @@ def run_process(
         log_dir.mkdir(parents=True, exist_ok=True)
         (log_dir / f"{plugin_id}.stdout.txt").write_bytes(stdout)
         (log_dir / f"{plugin_id}.stderr.txt").write_bytes(stderr)
+    if error is None and session_error:
+        error = f"OpenCode session error: {session_error}"
     if error is None and returncode != 0:
         error = f"OpenCode exited with status {returncode}"
     if error is None and not text:

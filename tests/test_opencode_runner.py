@@ -11,11 +11,15 @@ from benchmark_core import run_model
 from benchmark_plugin import PluginTaskResult
 from benchmark_state import BenchmarkState
 from opencode_runner import (
+    OPENCODE_RUN_FORMAT,
     OpenCodeProcessResult,
+    _extract_final_text,
+    _model_context_limit,
     generate_config,
     opencode_model_name,
     run_process,
     slugify_source,
+    validate_cli,
 )
 from plugins import discover_plugins
 
@@ -86,6 +90,24 @@ class TestOpenCodeConfig(unittest.TestCase):
             if os.name == "posix":
                 self.assertEqual(stat.S_IMODE(os.stat(path).st_mode), 0o600)
 
+    def test_model_limit_contains_context_and_output(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, "opencode.generated.json")
+            generate_config(self.sources, self.targets, path, token_levels=[100])
+            with open(path, encoding="utf-8") as handle:
+                on_disk = json.load(handle)
+            limits = {
+                name: model["limit"]
+                for provider in on_disk["provider"].values()
+                for name, model in provider["models"].items()
+            }
+            self.assertEqual(limits["model-a"], {"context": 131072, "output": 100})
+
+    def test_model_context_limit_infers_suffix(self):
+        self.assertEqual(_model_context_limit("qwen3.6:27b-128k"), 131072)
+        self.assertEqual(_model_context_limit("nemotron-3-nano:30b-1m"), 1048576)
+        self.assertEqual(_model_context_limit("big-pickle"), 131072)
+
     def test_mapping_collision_is_rejected_before_write(self):
         targets = {
             "one": {"source": "Same Source", "api_model": "model"},
@@ -100,8 +122,20 @@ class TestOpenCodeConfig(unittest.TestCase):
                 )
 
 
+def _ndjson_event(event_type, **extra):
+    payload = {"type": event_type, "timestamp": 1, "sessionID": "s1"}
+    payload.update(extra)
+    return json.dumps(payload).encode()
+
+
+def _text_event(text):
+    return _ndjson_event("text", part={
+        "type": "text", "text": text, "time": {"end": 1},
+    })
+
+
 class _FakeProcess:
-    def __init__(self, returncode=0, stdout=b"final answer\n", stderr=b"diagnostic\n"):
+    def __init__(self, returncode=0, stdout=b"", stderr=b"diagnostic\n"):
         self.returncode = returncode
         self._stdout = stdout
         self._stderr = stderr
@@ -123,12 +157,38 @@ class _FakeProcess:
         self.returncode = -9
 
 
+class TestOpenCodeExtraction(unittest.TestCase):
+    def test_extract_final_text_joins_text_events_in_order(self):
+        stream = b"\n".join([
+            _ndjson_event("step_start", part={"type": "step-start"}),
+            _text_event("part one"),
+            _ndjson_event("tool_use", part={"type": "tool"}),
+            _text_event("part two"),
+        ])
+        self.assertEqual(_extract_final_text(stream), ("part one\npart two", None))
+
+    def test_extract_final_text_surfaces_session_error(self):
+        stream = b"\n".join([
+            _text_event("partial"),
+            _ndjson_event("error", error={"message": "rate limited"}),
+        ])
+        self.assertEqual(_extract_final_text(stream), ("partial", "rate limited"))
+
+    def test_extract_final_text_falls_back_to_raw_stdout(self):
+        self.assertEqual(_extract_final_text(b"plain text\nnot json"), ("plain text\nnot json", None))
+
+    def test_extract_final_text_ignores_incomplete_parts(self):
+        stream = _ndjson_event("text", part={"type": "text", "text": "", "time": {}})
+        self.assertEqual(_extract_final_text(stream), ("", None))
+
+
 class TestOpenCodeProcess(unittest.TestCase):
     def test_invocation_uses_argument_list_config_env_and_separate_logs(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             config_path = os.path.join(tmpdir, "config.json")
             open(config_path, "w", encoding="utf-8").close()
-            fake = _FakeProcess()
+            stdout = b"\n".join([_text_event("final answer")])
+            fake = _FakeProcess(stdout=stdout)
             with mock.patch("opencode_runner.subprocess.Popen", return_value=fake) as popen:
                 result = run_process(
                     "line one\nline two",
@@ -145,7 +205,7 @@ class TestOpenCodeProcess(unittest.TestCase):
             command = popen.call_args.args[0]
             self.assertEqual(command[:7], [
                 "opencode-test", "run", "--model", "local-server/model-a",
-                "--format", "plain", "--agent",
+                "--format", OPENCODE_RUN_FORMAT, "--agent",
             ])
             self.assertEqual(command[-2:], ["benchmark-agent-a", "line one\nline two"])
             env = popen.call_args.kwargs["env"]
@@ -159,12 +219,50 @@ class TestOpenCodeProcess(unittest.TestCase):
                 tmpdir, "logs", "agent-a", "rate-limiter.stderr.txt")))
 
     def test_nonzero_exit_is_reported(self):
-        fake = _FakeProcess(returncode=7, stdout=b"", stderr=b"bad config")
+        fake = _FakeProcess(returncode=7, stderr=b"bad config")
         with mock.patch("opencode_runner.subprocess.Popen", return_value=fake):
             result = run_process("prompt", config_path="/tmp/config.json",
                                  model="provider/model", timeout=5,
                                  binary="opencode-test")
         self.assertEqual(result.error, "OpenCode exited with status 7")
+
+    def test_session_error_is_reported(self):
+        stream = _ndjson_event("error", error={"message": "provider down"})
+        fake = _FakeProcess(stdout=stream)
+        with mock.patch("opencode_runner.subprocess.Popen", return_value=fake):
+            result = run_process("prompt", config_path="/tmp/config.json",
+                                 model="provider/model", timeout=5,
+                                 binary="opencode-test")
+        self.assertEqual(result.error, "OpenCode session error: provider down")
+
+    def test_help_advertising_only_default_format_is_rejected(self):
+        help_text = (
+            "Options:\n"
+            "  --model  model to use  [string]\n"
+            "  --format format  [string] [choices: \"default\"] [default: \"default\"]\n"
+            "  --agent  agent to use  [string]\n"
+        )
+        probe = mock.Mock()
+        probe.returncode = 0
+        probe.stdout = help_text
+        probe.stderr = ""
+        with mock.patch("opencode_runner.subprocess.run", return_value=probe):
+            with self.assertRaisesRegex(RuntimeError, "'json' run format"):
+                validate_cli("opencode-test")
+
+    def test_help_advertising_json_format_passes(self):
+        help_text = (
+            "Options:\n"
+            "  --model  model to use  [string]\n"
+            "  --format format  [string] [choices: \"default\", \"json\"] [default: \"default\"]\n"
+            "  --agent  agent to use  [string]\n"
+        )
+        probe = mock.Mock()
+        probe.returncode = 0
+        probe.stdout = help_text
+        probe.stderr = ""
+        with mock.patch("opencode_runner.subprocess.run", return_value=probe):
+            validate_cli("opencode-test")
 
 
 class TestRunnerAwareExecution(unittest.TestCase):

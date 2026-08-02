@@ -131,6 +131,8 @@ The runner dynamically generates and retains `<output_dir>/opencode/opencode.gen
 
 OpenCode and HTTP artifacts are separated under `<output_dir>/opencode/` and `<output_dir>/http/`. Markdown, CSV, HTML, and PDF reports include runner metadata. Resume matching is runner-aware, so an HTTP result is never reused for an OpenCode task.
 
+Before scheduling any work the runner preflights the installed CLI: `opencode run --help` must advertise the `--model`/`--format`/`--agent` options and the `json` format choice. Each task is invoked as `opencode run --model <slugified-source>/<api_model> --format json <prompt>`; the adapter parses the NDJSON event stream and scores the final assistant answer. Generated configs always set both `limit.context` (inferred from the model id's `-NNk`/`-NNm` suffix) and `limit.output` (from `token_levels`), because OpenCode rejects provider models whose `limit` omits `context`.
+
 ## Outputs
 
 After completion the output directory contains:
