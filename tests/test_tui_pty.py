@@ -49,11 +49,15 @@ try:
     if max_y < 4 or max_x < 24:
         raise RuntimeError(f"terminal too small: {{max_y}}x{{max_x}}")
 
-    # The second frame is shorter, matching the reported "038s" -> "38s"
-    # failure. The final row is deliberately used because bottom-row curses
-    # writes are where boundary errors tend to surface.
+    # Render a wide frame first, then wait for the parent to resize the
+    # actual PTY to a portrait-shaped terminal. This reproduces the mobile
+    # case rather than only exercising a fixed 80-column fake.
     module._wr(screen, max_x, max_y, max_y - 1, 0, "038s")
     screen.refresh()
+    os.write(2, b"PTY_READY")
+    os.read(0, 1)
+    curses.resizeterm(20, 24)
+    max_y, max_x = screen.getmaxyx()
     module._wr(screen, max_x, max_y, max_y - 1, 0, "38s")
     module._wr(screen, max_x, max_y, 0, 0,
                "A👨‍👩‍👧‍👦B" + chr(27) + "[2J" + chr(27) + "[H done")
@@ -65,7 +69,7 @@ try:
         raise AssertionError(f"bad footer row: {{footer!r}}")
     if chr(27) in header or chr(27) in footer:
         raise AssertionError("terminal control character reached curses")
-    if "A" not in header or "B" not in header:
+    if "A" not in header or "👨" not in header:
         raise AssertionError(f"Unicode row was not rendered: {{header!r}}")
 finally:
     if screen is not None:
@@ -100,6 +104,7 @@ os.write(2, ("PTY_FINAL=" + json.dumps({{"footer": footer, "header": header}})).
             pass
 
         output = bytearray()
+        resized = False
         deadline = time.monotonic() + 5.0
         while time.monotonic() < deadline:
             readable, _, _ = select.select([master_fd], [], [], 0.2)
@@ -112,6 +117,19 @@ os.write(2, ("PTY_FINAL=" + json.dumps({{"footer": footer, "header": header}})).
             if not chunk:
                 break
             output.extend(chunk)
+            if not resized and b"PTY_READY" in output:
+                resized = True
+                narrow_winsize = struct.pack("HHHH", 20, 24, 0, 0)
+                try:
+                    termios.tcsetwinsize(master_fd, (20, 24))
+                except (AttributeError, OSError):
+                    pass
+                try:
+                    import fcntl
+                    fcntl.ioctl(master_fd, termios.TIOCSWINSZ, narrow_winsize)
+                except (AttributeError, OSError):
+                    pass
+                os.write(master_fd, b"x")
         else:
             os.kill(pid, 9)
 
@@ -120,6 +138,7 @@ os.write(2, ("PTY_FINAL=" + json.dumps({{"footer": footer, "header": header}})).
         decoded = output.decode("utf-8", "replace")
         self.assertTrue(os.WIFEXITED(status), decoded)
         self.assertEqual(os.waitstatus_to_exitcode(status), 0, decoded)
+        self.assertIn("PTY_READY", decoded, decoded)
         self.assertIn("PTY_FINAL=", decoded, decoded)
         self.assertIn('"footer": "38s', decoded, decoded)
         self.assertNotIn("Traceback", decoded, decoded)

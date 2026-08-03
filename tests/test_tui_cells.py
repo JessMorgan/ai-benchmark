@@ -38,6 +38,10 @@ class _FakeWindow:
         self.calls.append(("clrtoeol",))
         self.line = [" "] * self.width
 
+    def erase(self):
+        self.calls.append(("erase",))
+        self.line = [" "] * self.width
+
     def addstr(self, y, x, text, attr=0):
         self.calls.append(("addstr", y, x, text, attr))
         for char in text:
@@ -71,6 +75,66 @@ class TestTuiWriteHelper(unittest.TestCase):
         addstr = next(call for call in window.calls if call[0] == "addstr")
         self.assertEqual(addstr[3], "🔄12345")
         self.assertLessEqual(ai_benchmark._display_width(addstr[3]), 7)
+
+    def test_emoji_symbols_are_reserved_two_columns(self):
+        self.assertEqual(ai_benchmark._char_display_width("⚠"), 2)
+        self.assertEqual(ai_benchmark._char_display_width("⏳"), 2)
+        self.assertEqual(ai_benchmark._char_display_width("↕"), 1)
+        self.assertEqual(ai_benchmark._char_display_width("─"), 1)
+
+    def test_horizontal_slice_uses_display_columns_and_keeps_clusters(self):
+        text = "A👨‍👩‍👧‍👦BＣD"
+
+        self.assertEqual(ai_benchmark._slice_display_width(text, 0, 2), "A")
+        self.assertEqual(ai_benchmark._slice_display_width(text, 1, 2), "👨‍👩‍👧‍👦")
+        self.assertEqual(ai_benchmark._slice_display_width(text, 3, 3), "BＣ")
+
+    def test_horizontal_scroll_limit_uses_display_width(self):
+        plugin_hdr = "A👨‍👩‍👧‍👦B"
+        self.assertEqual(ai_benchmark._display_width(plugin_hdr), 4)
+
+    def test_resize_erases_virtual_screen_once_per_dimension_change(self):
+        window = _FakeWindow(12)
+
+        previous = ai_benchmark._tui_dimensions_changed(window, (20, 24), None)
+        self.assertEqual(previous, (20, 24))
+        self.assertEqual(window.calls.count(("erase",)), 1)
+
+        class FailingEraseWindow(_FakeWindow):
+            def erase(self):
+                self.calls.append(("erase",))
+                raise ai_benchmark.curses.error("resize pending")
+
+        failing = FailingEraseWindow(12)
+        failed_previous = ai_benchmark._tui_dimensions_changed(
+            failing, (20, 24), None
+        )
+        self.assertIsNone(failed_previous)
+        self.assertEqual(failing.calls.count(("erase",)), 1)
+
+        previous = ai_benchmark._tui_dimensions_changed(window, (20, 24), previous)
+        self.assertEqual(previous, (20, 24))
+        self.assertEqual(window.calls.count(("erase",)), 1)
+
+        previous = ai_benchmark._tui_dimensions_changed(window, (24, 20), previous)
+        self.assertEqual(previous, (24, 20))
+        self.assertEqual(window.calls.count(("erase",)), 2)
+
+    def test_narrow_header_and_summary_are_still_cleared_and_redrawn(self):
+        window = _FakeWindow(12)
+        snap = {"model": {"status": "pending"}}
+
+        ai_benchmark._render_header_and_summary(
+            window, 12, 3, snap, 0, 1, [], ["model"], [],
+            0, 0, 1, None, 0, 0,
+        )
+
+        rows = [call[1] for call in window.calls if call[0] == "addstr"]
+        self.assertIn(0, rows)
+        self.assertIn(1, rows)
+        self.assertGreaterEqual(
+            sum(call[0] == "clrtoeol" for call in window.calls), 3
+        )
 
     def test_zwj_emoji_is_kept_as_one_cluster_when_clipped(self):
         """Clipping must not leave a dangling ZWJ or variation selector."""

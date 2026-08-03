@@ -96,12 +96,36 @@ def _inject_429_stats(run_info):
 
 
 def _char_display_width(char):
-    """Return the approximate terminal-column width of one character."""
+    """Return a conservative terminal-column width for one character.
+
+    Terminals do not agree on the width of Unicode characters with East
+    Asian Width ``A`` (ambiguous), and many emoji-capable terminals render
+    symbols such as ``⚠`` as two columns even though Unicode classifies them
+    as neutral. Under-counting one of those characters lets ``curses`` write
+    past the right edge, where the terminal may wrap it onto the next row.
+    That wrap is the source of the apparent prepended/stale characters.
+
+    Over-counting ambiguous symbols is intentional: clipping a row one
+    column early is harmless; allowing a row to wrap corrupts every row
+    below it. ASCII remains one column wide.
+    """
     if char in "\r\n" or unicodedata.combining(char):
         return 0
     if unicodedata.category(char) in {"Cc", "Cf"}:
         return 0
-    return 2 if unicodedata.east_asian_width(char) in ("W", "F") else 1
+    east_asian_width = unicodedata.east_asian_width(char)
+    if east_asian_width in ("W", "F"):
+        return 2
+    # Emoji/symbol code points in these ranges are commonly rendered in an
+    # emoji presentation with two columns. Do not classify every ambiguous
+    # character as wide: arrows and box-drawing glyphs are normally one
+    # column in the Linux terminals this TUI targets, and over-counting them
+    # would make narrow layouts needlessly lose useful text.
+    codepoint = ord(char)
+    if (0x2600 <= codepoint <= 0x27BF
+            or 0x1F000 <= codepoint <= 0x1FAFF):
+        return 2
+    return 1
 
 
 def _is_grapheme_extension(char):
@@ -194,6 +218,55 @@ def _truncate_display_width(text, max_width):
     return "".join(result)
 
 
+def _slice_display_width(text, start, max_width):
+    """Return a grapheme-safe horizontal slice measured in display columns.
+
+    ``scroll_x`` is a column offset, not a Python code-point offset. Slicing
+    the raw string can split a ZWJ/combining cluster and can also disagree
+    with the terminal when wide characters occur before the viewport.
+    """
+    if start < 0:
+        start = 0
+    if max_width <= 0:
+        return ""
+    result = []
+    skipped = 0
+    width = 0
+    for cluster in _grapheme_clusters(text):
+        cluster_width = _cluster_display_width(cluster)
+        if skipped + cluster_width <= start:
+            skipped += cluster_width
+            continue
+        # A viewport boundary inside a wide cluster advances to the next
+        # complete cluster rather than emitting a dangling grapheme.
+        if skipped < start:
+            skipped += cluster_width
+            continue
+        if width + cluster_width > max_width:
+            break
+        result.append(cluster)
+        width += cluster_width
+    return "".join(result)
+
+
+def _tui_dimensions_changed(stdscr, dimensions, previous_dimensions):
+    """Erase the virtual screen once after a terminal resize.
+
+    A terminal can physically reflow old lines when it becomes narrower,
+    while curses still has the old virtual contents. Clearing on the first
+    frame at the new dimensions re-synchronizes both representations before
+    the normal per-row redraw starts.
+    """
+    if dimensions == previous_dimensions:
+        return previous_dimensions
+    try:
+        stdscr.erase()
+    except curses.error:
+        # The next frame will retry after curses finishes processing SIGWINCH.
+        return previous_dimensions
+    return dimensions
+
+
 def _wr(stdscr, max_x, max_y, y, x, text, attr=0):
     """Clear and safely write one bounded terminal row.
 
@@ -276,7 +349,11 @@ def _handle_tui_input(stdscr, scroll_y, scroll_x, max_row_offset, visible_rows, 
     elif key == curses.KEY_LEFT:
         scroll_x = max(0, scroll_x - 8)
     elif key == curses.KEY_RIGHT:
-        scroll_x = min(max(0, plugin_hdr_len - (max_x - frozen_width)), scroll_x + 8)
+        visible_width = max(0, max_x - frozen_width - 1)
+        scroll_x = min(
+            max(0, plugin_hdr_len - visible_width),
+            scroll_x + 8,
+        )
     scroll_y = max(0, min(max_row_offset, scroll_y))
     return scroll_y, scroll_x
 
@@ -296,8 +373,10 @@ def _render_header_and_summary(stdscr, max_x, max_y, snap, done, total, running,
     ts = datetime.now().strftime('%H:%M:%S')
     seed_info = f"Seed: {session_seed}  |  " if session_seed is not None else ""
     hdr = f"AI Benchmark \u2014 Parallel  |  {seed_info}{ts}"
-    if max_x > len(hdr):
-        _wr(stdscr, max_x, max_y, 0, 0, hdr, curses.A_BOLD)
+    # Always draw through _wr, even when the terminal is narrower than the
+    # complete message. Skipping the write leaves the previous wider frame
+    # physically visible after a narrow/mobile resize.
+    _wr(stdscr, max_x, max_y, 0, 0, hdr, curses.A_BOLD)
 
     failed_count = sum(1 for s in snap.values() if s["status"] == "failed")
     err_indicator = f"  |  \u26a0 {failed_count} failed" if failed_count else ""
@@ -310,7 +389,8 @@ def _render_header_and_summary(stdscr, max_x, max_y, snap, done, total, running,
                f"{err_indicator}"
                f"  |  \u2191\u2193 rows {scroll_y + 1}-{min(total_models, scroll_y + visible_rows)}/{total_models}"
                f"  |  \u2190\u2192 cols")
-    if max_y > 1 and max_x > len(summary):
+    if max_y > 1:
+        # _wr performs display-column clipping and clears the remainder.
         _wr(stdscr, max_x, max_y, 1, 0, summary)
 
     if max_y > 2:
@@ -323,10 +403,17 @@ def _render_table_headings(stdscr, max_x, max_y, scroll_x, frozen_cols, plugin_c
     plugin_hdr_parts = [f"{h:>{w}}" for h, w in plugin_cols]
     plugin_hdr = " ".join(plugin_hdr_parts)
     if max_y > 3:
-        visible_plugin_hdr = plugin_hdr[scroll_x:scroll_x + max(0, max_x - frozen_width)]
+        visible_plugin_hdr = _slice_display_width(
+            plugin_hdr, scroll_x, max(0, max_x - frozen_width - 1)
+        )
         _wr(stdscr, max_x, max_y, 3, 0, frozen_hdr + " " + visible_plugin_hdr, curses.A_UNDERLINE)
     return plugin_hdr
 
+
+# Display width of the frozen table prefix, including the separator before
+# the horizontally scrollable plugin columns. Keep this shared by the row
+# formatter and the curses layout calculations.
+FROZEN_VIEW_WIDTH = 34
 
 # Width of the per-plugin cell block rendered by ``_plugin_cell_block``.
 # The standard 4-cell results layout sums to 5+6+6+6=23 plus 3 single
@@ -572,6 +659,13 @@ def _format_model_row(name, s, display_idx, active_plugins, source_abbrevs,
     src_ab = _source_abbr(source_abbrevs, s.get("source"))
     model_disp = name[:16]
     frozen = f"{display_idx:>3}  {src_ab:<3} {model_disp:<18}  {status_ch:<3}"
+    # Keep the plugin viewport anchored at the same terminal column as the
+    # heading. Emoji status glyphs can occupy two columns, so Python's string
+    # length is not sufficient to align this frozen prefix.
+    frozen = _pad_display_width(
+        _truncate_display_width(frozen, FROZEN_VIEW_WIDTH - 1),
+        FROZEN_VIEW_WIDTH - 1,
+    )
 
     # Each plugin contributes exactly one 32-char block (merged status
     # OR standard 5-cell results) so ``plugin_str`` has the same total
@@ -609,7 +703,9 @@ def _render_model_rows(stdscr, max_x, max_y, snap_items, active_plugins, source_
             name, s, display_idx, active_plugins, source_abbrevs,
             sleeping_lookup=sleeping_lookup,
         )
-        visible_plugin = plugin_str[scroll_x:scroll_x + max(0, max_x - frozen_width - 1)]
+        visible_plugin = _slice_display_width(
+            plugin_str, scroll_x, max(0, max_x - frozen_width - 1)
+        )
         line = frozen + " " + visible_plugin
 
         attr = 0
@@ -639,6 +735,11 @@ def _render_model_rows(stdscr, max_x, max_y, snap_items, active_plugins, source_
             stdscr.clrtoeol()
         except Exception:
             pass
+
+
+def _pad_display_width(text, target_width):
+    """Right-pad ``text`` to a terminal-column width."""
+    return text + " " * max(0, target_width - _display_width(text))
 
 
 def _source_abbr(source_abbrevs, source):
@@ -865,7 +966,7 @@ def tui_main(state, stop_event, num_sources, active_plugins, session_seed=None):
         source_abbrevs = _unique_source_abbrevs(src_snap)
 
         frozen_cols = [("#", 4), ("S", 4), ("Model", 18), ("St", 4)]
-        frozen_width = sum(w for _h, w in frozen_cols) + len(frozen_cols)
+        frozen_width = FROZEN_VIEW_WIDTH
 
         plugin_cols = []
         for p in active_plugins:
@@ -883,9 +984,15 @@ def tui_main(state, stop_event, num_sources, active_plugins, session_seed=None):
             ])
 
         _last_tui_error_ts = 0.0
+        previous_dimensions = None
         while not stop_event.is_set():
             try:
                 max_y, max_x = stdscr.getmaxyx()
+                dimensions = (max_y, max_x)
+                if dimensions != previous_dimensions:
+                    previous_dimensions = _tui_dimensions_changed(
+                        stdscr, dimensions, previous_dimensions
+                    )
                 snap = state.snapshot()
                 snap_items = list(snap.items())
                 done = state.completed
@@ -934,7 +1041,7 @@ def tui_main(state, stop_event, num_sources, active_plugins, session_seed=None):
                 max_row_offset = max(0, len(snap_items) - VISIBLE_ROWS)
                 scroll_y, scroll_x = _handle_tui_input(
                     stdscr, scroll_y, scroll_x, max_row_offset, VISIBLE_ROWS, max_x,
-                    frozen_width, len(plugin_hdr)
+                    frozen_width, _display_width(plugin_hdr)
                 )
 
                 _render_model_rows(
