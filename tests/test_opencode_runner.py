@@ -19,6 +19,8 @@ from opencode_runner import (
     OPENCODE_INSTALL_SUBDIR,
     OPENCODE_PURE_FLAG,
     OPENCODE_RUN_FORMAT,
+    OPENCODE_THINKING_FLAG,
+    OpenCodeExtract,
     OpenCodeProcessResult,
     _extract_final_text,
     _local_binary_path,
@@ -179,6 +181,7 @@ class _FakeProcess:
         self.returncode = -9
 
 
+
 class TestOpenCodeExtraction(unittest.TestCase):
     def test_extract_final_text_joins_text_events_in_order(self):
         stream = b"\n".join([
@@ -187,21 +190,56 @@ class TestOpenCodeExtraction(unittest.TestCase):
             _ndjson_event("tool_use", part={"type": "tool"}),
             _text_event("part two"),
         ])
-        self.assertEqual(_extract_final_text(stream), ("part one\npart two", None))
+        extracted = _extract_final_text(stream)
+        self.assertEqual(extracted, OpenCodeExtract("part one\npart two", "", None))
+        self.assertEqual(extracted.text, "part one\npart two")
+        self.assertEqual(extracted.think_text, "")
+        self.assertIsNone(extracted.error)
+
+    def test_extract_final_text_joins_reasoning_events_into_think_text(self):
+        stream = b"\n".join([
+            _ndjson_event("reasoning", part={
+                "type": "reasoning", "text": "step one reasoning",
+                "time": {"end": 1},
+            }),
+            _text_event("final answer"),
+            _ndjson_event("reasoning", part={
+                "type": "reasoning", "text": "step two reasoning",
+                "time": {"end": 1},
+            }),
+        ])
+        extracted = _extract_final_text(stream)
+        self.assertEqual(extracted.text, "final answer")
+        self.assertEqual(extracted.think_text, "step one reasoning\nstep two reasoning")
+        self.assertIsNone(extracted.error)
+
+    def test_extract_final_text_ignores_empty_reasoning_parts(self):
+        stream = _ndjson_event("reasoning", part={"type": "reasoning", "text": "", "time": {}})
+        extracted = _extract_final_text(stream)
+        self.assertEqual(extracted.text, "")
+        self.assertEqual(extracted.think_text, "")
+        self.assertIsNone(extracted.error)
 
     def test_extract_final_text_surfaces_session_error(self):
         stream = b"\n".join([
             _text_event("partial"),
             _ndjson_event("error", error={"message": "rate limited"}),
         ])
-        self.assertEqual(_extract_final_text(stream), ("partial", "rate limited"))
+        extracted = _extract_final_text(stream)
+        self.assertEqual(extracted.text, "partial")
+        self.assertEqual(extracted.error, "rate limited")
 
     def test_extract_final_text_falls_back_to_raw_stdout(self):
-        self.assertEqual(_extract_final_text(b"plain text\nnot json"), ("plain text\nnot json", None))
+        extracted = _extract_final_text(b"plain text\nnot json")
+        self.assertEqual(extracted.text, "plain text\nnot json")
+        self.assertEqual(extracted.think_text, "")
+        self.assertIsNone(extracted.error)
 
     def test_extract_final_text_ignores_incomplete_parts(self):
         stream = _ndjson_event("text", part={"type": "text", "text": "", "time": {}})
-        self.assertEqual(_extract_final_text(stream), ("", None))
+        extracted = _extract_final_text(stream)
+        self.assertEqual(extracted.text, "")
+        self.assertEqual(extracted.think_text, "")
 
 
 class TestOpenCodeProcess(unittest.TestCase):
@@ -225,10 +263,10 @@ class TestOpenCodeProcess(unittest.TestCase):
                 )
 
             command = popen.call_args.args[0]
-            self.assertEqual(command[:8], [
+            self.assertEqual(command[:9], [
                 "opencode-test", "run", OPENCODE_PURE_FLAG,
                 "--model", "local-server/model-a", "--format",
-                OPENCODE_RUN_FORMAT, "--agent",
+                OPENCODE_RUN_FORMAT, OPENCODE_THINKING_FLAG, "--agent",
             ])
             self.assertEqual(command[-2:], ["benchmark-agent-a", "line one\nline two"])
             env = popen.call_args.kwargs["env"]
@@ -265,6 +303,7 @@ class TestOpenCodeProcess(unittest.TestCase):
             "  --format format  [string] [choices: \"default\"] [default: \"default\"]\n"
             "  --agent  agent to use  [string]\n"
             "  --pure  disable external plugins  [boolean]\n"
+            "  --thinking  show thinking blocks  [boolean]\n"
         )
         probe = mock.Mock()
         probe.returncode = 0
@@ -289,6 +328,22 @@ class TestOpenCodeProcess(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "--pure"):
                 validate_cli("opencode-test")
 
+    def test_help_without_thinking_is_rejected(self):
+        help_text = (
+            "Options:\n"
+            "  --model  model to use  [string]\n"
+            "  --format format  [string] [choices: \"default\", \"json\"] [default: \"default\"]\n"
+            "  --agent  agent to use  [string]\n"
+            "  --pure  disable external plugins  [boolean]\n"
+        )
+        probe = mock.Mock()
+        probe.returncode = 0
+        probe.stdout = help_text
+        probe.stderr = ""
+        with mock.patch("opencode_runner.subprocess.run", return_value=probe):
+            with self.assertRaisesRegex(RuntimeError, "--thinking"):
+                validate_cli("opencode-test")
+
     def test_help_advertising_json_format_passes(self):
         help_text = (
             "Options:\n"
@@ -296,6 +351,7 @@ class TestOpenCodeProcess(unittest.TestCase):
             "  --format format  [string] [choices: \"default\", \"json\"] [default: \"default\"]\n"
             "  --agent  agent to use  [string]\n"
             "  --pure  disable external plugins  [boolean]\n"
+            "  --thinking  show thinking blocks  [boolean]\n"
         )
         probe = mock.Mock()
         probe.returncode = 0
@@ -490,6 +546,7 @@ class TestOpenCodeBinaryResolution(unittest.TestCase):
         self.assertEqual(str(_local_binary_path()), expected)
 
 
+
 class TestRunnerAwareExecution(unittest.TestCase):
     def test_opencode_result_is_distinct_from_http_result(self):
         plugin = next(p for p in discover_plugins() if p.id == "rate-limiter")
@@ -521,15 +578,85 @@ class TestRunnerAwareExecution(unittest.TestCase):
         self.assertEqual(result["runner"], "opencode")
         self.assertEqual(result["opencode_model"], "local/model-a")
 
+    def test_opencode_thinking_writes_think_sidecar(self):
+        """Reasoning events must flow into ``{pid}.think.txt`` like HTTP."""
+        plugin = next(p for p in discover_plugins() if p.id == "rate-limiter")
+        target_key = "model-a [opencode]"
+        state = BenchmarkState({
+            target_key: {
+                "source": "Local",
+                "api_model": "model-a",
+                "runner": "opencode",
+            }
+        }, [plugin.id])
+        source_config = {"Local": {"plugin_thread_limit": 1}}
+        process_result = OpenCodeProcessResult(
+            "final answer", "", 0.2, None, 0, think_text="chain of thought")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with mock.patch("benchmark_core.run_process", return_value=process_result):
+                run_model(
+                    target_key, "Local", state, [plugin], source_config,
+                    timeout=5, token_levels=[100], output_dir=tmpdir,
+                    global_cfg={}, runner="opencode", api_model="model-a",
+                    opencode_config_path="/tmp/config.json",
+                    opencode_model="local/model-a", display_name="model-a",
+                    config_target_name="model-a", save_responses=True,
+                )
+
+            responses_dir = os.path.join(tmpdir, "responses", "model-a")
+            think_path = os.path.join(responses_dir, f"{plugin.id}.think.txt")
+            self.assertTrue(os.path.isfile(think_path), "expected a .think.txt sidecar")
+            with open(think_path, encoding="utf-8") as handle:
+                self.assertEqual(handle.read(), "chain of thought")
+            joined_path = os.path.join(responses_dir, f"{plugin.id}.txt")
+            with open(joined_path, encoding="utf-8") as handle:
+                self.assertIn("<thinking>\nchain of thought\n</thinking>", handle.read())
+
+    def test_opencode_failure_preserves_captured_thinking(self):
+        """A failed OpenCode run must keep reasoning captured pre-failure."""
+        plugin = next(p for p in discover_plugins() if p.id == "rate-limiter")
+        target_key = "model-a [opencode]"
+        state = BenchmarkState({
+            target_key: {
+                "source": "Local",
+                "api_model": "model-a",
+                "runner": "opencode",
+            }
+        }, [plugin.id])
+        source_config = {"Local": {"plugin_thread_limit": 1}}
+        process_result = OpenCodeProcessResult(
+            "partial answer", "", 1800.1, "OpenCode timed out after 1800s", 0,
+            think_text="reasoning before timeout",
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with mock.patch("benchmark_core.run_process", return_value=process_result):
+                run_model(
+                    target_key, "Local", state, [plugin], source_config,
+                    timeout=5, token_levels=[100], output_dir=tmpdir,
+                    global_cfg={}, runner="opencode", api_model="model-a",
+                    opencode_config_path="/tmp/config.json",
+                    opencode_model="local/model-a", display_name="model-a",
+                    config_target_name="model-a", save_responses=True,
+                )
+
+            responses_dir = os.path.join(tmpdir, "responses", "model-a")
+            think_path = os.path.join(responses_dir, f"{plugin.id}.think.txt")
+            self.assertTrue(os.path.isfile(think_path), "failed run must keep .think.txt")
+            with open(think_path, encoding="utf-8") as handle:
+                self.assertEqual(handle.read(), "reasoning before timeout")
+            with open(os.path.join(responses_dir, f"{plugin.id}.meta.json"), encoding="utf-8") as handle:
+                meta = json.load(handle)
+            self.assertEqual(meta["error"], "OpenCode timed out after 1800s")
+            self.assertEqual(meta["think_text"], "reasoning before timeout")
+
     def test_latest_results_keeps_http_and_opencode_variants(self):
         state = BenchmarkState({"model-a": "Local", "model-a [opencode]": "Local"}, ["p"])
         state.add_result({"model": "model-a", "state_key": "model-a", "runner": "http"})
         state.add_result({"model": "model-a", "state_key": "model-a [opencode]", "runner": "opencode"})
         self.assertEqual({r["runner"] for r in state.latest_results()}, {"http", "opencode"})
 
-
-if __name__ == "__main__":
-    unittest.main()
     def test_resolved_binary_is_passed_to_run_process(self):
         """The resolved binary path must reach ``run_process`` as ``binary``."""
         plugin = next(p for p in discover_plugins() if p.id == "rate-limiter")
@@ -585,3 +712,7 @@ if __name__ == "__main__":
             )
 
         self.assertEqual(run.call_args.kwargs["binary"], OPENCODE_BINARY)
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -55,6 +55,11 @@ OPENCODE_VERSION_MARKER = "version.txt"
 # benchmark runs are reproducible and cannot inherit host-local extensions.
 OPENCODE_RUN_FORMAT = "json"
 OPENCODE_PURE_FLAG = "--pure"
+# OpenCode only emits ``reasoning`` NDJSON events (the model's chain-of-
+# thought) when this flag is set; non-interactive ``opencode run`` defaults
+# ``thinking`` to False, so without it the event stream contains text/tool/
+# step events only and thinking-capable models' reasoning is silently lost.
+OPENCODE_THINKING_FLAG = "--thinking"
 
 
 def validate_cli(binary: str = OPENCODE_BINARY, *, timeout: float = 10) -> None:
@@ -79,7 +84,7 @@ def validate_cli(binary: str = OPENCODE_BINARY, *, timeout: float = 10) -> None:
     if probe.returncode != 0:
         raise RuntimeError(f"OpenCode CLI rejected 'run --help' (status {probe.returncode})")
     missing = [
-        flag for flag in ("--model", "--format", "--agent", OPENCODE_PURE_FLAG)
+        flag for flag in ("--model", "--format", "--agent", OPENCODE_PURE_FLAG, OPENCODE_THINKING_FLAG)
         if flag not in help_text
     ]
     if missing:
@@ -378,6 +383,22 @@ def resolve_opencode_binary(
 
 
 @dataclass(frozen=True)
+class OpenCodeExtract:
+    """Parsed content from one OpenCode NDJSON event stream.
+
+    ``think_text`` holds the concatenated reasoning parts (``{"type":
+    "reasoning", "part": {"type": "reasoning", "text": ...}}`` events),
+    mirroring the ``think_text`` the HTTP path accumulates from
+    ``reasoning_content``. It is empty when the model emitted no thinking or
+    when the CLI was invoked without ``--thinking``.
+    """
+
+    text: str
+    think_text: str
+    error: str | None
+
+
+@dataclass(frozen=True)
 class OpenCodeProcessResult:
     """Captured result from one non-interactive OpenCode invocation."""
 
@@ -386,6 +407,7 @@ class OpenCodeProcessResult:
     elapsed: float
     error: str | None
     returncode: int | None
+    think_text: str = ""
 
 
 def slugify_source(source: str) -> str:
@@ -588,21 +610,24 @@ def generate_config(
     }
 
 
-def _extract_final_text(stdout: bytes) -> tuple[str, str | None]:
-    """Extract the final assistant answer from ``opencode run --format json``.
+def _extract_final_text(stdout: bytes) -> OpenCodeExtract:
+    """Extract final text and reasoning from ``opencode run --format json``.
 
     ``--format json`` emits one NDJSON event per line.  Completed assistant
     text parts arrive as ``{"type": "text", "part": {"type": "text",
-    "text": ..., "time": {"end": ...}}}``; the CLI also emits ``tool_use``,
-    ``step_start``, ``reasoning``, and ``error`` events, none of which carry
-    final answer text.  Concatenate text events in order (the model may emit
-    several parts), and fall back to the raw decoded stdout when the stream is
-    not NDJSON at all.
+    "text": ..., "time": {"end": ...}}}``; completed reasoning parts
+    arrive as ``{"type": "reasoning", "part": {"type": "reasoning",
+    "text": ...}}`` (only when the CLI was invoked with ``--thinking``).
+    ``tool_use``, ``step_start``, and ``step_finish`` events carry no
+    answer/thinking text.  Concatenate text and reasoning events in order
+    (the model may emit several parts each), and fall back to the raw
+    decoded stdout when the stream is not NDJSON at all.
 
-    Returns ``(text, error)`` where ``error`` is an ``error`` event payload
-    string when the session itself reported one.
+    Returns an :class:`OpenCodeExtract` whose ``error`` is the ``error``
+    event payload string when the session itself reported one.
     """
     text_parts: list[str] = []
+    thinking_parts: list[str] = []
     session_error: str | None = None
     saw_json = False
     for line in stdout.splitlines():
@@ -621,6 +646,12 @@ def _extract_final_text(stdout: bytes) -> tuple[str, str | None]:
                 part_text = part.get("text")
                 if isinstance(part_text, str) and part_text.strip():
                     text_parts.append(part_text)
+        elif event_type == "reasoning":
+            part = event.get("part") or {}
+            if isinstance(part, dict) and part.get("type") == "reasoning":
+                part_text = part.get("text")
+                if isinstance(part_text, str) and part_text.strip():
+                    thinking_parts.append(part_text)
         elif event_type == "error":
             payload = event.get("error")
             if isinstance(payload, dict):
@@ -628,8 +659,11 @@ def _extract_final_text(stdout: bytes) -> tuple[str, str | None]:
             elif isinstance(payload, str):
                 session_error = payload
     if saw_json:
-        return "\n".join(text_parts).strip(), session_error
-    return stdout.decode("utf-8", errors="replace").strip(), None
+        return OpenCodeExtract("\n".join(text_parts).strip(),
+                               "\n".join(thinking_parts).strip(),
+                               session_error)
+    return OpenCodeExtract(stdout.decode("utf-8", errors="replace").strip(), "", None)
+
 
 
 def _terminate_process(process: subprocess.Popen[bytes]) -> None:
@@ -680,6 +714,7 @@ def run_process(
     command = [
         binary, "run", OPENCODE_PURE_FLAG,
         "--model", model, "--format", OPENCODE_RUN_FORMAT,
+        OPENCODE_THINKING_FLAG,
     ]
     if agent:
         command.extend(["--agent", agent])
@@ -731,7 +766,10 @@ def run_process(
         if process is not None and process.poll() is None:
             _terminate_process(process)
 
-    text, session_error = _extract_final_text(stdout)
+    extract = _extract_final_text(stdout)
+    text = extract.text
+    think_text = extract.think_text
+    session_error = extract.error
     diagnostic = stderr.decode("utf-8", errors="replace")
     elapsed = time.monotonic() - started
     if output_dir:
@@ -745,4 +783,5 @@ def run_process(
         error = f"OpenCode exited with status {returncode}"
     if error is None and not text:
         error = "OpenCode returned an empty response"
-    return OpenCodeProcessResult(text, diagnostic, elapsed, error, returncode)
+    return OpenCodeProcessResult(text, diagnostic, elapsed, error, returncode,
+                                 think_text=think_text)

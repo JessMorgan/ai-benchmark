@@ -398,6 +398,7 @@ def _run_plugin_task(target_name, api_model, source, plugin, source_config, time
             stop_event=stop_event,
         )
         text = process_result.text
+        think_text = process_result.think_text
         serr = process_result.error
         response_time = round(process_result.elapsed, 1)
         gen_time = process_result.elapsed
@@ -417,6 +418,13 @@ def _run_plugin_task(target_name, api_model, source, plugin, source_config, time
                         handle.write(prompt)
                     with open(os.path.join(responses_dir, f"{pid}.content.txt"), "w", encoding="utf-8") as handle:
                         handle.write(text)
+                    # Preserve any reasoning captured before the failure (a
+                    # timeout/cancellation often happens mid-thinking); the
+                    # raw stdout log also retains it, but the sidecar keeps
+                    # the failure diagnosable in place.
+                    if think_text:
+                        with open(os.path.join(responses_dir, f"{pid}.think.txt"), "w", encoding="utf-8") as handle:
+                            handle.write(think_text)
                     with open(os.path.join(responses_dir, f"{pid}.meta.json"), "w", encoding="utf-8") as handle:
                         json.dump({
                             "plugin": pid,
@@ -435,6 +443,7 @@ def _run_plugin_task(target_name, api_model, source, plugin, source_config, time
                             "seed": session_seed,
                             "timestamp": datetime.now().isoformat(),
                             "error": serr,
+                            "think_text": think_text,
                         }, handle, indent=2, default=str)
                 except OSError:
                     pass
@@ -620,6 +629,13 @@ def _run_plugin_task(target_name, api_model, source, plugin, source_config, time
     if gen_time > 0:
         tps = round(output_tokens / gen_time, 2)
 
+    # OpenCode and HTTP share the same save-responses layout below: a joined
+    # ``{pid}.txt`` with any thinking wrapped in markers, a ``{pid}.think.txt``
+    # thinking-only file, and a ``{pid}.content.txt`` pure-final file.
+    # ``think_text`` for the OpenCode runner was extracted from the NDJSON
+    # ``reasoning`` events (only emitted when the CLI is invoked with
+    # ``--thinking``), mirroring the ``reasoning_content`` the HTTP path
+    # accumulates.
     if save_responses and output_dir:
         responses_dir = os.path.join(output_dir, "responses", sanitize_filename(artifact_target_name or config_target_name))
         os.makedirs(responses_dir, exist_ok=True)

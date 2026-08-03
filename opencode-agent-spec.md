@@ -78,7 +78,7 @@ The exact argparse spelling should be `--runner` unless project conventions requ
 
 - For `--runner http`, do not require or probe OpenCode.
 - For `--runner opencode` and `--runner both`, resolve the OpenCode binary before scheduling target workers or making HTTP requests. Resolution order:
-  1. `shutil.which("opencode")` — an existing on-PATH install that passes the capability preflight (`opencode run --help` advertising `--model`/`--format`/`--agent`/`--pure` and the `json` format choice).
+  1. `shutil.which("opencode")` — an existing on-PATH install that passes the capability preflight (`opencode run --help` advertising `--model`/`--format`/`--agent`/`--pure`/`--thinking` and the `json` format choice).
   2. A previously auto-installed local copy at `<project root>/.tools/opencode/opencode` if it still passes the preflight.
   3. When `--no-install-opencode` is NOT given, download the official latest release into `.tools/opencode/` and validate it. The download mirrors the official installer's platform detection (`opencode-<os>-<arch>[-baseline][-musl].tar.gz` on Linux, `.zip` on macOS/Windows) and writes a `version.txt` marker next to the binary. An on-PATH install that exists but fails the preflight is replaced by the local copy or a fresh install automatically.
 - If no usable binary can be resolved, exit non-zero with an actionable message. With `--no-install-opencode`, the message states that OpenCode must be installed and available on `PATH` (or that the on-PATH binary is incompatible) and that the opt-out prevented the automatic download; the benchmark never silently falls back to HTTP.
@@ -274,6 +274,8 @@ The invocation must:
 - use an argument list, not a shell command string, to avoid quoting/injection issues.
 
 The installed OpenCode CLI's supported machine-readable mode should be checked during implementation. The benchmark uses `--format json` and extracts the final assistant text from the NDJSON event stream without including progress/event wrappers in the score input; stderr is retained as diagnostics. Every invocation also uses `--pure` so external OpenCode plugins cannot change the benchmark's tools, prompts, permissions, or event stream.
+
+Thinking content: every invocation passes `--thinking`, because non-interactive `opencode run` defaults the `thinking` option to false and without it the CLI never emits `reasoning` NDJSON events — thinking-capable models' chain-of-thought would be silently dropped even though the provider returned it. The adapter joins `reasoning` events into the same `think_text` the HTTP runner accumulates from `reasoning_content`, so OpenCode results produce the same `{plugin}.think.txt` and `<thinking>…</thinking>`-wrapped `{plugin}.txt` sidecars as HTTP under `--save-responses`. Preflight therefore requires the installed CLI to advertise `--thinking`.
 
 ### Prompt handling
 
