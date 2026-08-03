@@ -271,7 +271,7 @@ The invocation must:
 - capture stdout and stderr separately;
 - use an argument list, not a shell command string, to avoid quoting/injection issues.
 
-The installed OpenCode CLI's supported machine-readable mode should be checked during implementation. This specification currently requires plain final text on stdout for scoring, with stderr treated as diagnostics. If the selected OpenCode version only provides structured events, the adapter must extract the final assistant text without including progress/event wrappers in the score input.
+The installed OpenCode CLI's supported machine-readable mode should be checked during implementation. The benchmark uses `--format json` and extracts the final assistant text from the NDJSON event stream without including progress/event wrappers in the score input; stderr is retained as diagnostics. Every invocation also uses `--pure` so external OpenCode plugins cannot change the benchmark's tools, prompts, permissions, or event stream.
 
 ### Prompt handling
 
@@ -433,7 +433,7 @@ The `--dump-default-config` output should not add an OpenCode configuration bloc
 
 ## 14. Version-sensitive adapter assumptions
 
-The adapter uses the OpenCode contract available to the implementation: `OPENCODE_CONFIG` selects the retained generated config, `opencode run` performs a non-interactive invocation, `--model` selects the mapped provider/model, `--agent` selects generated agent context, and `--format plain` supplies final stdout text for scoring. Operators should verify these flags against their installed OpenCode release when upgrading OpenCode; no automatic installation or upgrade is performed.
+The adapter uses the OpenCode contract available to the implementation: `OPENCODE_CONFIG` selects the retained generated config, `opencode run` performs a non-interactive invocation, `--pure` disables external plugins, `--model` selects the mapped provider/model, `--agent` selects generated agent context, and `--format json` supplies an NDJSON event stream from which final text is extracted for scoring. Operators should verify these flags against their installed OpenCode release when upgrading OpenCode; no automatic installation or upgrade is performed.
 
 The benchmark's source configuration is projected into OpenCode's OpenAI-compatible provider shape. HTTP-only controls such as direct streaming telemetry and 429 retry bookkeeping are not fabricated for subprocess results; OpenCode response time and estimated output tokens are recorded instead.
 

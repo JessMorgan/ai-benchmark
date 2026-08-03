@@ -24,8 +24,10 @@ OPENCODE_BINARY = "opencode"
 # ``json`` (NDJSON event stream).  The adapter uses ``json`` so the final
 # assistant answer can be extracted deterministically without ANSI/UI noise;
 # ``plain`` does not exist in any released CLI and caused every invocation to
-# be rejected with exit status 1.
+# be rejected with exit status 1. ``--pure`` disables external plugins so
+# benchmark runs are reproducible and cannot inherit host-local extensions.
 OPENCODE_RUN_FORMAT = "json"
+OPENCODE_PURE_FLAG = "--pure"
 
 
 def validate_cli(binary: str = OPENCODE_BINARY, *, timeout: float = 10) -> None:
@@ -49,7 +51,10 @@ def validate_cli(binary: str = OPENCODE_BINARY, *, timeout: float = 10) -> None:
     help_text = f"{probe.stdout}\n{probe.stderr}"
     if probe.returncode != 0:
         raise RuntimeError(f"OpenCode CLI rejected 'run --help' (status {probe.returncode})")
-    missing = [flag for flag in ("--model", "--format", "--agent") if flag not in help_text]
+    missing = [
+        flag for flag in ("--model", "--format", "--agent", OPENCODE_PURE_FLAG)
+        if flag not in help_text
+    ]
     if missing:
         raise RuntimeError(
             "Installed OpenCode CLI is missing required run options: " + ", ".join(missing)
@@ -356,8 +361,16 @@ def run_process(
     plugin_id: str = "plugin",
     stop_event: Any = None,
 ) -> OpenCodeProcessResult:
-    """Run one isolated OpenCode task and capture stdout/stderr separately."""
-    command = [binary, "run", "--model", model, "--format", OPENCODE_RUN_FORMAT]
+    """Run one isolated, plugin-free OpenCode task.
+
+    ``--pure`` is deliberately part of every invocation rather than only a
+    generated-config setting: it prevents user/project-installed OpenCode
+    plugins from changing the benchmark's tools, prompts, or event stream.
+    """
+    command = [
+        binary, "run", OPENCODE_PURE_FLAG,
+        "--model", model, "--format", OPENCODE_RUN_FORMAT,
+    ]
     if agent:
         command.extend(["--agent", agent])
     command.append(prompt)

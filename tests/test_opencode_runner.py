@@ -11,6 +11,7 @@ from benchmark_core import run_model
 from benchmark_plugin import PluginTaskResult
 from benchmark_state import BenchmarkState
 from opencode_runner import (
+    OPENCODE_PURE_FLAG,
     OPENCODE_RUN_FORMAT,
     OpenCodeProcessResult,
     _extract_final_text,
@@ -203,9 +204,10 @@ class TestOpenCodeProcess(unittest.TestCase):
                 )
 
             command = popen.call_args.args[0]
-            self.assertEqual(command[:7], [
-                "opencode-test", "run", "--model", "local-server/model-a",
-                "--format", OPENCODE_RUN_FORMAT, "--agent",
+            self.assertEqual(command[:8], [
+                "opencode-test", "run", OPENCODE_PURE_FLAG,
+                "--model", "local-server/model-a", "--format",
+                OPENCODE_RUN_FORMAT, "--agent",
             ])
             self.assertEqual(command[-2:], ["benchmark-agent-a", "line one\nline two"])
             env = popen.call_args.kwargs["env"]
@@ -241,6 +243,7 @@ class TestOpenCodeProcess(unittest.TestCase):
             "  --model  model to use  [string]\n"
             "  --format format  [string] [choices: \"default\"] [default: \"default\"]\n"
             "  --agent  agent to use  [string]\n"
+            "  --pure  disable external plugins  [boolean]\n"
         )
         probe = mock.Mock()
         probe.returncode = 0
@@ -250,12 +253,28 @@ class TestOpenCodeProcess(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "'json' run format"):
                 validate_cli("opencode-test")
 
+    def test_help_without_pure_is_rejected(self):
+        help_text = (
+            "Options:\n"
+            "  --model  model to use  [string]\n"
+            "  --format format  [string] [choices: \"default\", \"json\"] [default: \"default\"]\n"
+            "  --agent  agent to use  [string]\n"
+        )
+        probe = mock.Mock()
+        probe.returncode = 0
+        probe.stdout = help_text
+        probe.stderr = ""
+        with mock.patch("opencode_runner.subprocess.run", return_value=probe):
+            with self.assertRaisesRegex(RuntimeError, "--pure"):
+                validate_cli("opencode-test")
+
     def test_help_advertising_json_format_passes(self):
         help_text = (
             "Options:\n"
             "  --model  model to use  [string]\n"
             "  --format format  [string] [choices: \"default\", \"json\"] [default: \"default\"]\n"
             "  --agent  agent to use  [string]\n"
+            "  --pure  disable external plugins  [boolean]\n"
         )
         probe = mock.Mock()
         probe.returncode = 0
