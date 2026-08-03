@@ -1,4 +1,5 @@
 """Tests for CLI argument handling and plugin execution modes."""
+import importlib.util
 import json
 import os
 import subprocess
@@ -797,6 +798,90 @@ class TestStopEventInterruption(unittest.TestCase):
             thread.join()
 
         self.assertEqual(request_result.error, "Cancelled")
+
+
+class TestRunnerPipeline(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        spec = importlib.util.spec_from_file_location("ai_benchmark_pipeline_test", "ai-benchmark.py")
+        cls.module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cls.module)
+
+    def test_http_starts_for_target_before_later_opencode_target_finishes(self):
+        """Both-mode pipelines preserve per-target order without a global barrier."""
+        targets_by_source = {"Source": ["model-a", "model-b"]}
+        opencode_pending = {"Source": ["model-a", "model-b"]}
+        http_pending = {"Source": {"model-a", "model-b"}}
+        stop_event = threading.Event()
+        model_a_http_started = threading.Event()
+        release_model_b = threading.Event()
+        calls = []
+        lock = threading.Lock()
+
+        def run_target(target_name, runner):
+            if target_name == "model-b" and runner == "opencode":
+                if not model_a_http_started.wait(2):
+                    raise AssertionError("HTTP did not start for model-a before model-b")
+            with lock:
+                calls.append((target_name, runner))
+            if target_name == "model-a" and runner == "http":
+                model_a_http_started.set()
+
+        threads = self.module._start_runner_pipeline(
+            targets_by_source, opencode_pending, http_pending,
+            run_target, stop_event, lambda *_args: None,
+        )
+        self.assertTrue(model_a_http_started.wait(2))
+        # model-b OpenCode is deliberately held until model-a HTTP starts.
+        # Seeing both calls complete proves there was no global OpenCode
+        # barrier between the two runner variants.
+        for thread in threads:
+            thread.join(timeout=2)
+        self.assertTrue(all(not thread.is_alive() for thread in threads))
+        with lock:
+            self.assertLess(
+                calls.index(("model-a", "http")),
+                calls.index(("model-b", "opencode")),
+            )
+
+    def test_pipeline_workers_stop_after_cancellation(self):
+        """Cancellation releases the producer and consumer sentinels."""
+        stop_event = threading.Event()
+        calls = []
+        targets_by_source = {"Source": ["model-a", "model-b"]}
+        opencode_pending = {"Source": ["model-a", "model-b"]}
+        http_pending = {"Source": {"model-a", "model-b"}}
+
+        def run_target(target_name, runner):
+            calls.append((target_name, runner))
+            stop_event.set()
+
+        threads = self.module._start_runner_pipeline(
+            targets_by_source, opencode_pending, http_pending,
+            run_target, stop_event, lambda *_args: None,
+        )
+        for thread in threads:
+            thread.join(timeout=2)
+        self.assertTrue(all(not thread.is_alive() for thread in threads))
+        self.assertLessEqual(len(calls), 2)
+
+    def test_completed_opencode_target_is_seeded_into_http_queue(self):
+        """Resume skips completed OpenCode work but still runs pending HTTP."""
+        calls = []
+        targets_by_source = {"Source": ["model-a"]}
+        opencode_pending = {"Source": []}
+        http_pending = {"Source": {"model-a"}}
+        stop_event = threading.Event()
+
+        threads = self.module._start_runner_pipeline(
+            targets_by_source, opencode_pending, http_pending,
+            lambda target, runner: calls.append((target, runner)),
+            stop_event, lambda *_args: None,
+        )
+        for thread in threads:
+            thread.join(timeout=2)
+        self.assertEqual(calls, [("model-a", "http")])
+        self.assertTrue(all(not thread.is_alive() for thread in threads))
 
 
 class TestScriptedMode(unittest.TestCase):

@@ -31,7 +31,7 @@ python ai-benchmark.py [options]
 | `--seed INT` | Fixed random seed for all API requests |
 | `--no-rerun-failed` | Keep failed models as failed on resume (default re-runs them) |
 | `--retry-on-429` / `--no-retry-on-429` | Toggle HTTP-429 retry/backoff globally. Default is **ON**; pass `--no-retry-on-429` to opt out (sources with explicit `max_429_retries` are preserved). See [Configuration Reference](configuration.md#http-429-retry--backoff) for the per-source keys and migration notes. |
-| `--runner {http,opencode,both}` | Select the existing HTTP runner (default), the pre-installed OpenCode CLI runner, or both. In `both`, OpenCode runs first. |
+| `--runner {http,opencode,both}` | Select the existing HTTP runner (default), the pre-installed OpenCode CLI runner, or both. In `both`, each target pipelines OpenCode into HTTP. |
 | `-h, --help` | Show help message |
 
 ## Examples
@@ -125,7 +125,7 @@ To run each configured model and agent through a locally installed OpenCode CLI:
 python ai-benchmark.py --runner opencode
 ```
 
-`opencode` must already be installed and discoverable through `PATH`; the benchmark fails before scheduling work if it is missing. `--runner both` runs the OpenCode phase first and then the HTTP phase:
+`opencode` must already be installed and discoverable through `PATH`; the benchmark fails before scheduling work if it is missing. `--runner both` runs a per-source pipeline: each target's HTTP execution starts as soon as its own OpenCode execution finishes, while later targets continue through OpenCode:
 
 ```sh
 python ai-benchmark.py --runner both --save-responses

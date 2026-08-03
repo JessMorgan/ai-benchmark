@@ -17,7 +17,7 @@ python ai-benchmark.py --runner http
 # Run configured models and agents through a pre-installed OpenCode CLI
 python ai-benchmark.py --runner opencode
 
-# Compare OpenCode first, then the existing HTTP path
+# Pipeline OpenCode into HTTP per target (no global phase barrier)
 python ai-benchmark.py --runner both
 
 # Or discover models from a running server
@@ -114,7 +114,7 @@ python ai-benchmark.py [options]
 | `--plugins-whitelist ID [ID ...]` | Run only these plugins |
 | `--plugins-blacklist ID [ID ...]` | Run all plugins except these |
 | `--seed INT` | Fixed random seed for all API requests |
-| `--runner {http,opencode,both}` | Select the existing HTTP runner (default), the pre-installed OpenCode runner, or both (OpenCode first) |
+| `--runner {http,opencode,both}` | Select the existing HTTP runner (default), the pre-installed OpenCode runner, or both (per-target OpenCode→HTTP pipeline) |
 | `-h, --help` | Show this help message |
 
 ## Resume / Continue
@@ -129,7 +129,7 @@ OpenCode is an optional runtime dependency. Use `--runner opencode` or `--runner
 
 The runner dynamically generates and retains `<output_dir>/opencode/opencode.generated.json` from the loaded sources and resolved API models. Its model names follow `{strictly-slugified-source}/{api_model}`; for example, `Local Server 1` plus `vendor/model-x` becomes `local-server-1/vendor/model-x`. The generated file contains resolved credentials, so protect it and the output directory.
 
-OpenCode and HTTP artifacts are separated under `<output_dir>/opencode/` and `<output_dir>/http/`. Markdown, CSV, HTML, and PDF reports include runner metadata. Resume matching is runner-aware, so an HTTP result is never reused for an OpenCode task.
+OpenCode and HTTP artifacts are separated under `<output_dir>/opencode/` and `<output_dir>/http/`. Markdown, CSV, HTML, and PDF reports include runner metadata. Resume matching is runner-aware, so an HTTP result is never reused for an OpenCode task. With `--runner both`, each source runs a per-target pipeline: HTTP for a target starts as soon as that target's OpenCode execution completes, without waiting for other targets' OpenCode executions; already-completed OpenCode targets flow directly to HTTP on resume.
 
 Before scheduling any work the runner preflights the installed CLI: `opencode run --help` must advertise the `--model`/`--format`/`--agent` options and the `json` format choice. Each task is invoked as `opencode run --model <slugified-source>/<api_model> --format json <prompt>`; the adapter parses the NDJSON event stream and scores the final assistant answer. Generated configs always set both `limit.context` (inferred from the model id's `-NNk`/`-NNm` suffix) and `limit.output` (from `token_levels`), because OpenCode rejects provider models whose `limit` omits `context`.
 

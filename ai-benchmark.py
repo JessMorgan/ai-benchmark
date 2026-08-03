@@ -11,6 +11,7 @@ import curses
 import glob
 import json
 import os
+import queue
 import random
 import shutil
 import subprocess
@@ -873,6 +874,88 @@ def tui_main(state, stop_event, num_sources, active_plugins, session_seed=None):
             pass
 
 
+def _start_runner_pipeline(targets_by_source, opencode_pending, http_pending,
+                           run_target, stop_event, on_error):
+    """Start per-source OpenCode-to-HTTP pipelines.
+
+    ``run_target(name, runner)`` executes one configured target through the
+    requested runner. For each source, one producer advances through pending
+    OpenCode targets while a consumer runs HTTP targets as soon as their own
+    OpenCode execution has completed. Targets already complete in OpenCode are
+    seeded directly into the HTTP queue, which keeps resume runs pipelined too.
+
+    The returned threads are intentionally not joined here. The caller owns
+    the join/interrupt policy so Ctrl+C can set ``stop_event`` and close active
+    HTTP requests before waiting for the workers to wind down.
+    """
+    sentinel = object()
+    http_queues = {source: queue.Queue() for source in targets_by_source}
+    threads = []
+
+    def http_worker(source):
+        work_queue = http_queues[source]
+        while True:
+            target_name = work_queue.get()
+            try:
+                if target_name is sentinel:
+                    return
+                if stop_event.is_set():
+                    continue
+                try:
+                    run_target(target_name, "http")
+                except Exception as exc:
+                    on_error(target_name, "http", exc)
+            finally:
+                work_queue.task_done()
+
+    def opencode_worker(source):
+        work_queue = http_queues[source]
+        try:
+            for target_name in opencode_pending.get(source, []):
+                if stop_event.is_set():
+                    break
+                try:
+                    run_target(target_name, "opencode")
+                except Exception as exc:
+                    # OpenCode failure must not prevent the independent HTTP
+                    # comparison for this target from being attempted.
+                    on_error(target_name, "opencode", exc)
+                if not stop_event.is_set() and target_name in http_pending.get(source, set()):
+                    work_queue.put(target_name)
+        finally:
+            work_queue.put(sentinel)
+
+    for source, target_names in targets_by_source.items():
+        if not target_names:
+            continue
+        http_thread = threading.Thread(
+            target=http_worker, args=(source,),
+            name=f"http-pipeline-{source}", daemon=True,
+        )
+        http_thread.start()
+        threads.append(http_thread)
+
+        # HTTP targets whose OpenCode identity is already complete can start
+        # immediately; newly completed OpenCode targets are enqueued by the
+        # producer below. Preserve configured target order within each queue.
+        ready_targets = [
+            target_name for target_name in target_names
+            if target_name in http_pending.get(source, set())
+            and target_name not in opencode_pending.get(source, [])
+        ]
+        for target_name in ready_targets:
+            http_queues[source].put(target_name)
+
+        opencode_thread = threading.Thread(
+            target=opencode_worker, args=(source,),
+            name=f"opencode-pipeline-{source}", daemon=True,
+        )
+        opencode_thread.start()
+        threads.append(opencode_thread)
+
+    return threads
+
+
 def _prompt_restart_or_continue(scripted=False):
     """Ask the user whether to restart or continue a run with changed plugins.
 
@@ -979,7 +1062,7 @@ def main():
     parser.add_argument('--scripted', action='store_true',
                         help='Non-interactive mode: never prompt for input; default to continuing runs')
     parser.add_argument('--runner', choices=['http', 'opencode', 'both'], default='http',
-                        help='Execution runner: http (default), opencode, or both (OpenCode runs first)')
+                        help='Execution runner: http (default), opencode, or both (per-target OpenCode-to-HTTP pipeline)')
     args = parser.parse_args()
 
     if args.list_plugins:
@@ -1286,77 +1369,124 @@ def main():
                 t.join(timeout=timeout / max(len(source_threads), 1))
             return not any(t.is_alive() for t in source_threads.values())
 
-        phase_runners = ["opencode", "http"] if runner_mode == "both" else [runner_mode]
-        for phase_runner in phase_runners:
-            phase_targets = targets
-            source_queues = {src: [] for src in set(t["source"] for t in phase_targets.values())}
-            for name, info in phase_targets.items():
+        errors_lock = threading.Lock()
+        persistence_lock = threading.Lock()
+        raw_targets = {}
+        raw_targets.update(cfg.get("models", {}))
+        raw_targets.update(cfg.get("agents", {}))
+
+        def run_target(model_name, phase_runner):
+            """Run one target through one runner and persist its progress."""
+            nonlocal worker_errors
+            model_blacklist = get_target_plugins_blacklist(raw_targets, model_name)
+            model_active_plugins = [p for p in active_plugins if p.id not in model_blacklist]
+            target_info = targets[model_name]
+            state_key = model_name if phase_runner == "http" else f"{model_name} [opencode]"
+            phase_output_dir = http_output_dir if phase_runner == "http" else opencode_output_dir
+            mapped = None
+            agent_id = None
+            if phase_runner == "opencode":
+                mapped = opencode_model_name(target_info["source"], target_info["api_model"])
+                agent_id = opencode_agent_ids.get(model_name)
+            run_model(state_key, target_info["source"], state, model_active_plugins,
+                      source_config, timeout, token_levels, phase_output_dir,
+                      session_seed=session_seed, global_cfg=cfg, stop_event=stop_event,
+                      save_responses=args.save_responses,
+                      api_model=target_info["api_model"],
+                      system_prompt=target_info["system_prompt"],
+                      is_agent=target_info["is_agent"], runner=phase_runner,
+                      opencode_config_path=opencode_config_path,
+                      opencode_model=mapped, opencode_agent=agent_id,
+                      display_name=model_name, config_target_name=model_name)
+            # OpenCode and HTTP pipeline workers can finish different targets
+            # concurrently. Serialize persistence because save_state uses a
+            # shared .tmp path and report generation writes shared output
+            # files; the in-memory BenchmarkState itself remains thread-safe.
+            with persistence_lock:
+                state.save_state(state_file, plugin_versions=plugin_versions)
+                _save_outputs(state, output_dir, active_plugins)
+
+        def on_worker_error(model_name, phase_runner, exc):
+            nonlocal worker_errors
+            with errors_lock:
+                worker_errors += 1
+            print(f"\\n❌ Worker exception ({model_name}, {phase_runner}): "
+                  f"{type(exc).__name__}: {exc}", file=sys.stderr)
+
+        if runner_mode == "both":
+            # Pipeline each source independently: an HTTP comparison for a
+            # target is released as soon as that target's OpenCode run ends,
+            # while the source's producer continues with later OpenCode
+            # targets. A completed OpenCode target is seeded directly into
+            # HTTP on resume; no global OpenCode/HTTP barrier remains.
+            targets_by_source = {src: [] for src in source_config}
+            for name, info in targets.items():
+                targets_by_source.setdefault(info["source"], []).append(name)
+            snapshot = state.snapshot()
+            opencode_pending = {src: [] for src in targets_by_source}
+            http_pending = {src: set() for src in targets_by_source}
+            for name, info in targets.items():
+                if snapshot.get(f"{name} [opencode]", {}).get("status") != "completed":
+                    opencode_pending[info["source"]].append(name)
+                if snapshot.get(name, {}).get("status") != "completed":
+                    http_pending[info["source"]].add(name)
+
+            pipeline_threads = _start_runner_pipeline(
+                targets_by_source, opencode_pending, http_pending,
+                run_target, stop_event, on_worker_error,
+            )
+            if pipeline_threads:
+                try:
+                    for thread in pipeline_threads:
+                        thread.join()
+                except KeyboardInterrupt:
+                    interrupted = True
+                    run_info["status"] = "interrupted"
+                    stop_event.set()
+                    print("\\n\\n⚠️  Ctrl+C — saving state and shutting down...", file=sys.stderr)
+                    close_active_requests()
+                    for thread in pipeline_threads:
+                        thread.join(timeout=1.0)
+        else:
+            # Preserve the original single-runner source workers. Only
+            # --runner both needs cross-runner coordination.
+            phase_runner = runner_mode
+            source_queues = {src: [] for src in set(t["source"] for t in targets.values())}
+            snapshot = state.snapshot()
+            for name, info in targets.items():
                 state_key = name if phase_runner == "http" else f"{name} [opencode]"
-                snap = state.snapshot().get(state_key, {})
-                if snap.get("status") in ("completed",):
+                if snapshot.get(state_key, {}).get("status") == "completed":
                     continue
                 source_queues[info["source"]].append(name)
 
             source_threads = {}
-            errors_lock = threading.Lock()
-            raw_targets = {}
-            raw_targets.update(cfg.get("models", {}))
-            raw_targets.update(cfg.get("agents", {}))
-
-            def worker(source, model_names, phase_runner=phase_runner):
-                nonlocal worker_errors
-                for model_name in model_names:
-                    if stop_event.is_set():
-                        break
-                    try:
-                        model_blacklist = get_target_plugins_blacklist(raw_targets, model_name)
-                        model_active_plugins = [p for p in active_plugins if p.id not in model_blacklist]
-                        target_info = targets[model_name]
-                        state_key = model_name if phase_runner == "http" else f"{model_name} [opencode]"
-                        phase_output_dir = http_output_dir if phase_runner == "http" else opencode_output_dir
-                        mapped = None
-                        agent_id = None
-                        if phase_runner == "opencode":
-                            mapped = opencode_model_name(target_info["source"], target_info["api_model"])
-                            agent_id = opencode_agent_ids.get(model_name)
-                        phase_state = state
-                        run_model(state_key, target_info["source"], phase_state, model_active_plugins,
-                                  source_config, timeout, token_levels, phase_output_dir,
-                                  session_seed=session_seed, global_cfg=cfg, stop_event=stop_event,
-                                  save_responses=args.save_responses,
-                                  api_model=target_info["api_model"],
-                                  system_prompt=target_info["system_prompt"],
-                                  is_agent=target_info["is_agent"], runner=phase_runner,
-                                  opencode_config_path=opencode_config_path,
-                                  opencode_model=mapped, opencode_agent=agent_id,
-                                  display_name=model_name, config_target_name=model_name)
-                        state.save_state(state_file, plugin_versions=plugin_versions)
-                        _save_outputs(state, output_dir, active_plugins)
-                    except Exception as e:
-                        with errors_lock:
-                            worker_errors += 1
-                        print(f"\\n❌ Worker exception ({model_name}, {phase_runner}): {type(e).__name__}: {e}",
-                              file=sys.stderr)
-
-            for source, queue in source_queues.items():
-                if not queue:
+            for source, model_names in source_queues.items():
+                if not model_names:
                     continue
-                t = threading.Thread(target=worker, args=(source, queue), daemon=True)
-                t.start()
-                source_threads[source] = t
 
-            if not source_threads:
-                continue
-            try:
-                _join_workers()
-            except KeyboardInterrupt:
-                interrupted = True
-                run_info["status"] = "interrupted"
-                stop_event.set()
-                print("\\n\\n⚠️  Ctrl+C — saving state and shutting down...", file=sys.stderr)
-                close_active_requests()
-                _join_workers(timeout=1.0)
-                break
+                def worker(source=source, model_names=model_names):
+                    for model_name in model_names:
+                        if stop_event.is_set():
+                            break
+                        try:
+                            run_target(model_name, phase_runner)
+                        except Exception as exc:
+                            on_worker_error(model_name, phase_runner, exc)
+
+                thread = threading.Thread(target=worker, args=(), daemon=True)
+                thread.start()
+                source_threads[source] = thread
+
+            if source_threads:
+                try:
+                    _join_workers()
+                except KeyboardInterrupt:
+                    interrupted = True
+                    run_info["status"] = "interrupted"
+                    stop_event.set()
+                    print("\\n\\n⚠️  Ctrl+C — saving state and shutting down...", file=sys.stderr)
+                    close_active_requests()
+                    _join_workers(timeout=1.0)
 
         stop_event.set()
         # The TUI thread is a daemon, so we don't need to wait for it. A short

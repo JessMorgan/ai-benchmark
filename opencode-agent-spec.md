@@ -89,10 +89,10 @@ When `--runner both` is selected:
 
 1. Resolve and validate all targets.
 2. Validate OpenCode availability and generated-config inputs.
-3. Run the OpenCode variant for all applicable targets.
-4. Run the HTTP variant for all applicable targets.
+3. Create one OpenCode producer and one HTTP consumer per source.
+4. Release each target's HTTP variant immediately after that target's OpenCode variant finishes; continue OpenCode work for later targets concurrently.
 
-Within each phase, retain the existing configured concurrency behavior as much as possible. The spec does not require OpenCode and HTTP variants to run concurrently; the selected order is OpenCode first, then HTTP.
+The ordering guarantee is per target, not global: HTTP target `T` never starts before OpenCode target `T`, but it does not wait for unrelated targets. On resume, targets with completed OpenCode state are released directly to HTTP. Single-runner modes retain their existing source-level worker behavior.
 
 ## 5. Target and runner identity
 
@@ -407,7 +407,7 @@ Add or update tests without weakening current HTTP behavior.
 ### Runner isolation and resume
 
 - `http` and `opencode` artifacts use separate namespaces;
-- `both` runs OpenCode first and then HTTP;
+- `both` pipelines each target from OpenCode into HTTP without a global phase barrier;
 - both variants appear distinctly in results/reports;
 - one runner's result cannot satisfy the other runner on resume;
 - requesting `both` after an HTTP-only run schedules the missing OpenCode variant;
