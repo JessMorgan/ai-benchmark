@@ -72,6 +72,33 @@ class TestTuiWriteHelper(unittest.TestCase):
         self.assertEqual(addstr[3], "🔄12345")
         self.assertLessEqual(ai_benchmark._display_width(addstr[3]), 7)
 
+    def test_zwj_emoji_is_kept_as_one_cluster_when_clipped(self):
+        """Clipping must not leave a dangling ZWJ or variation selector."""
+        family = "👨‍👩‍👧‍👦"
+        rendered = ai_benchmark._truncate_display_width("A" + family + "B", 2)
+
+        self.assertEqual(rendered, "A")
+        self.assertNotIn("\\u200d", rendered)
+        self.assertLessEqual(ai_benchmark._display_width(rendered), 3)
+
+    def test_combining_mark_and_skin_tone_modifier_stay_with_base(self):
+        """Grapheme extensions are included only with their base cluster."""
+        text = "é👍🏽X"
+
+        self.assertEqual(ai_benchmark._truncate_display_width(text, 1), "é")
+        self.assertEqual(ai_benchmark._truncate_display_width(text, 2), "é")
+        self.assertEqual(ai_benchmark._truncate_display_width(text, 3), "é👍🏽")
+
+    def test_control_characters_are_removed_before_curses_write(self):
+        """Model text cannot inject a cursor-moving terminal control."""
+        window = _FakeWindow(40)
+
+        ai_benchmark._wr(window, 40, 1, 0, 0, "ok\u001b[2J\u001b[H done")
+
+        addstr = next(call for call in window.calls if call[0] == "addstr")
+        self.assertEqual(addstr[3], "ok[2J[H done")
+        self.assertNotIn("\u001b", addstr[3])
+
     def test_boundary_write_is_not_retried_after_curses_error(self):
         class ErrorWindow(_FakeWindow):
             def addstr(self, *args):

@@ -97,39 +97,100 @@ def _inject_429_stats(run_info):
 
 def _char_display_width(char):
     """Return the approximate terminal-column width of one character."""
-    if char in "\\r\\n" or unicodedata.combining(char):
+    if char in "\r\n" or unicodedata.combining(char):
         return 0
     if unicodedata.category(char) in {"Cc", "Cf"}:
         return 0
     return 2 if unicodedata.east_asian_width(char) in ("W", "F") else 1
 
 
+def _is_grapheme_extension(char):
+    """Return whether ``char`` extends the preceding display cluster.
+
+    This is a deliberately small, dependency-free approximation of Unicode
+    grapheme breaking. It covers the sequences most likely to occur in status
+    text: combining marks, variation selectors, emoji modifiers, and format
+    characters such as the zero-width joiner.
+    """
+    codepoint = ord(char)
+    category = unicodedata.category(char)
+    return (
+        unicodedata.combining(char) != 0
+        or category in {"Mn", "Me", "Cf"}
+        or 0x1F3FB <= codepoint <= 0x1F3FF  # emoji skin-tone modifiers
+    )
+
+
+def _grapheme_clusters(text):
+    """Yield approximate terminal grapheme clusters from ``text``.
+
+    Newlines terminate the row and C0/C1 control characters are omitted so
+    model-provided text cannot move the cursor or inject terminal controls.
+    A code point following a ZWJ remains in the same cluster, as do paired
+    regional indicators used for flag emoji.
+    """
+    cluster = []
+    regional_indicator = False
+    for char in text:
+        if char in "\r\n":
+            break
+        if unicodedata.category(char) == "Cc":
+            continue
+        if not cluster:
+            cluster = [char]
+            regional_indicator = 0x1F1E6 <= ord(char) <= 0x1F1FF
+            continue
+        previous = cluster[-1]
+        is_regional = 0x1F1E6 <= ord(char) <= 0x1F1FF
+        if (
+            _is_grapheme_extension(char)
+            or previous == "\u200d"
+            or (regional_indicator and is_regional)
+        ):
+            cluster.append(char)
+            if regional_indicator and is_regional:
+                regional_indicator = False
+        else:
+            yield "".join(cluster)
+            cluster = [char]
+            regional_indicator = is_regional
+    if cluster:
+        yield "".join(cluster)
+
+
+def _cluster_display_width(cluster):
+    """Return a conservative terminal width for one grapheme cluster."""
+    if "\u200d" in cluster or (
+        sum(0x1F1E6 <= ord(char) <= 0x1F1FF for char in cluster) == 2
+    ):
+        # Joined emoji and flag pairs are rendered as one pictograph by
+        # terminals even though they contain several Unicode code points.
+        return 2
+    return max((_char_display_width(char) for char in cluster), default=0)
+
+
 def _display_width(text):
     """Return the terminal-column width of ``text`` without extra deps.
 
-    Python string length is not the same as terminal width: emoji and
-    East-Asian wide characters commonly occupy two columns, while combining
-    marks and joiner/control characters occupy none. TUI clipping must use
-    display columns or a line can wrap at the right edge and corrupt the
-    beginning of the next row.
+    Width is calculated per approximate grapheme cluster rather than per
+    Python code point. This keeps joined emoji, flags, skin-tone modifiers,
+    and combining marks together when a row is clipped.
     """
-    return sum(_char_display_width(char) for char in text if char not in "\\r\\n")
+    return sum(_cluster_display_width(cluster) for cluster in _grapheme_clusters(text))
 
 
 def _truncate_display_width(text, max_width):
-    """Return a prefix of ``text`` no wider than ``max_width`` columns."""
+    """Return a sanitized prefix no wider than ``max_width`` columns."""
     if max_width <= 0:
         return ""
     result = []
     width = 0
-    for char in text:
-        if char in "\\r\\n":
+    for cluster in _grapheme_clusters(text):
+        cluster_width = _cluster_display_width(cluster)
+        if width + cluster_width > max_width:
             break
-        char_width = _char_display_width(char)
-        if width + char_width > max_width:
-            break
-        result.append(char)
-        width += char_width
+        result.append(cluster)
+        width += cluster_width
     return "".join(result)
 
 
