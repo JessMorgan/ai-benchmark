@@ -31,7 +31,8 @@ python ai-benchmark.py [options]
 | `--seed INT` | Fixed random seed for all API requests |
 | `--no-rerun-failed` | Keep failed models as failed on resume (default re-runs them) |
 | `--retry-on-429` / `--no-retry-on-429` | Toggle HTTP-429 retry/backoff globally. Default is **ON**; pass `--no-retry-on-429` to opt out (sources with explicit `max_429_retries` are preserved). See [Configuration Reference](configuration.md#http-429-retry--backoff) for the per-source keys and migration notes. |
-| `--runner {http,opencode,both}` | Select the existing HTTP runner (default), the pre-installed OpenCode CLI runner, or both. In `both`, each target pipelines OpenCode into HTTP. |
+| `--runner {http,opencode,both}` | Select the existing HTTP runner (default), the OpenCode CLI runner, or both. In `both`, each target pipelines OpenCode into HTTP. |
+| `--no-install-opencode` | Do not auto-download OpenCode into `.tools/opencode/` when it is missing or too old; fail with an error instead |
 | `-h, --help` | Show help message |
 
 ## Examples
@@ -119,13 +120,13 @@ The default runner is the existing OpenAI-compatible HTTP path:
 python ai-benchmark.py --runner http
 ```
 
-To run each configured model and agent through a locally installed OpenCode CLI:
+To run each configured model and agent through OpenCode:
 
 ```sh
 python ai-benchmark.py --runner opencode
 ```
 
-`opencode` must already be installed and discoverable through `PATH`; the benchmark fails before scheduling work if it is missing. `--runner both` gives each source one execution slot: each target runs OpenCode, then HTTP, before the source advances to its next target. The two runners never overlap on one source:
+OpenCode is resolved at startup: an on-PATH install that passes the capability check is used; otherwise the benchmark downloads the official latest release into `<project root>/.tools/opencode/` and uses that binary, printing the resolved path. Pass `--no-install-opencode` to disable the download and fail with an actionable error instead. `--runner both` gives each source one execution slot: each target runs OpenCode, then HTTP, before the source advances to its next target. The two runners never overlap on one source:
 
 ```sh
 python ai-benchmark.py --runner both --save-responses
@@ -133,9 +134,9 @@ python ai-benchmark.py --runner both --save-responses
 
 OpenCode mode generates and retains `<output_dir>/opencode/opencode.generated.json` from the loaded benchmark sources. The file contains resolved authentication values, is written with restrictive permissions where supported, and should be treated as a secret-bearing artifact. OpenCode responses and logs are stored below `<output_dir>/opencode/`; HTTP artifacts are stored below `<output_dir>/http/`. Results include a runner column so the two variants remain distinguishable, and resume reuses results only for the same runner.
 
-Startup preflight validates the installed OpenCode CLI before any work is scheduled: the executable must be on `PATH`, `opencode run --help` must advertise the `--model`/`--format`/`--agent` options, and `--format` must list `json` as a choice. An unsupported CLI fails fast with a clear error instead of failing every task at runtime.
+Startup preflight validates the OpenCode CLI before any work is scheduled: `opencode run --help` must advertise the `--model`/`--format`/`--agent`/`--pure` options and `--format` must list `json` as a choice. An on-PATH binary that fails this check is replaced by a fresh `.tools/opencode/` install automatically (unless `--no-install-opencode`); the resolved binary path is recorded in `run-info.json` as `opencode_binary`. An unsupported CLI fails fast with a clear error instead of failing every task at runtime.
 
-Each OpenCode task is invoked as `opencode run --model <slugified-source>/<api_model> --format json <prompt>`. The adapter uses the `json` event-stream format (the only machine-readable choice; `plain` is not a valid value) and extracts the final assistant answer from the NDJSON `text` events, so the scored response is the model's final answer without TUI/ANSI noise. Generated configs set both `limit.context` (inferred from the model id's `-NNk`/`-NNm` suffix, e.g. `-128k`) and `limit.output` (from `token_levels`), because OpenCode rejects provider models whose `limit` omits `context`.
+Each OpenCode task is invoked as `opencode run --pure --model <slugified-source>/<api_model> --format json <prompt>` (with `--agent` for agent targets). The adapter uses the `json` event-stream format (the only machine-readable choice; `plain` is not a valid value) and extracts the final assistant answer from the NDJSON `text` events, so the scored response is the model's final answer without TUI/ANSI noise. Generated configs set both `limit.context` (inferred from the model id's `-NNk`/`-NNm` suffix, e.g. `-128k`) and `limit.output` (from `token_levels`), because OpenCode rejects provider models whose `limit` omits `context`.
 
 The OpenCode model mapping is deterministic: the source name is lowercased and strictly slugified, then joined with the resolved API model as `{slugified-source}/{api_model}`. Existing slashes in `api_model` are preserved.
 

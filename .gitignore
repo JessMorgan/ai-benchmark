@@ -10,3 +10,6 @@ __pycache__/
 htmlcov/
 coverage.xml
 .coverage.*
+
+# Locally auto-installed tool binaries (e.g. OpenCode)
+.tools/

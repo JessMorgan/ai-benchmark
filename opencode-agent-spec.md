@@ -8,7 +8,7 @@
 
 Add an optional OpenCode-backed execution runner to AI Benchmark. The user selects the runner at invocation time with a CLI option rather than configuring it in the benchmark config file. The runner controls whether configured models and agents execute through the existing OpenAI-compatible HTTP path, through a locally pre-installed `opencode` CLI process, or through both paths.
 
-The feature must dynamically generate an OpenCode configuration from the loaded ai-benchmark configuration. OpenCode is an external prerequisite: the executable must already be installed and discoverable before an OpenCode run starts. No automatic installation is in scope.
+The feature must dynamically generate an OpenCode configuration from the loaded ai-benchmark configuration. OpenCode is an external prerequisite, but when it is missing (or too old for the required CLI contract) the benchmark downloads the official release into a project-local directory (`.tools/opencode/`) and uses that binary; see the "Preflight behavior" section for the full resolution order and the `--no-install-opencode` opt-out.
 
 ## 2. Decisions captured from the interview
 
@@ -30,7 +30,7 @@ The feature must dynamically generate an OpenCode configuration from the loaded 
   The source is the benchmark source map key, not an independently configured OpenCode provider ID.
 - Source normalization uses strict slugification: lowercase; replace every run of non-alphanumeric characters with `-`; collapse duplicate separators; trim leading/trailing `-`.
 - Existing provider prefixes in `api_model` are not removed. The mapping always applies the formula literally, even when `api_model` already contains `/`.
-- OpenCode must be checked during startup with a `PATH` lookup (`shutil.which`). The selected OpenCode mode is a hard prerequisite; failure is reported before benchmark work is scheduled.
+- OpenCode is resolved during startup. The selected OpenCode mode is a hard prerequisite; failure is reported before benchmark work is scheduled. Resolution order: (1) an on-PATH install that passes the capability preflight; (2) a previously auto-installed local copy under `.tools/opencode/`; (3) a fresh auto-install of the latest release into `.tools/opencode/` when not disabled by `--no-install-opencode`.
 - In `both` mode, OpenCode runs before the HTTP runner.
 - Both runner variants may be represented in the same overall benchmark run, but their artifacts use separate `http/` and `opencode/` namespaces.
 - Resume is runner-aware: a result can be reused only when target, runner, and plugin identity match.
@@ -77,11 +77,13 @@ The exact argparse spelling should be `--runner` unless project conventions requ
 ### Preflight behavior
 
 - For `--runner http`, do not require or probe OpenCode.
-- For `--runner opencode` and `--runner both`, call `shutil.which("opencode")` before scheduling target workers or making HTTP requests.
-- If the lookup fails, exit non-zero with an actionable message stating that OpenCode must be installed and available on `PATH`.
-- Do not fall back silently to HTTP.
+- For `--runner opencode` and `--runner both`, resolve the OpenCode binary before scheduling target workers or making HTTP requests. Resolution order:
+  1. `shutil.which("opencode")` — an existing on-PATH install that passes the capability preflight (`opencode run --help` advertising `--model`/`--format`/`--agent`/`--pure` and the `json` format choice).
+  2. A previously auto-installed local copy at `<project root>/.tools/opencode/opencode` if it still passes the preflight.
+  3. When `--no-install-opencode` is NOT given, download the official latest release into `.tools/opencode/` and validate it. The download mirrors the official installer's platform detection (`opencode-<os>-<arch>[-baseline][-musl].tar.gz` on Linux, `.zip` on macOS/Windows) and writes a `version.txt` marker next to the binary. An on-PATH install that exists but fails the preflight is replaced by the local copy or a fresh install automatically.
+- If no usable binary can be resolved, exit non-zero with an actionable message. With `--no-install-opencode`, the message states that OpenCode must be installed and available on `PATH` (or that the on-PATH binary is incompatible) and that the opt-out prevented the automatic download; the benchmark never silently falls back to HTTP.
 - The preflight must happen before any target is run, including in `both` mode, so a missing dependency cannot produce a partial mixed run.
-- The selected mode should be recorded in run metadata, such as `run-info.json`.
+- The selected mode and the resolved binary path should be recorded in run metadata, such as `run-info.json` (`runner`, `opencode_binary`).
 
 ### Ordering
 

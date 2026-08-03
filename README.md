@@ -114,7 +114,8 @@ python ai-benchmark.py [options]
 | `--plugins-whitelist ID [ID ...]` | Run only these plugins |
 | `--plugins-blacklist ID [ID ...]` | Run all plugins except these |
 | `--seed INT` | Fixed random seed for all API requests |
-| `--runner {http,opencode,both}` | Select the existing HTTP runner (default), the pre-installed OpenCode runner, or both (per-target OpenCode→HTTP pipeline) |
+| `--runner {http,opencode,both}` | Select the existing HTTP runner (default), the OpenCode runner, or both (per-target OpenCode→HTTP pipeline) |
+| `--no-install-opencode` | Do not auto-download OpenCode into `.tools/opencode/` when it is missing or too old; fail with an error instead |
 | `-h, --help` | Show this help message |
 
 ## Resume / Continue
@@ -125,13 +126,13 @@ If the set of active plugins changes between runs, the app detects this and asks
 
 ## OpenCode runner
 
-OpenCode is an optional runtime dependency. Use `--runner opencode` or `--runner both`; the executable must already be installed and available on `PATH`, and startup fails before benchmark work begins if it is missing. No OpenCode block is added to the benchmark config.
+OpenCode is an optional runtime dependency. Use `--runner opencode` or `--runner both`. If `opencode` is already installed and available on `PATH`, that binary is used (after a capability check). If it is missing — or is too old to satisfy the required CLI contract — the benchmark downloads the official latest release into a project-local directory (`.tools/opencode/`) and uses that binary instead, printing the resolved path at startup. Pass `--no-install-opencode` to disable the automatic download and fail with an actionable error instead. Either way, an unusable OpenCode fails before benchmark work begins. No OpenCode block is added to the benchmark config.
 
 The runner dynamically generates and retains `<output_dir>/opencode/opencode.generated.json` from the loaded sources and resolved API models. Its model names follow `{strictly-slugified-source}/{api_model}`; for example, `Local Server 1` plus `vendor/model-x` becomes `local-server-1/vendor/model-x`. The generated file contains resolved credentials, so protect it and the output directory.
 
 OpenCode and HTTP artifacts are separated under `<output_dir>/opencode/` and `<output_dir>/http/`. Markdown, CSV, HTML, and PDF reports include runner metadata. Resume matching is runner-aware, so an HTTP result is never reused for an OpenCode task. With `--runner both`, each source has one execution slot and runs a per-target pipeline: OpenCode for a target finishes before its HTTP comparison starts, and the source then advances to the next target. OpenCode and HTTP never overlap on the same source; already-completed OpenCode targets flow directly to HTTP on resume.
 
-Before scheduling any work the runner preflights the installed CLI: `opencode run --help` must advertise the `--pure`/`--model`/`--format`/`--agent` options and the `json` format choice. Each task is invoked as `opencode run --pure --model <slugified-source>/<api_model> --format json <prompt>`; `--pure` prevents external OpenCode plugins from changing the benchmark environment, tools, prompts, or event stream. The adapter parses the NDJSON event stream and scores the final assistant answer. Generated configs always set both `limit.context` (inferred from the model id's `-NNk`/`-NNm` suffix) and `limit.output` (from `token_levels`), because OpenCode rejects provider models whose `limit` omits `context`.
+Before scheduling any work the runner resolves and preflights the CLI: `opencode run --help` must advertise the `--pure`/`--model`/`--format`/`--agent` options and the `json` format choice. A previously auto-installed copy under `.tools/opencode/` is reused when it still passes the preflight; the resolved binary path is recorded in `run-info.json` as `opencode_binary`. Each task is invoked as `opencode run --pure --model <slugified-source>/<api_model> --format json <prompt>`; `--pure` prevents external OpenCode plugins from changing the benchmark environment, tools, prompts, or event stream. The adapter parses the NDJSON event stream and scores the final assistant answer. Generated configs always set both `limit.context` (inferred from the model id's `-NNk`/`-NNm` suffix) and `limit.output` (from `token_levels`), because OpenCode rejects provider models whose `limit` omits `context`.
 
 ## Outputs
 

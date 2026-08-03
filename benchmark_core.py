@@ -17,7 +17,12 @@ from benchmark_http import (  # noqa: F401
     nonstream_request,
 )
 from benchmark_plugin import PluginTaskResult
-from opencode_runner import OpenCodeProcessResult, opencode_model_name, run_process
+from opencode_runner import (
+    OPENCODE_BINARY,
+    OpenCodeProcessResult,
+    opencode_model_name,
+    run_process,
+)
 from benchmark_outputs import (  # noqa: F401
     _save_outputs,
     gen_csv,
@@ -341,7 +346,8 @@ def _run_plugin_task(target_name, api_model, source, plugin, source_config, time
                      stop_event=None, save_responses=False, output_dir=None,
                      system_prompt=None, is_agent=False, runner="http",
                      opencode_config_path=None, opencode_model=None,
-                     opencode_agent=None, artifact_target_name=None,
+                     opencode_agent=None, opencode_binary=None,
+                     artifact_target_name=None,
                      config_target_name=None) -> PluginTaskResult:
     """Run a single plugin task and return named result/error fields."""
     pid = plugin.id
@@ -384,6 +390,7 @@ def _run_plugin_task(target_name, api_model, source, plugin, source_config, time
             config_path=opencode_config_path,
             model=opencode_model,
             timeout=timeout,
+            binary=opencode_binary or OPENCODE_BINARY,
             agent=opencode_agent,
             output_dir=output_dir,
             target_key=artifact_target_name or config_target_name,
@@ -733,7 +740,7 @@ def run_model(model_name, source, state, active_plugins, source_config, timeout,
               stop_event=None, save_responses=False, api_model=None,
               system_prompt=None, is_agent=False, runner="http",
               opencode_config_path=None, opencode_model=None,
-              opencode_agent=None, display_name=None,
+              opencode_agent=None, opencode_binary=None, display_name=None,
               config_target_name=None):
     """Run active plugins for one model or agent through a selected runner."""
     start = time.time()
@@ -820,6 +827,7 @@ def run_model(model_name, source, state, active_plugins, source_config, timeout,
                  opencode_config_path=opencode_config_path,
                  opencode_model=opencode_model,
                  opencode_agent=opencode_agent,
+                 opencode_binary=opencode_binary,
                  display_name=display_name,
                  config_target_name=config_target_name)
 
@@ -829,8 +837,8 @@ def _run_plugins(target_name, api_model, source, state, active_plugins, plugins_
                  session_seed, global_cfg, r, start, max_workers,
                  stop_event=None, save_responses=False, system_prompt=None,
                  is_agent=False, runner="http", opencode_config_path=None,
-                 opencode_model=None, opencode_agent=None, display_name=None,
-                 config_target_name=None):
+                 opencode_model=None, opencode_agent=None, opencode_binary=None,
+                 display_name=None, config_target_name=None):
     """Run plugins for one model using a thread pool of bounded size.
 
     A single-worker pool (``max_workers=1``) is equivalent to sequential
@@ -866,6 +874,7 @@ def _run_plugins(target_name, api_model, source, state, active_plugins, plugins_
                                            opencode_config_path=opencode_config_path,
                                            opencode_model=opencode_model,
                                            opencode_agent=opencode_agent,
+                                           opencode_binary=opencode_binary,
                                            artifact_target_name=display_name or target_name,
                                            config_target_name=config_target_name or display_name or target_name)
             result = task_result.result

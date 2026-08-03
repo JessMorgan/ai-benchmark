@@ -45,7 +45,8 @@ from shell_completion import generate_shell_completion
 from opencode_runner import (
     generate_config as generate_opencode_config,
     opencode_model_name,
-    validate_cli as validate_opencode_cli,
+    opencode_version,
+    resolve_opencode_binary,
 )
 
 DEFAULT_CONFIG_PATH = "benchmark-config.json"
@@ -1246,6 +1247,8 @@ def main():
                         help='Non-interactive mode: never prompt for input; default to continuing runs')
     parser.add_argument('--runner', choices=['http', 'opencode', 'both'], default='http',
                         help='Execution runner: http (default), opencode, or both (per-target OpenCode-to-HTTP pipeline)')
+    parser.add_argument('--no-install-opencode', action='store_true',
+                        help='Do not auto-download OpenCode into .tools/opencode/ when it is missing or too old; fail with an error instead')
     args = parser.parse_args()
 
     if args.list_plugins:
@@ -1300,17 +1303,18 @@ def main():
         sys.exit(1)
     targets = resolve_targets(cfg)
     runner_mode = args.runner
+    opencode_binary = None
     if runner_mode in ("opencode", "both"):
-        opencode_binary = shutil.which("opencode")
-        if opencode_binary is None:
-            print("❌ OpenCode runner selected, but 'opencode' was not found on PATH. "
-                  "Install OpenCode before using --runner opencode/both.", file=sys.stderr)
-            sys.exit(1)
         try:
-            validate_opencode_cli(opencode_binary)
+            opencode_binary = resolve_opencode_binary(
+                allow_install=not args.no_install_opencode,
+            )
         except RuntimeError as exc:
-            print(f"❌ OpenCode preflight failed: {exc}", file=sys.stderr)
+            print(f"❌ OpenCode unavailable: {exc}", file=sys.stderr)
             sys.exit(1)
+        version = opencode_version(opencode_binary)
+        print(f"🤖 OpenCode binary: {opencode_binary}"
+              + (f" (v{version})" if version else ""), file=sys.stderr)
     output_dir = cfg.get("output_dir", "benchmark-results")
     if args.out:
         output_dir = args.out
@@ -1438,6 +1442,7 @@ def main():
         "runner": runner_mode,
         "opencode_config": opencode_config_path,
         "opencode_projection": opencode_projection,
+        "opencode_binary": opencode_binary,
         "targets": list(targets.keys()),
     }
 
@@ -1580,6 +1585,7 @@ def main():
                       is_agent=target_info["is_agent"], runner=phase_runner,
                       opencode_config_path=opencode_config_path,
                       opencode_model=mapped, opencode_agent=agent_id,
+                      opencode_binary=opencode_binary,
                       display_name=model_name, config_target_name=model_name)
             # OpenCode and HTTP pipeline workers can finish different targets
             # concurrently. Serialize persistence because save_state uses a

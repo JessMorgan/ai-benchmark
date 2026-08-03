@@ -3,15 +3,25 @@
 This module deliberately keeps the external-process adapter separate from the
 existing OpenAI-compatible HTTP transport.  The CLI supplies a generated
 OpenCode config and invokes one fresh ``opencode run`` process per plugin task.
+
+When the CLI is not installed, the benchmark can download the official
+release into a project-local directory (``.tools/opencode/``) instead of
+requiring a manual install; see :func:`resolve_opencode_binary`.
 """
 from __future__ import annotations
 
 import json
 import os
+import platform
 import re
+import shutil
 import signal
 import subprocess
+import tarfile
+import tempfile
 import time
+import urllib.request
+import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -20,6 +30,23 @@ from urllib.parse import urlsplit, urlunsplit
 
 OPENCODE_BINARY = "opencode"
 
+# ─── Local auto-install constants ───────────────────────────────────────────
+# When ``--runner opencode``/``both`` is selected and the CLI is not usable
+# from PATH, the benchmark downloads the official release binary into a
+# private directory inside the project root. The layout mirrors the official
+# installer (``~/.opencode/bin/opencode``) but scoped to the project so the
+# tool stays self-contained and never touches user shell config.
+OPENCODE_REPO = "anomalyco/opencode"
+OPENCODE_GITHUB_URL = f"https://github.com/{OPENCODE_REPO}"
+OPENCODE_LATEST_API_URL = (
+    f"https://api.github.com/repos/{OPENCODE_REPO}/releases/latest"
+)
+# Relative to the project root (the directory containing this module).
+OPENCODE_INSTALL_SUBDIR = os.path.join(".tools", "opencode")
+# Marker file written next to the installed binary so operators can see which
+# release was downloaded (best-effort; ``"latest"`` when the GitHub API
+# version lookup fails).
+OPENCODE_VERSION_MARKER = "version.txt"
 # ``opencode run --format`` accepts exactly ``default`` (formatted) or
 # ``json`` (NDJSON event stream).  The adapter uses ``json`` so the final
 # assistant answer can be extracted deterministically without ANSI/UI noise;
@@ -64,6 +91,289 @@ def validate_cli(binary: str = OPENCODE_BINARY, *, timeout: float = 10) -> None:
             "Installed OpenCode CLI does not advertise the 'json' run format "
             f"required for the {OPENCODE_RUN_FORMAT!r} output contract"
         )
+
+# ─── Local auto-install ──────────────────────────────────────────────────────
+
+
+def _local_install_dir() -> Path:
+    """Return the project-scoped directory for a locally installed OpenCode.
+
+    The project root is the directory containing this module, so the install
+    location is stable regardless of the current working directory.
+    """
+    return Path(__file__).resolve().parent / OPENCODE_INSTALL_SUBDIR
+
+
+def _local_binary_path(install_dir: str | os.PathLike[str] | None = None) -> Path:
+    """Return the expected binary path inside a local install directory."""
+    install_dir = Path(install_dir) if install_dir else _local_install_dir()
+    name = "opencode.exe" if os.name == "nt" else "opencode"
+    return install_dir / name
+
+
+def _cpu_has_avx2() -> bool:
+    """Best-effort AVX2 flag check, mirroring the official installer."""
+    try:
+        with open("/proc/cpuinfo", encoding="utf-8", errors="replace") as handle:
+            for line in handle:
+                if line.lower().startswith("flags"):
+                    return "avx2" in line.lower().split()
+    except OSError:
+        pass
+    return True
+
+
+def _is_musl_libc() -> bool:
+    """Detect musl libc (Alpine or an ldd that reports musl)."""
+    if os.path.exists("/etc/alpine-release"):
+        return True
+    try:
+        probe = subprocess.run(
+            ["ldd", "--version"], capture_output=True, text=True,
+            timeout=5, check=False,
+        )
+        return "musl" in (probe.stdout + probe.stderr).lower()
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
+def _darwin_translated() -> bool:
+    """True when an x64 process runs under Rosetta 2 on Apple silicon."""
+    try:
+        probe = subprocess.run(
+            ["sysctl", "-n", "sysctl.proc_translated"],
+            capture_output=True, text=True, timeout=5, check=False,
+        )
+        return probe.returncode == 0 and probe.stdout.strip() == "1"
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
+def _darwin_avx2() -> bool:
+    """Best-effort macOS AVX2 check (``hw.optional.avx2_0`` sysctl)."""
+    try:
+        probe = subprocess.run(
+            ["sysctl", "-n", "hw.optional.avx2_0"],
+            capture_output=True, text=True, timeout=5, check=False,
+        )
+        return probe.returncode == 0 and probe.stdout.strip() == "1"
+    except (OSError, subprocess.TimeoutExpired):
+        return True
+
+
+def _platform_asset_name() -> str:
+    """Build the official release asset filename for this platform.
+
+    Mirrors the official installer's detection exactly: ``opencode-<os>-<arch>
+    [-baseline][-musl].tar.gz`` on Linux (``.zip`` on macOS/Windows), with
+    ``-baseline`` selected when the CPU lacks AVX2 and ``-musl`` for
+    Alpine-style libc builds. macOS x64 processes running under Rosetta 2 get
+    the arm64 build.
+    """
+    raw_os = platform.system().lower()
+    if raw_os.startswith("darwin"):
+        os_name = "darwin"
+    elif raw_os.startswith("linux"):
+        os_name = "linux"
+    elif raw_os in ("mingw", "msys", "cygwin") or raw_os.startswith("windows"):
+        os_name = "windows"
+    else:
+        raise RuntimeError(
+            f"Unsupported OS for OpenCode auto-install: {platform.system()!r}"
+        )
+
+    machine = platform.machine().lower()
+    if machine in ("aarch64", "arm64"):
+        arch = "arm64"
+    elif machine in ("x86_64", "amd64", "x64"):
+        arch = "x64"
+    else:
+        raise RuntimeError(
+            f"Unsupported architecture for OpenCode auto-install: {machine!r}"
+        )
+
+    target = f"{os_name}-{arch}"
+    if arch == "x64":
+        if os_name == "linux":
+            if not _cpu_has_avx2():
+                target += "-baseline"
+        elif os_name == "darwin":
+            if _darwin_translated():
+                target = "darwin-arm64"
+            elif not _darwin_avx2():
+                target += "-baseline"
+    if os_name == "linux" and _is_musl_libc():
+        target += "-musl"
+    extension = ".tar.gz" if os_name == "linux" else ".zip"
+    return f"opencode-{target}{extension}"
+
+
+def _download_to(url: str, dest: Path, *, timeout: float) -> None:
+    """Download ``url`` to ``dest``, following redirects (GitHub release
+    download URLs redirect to the versioned asset on a CDN)."""
+    request = urllib.request.Request(
+        url, headers={"User-Agent": "ai-benchmark/opencode-installer"}
+    )
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        with open(dest, "wb") as handle:
+            shutil.copyfileobj(response, handle)
+
+
+def _latest_opencode_version(*, timeout: float = 15) -> str | None:
+    """Return the latest release tag without the leading ``v`` (best effort)."""
+    try:
+        with urllib.request.urlopen(OPENCODE_LATEST_API_URL, timeout=timeout) as response:
+            payload = json.load(response)
+        tag = payload.get("tag_name", "")
+    except Exception:
+        return None
+    if not isinstance(tag, str) or not tag:
+        return None
+    return tag[1:] if tag.startswith("v") else tag
+
+
+def _extract_binary(archive: Path, dest_dir: Path) -> Path:
+    """Extract ``archive`` and return the path of the bundled binary."""
+    if archive.name.endswith(".tar.gz"):
+        with tarfile.open(archive, "r:gz") as tar:
+            try:
+                # Python >= 3.12: sanitize member metadata on extraction
+                # (avoids the 3.14 deprecation for unfiltered extraction).
+                tar.extractall(dest_dir, filter="data")
+            except TypeError:
+                tar.extractall(dest_dir)
+    else:
+        with zipfile.ZipFile(archive) as zf:
+            zf.extractall(dest_dir)
+    for candidate in dest_dir.rglob("opencode*"):
+        if candidate.is_file() and candidate.name in ("opencode", "opencode.exe"):
+            return candidate
+    raise RuntimeError(
+        f"OpenCode release archive {archive.name} did not contain the opencode binary"
+    )
+
+
+def install_opencode(
+    install_dir: str | os.PathLike[str] | None = None,
+    *,
+    timeout: float = 120,
+) -> str:
+    """Download the latest OpenCode release into a project-local directory.
+
+    Defaults to ``<project root>/.tools/opencode/``. Returns the absolute
+    path of the installed binary. Raises RuntimeError with an actionable
+    message when the platform is unsupported, the download fails, or
+    extraction fails.
+    """
+    install_dir = Path(install_dir) if install_dir else _local_install_dir()
+    asset = _platform_asset_name()
+    url = f"{OPENCODE_GITHUB_URL}/releases/latest/download/{asset}"
+    version = _latest_opencode_version()
+    try:
+        with tempfile.TemporaryDirectory(prefix="opencode-install-") as tmp:
+            tmp_path = Path(tmp)
+            archive = tmp_path / asset
+            _download_to(url, archive, timeout=timeout)
+            binary = _extract_binary(archive, tmp_path)
+            install_dir.mkdir(parents=True, exist_ok=True)
+            dest = install_dir / binary.name
+            shutil.move(str(binary), str(dest))
+            dest.chmod(0o755)
+            (install_dir / OPENCODE_VERSION_MARKER).write_text(
+                version or "latest", encoding="utf-8"
+            )
+    except RuntimeError:
+        raise
+    except Exception as exc:
+        raise RuntimeError(
+            f"Could not auto-install OpenCode from {url}: {type(exc).__name__}: {exc}"
+        ) from exc
+    return str(dest)
+
+
+def opencode_version(binary: str, timeout: float = 5) -> str | None:
+    """Return the first line of ``<binary> --version``, or None (best effort)."""
+    try:
+        probe = subprocess.run(
+            [binary, "--version"], capture_output=True, text=True,
+            timeout=timeout, check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    first = (probe.stdout or probe.stderr).strip().splitlines()
+    return first[0].strip() if first else None
+
+
+def resolve_opencode_binary(
+    binary: str = OPENCODE_BINARY,
+    install_dir: str | os.PathLike[str] | None = None,
+    *,
+    allow_install: bool = True,
+    validate_timeout: float = 10,
+    install_timeout: float = 120,
+) -> str:
+    """Resolve a usable OpenCode CLI binary for a run.
+
+    Priority: (1) an on-PATH install that passes the capability preflight;
+    (2) a previously auto-installed local copy; (3) a fresh local install
+    (when ``allow_install``). An on-PATH install that exists but fails the
+    preflight (e.g. an old release missing ``--thinking``/``--pure``) is
+    replaced by the local copy or a fresh install automatically, so a stale
+    global binary never blocks a run.
+
+    Raises RuntimeError with an actionable message when no usable binary can
+    be found (always the case when ``allow_install`` is False and nothing
+    usable exists).
+    """
+    on_path = shutil.which(binary)
+    local = _local_binary_path(install_dir)
+    preflight_error: RuntimeError | None = None
+
+    # 1. Prefer a valid on-PATH install.
+    if on_path:
+        try:
+            validate_cli(on_path, timeout=validate_timeout)
+            return on_path
+        except RuntimeError as exc:
+            preflight_error = exc
+
+    # 2. Reuse a previously installed local copy if it still validates.
+    if local.is_file():
+        try:
+            validate_cli(str(local), timeout=validate_timeout)
+            return str(local)
+        except RuntimeError:
+            pass  # stale/corrupt -> reinstall below
+
+    # 3. Install a fresh copy when permitted.
+    if allow_install:
+        installed = install_opencode(install_dir, timeout=install_timeout)
+        try:
+            validate_cli(installed, timeout=validate_timeout)
+        except RuntimeError as exc:
+            raise RuntimeError(
+                f"Auto-installed OpenCode at {installed} failed preflight: {exc}"
+            ) from exc
+        return installed
+
+    if preflight_error is not None:
+        raise RuntimeError(
+            f"OpenCode on PATH is incompatible: {preflight_error}. Reinstall a "
+            "newer OpenCode or re-run without --no-install-opencode so the "
+            "benchmark can download a compatible copy into "
+            f"{_local_install_dir()}/."
+        ) from preflight_error
+    if local.is_file():
+        raise RuntimeError(
+            f"The locally installed OpenCode at {local} does not pass the "
+            "preflight. Delete it or re-run without --no-install-opencode to "
+            "reinstall the latest release."
+        )
+    raise RuntimeError(
+        "'opencode' was not found on PATH. Install OpenCode or re-run without "
+        "--no-install-opencode so the benchmark can download it into "
+        f"{_local_install_dir()}/."
+    )
 
 
 
