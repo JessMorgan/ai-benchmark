@@ -125,7 +125,7 @@ To run each configured model and agent through a locally installed OpenCode CLI:
 python ai-benchmark.py --runner opencode
 ```
 
-`opencode` must already be installed and discoverable through `PATH`; the benchmark fails before scheduling work if it is missing. `--runner both` runs a per-source pipeline: each target's HTTP execution starts as soon as its own OpenCode execution finishes, while later targets continue through OpenCode:
+`opencode` must already be installed and discoverable through `PATH`; the benchmark fails before scheduling work if it is missing. `--runner both` gives each source one execution slot: each target runs OpenCode, then HTTP, before the source advances to its next target. The two runners never overlap on one source:
 
 ```sh
 python ai-benchmark.py --runner both --save-responses

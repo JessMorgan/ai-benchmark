@@ -807,45 +807,44 @@ class TestRunnerPipeline(unittest.TestCase):
         cls.module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(cls.module)
 
-    def test_http_starts_for_target_before_later_opencode_target_finishes(self):
-        """Both-mode pipelines preserve per-target order without a global barrier."""
+    def test_source_pipeline_serializes_runners_and_preserves_target_order(self):
+        """Each source has one slot: target A OpenCode -> HTTP -> target B."""
         targets_by_source = {"Source": ["model-a", "model-b"]}
         opencode_pending = {"Source": ["model-a", "model-b"]}
         http_pending = {"Source": {"model-a", "model-b"}}
         stop_event = threading.Event()
-        model_a_http_started = threading.Event()
-        release_model_b = threading.Event()
+        active = set()
+        overlap = []
         calls = []
         lock = threading.Lock()
 
         def run_target(target_name, runner):
-            if target_name == "model-b" and runner == "opencode":
-                if not model_a_http_started.wait(2):
-                    raise AssertionError("HTTP did not start for model-a before model-b")
             with lock:
+                if active:
+                    overlap.append((set(active), target_name, runner))
+                active.add(runner)
                 calls.append((target_name, runner))
-            if target_name == "model-a" and runner == "http":
-                model_a_http_started.set()
+            time.sleep(0.005)
+            with lock:
+                active.remove(runner)
 
         threads = self.module._start_runner_pipeline(
             targets_by_source, opencode_pending, http_pending,
             run_target, stop_event, lambda *_args: None,
         )
-        self.assertTrue(model_a_http_started.wait(2))
-        # model-b OpenCode is deliberately held until model-a HTTP starts.
-        # Seeing both calls complete proves there was no global OpenCode
-        # barrier between the two runner variants.
         for thread in threads:
             thread.join(timeout=2)
         self.assertTrue(all(not thread.is_alive() for thread in threads))
-        with lock:
-            self.assertLess(
-                calls.index(("model-a", "http")),
-                calls.index(("model-b", "opencode")),
-            )
+        self.assertEqual(overlap, [])
+        self.assertEqual(calls, [
+            ("model-a", "opencode"),
+            ("model-a", "http"),
+            ("model-b", "opencode"),
+            ("model-b", "http"),
+        ])
 
     def test_pipeline_workers_stop_after_cancellation(self):
-        """Cancellation releases the producer and consumer sentinels."""
+        """Cancellation stops the single source worker between runner steps."""
         stop_event = threading.Event()
         calls = []
         targets_by_source = {"Source": ["model-a", "model-b"]}
@@ -865,7 +864,7 @@ class TestRunnerPipeline(unittest.TestCase):
         self.assertTrue(all(not thread.is_alive() for thread in threads))
         self.assertLessEqual(len(calls), 2)
 
-    def test_completed_opencode_target_is_seeded_into_http_queue(self):
+    def test_completed_opencode_target_runs_pending_http_on_resume(self):
         """Resume skips completed OpenCode work but still runs pending HTTP."""
         calls = []
         targets_by_source = {"Source": ["model-a"]}

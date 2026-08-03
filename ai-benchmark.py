@@ -11,7 +11,6 @@ import curses
 import glob
 import json
 import os
-import queue
 import random
 import shutil
 import subprocess
@@ -876,82 +875,52 @@ def tui_main(state, stop_event, num_sources, active_plugins, session_seed=None):
 
 def _start_runner_pipeline(targets_by_source, opencode_pending, http_pending,
                            run_target, stop_event, on_error):
-    """Start per-source OpenCode-to-HTTP pipelines.
+    """Start one OpenCode-to-HTTP worker per source.
 
     ``run_target(name, runner)`` executes one configured target through the
-    requested runner. For each source, one producer advances through pending
-    OpenCode targets while a consumer runs HTTP targets as soon as their own
-    OpenCode execution has completed. Targets already complete in OpenCode are
-    seeded directly into the HTTP queue, which keeps resume runs pipelined too.
+    requested runner. In ``both`` mode, each source has exactly one worker,
+    which processes each target as ``OpenCode -> HTTP`` before moving to the
+    next target. Sources run concurrently with one another, but OpenCode and
+    HTTP can never run at the same time for the same source.
 
-    The returned threads are intentionally not joined here. The caller owns
-    the join/interrupt policy so Ctrl+C can set ``stop_event`` and close active
-    HTTP requests before waiting for the workers to wind down.
+    Targets whose OpenCode identity is already complete are sent directly to
+    their pending HTTP step on resume. The returned threads are intentionally
+    not joined here; the caller owns the join/interrupt policy so Ctrl+C can
+    set ``stop_event`` and close active HTTP requests before waiting for workers
+    to wind down.
     """
-    sentinel = object()
-    http_queues = {source: queue.Queue() for source in targets_by_source}
     threads = []
 
-    def http_worker(source):
-        work_queue = http_queues[source]
-        while True:
-            target_name = work_queue.get()
-            try:
-                if target_name is sentinel:
-                    return
-                if stop_event.is_set():
-                    continue
+    def source_worker(source, target_names):
+        for target_name in target_names:
+            if stop_event.is_set():
+                break
+            if target_name in opencode_pending.get(source, []):
+                try:
+                    run_target(target_name, "opencode")
+                except Exception as exc:
+                    # An OpenCode failure must not prevent the independent HTTP
+                    # comparison for this target from being attempted.
+                    on_error(target_name, "opencode", exc)
+            if stop_event.is_set():
+                break
+            if target_name in http_pending.get(source, set()):
                 try:
                     run_target(target_name, "http")
                 except Exception as exc:
                     on_error(target_name, "http", exc)
-            finally:
-                work_queue.task_done()
-
-    def opencode_worker(source):
-        work_queue = http_queues[source]
-        try:
-            for target_name in opencode_pending.get(source, []):
-                if stop_event.is_set():
-                    break
-                try:
-                    run_target(target_name, "opencode")
-                except Exception as exc:
-                    # OpenCode failure must not prevent the independent HTTP
-                    # comparison for this target from being attempted.
-                    on_error(target_name, "opencode", exc)
-                if not stop_event.is_set() and target_name in http_pending.get(source, set()):
-                    work_queue.put(target_name)
-        finally:
-            work_queue.put(sentinel)
 
     for source, target_names in targets_by_source.items():
         if not target_names:
             continue
-        http_thread = threading.Thread(
-            target=http_worker, args=(source,),
-            name=f"http-pipeline-{source}", daemon=True,
+        thread = threading.Thread(
+            target=source_worker,
+            args=(source, target_names),
+            name=f"runner-pipeline-{source}",
+            daemon=True,
         )
-        http_thread.start()
-        threads.append(http_thread)
-
-        # HTTP targets whose OpenCode identity is already complete can start
-        # immediately; newly completed OpenCode targets are enqueued by the
-        # producer below. Preserve configured target order within each queue.
-        ready_targets = [
-            target_name for target_name in target_names
-            if target_name in http_pending.get(source, set())
-            and target_name not in opencode_pending.get(source, [])
-        ]
-        for target_name in ready_targets:
-            http_queues[source].put(target_name)
-
-        opencode_thread = threading.Thread(
-            target=opencode_worker, args=(source,),
-            name=f"opencode-pipeline-{source}", daemon=True,
-        )
-        opencode_thread.start()
-        threads.append(opencode_thread)
+        thread.start()
+        threads.append(thread)
 
     return threads
 
@@ -1414,11 +1383,10 @@ def main():
                   f"{type(exc).__name__}: {exc}", file=sys.stderr)
 
         if runner_mode == "both":
-            # Pipeline each source independently: an HTTP comparison for a
-            # target is released as soon as that target's OpenCode run ends,
-            # while the source's producer continues with later OpenCode
-            # targets. A completed OpenCode target is seeded directly into
-            # HTTP on resume; no global OpenCode/HTTP barrier remains.
+            # Pipeline each source independently with one execution slot:
+            # each target runs OpenCode then HTTP before the source advances
+            # to its next target. Sources still run concurrently, but there
+            # is never an OpenCode/HTTP overlap within one source.
             targets_by_source = {src: [] for src in source_config}
             for name, info in targets.items():
                 targets_by_source.setdefault(info["source"], []).append(name)

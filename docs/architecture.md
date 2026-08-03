@@ -39,7 +39,7 @@ This document describes the high-level design of AI Benchmark.
 3. **Runner Scheduling and Worker Threads**
    - `--runner http` uses the existing direct OpenAI-compatible path.
    - `--runner opencode` generates one retained OpenCode config and starts one isolated `opencode run` process per target/plugin.
-   - `--runner both` creates one OpenCode producer and one HTTP consumer per source. Each target's HTTP work is queued as soon as that target's OpenCode work finishes, while later targets continue through OpenCode; there is no global OpenCode/HTTP phase barrier.
+   - `--runner both` creates one worker per source. That worker runs each target as OpenCode then HTTP before advancing, so OpenCode and HTTP never overlap on the same source; sources still run concurrently with one another.
    - Targets whose OpenCode state is already complete on resume are seeded directly into the HTTP queue.
    - Single-runner modes retain one source worker per source and run `run_model()` for each target in its queue.
    - State identities include the configured target and runner, preventing cross-runner resume reuse.
@@ -108,14 +108,14 @@ Output generators handle mixed numeric and string scores defensively to avoid er
 
 ## Concurrency Model
 
-- Source-level parallelism: one thread per source in single-runner modes; in `both`, one OpenCode producer plus one HTTP consumer per source.
-- Pipeline ordering: HTTP for target `T` waits only for OpenCode target `T`; it does not wait for other targets' OpenCode work.
+- Source-level parallelism: one thread per source in all modes; in `both`, that one source worker owns both runner steps.
+- Pipeline ordering: target `T` runs OpenCode then HTTP, with no overlap between runners on the source; the source advances to the next target afterward.
 - Plugin-level parallelism: controlled by per-source `plugin_thread_limit` (with a top-level fallback).
 - `ThreadPoolExecutor` runs plugins for a single model.
 
 ## Resume Behavior
 
-Runner identity is part of the persisted result key. A completed HTTP result cannot satisfy an OpenCode run, and vice versa. In `both`, each pipeline side skips only its own completed target/plugin results; completed OpenCode targets are released directly to the HTTP queue on resume. State and reports retain both variants, while runner-specific response and log artifacts remain under `http/` and `opencode/`.
+Runner identity is part of the persisted result key. A completed HTTP result cannot satisfy an OpenCode run, and vice versa. In `both`, each source worker skips completed runner steps independently; completed OpenCode targets proceed directly to their pending HTTP step on resume. State and reports retain both variants, while runner-specific response and log artifacts remain under `http/` and `opencode/`.
 
 
 Saved state includes:
