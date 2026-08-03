@@ -23,6 +23,78 @@ sys.modules["_ai_benchmark_module"] = ai_benchmark
 _spec.loader.exec_module(ai_benchmark)
 
 
+class _FakeWindow:
+    """Small single-row curses stand-in for testing ``_wr``."""
+
+    def __init__(self, width):
+        self.width = width
+        self.line = [" "] * width
+        self.calls = []
+
+    def move(self, y, x):
+        self.calls.append(("move", y, x))
+
+    def clrtoeol(self):
+        self.calls.append(("clrtoeol",))
+        self.line = [" "] * self.width
+
+    def addstr(self, y, x, text, attr=0):
+        self.calls.append(("addstr", y, x, text, attr))
+        for char in text:
+            if x >= self.width:
+                break
+            self.line[x] = char
+            x += 2 if ai_benchmark._char_display_width(char) == 2 else 1
+
+
+class TestTuiWriteHelper(unittest.TestCase):
+    """Regression tests for stale characters and terminal-edge writes."""
+
+    def test_shorter_next_frame_cannot_leave_leading_or_trailing_characters(self):
+        window = _FakeWindow(12)
+
+        ai_benchmark._wr(window, 12, 1, 0, 0, "038s")
+        ai_benchmark._wr(window, 12, 1, 0, 0, "38s")
+
+        self.assertEqual("".join(window.line[:3]), "38s")
+        self.assertEqual("".join(window.line[3:]), " " * 9)
+        self.assertEqual(
+            [call[0] for call in window.calls],
+            ["move", "clrtoeol", "addstr", "move", "clrtoeol", "addstr"],
+        )
+
+    def test_wide_unicode_is_clipped_by_terminal_columns(self):
+        window = _FakeWindow(8)
+
+        ai_benchmark._wr(window, 8, 1, 0, 0, "🔄123456")
+
+        addstr = next(call for call in window.calls if call[0] == "addstr")
+        self.assertEqual(addstr[3], "🔄12345")
+        self.assertLessEqual(ai_benchmark._display_width(addstr[3]), 7)
+
+    def test_boundary_write_is_not_retried_after_curses_error(self):
+        class ErrorWindow(_FakeWindow):
+            def addstr(self, *args):
+                self.calls.append(("addstr", args))
+                raise ai_benchmark.curses.error("edge")
+
+        window = ErrorWindow(8)
+        ai_benchmark._wr(window, 8, 1, 0, 0, "1234567")
+
+        self.assertEqual(len([call for call in window.calls if call[0] == "addstr"]), 1)
+
+    def test_footer_redraw_clears_a_longer_previous_message(self):
+        window = _FakeWindow(60)
+
+        ai_benchmark._render_footer(window, 60, 1, [], [], 0)
+        ai_benchmark._render_footer(window, 60, 1, ["model"], [], 0)
+
+        rendered = "".join(window.line)
+        self.assertTrue(rendered.startswith(" 1 active"))
+        self.assertNotIn("All models complete", rendered)
+        self.assertEqual(rendered.rstrip(), " 1 active")
+
+
 class TestPluginCellBlock(unittest.TestCase):
     """The ``_plugin_cell_block`` helper produces a single 26-char cell per
     plugin, collapsing the existing 4-cell results layout to a bracket-

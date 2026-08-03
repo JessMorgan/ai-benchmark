@@ -18,6 +18,7 @@ import sys
 import threading
 import time
 import traceback
+import unicodedata
 from datetime import datetime
 
 from benchmark_core import (
@@ -94,17 +95,62 @@ def _inject_429_stats(run_info):
     return run_info
 
 
+def _char_display_width(char):
+    """Return the approximate terminal-column width of one character."""
+    if char in "\\r\\n" or unicodedata.combining(char):
+        return 0
+    if unicodedata.category(char) in {"Cc", "Cf"}:
+        return 0
+    return 2 if unicodedata.east_asian_width(char) in ("W", "F") else 1
+
+
+def _display_width(text):
+    """Return the terminal-column width of ``text`` without extra deps.
+
+    Python string length is not the same as terminal width: emoji and
+    East-Asian wide characters commonly occupy two columns, while combining
+    marks and joiner/control characters occupy none. TUI clipping must use
+    display columns or a line can wrap at the right edge and corrupt the
+    beginning of the next row.
+    """
+    return sum(_char_display_width(char) for char in text if char not in "\\r\\n")
+
+
+def _truncate_display_width(text, max_width):
+    """Return a prefix of ``text`` no wider than ``max_width`` columns."""
+    if max_width <= 0:
+        return ""
+    result = []
+    width = 0
+    for char in text:
+        if char in "\\r\\n":
+            break
+        char_width = _char_display_width(char)
+        if width + char_width > max_width:
+            break
+        result.append(char)
+        width += char_width
+    return "".join(result)
+
+
 def _wr(stdscr, max_x, max_y, y, x, text, attr=0):
-    """Write text to the curses screen, bounded by the terminal size."""
+    """Clear and safely write one bounded terminal row.
+
+    Keep one column unused at the right edge. Writing exactly through the
+    lower/right boundary can trigger curses' automatic wrap (or a
+    ``curses.error`` after a partial write), which leaves the virtual and
+    physical screens out of sync and produces leading characters on the next
+    frame. Do not retry a failed write at the current cursor position: a
+    failed boundary write may already have advanced that cursor.
+    """
     if not (0 <= y < max_y and 0 <= x < max_x):
         return
+    safe_text = _truncate_display_width(text, max_x - x - 1)
     try:
         stdscr.move(y, x)
         stdscr.clrtoeol()
-        try:
-            stdscr.addstr(y, x, text[:max_x - x], attr)
-        except curses.error:
-            stdscr.addstr(y, x, text[:max_x - x])
+        if safe_text:
+            stdscr.addstr(y, x, safe_text, attr)
     except curses.error:
         # Window too small or resized since getmaxyx(); skip this frame.
         pass
