@@ -19,6 +19,7 @@ import signal
 import subprocess
 import tarfile
 import tempfile
+import threading
 import time
 import urllib.request
 import zipfile
@@ -47,6 +48,33 @@ OPENCODE_INSTALL_SUBDIR = os.path.join(".tools", "opencode")
 # release was downloaded (best-effort; ``"latest"`` when the GitHub API
 # version lookup fails).
 OPENCODE_VERSION_MARKER = "version.txt"
+
+# ─── Loop guards / fast-fail ────────────────────────────────────────────────
+# OpenCode's agent loop has no internal liveness detection: once it emits a
+# step it waits for the provider's next response indefinitely, and a stalled
+# or looping task would otherwise burn the full benchmark timeout with zero
+# diagnostics. These guards terminate the subprocess early and surface an
+# actionable error instead. All three are data-backed from the
+# ``2026-08-02-more-tests-more-models-opencode`` run (healthy streams emit
+# ``step_start`` within seconds, never exceed 19 steps, and never repeat an
+# identical text event); each can be disabled per call by passing 0/None.
+
+# Kill the subprocess when NO bytes have arrived on stdout or stderr for this
+# many seconds. Catches silent hangs (provider never returns even a
+# ``step_start``) and mid-stream stalls (``step_start`` then silence, or a
+# tool round-trip whose follow-up request never returns).
+OPENCODE_NO_OUTPUT_GRACE = 120.0
+# Kill after this many completed agent steps (``step_finish`` events). Catches
+# reasoning/tool planning loops (e.g. 683 ``todowrite`` calls with zero final
+# text) long before the outer timeout.
+OPENCODE_MAX_STEPS = 50
+# Kill when the same non-trivial text event appears this many times. Catches
+# text-repetition loops (canned continuation strings cycled forever).
+OPENCODE_REPEAT_THRESHOLD = 5
+# Minimum length (chars) of a text event considered by the repetition guard,
+# so trivial acknowledgements cannot false-positive.
+OPENCODE_REPEAT_MIN_LEN = 20
+
 # ``opencode run --format`` accepts exactly ``default`` (formatted) or
 # ``json`` (NDJSON event stream).  The adapter uses ``json`` so the final
 # assistant answer can be extracted deterministically without ANSI/UI noise;
@@ -96,6 +124,7 @@ def validate_cli(binary: str = OPENCODE_BINARY, *, timeout: float = 10) -> None:
             "Installed OpenCode CLI does not advertise the 'json' run format "
             f"required for the {OPENCODE_RUN_FORMAT!r} output contract"
         )
+
 
 # ─── Local auto-install ──────────────────────────────────────────────────────
 
@@ -381,7 +410,6 @@ def resolve_opencode_binary(
     )
 
 
-
 @dataclass(frozen=True)
 class OpenCodeExtract:
     """Parsed content from one OpenCode NDJSON event stream.
@@ -665,7 +693,6 @@ def _extract_final_text(stdout: bytes) -> OpenCodeExtract:
     return OpenCodeExtract(stdout.decode("utf-8", errors="replace").strip(), "", None)
 
 
-
 def _terminate_process(process: subprocess.Popen[bytes]) -> None:
     """Terminate OpenCode and its process group where supported."""
     if process.poll() is not None:
@@ -692,6 +719,93 @@ def _terminate_process(process: subprocess.Popen[bytes]) -> None:
             pass
 
 
+class _StreamGuard:
+    """Incrementally count NDJSON events to enforce the loop guards.
+
+    Fed raw stdout chunks by the reader pump (single writer thread); the
+    main ``run_process`` loop reads :attr:`steps_exceeded` / :attr:`repeated`
+    after each poll tick. Keeps a partial-line buffer so event boundaries
+    that fall across chunk edges are handled correctly.
+
+    Deliberately lock-free: ``feed`` runs on exactly one writer thread while
+    the main loop only *reads* :attr:`steps_exceeded` / :attr:`repeated`, so
+    under the GIL the worst case is a stale read delayed by one 100 ms poll
+    tick — irrelevant for a kill guard. Do not add a lock here; it would
+    only add contention to the hot pump path.
+    """
+
+    __slots__ = ("step_limit", "repeat_threshold", "repeat_min_len",
+                 "_pending", "_text_counts", "step_count", "repeated")
+
+    def __init__(self, step_limit: int = 0, repeat_threshold: int = 0,
+                 repeat_min_len: int = 20) -> None:
+        self.step_limit = step_limit or 0
+        self.repeat_threshold = repeat_threshold or 0
+        self.repeat_min_len = repeat_min_len or 0
+        self._pending = b""
+        self._text_counts: dict[str, int] = {}
+        self.step_count = 0
+        self.repeated = False
+
+    @property
+    def steps_exceeded(self) -> bool:
+        return bool(self.step_limit) and self.step_count >= self.step_limit
+
+    def feed(self, chunk: bytes) -> None:
+        # Once a guard has tripped, stop counting: the main loop will kill
+        # the process within one poll tick and a looping stream can emit
+        # thousands more events before that happens.
+        if self.repeated or self.steps_exceeded:
+            return
+        self._pending += chunk
+        lines = self._pending.split(b"\n")
+        self._pending = lines.pop()
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                event = json.loads(line)
+            except ValueError:
+                continue
+            if not isinstance(event, dict):
+                continue
+            event_type = event.get("type")
+            if event_type == "step_finish":
+                self.step_count += 1
+            elif event_type == "text":
+                part = event.get("part")
+                text = part.get("text") if isinstance(part, dict) else None
+                if isinstance(text, str) and len(text.strip()) >= self.repeat_min_len:
+                    self._text_counts[text] = self._text_counts.get(text, 0) + 1
+                    if (self.repeat_threshold
+                            and self._text_counts[text] >= self.repeat_threshold):
+                        self.repeated = True
+
+
+def _pump_stream(stream: Any, sink: list[bytes], guard: _StreamGuard | None) -> None:
+    """Read ``stream`` to EOF, appending chunks to ``sink``.
+
+    Runs on a daemon thread so the child can emit megabytes of NDJSON without
+    deadlocking the main loop (``Popen.communicate`` would buffer everything
+    invisibly; the reader threads are the only way to see data as it flows).
+    ``guard``, when given, receives every chunk for incremental loop
+    detection. Reading blocks until data or EOF; the main loop terminates the
+    process on timeout/cancel, which closes the pipe and unblocks this thread.
+    """
+    try:
+        while True:
+            chunk = stream.read(65536)
+            if not chunk:
+                break
+            sink.append(chunk)
+            if guard is not None:
+                guard.feed(chunk)
+    except (OSError, ValueError):
+        # Pipe closed under us (process killed, fd closed) — nothing to do.
+        pass
+
+
 def run_process(
     prompt: str,
     *,
@@ -704,12 +818,34 @@ def run_process(
     target_key: str = "target",
     plugin_id: str = "plugin",
     stop_event: Any = None,
+    no_output_grace: float = OPENCODE_NO_OUTPUT_GRACE,
+    step_limit: int = OPENCODE_MAX_STEPS,
+    repeat_threshold: int = OPENCODE_REPEAT_THRESHOLD,
+    repeat_min_len: int = OPENCODE_REPEAT_MIN_LEN,
 ) -> OpenCodeProcessResult:
     """Run one isolated, plugin-free OpenCode task.
 
     ``--pure`` is deliberately part of every invocation rather than only a
     generated-config setting: it prevents user/project-installed OpenCode
     plugins from changing the benchmark's tools, prompts, or event stream.
+
+    Output is drained by daemon reader threads (``communicate`` would hide
+    it until exit). While the process runs, three loop guards abort it early
+    instead of burning the full ``timeout``:
+
+    * **Staleness fast-fail** (``no_output_grace``): no bytes on stdout or
+      stderr for that many seconds — catches silent hangs and mid-stream /
+      tool round-trip stalls where the provider never answers.
+    * **Step budget** (``step_limit``): too many completed ``step_finish``
+      events — catches reasoning/tool planning loops that never produce a
+      final answer.
+    * **Text repetition** (``repeat_threshold``/``repeat_min_len``): the same
+      non-trivial text event seen repeatedly — catches canned-continuation
+      loops.
+
+    All guards are disabled by passing 0/None. The process group is
+    terminated (and any partial stdout retained) on timeout, cancellation,
+    or a guard trip.
     """
     command = [
         binary, "run", OPENCODE_PURE_FLAG,
@@ -723,9 +859,6 @@ def run_process(
     env["OPENCODE_CONFIG"] = os.path.abspath(config_path)
     started = time.monotonic()
     process: subprocess.Popen[bytes] | None = None
-    stdout = b""
-    stderr = b""
-    error: str | None = None
     try:
         process = subprocess.Popen(
             command,
@@ -735,36 +868,81 @@ def run_process(
             env=env,
             start_new_session=(os.name == "posix"),
         )
-        deadline = started + max(0, float(timeout))
+    except OSError as exc:
+        return OpenCodeProcessResult("", "", time.monotonic() - started,
+                                    f"Could not start OpenCode: {type(exc).__name__}", None)
+
+    stdout_chunks: list[bytes] = []
+    stderr_chunks: list[bytes] = []
+    guard = _StreamGuard(step_limit=step_limit,
+                         repeat_threshold=repeat_threshold,
+                         repeat_min_len=repeat_min_len)
+    pumps: list[threading.Thread] = []
+    for stream, sink, with_guard in ((process.stdout, stdout_chunks, True),
+                                     (process.stderr, stderr_chunks, False)):
+        if stream is None:
+            continue
+        thread = threading.Thread(
+            target=_pump_stream,
+            args=(stream, sink, guard if with_guard else None),
+            daemon=True,
+        )
+        thread.start()
+        pumps.append(thread)
+
+    deadline = started + max(0, float(timeout))
+    last_data = started
+    prev_total = 0
+    error: str | None = None
+    try:
         while True:
-            remaining = deadline - time.monotonic()
             if stop_event is not None and stop_event.is_set():
                 _terminate_process(process)
                 error = "Cancelled"
                 break
-            if remaining <= 0:
+            if process.poll() is not None:
+                # Exited on its own — honor that over the deadline and guards.
+                break
+            if time.monotonic() >= deadline:
                 _terminate_process(process)
                 error = f"OpenCode timed out after {timeout}s"
                 break
-            try:
-                stdout, stderr = process.communicate(timeout=min(0.2, remaining))
+            total = sum(len(c) for c in stdout_chunks) + sum(len(c) for c in stderr_chunks)
+            if total > prev_total:
+                last_data = time.monotonic()
+                prev_total = total
+            if no_output_grace and time.monotonic() - last_data > no_output_grace:
+                _terminate_process(process)
+                error = (f"OpenCode produced no output within "
+                         f"{no_output_grace:g}s (possible provider/agent stall)")
                 break
-            except subprocess.TimeoutExpired:
-                continue
+            if guard.steps_exceeded:
+                _terminate_process(process)
+                error = (f"OpenCode reached {step_limit} agent steps without "
+                         "finishing (possible loop)")
+                break
+            if guard.repeated:
+                _terminate_process(process)
+                error = (f"OpenCode repeated the same text {repeat_threshold} "
+                         "times (possible loop)")
+                break
+            if stop_event is not None:
+                stop_event.wait(0.1)
+            else:
+                time.sleep(0.1)
+    finally:
         if process.poll() is None:
             _terminate_process(process)
-        if process.returncode is not None and (not stdout and not stderr):
-            try:
-                stdout, stderr = process.communicate(timeout=1)
-            except (subprocess.TimeoutExpired, ValueError):
-                pass
-        returncode = process.returncode
-    except OSError as exc:
-        return OpenCodeProcessResult("", "", time.monotonic() - started,
-                                    f"Could not start OpenCode: {type(exc).__name__}", None)
-    finally:
-        if process is not None and process.poll() is None:
-            _terminate_process(process)
+        try:
+            process.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            pass
+        for thread in pumps:
+            thread.join(timeout=2)
+
+    stdout = b"".join(stdout_chunks)
+    stderr = b"".join(stderr_chunks)
+    returncode = process.returncode
 
     extract = _extract_final_text(stdout)
     text = extract.text

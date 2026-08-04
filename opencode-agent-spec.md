@@ -296,6 +296,14 @@ Each subprocess is governed by the existing benchmark timeout policy. The implem
 - mark the result as failed/truncated with an actionable error rather than hanging the worker;
 - ensure generated config and process resources are closed even on timeout, cancellation, or worker exceptions.
 
+The subprocess additionally runs three loop guards against the live NDJSON stream so stalled/looping tasks fast-fail instead of burning the full timeout with zero diagnostics (all implemented; defaults data-backed from the `2026-08-02-more-tests-more-models-opencode` run):
+
+- **Staleness fast-fail** — kill when no bytes arrive on stdout or stderr for 120 s (`no_output_grace`). Catches silent hangs (0-byte streams) and mid-stream/tool round-trip stalls (`step_start` or `tool_use` followed by silence).
+- **Step budget** — kill after 50 `step_finish` events (`step_limit`). Catches reasoning/tool planning loops that never produce a final answer.
+- **Text-repetition guard** — kill when the same non-trivial text event (≥ 20 chars) appears 5× (`repeat_threshold`/`repeat_min_len`). Catches canned-continuation loops.
+
+Each guard is disabled by passing 0/None; a process that exits on its own is honored over the guards; partial stdout is retained in the result on any guard trip.
+
 OpenCode-specific process timing should be recorded separately from direct HTTP timing where possible. Do not claim direct-path TTFT or streaming metrics when OpenCode only supplies a final buffered response.
 
 ## 9. Scoring and result semantics
@@ -437,7 +445,7 @@ The `--dump-default-config` output should not add an OpenCode configuration bloc
 
 ## 14. Version-sensitive adapter assumptions
 
-The adapter uses the OpenCode contract available to the implementation: `OPENCODE_CONFIG` selects the retained generated config, `opencode run` performs a non-interactive invocation, `--pure` disables external plugins, `--model` selects the mapped provider/model, `--agent` selects generated agent context, and `--format json` supplies an NDJSON event stream from which final text is extracted for scoring. Operators should verify these flags against their installed OpenCode release when upgrading OpenCode; no automatic installation or upgrade is performed.
+The adapter uses the OpenCode contract available to the implementation: `OPENCODE_CONFIG` selects the retained generated config, `opencode run` performs a non-interactive invocation, `--pure` disables external plugins, `--model` selects the mapped provider/model, `--agent` selects generated agent context, `--format json` supplies an NDJSON event stream from which final text and `reasoning` events are extracted, and `--thinking` enables emission of those `reasoning` events so thinking content is preserved for scoring sidecars. Operators should verify these flags against their installed OpenCode release when upgrading OpenCode. When the installed CLI is missing or does not satisfy this contract, the benchmark automatically downloads the latest release into `.tools/opencode/` (unless `--no-install-opencode` is passed) and preflights that binary the same way; the resolved path is recorded in `run-info.json` so the exact binary used by a run is reproducible.
 
 The benchmark's source configuration is projected into OpenCode's OpenAI-compatible provider shape. HTTP-only controls such as direct streaming telemetry and 429 retry bookkeeping are not fabricated for subprocess results; OpenCode response time and estimated output tokens are recorded instead.
 

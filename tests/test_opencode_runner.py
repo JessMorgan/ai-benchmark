@@ -22,6 +22,7 @@ from opencode_runner import (
     OPENCODE_THINKING_FLAG,
     OpenCodeExtract,
     OpenCodeProcessResult,
+    _StreamGuard,
     _extract_final_text,
     _local_binary_path,
     _model_context_limit,
@@ -45,6 +46,7 @@ class TestOpenCodeMapping(unittest.TestCase):
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
         self.assertIs(module.opencode_model_name, opencode_model_name)
+        self.assertIs(module.resolve_opencode_binary, resolve_opencode_binary)
 
     def test_cli_accepts_no_install_opencode_flag(self):
         """--no-install-opencode must parse (and be ignorable with
@@ -159,17 +161,18 @@ def _text_event(text):
 
 
 class _FakeProcess:
+    """A process that has already exited (poll() != None) with full output."""
     def __init__(self, returncode=0, stdout=b"", stderr=b"diagnostic\n"):
         self.returncode = returncode
-        self._stdout = stdout
-        self._stderr = stderr
+        self.stdout = io.BytesIO(stdout)
+        self.stderr = io.BytesIO(stderr)
         self.pid = 1234
 
     def poll(self):
         return self.returncode
 
     def communicate(self, timeout=None):
-        return self._stdout, self._stderr
+        return self.stdout.getvalue(), self.stderr.getvalue()
 
     def wait(self, timeout=None):
         return self.returncode
@@ -180,6 +183,11 @@ class _FakeProcess:
     def kill(self):
         self.returncode = -9
 
+
+class _StallingFakeProcess(_FakeProcess):
+    """A process that never exits on its own (poll() -> None until killed)."""
+    def __init__(self, stdout=b"", stderr=b""):
+        super().__init__(returncode=None, stdout=stdout, stderr=stderr)
 
 
 class TestOpenCodeExtraction(unittest.TestCase):
@@ -545,6 +553,120 @@ class TestOpenCodeBinaryResolution(unittest.TestCase):
         expected = os.path.join(project, OPENCODE_INSTALL_SUBDIR, OPENCODE_BINARY)
         self.assertEqual(str(_local_binary_path()), expected)
 
+
+class TestOpenCodeLoopGuards(unittest.TestCase):
+    """Fast-fail and loop guards on the OpenCode subprocess."""
+
+    def _stall(self, stdout=b"", **run_kwargs):
+        fake = _StallingFakeProcess(stdout=stdout)
+        popen = mock.patch("opencode_runner.subprocess.Popen", return_value=fake)
+        term = mock.patch("opencode_runner._terminate_process")
+        popen.start()
+        term_mock = term.start()
+        self.addCleanup(popen.stop)
+        self.addCleanup(term.stop)
+        # Callers may supply their own short timeout; default to 30s otherwise.
+        run_kwargs.setdefault("timeout", 30)
+        result = run_process("prompt", config_path="/tmp/config.json",
+                             model="provider/model", **run_kwargs)
+        return result, fake, term_mock
+
+    def test_fast_fail_when_no_output_for_grace_period(self):
+        """A subprocess that emits nothing for the grace period is killed early."""
+        result, fake, term = self._stall(stdout=b"", no_output_grace=0.15)
+        self.assertIn("produced no output within", result.error)
+        self.assertTrue(term.called)
+
+    def test_steps_only_stream_is_killed_when_grace_elapses(self):
+        """step_start then silence (mid-stream stall) must also fast-fail."""
+        stream = _ndjson_event("step_start", part={"type": "step-start"})
+        result, fake, term = self._stall(stdout=stream, no_output_grace=0.15)
+        self.assertIn("produced no output within", result.error)
+
+    def test_step_budget_kills_planning_loop(self):
+        """A reasoning/tool planning loop (many steps, no final text) dies at the cap."""
+        stream = b"\n".join([
+            _ndjson_event("step_finish", part={"type": "step-finish"})
+            for _ in range(60)
+        ])
+        result, fake, term = self._stall(stdout=stream, step_limit=10)
+        self.assertIn("reached 10 agent steps", result.error)
+        self.assertTrue(term.called)
+
+    def test_text_repetition_kills_loop(self):
+        """The same non-trivial text event repeated past the threshold trips the guard."""
+        event = _text_event("Continue if you have next steps, or stop and ask for clarification.")
+        result, fake, term = self._stall(stdout=b"\n".join([event] * 7), repeat_threshold=5)
+        self.assertIn("repeated the same text 5 times", result.error)
+        self.assertTrue(term.called)
+
+    def test_repeat_guard_ignores_short_acknowledgements(self):
+        """Trivial short repeats below repeat_min_len must not false-positive."""
+        result, fake, term = self._stall(
+            stdout=b"\n".join([_text_event("Yes")] * 10),
+            timeout=0.3, repeat_threshold=3,
+        )
+        self.assertIn("timed out", result.error)
+        self.assertNotIn("loop", result.error)
+
+    def test_guards_can_be_disabled(self):
+        """All guards off: a silent process burns the outer timeout instead."""
+        result, fake, term = self._stall(
+            stdout=b"", timeout=0.3, no_output_grace=0, step_limit=0, repeat_threshold=0)
+        self.assertIn("timed out after 0.3s", result.error)
+        self.assertTrue(term.called)
+
+    def test_healthy_stream_outlives_grace_and_keeps_partial_output(self):
+        """Flowing content resets the staleness timer; on outer timeout the
+        streamed text is retained in the result."""
+        stream = b"\n".join([
+            _ndjson_event("step_start", part={"type": "step-start"}),
+            _text_event("A real answer with enough text to exceed the repeat-min length."),
+            _ndjson_event("step_finish", part={"type": "step-finish"}),
+        ])
+        result, fake, term = self._stall(stdout=stream, timeout=0.3, no_output_grace=5)
+        self.assertIn("timed out", result.error)
+        self.assertNotIn("loop", result.error)
+        self.assertNotIn("no output", result.error)
+        self.assertIn("real answer", result.text)
+
+    def test_guard_parses_events_split_across_chunk_boundaries(self):
+        """The incremental parser must handle a line that spans two feeds."""
+        guard = _StreamGuard(step_limit=2)
+        line = _ndjson_event("step_finish", part={"type": "step-finish"})
+        mid = len(line) // 2
+        guard.feed(line[:mid])
+        guard.feed(line[mid:] + b"\n")
+        guard.feed(line + b"\n")
+        self.assertEqual(guard.step_count, 2)
+        self.assertTrue(guard.steps_exceeded)
+
+    def test_guard_stops_counting_after_trip(self):
+        """Once a guard trips, feed() must not keep accumulating counts."""
+        guard = _StreamGuard(step_limit=2, repeat_threshold=3, repeat_min_len=5)
+        guard.feed(_text_event("aaaaaaaaaa") + b"\n")  # 1 repeat
+        guard.feed(_text_event("aaaaaaaaaa") + b"\n")  # 2 repeats
+        guard.feed(_text_event("aaaaaaaaaa") + b"\n")  # 3 repeats -> tripped
+        self.assertTrue(guard.repeated)
+        guard.feed(_text_event("aaaaaaaaaa") + b"\n")  # ignored
+        self.assertEqual(guard._text_counts["aaaaaaaaaa"], 3)
+
+    def test_natural_exit_wins_over_deadline_and_guards(self):
+        """A process that exits on its own must not be reported as a timeout
+        even when the deadline has already passed."""
+        stream = b"\n".join([
+            _text_event("A complete final answer that finishes the task."),
+        ])
+        fake = _FakeProcess(returncode=0, stdout=stream)
+        with mock.patch("opencode_runner.subprocess.Popen", return_value=fake):
+            result = run_process(
+                "prompt", config_path="/tmp/config.json",
+                model="provider/model", timeout=0,  # deadline already passed
+                no_output_grace=0, step_limit=0, repeat_threshold=0,
+                binary="opencode-test",
+            )
+        self.assertIsNone(result.error)
+        self.assertIn("complete final answer", result.text)
 
 
 class TestRunnerAwareExecution(unittest.TestCase):

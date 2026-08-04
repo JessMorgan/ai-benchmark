@@ -138,6 +138,8 @@ Startup preflight validates the OpenCode CLI before any work is scheduled: `open
 
 Each OpenCode task is invoked as `opencode run --pure --model <slugified-source>/<api_model> --format json --thinking <prompt>` (with `--agent` for agent targets). The adapter uses the `json` event-stream format (the only machine-readable choice; `plain` is not a valid value) and extracts the final assistant answer from the NDJSON `text` events (and `reasoning` events into the `think_text` sidecars), so the scored response is the model's final answer without TUI/ANSI noise. Generated configs set both `limit.context` (inferred from the model id's `-NNk`/`-NNm` suffix, e.g. `-128k`) and `limit.output` (from `token_levels`), because OpenCode rejects provider models whose `limit` omits `context`.
 
+OpenCode's agent loop has no internal liveness detection, so stalled/looping tasks would otherwise burn the full benchmark timeout silently. Each subprocess therefore runs three data-backed loop guards that kill it early with an actionable error (partial stdout retained): a **staleness fast-fail** (120 s with no output on stdout or stderr — silent hangs and mid-stream/tool round-trip stalls), a **step budget** (50 `step_finish` events — reasoning/tool planning loops), and a **text-repetition guard** (same non-trivial text event 5× — canned-continuation loops). All three can be disabled per call by passing 0/None.
+
 The OpenCode model mapping is deterministic: the source name is lowercased and strictly slugified, then joined with the resolved API model as `{slugified-source}/{api_model}`. Existing slashes in `api_model` are preserved.
 
 ### Discover models from an API

@@ -76,6 +76,14 @@ Each OpenCode task runs `opencode run --pure --model <mapped> --format json --th
 
 OpenCode has buffered final-output semantics in this adapter. Direct HTTP streaming metrics such as TTFT are not fabricated for OpenCode; its response time and estimated output-token count are recorded instead. Timeouts and cancellation terminate the subprocess group where supported.
 
+OpenCode's agent loop has no internal liveness detection: once it emits a step it waits for the provider's next response indefinitely, and a stalled or looping task would otherwise burn the full benchmark timeout with zero diagnostics. `run_process()` therefore runs three loop guards against the live NDJSON stream, each aborting the subprocess early with an actionable error (any partial stdout is retained):
+
+- **Staleness fast-fail** (`no_output_grace`, default 120 s): kills the process when no bytes arrive on stdout *or* stderr for that long. Catches silent hangs (the provider never answers the initial request — a 0-byte stream) and mid-stream/tool round-trip stalls (`step_start` or a `tool_use` event, then silence).
+- **Step budget** (`step_limit`, default 50): kills when `step_finish` events exceed the cap. Catches reasoning/tool planning loops that churn steps (e.g. hundreds of `todowrite` calls) without ever producing a final answer.
+- **Text-repetition** (`repeat_threshold` 5 / `repeat_min_len` 20): kills when the same non-trivial text event appears repeatedly. Catches canned-continuation loops (a short canned string fed back into the loop thousands of times).
+
+The defaults are data-backed from the `2026-08-02-more-tests-more-models-opencode` run: healthy streams emit `step_start` within seconds, never exceed 19 steps, and never repeat an identical text event. Each guard is disabled by passing 0/None, and a process that exits on its own is always honored over the guards.
+
 ## API Request Flow
 
 ```
