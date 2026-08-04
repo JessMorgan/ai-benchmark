@@ -21,6 +21,7 @@ def generate_shell_completion(shell, plugins):
         "--base-url",
         "--api-key",
         "--save-responses",
+        "--no-preload",
         "--runner",
     ]
     flag_list = " ".join(flags)
@@ -82,6 +83,7 @@ _arguments \\
     '--base-url[Base URL for model discovery via /v1/models API]:url:' \\
     '--api-key[API key for model discovery]:key:' \\
     '--save-responses[Save each model\'s plugin response text to <output_dir>/responses/]' \\
+    '--no-preload[Disable per-source model pre-loading for this run]' \\
     '--runner[Execution runner]:runner:(http opencode both)' \\
     '*:file:_files'
 
@@ -109,6 +111,7 @@ esac
             "complete -c ai-benchmark.py -l base-url -F -d 'Base URL for model discovery via /v1/models API'",
             "complete -c ai-benchmark.py -l api-key -F -d 'API key for model discovery'",
             "complete -c ai-benchmark.py -l save-responses -d 'Save each model\\'s plugin response text to <output_dir>/responses/'",
+            "complete -c ai-benchmark.py -l no-preload -d 'Disable per-source model pre-loading for this run'",
             "complete -c ai-benchmark.py -l runner -x -a 'http opencode both' -d 'Execution runner'",
         ]
         return "\n".join(lines) + "\n"

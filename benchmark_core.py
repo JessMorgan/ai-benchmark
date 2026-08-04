@@ -6,6 +6,7 @@ import threading
 import time
 import traceback
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+from dataclasses import dataclass
 from datetime import datetime
 
 import yaml
@@ -32,6 +33,71 @@ from benchmark_outputs import (  # noqa: F401
     sanitize_filename,
 )
 from benchmark_state import BenchmarkState  # noqa: F401
+
+
+PRELOAD_PROMPT = "Reply with the single word OK."
+PRELOAD_DEFAULT_TIMEOUT = 300
+
+
+@dataclass(frozen=True)
+class PreloadResult:
+    """Outcome of a model warm-up probe."""
+
+    success: bool
+    elapsed: float
+    error: str | None = None
+    text: str = ""
+
+
+def resolve_preload_timeout(source_config, source, default=PRELOAD_DEFAULT_TIMEOUT):
+    """Return a positive per-source preload timeout, or the default."""
+    cfg = source_config.get(source) or {}
+    value = cfg.get("preload_timeout", default) if isinstance(cfg, dict) else default
+    try:
+        value = int(value)
+    except (TypeError, ValueError):
+        return default
+    return value if value > 0 else default
+
+
+def preload_model(source_config, source, api_model, timeout,
+                  session_seed=0, stop_event=None, drop_params=None,
+                  log_path=None) -> PreloadResult:
+    """Warm one model with a small, non-scoring HTTP request.
+
+    The probe deliberately disables HTTP 429 retries: a source that cannot
+    answer the warm-up request should be reported immediately rather than
+    occupying its source worker during backoff. The caller owns the probe's
+    timing, so this elapsed time never enters a benchmark result's timers.
+    """
+    started = time.time()
+    cfg = source_config.get(source)
+    if not isinstance(cfg, dict):
+        return PreloadResult(False, round(time.time() - started, 1),
+                             f"Unknown source '{source}' — not in SOURCE_CONFIG")
+
+    probe_sources = dict(source_config)
+    probe_cfg = dict(cfg)
+    probe_cfg["max_429_retries"] = 0
+    probe_sources[source] = probe_cfg
+    response = nonstream_request(
+        probe_sources, timeout, api_model, source, PRELOAD_PROMPT, 16,
+        log_path=log_path,
+        log_label=f"Model preload ({source}/{api_model})",
+        session_seed=session_seed,
+        temperature=0.0,
+        drop_params=drop_params or [],
+        stop_event=stop_event,
+    )
+    error = response.error
+    if not error and not response.text.strip():
+        error = "empty preload response"
+    return PreloadResult(
+        success=not error,
+        elapsed=round(time.time() - started, 1),
+        error=error,
+        text=response.text,
+    )
 
 
 def count_tokens(text):
@@ -359,7 +425,9 @@ def dump_default_config():
                     "Authorization": "Bearer ${AI_SERVER_API_KEY:sk-your-key-here}",
                     "Content-Type": "application/json"
                 },
-                "plugin_thread_limit": 1
+                "plugin_thread_limit": 1,
+                "preload": False,
+                "preload_timeout": PRELOAD_DEFAULT_TIMEOUT
             },
             "Local Server 2": {
                 "api_url": "http://other.server:11434/chat/completions",
@@ -367,7 +435,9 @@ def dump_default_config():
                     "Authorization": "Bearer ${GAMING_PC_API_KEY:sk-your-key-here}",
                     "Content-Type": "application/json"
                 },
-                "plugin_thread_limit": 1
+                "plugin_thread_limit": 1,
+                "preload": False,
+                "preload_timeout": PRELOAD_DEFAULT_TIMEOUT
             },
             "Remote Provider 1": {
                 "api_url": "http://remote.provider:11434/chat/completions",
@@ -375,7 +445,9 @@ def dump_default_config():
                     "Authorization": "Bearer ${REMOTE_API_KEY:sk-your-key-here}",
                     "Content-Type": "application/json"
                 },
-                "plugin_thread_limit": 1
+                "plugin_thread_limit": 1,
+                "preload": False,
+                "preload_timeout": PRELOAD_DEFAULT_TIMEOUT
             }
         },
         "models": {

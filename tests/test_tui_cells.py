@@ -185,6 +185,18 @@ class TestTuiWriteHelper(unittest.TestCase):
         self.assertNotIn("All models complete", rendered)
         self.assertEqual(rendered.rstrip(), " 1 active")
 
+    def test_footer_shows_preloading_model_and_elapsed_seconds(self):
+        window = _FakeWindow(80)
+
+        ai_benchmark._render_footer(
+            window, 80, 1, [], ["model"], 0,
+            preloading_models=["model"],
+            preloading_details=[("model", 8.0)],
+        )
+
+        rendered = "".join(window.line)
+        self.assertIn("Preloading model 8s", rendered)
+
 
 class TestPluginCellBlock(unittest.TestCase):
     """The ``_plugin_cell_block`` helper produces a single 26-char cell per

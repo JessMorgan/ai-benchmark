@@ -33,6 +33,7 @@ python ai-benchmark.py [options]
 | `--retry-on-429` / `--no-retry-on-429` | Toggle HTTP-429 retry/backoff globally. Default is **ON**; pass `--no-retry-on-429` to opt out (sources with explicit `max_429_retries` are preserved). See [Configuration Reference](configuration.md#http-429-retry--backoff) for the per-source keys and migration notes. |
 | `--runner {http,opencode,both}` | Select the existing HTTP runner (default), the OpenCode CLI runner, or both. In `both`, each target pipelines OpenCode into HTTP. |
 | `--no-install-opencode` | Do not auto-download OpenCode into `.tools/opencode/` when it is missing or too old; fail with an error instead |
+| `--no-preload` | Disable per-source model warm-up probes for this run, overriding `preload: true` |
 | `-h, --help` | Show help message |
 
 ## Examples
@@ -110,6 +111,14 @@ python ai-benchmark.py --generate-shell-completion zsh > ~/.zsh/completions/_ai-
 
 # Fish
 python ai-benchmark.py --generate-shell-completion fish > ~/.config/fish/completions/ai-benchmark.py.fish
+```
+
+### Disable model preloading
+
+Sources can opt into a 300-second-by-default warm-up probe with `preload: true` and optionally override the limit with `preload_timeout`. Disable all configured probes for a run with:
+
+```sh
+python ai-benchmark.py --no-preload
 ```
 
 ### Select an execution runner

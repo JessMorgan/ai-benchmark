@@ -57,6 +57,18 @@ class TestCLIArgs(unittest.TestCase):
         for src_cfg in cfg["sources"].values():
             self.assertIn("plugin_thread_limit", src_cfg)
             self.assertEqual(src_cfg["plugin_thread_limit"], 1)
+            self.assertIn("preload", src_cfg)
+            self.assertFalse(src_cfg["preload"])
+            self.assertEqual(src_cfg["preload_timeout"], 300)
+
+    def test_help_and_completion_expose_no_preload(self):
+        result = subprocess.run(
+            [sys.executable, "ai-benchmark.py", "--help"],
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("--no-preload", result.stdout)
 
     def test_dump_default_config_has_per_plugin_temperatures(self):
         result = subprocess.run(

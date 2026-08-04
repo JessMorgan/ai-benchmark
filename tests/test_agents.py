@@ -141,6 +141,81 @@ class TestResolveTargets(unittest.TestCase):
         self.assertIsNone(targets["bool-model"]["token_levels"])
 
 
+class TestModelPreload(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.module = load_benchmark_module()
+
+    def test_resolve_preload_timeout_uses_configured_positive_value(self):
+        self.assertEqual(
+            self.module.resolve_preload_timeout(
+                {"Local": {"preload_timeout": 17}}, "Local"
+            ),
+            17,
+        )
+
+    def test_resolve_preload_timeout_defaults_for_invalid_values(self):
+        for value in (None, 0, -1, "not-a-number"):
+            with self.subTest(value=value):
+                self.assertEqual(
+                    self.module.resolve_preload_timeout(
+                        {"Local": {"preload_timeout": value}}, "Local"
+                    ),
+                    300,
+                )
+
+    def test_preload_model_uses_direct_nonstream_probe_without_429_retries(self):
+        response = NonStreamResult("OK", "", {}, 1.25, None, "stop")
+        with mock.patch.object(self.module, "nonstream_request", return_value=response) as request:
+            result = self.module.preload_model(
+                {"Local": {"api_url": "http://localhost/chat", "max_429_retries": 4}},
+                "Local",
+                "model-a",
+                timeout=23,
+                session_seed=9,
+                drop_params=["seed"],
+            )
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.text, "OK")
+        self.assertIsNone(result.error)
+        request.assert_called_once()
+        args, kwargs = request.call_args
+        self.assertEqual(args[1:6], (23, "model-a", "Local", "Reply with the single word OK.", 16))
+        self.assertEqual(kwargs["session_seed"], 9)
+        self.assertEqual(kwargs["drop_params"], ["seed"])
+        # The helper copies the source config so the caller's retry policy is
+        # not mutated while the one-shot probe disables 429 retries.
+        self.assertEqual(kwargs["stop_event"], None)
+        self.assertEqual(request.call_args.args[0]["Local"]["max_429_retries"], 0)
+
+    def test_preload_model_rejects_empty_response(self):
+        response = NonStreamResult("", "", {}, 0.2, None, "stop")
+        with mock.patch.object(self.module, "nonstream_request", return_value=response):
+            result = self.module.preload_model(
+                {"Local": {"api_url": "http://localhost/chat"}},
+                "Local", "model-a", timeout=3,
+            )
+        self.assertFalse(result.success)
+        self.assertEqual(result.error, "empty preload response")
+
+    def test_save_state_omits_session_only_preload_fields(self):
+        state = self.module.BenchmarkState({"model-a": "Local"}, ["rate-limiter"])
+        state.update(
+            "model-a", preloading=True, preload_start_ts=12.0,
+            preload_status="running", preload_time=3.0,
+            preload_error=None,
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, "state.json")
+            state.save_state(path)
+            with open(path, encoding="utf-8") as handle:
+                saved = json.load(handle)
+        self.assertNotIn("preloading", saved["model_info"]["model-a"])
+        self.assertNotIn("preload_start_ts", saved["model_info"]["model-a"])
+        self.assertNotIn("preload_status", saved["model_info"]["model-a"])
+
+
 class TestAgentMetadata(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

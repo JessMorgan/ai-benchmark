@@ -30,6 +30,9 @@ from benchmark_core import (
     get_target_plugins_blacklist,
     load_config,
     parse_plugin_temperatures,
+    PreloadResult,
+    preload_model,
+    resolve_preload_timeout,
     resolve_targets,
     run_model,
     _save_outputs,
@@ -297,7 +300,7 @@ def _fallback_tui_loop(state, stop_event, session_seed=None):
         snap = state.snapshot()
         active = sum(
             1 for s in snap.values()
-            if s.get("running_pids") or s["status"] == "queued"
+            if s.get("preloading") or s.get("running_pids") or s["status"] == "queued"
         )
         done = state.completed
         total = state.total
@@ -313,7 +316,10 @@ def _fallback_tui_loop(state, stop_event, session_seed=None):
             f"  |  HTTP: {http_threads}  |  429⏸ {sleeping_model_count}"
         ]
         for name, s in snap.items():
-            if s.get("running_pids"):
+            if s.get("preloading"):
+                elapsed = (time.monotonic() - s.get("preload_start_ts", 0)) if s.get("preload_start_ts") else 0
+                parts.append(f"  🔄 Preloading {name[:30]} {elapsed:.0f}s")
+            elif s.get("running_pids"):
                 elapsed = (time.monotonic() - s.get("attempt_start", 0)) if s.get("attempt_start") else 0
                 err = s.get("last_error", "")
                 msg = f"  {name[:30]} {elapsed:.0f}s"
@@ -646,7 +652,9 @@ def _format_model_row(name, s, display_idx, active_plugins, source_abbrevs,
     sv = s["status"]
     status_ch = {"pending": "\u23f3", "queued": "\u23f3",
                  "completed": "\u2705", "failed": "\u274c"}.get(sv, "?")
-    if sv == "running" or s.get("running_pids"):
+    if s.get("preloading"):
+        status_ch = "\U0001f504"
+    elif sv == "running" or s.get("running_pids"):
         status_ch = "\U0001f537"
 
     def fmt_val(v, fmt=".1f"):
@@ -838,7 +846,8 @@ def _build_live_indicators(s, active_plugins, *, now=None):
 
 
 def _render_live_activity(stdscr, max_x, max_y, snap, source_abbrevs, live_models,
-                          live_top, live_height, log_top, active_plugins, sleeping_lookup):
+                          live_top, live_height, log_top, active_plugins, sleeping_lookup,
+                          preloading_models=None):
     """Render running models + 429-sleeping plugins in the live area.
 
     ``sleeping_lookup`` maps ``(source, api_model, pid)`` to sleep info so
@@ -880,6 +889,16 @@ def _render_live_activity(stdscr, max_x, max_y, snap, source_abbrevs, live_model
         if err:
             msg += f"  {err}"
         _wr(stdscr, max_x, max_y, live_row, 0, msg)
+        live_row += 1
+
+    for nm in (preloading_models or []):
+        if live_row >= log_top:
+            break
+        s = snap.get(nm) or {}
+        src_ab = _source_abbr(source_abbrevs, s.get("source"))
+        elapsed = int(max(0, time.monotonic() - (s.get("preload_start_ts") or time.monotonic())))
+        _wr(stdscr, max_x, max_y, live_row, 0,
+            f" 🔄 [{src_ab}] Preloading model {nm[:36]} {elapsed}s")
         live_row += 1
 
     if sleeping_lookup and live_row + 1 < log_top:
@@ -927,15 +946,34 @@ def _render_recent_errors(stdscr, max_x, max_y, state, log_top, footer_line):
             pass
 
 
-def _render_footer(stdscr, max_x, max_y, live_models, queuing, footer_line):
-    """Render the bottom status line."""
-    if not live_models and not queuing:
+def _render_footer(stdscr, max_x, max_y, live_models, queuing, footer_line,
+                   preloading_models=None, preloading_details=None):
+    """Render the bottom status line, including active preload probes.
+
+    ``preloading_details`` is an optional sequence of ``(name, seconds)``
+    pairs. Keeping it separate from ``preloading_models`` preserves the
+    small helper API used by older callers while allowing the curses footer
+    to show the requested ``Preloading model Ns`` status instead of only a
+    count.
+    """
+    preloading_models = preloading_models or []
+    preloading_details = preloading_details or []
+    if not live_models and not queuing and not preloading_models:
         msg = " All models complete — generating outputs..."
     else:
-        q = f"{len(queuing)} queued" if queuing else ""
-        a = f"{len(live_models)} active" if live_models else ""
-        sep2 = "  |  " if q and a else ""
-        msg = f" {a}{sep2}{q}"
+        parts = []
+        if live_models:
+            parts.append(f"{len(live_models)} active")
+        if preloading_details:
+            parts.extend(
+                f"Preloading {name[:30]} {seconds:.0f}s"
+                for name, seconds in preloading_details
+            )
+        elif preloading_models:
+            parts.append(f"{len(preloading_models)} preloading")
+        if queuing:
+            parts.append(f"{len(queuing)} queued")
+        msg = " " + "  |  ".join(parts)
     _wr(stdscr, max_x, max_y, footer_line, 0, msg)
 
 
@@ -1008,8 +1046,9 @@ def tui_main(state, stop_event, num_sources, active_plugins, session_seed=None):
                 # from outer callers (e.g. ``status="completed"`` set after
                 # the last plugin finishes).
                 running = [n for n, s in snap.items() if s.get("running_pids")]
-                queued = [n for n, s in snap.items() if s["status"] == "queued"]
-                pending = [n for n, s in snap.items() if s["status"] == "pending"]
+                preloading = [n for n, s in snap.items() if s.get("preloading")]
+                queued = [n for n, s in snap.items() if s["status"] == "queued" and not s.get("preloading")]
+                pending = [n for n, s in snap.items() if s["status"] == "pending" and not s.get("preloading")]
 
                 FOOTER_LINE = max_y - 1
                 MAX_LOG_ROWS = 3
@@ -1056,13 +1095,26 @@ def tui_main(state, stop_event, num_sources, active_plugins, session_seed=None):
 
                 _render_live_activity(
                     stdscr, max_x, max_y, snap, source_abbrevs, running,
-                    LIVE_TOP, LIVE_HEIGHT, LOG_TOP, active_plugins, sleeping_lookup
+                    LIVE_TOP, LIVE_HEIGHT, LOG_TOP, active_plugins, sleeping_lookup,
+                    preloading_models=preloading,
                 )
 
                 _render_recent_errors(stdscr, max_x, max_y, state, LOG_TOP, FOOTER_LINE)
 
                 queuing = queued + pending
-                _render_footer(stdscr, max_x, max_y, running, queuing, FOOTER_LINE)
+                preload_details = [
+                    (
+                        name,
+                        max(0.0, time.monotonic() - (snap[name].get("preload_start_ts") or time.monotonic())),
+                    )
+                    for name in preloading
+                    if name in snap
+                ]
+                _render_footer(
+                    stdscr, max_x, max_y, running, queuing, FOOTER_LINE,
+                    preloading_models=preloading,
+                    preloading_details=preload_details,
+                )
 
                 stdscr.refresh()
             except Exception:
@@ -1110,15 +1162,16 @@ def _start_runner_pipeline(targets_by_source, opencode_pending, http_pending,
         for target_name in target_names:
             if stop_event.is_set():
                 break
+            skip_target = False
             if target_name in opencode_pending.get(source, []):
                 try:
-                    run_target(target_name, "opencode")
+                    skip_target = run_target(target_name, "opencode") is False
                 except Exception as exc:
                     # An OpenCode failure must not prevent the independent HTTP
                     # comparison for this target from being attempted.
                     on_error(target_name, "opencode", exc)
-            if stop_event.is_set():
-                break
+            if stop_event.is_set() or skip_target:
+                continue
             if target_name in http_pending.get(source, set()):
                 try:
                     run_target(target_name, "http")
@@ -1249,6 +1302,8 @@ def main():
                         help='Execution runner: http (default), opencode, or both (per-target OpenCode-to-HTTP pipeline)')
     parser.add_argument('--no-install-opencode', action='store_true',
                         help='Do not auto-download OpenCode into .tools/opencode/ when it is missing or too old; fail with an error instead')
+    parser.add_argument('--no-preload', action='store_true',
+                        help='Disable per-source model pre-loading for this run')
     args = parser.parse_args()
 
     if args.list_plugins:
@@ -1444,6 +1499,17 @@ def main():
         "opencode_projection": opencode_projection,
         "opencode_binary": opencode_binary,
         "targets": list(targets.keys()),
+        "preload": {
+            "enabled_sources": [
+                name for name, src_cfg in source_config.items()
+                if not args.no_preload and isinstance(src_cfg, dict) and src_cfg.get("preload", False)
+            ],
+            "attempted": 0,
+            "succeeded": 0,
+            "failed": 0,
+            "total_preload_time": 0.0,
+            "per_model": {},
+        },
     }
 
     try:
@@ -1559,9 +1625,158 @@ def main():
 
         errors_lock = threading.Lock()
         persistence_lock = threading.Lock()
+        preload_lock = threading.Lock()
+        preloaded_ok = set()
+        preload_failed = set()
         raw_targets = {}
         raw_targets.update(cfg.get("models", {}))
         raw_targets.update(cfg.get("agents", {}))
+
+        def _preload_is_enabled(source):
+            src_cfg = source_config.get(source) or {}
+            return (not args.no_preload and isinstance(src_cfg, dict)
+                    and bool(src_cfg.get("preload", False)))
+
+        def _set_preloading(target_name, target_info, enabled):
+            """Mark both runner rows for a target as warming, when present."""
+            keys = [target_name]
+            if runner_mode == "both":
+                keys.append(f"{target_name} [opencode]")
+            now = time.monotonic() if enabled else 0
+            snapshot = state.snapshot()
+            for key in keys:
+                # A completed leg must remain completed on resume. The shared
+                # probe can still warm the model for pending legs, but it
+                # must not turn an already-finished runner back into queued
+                # work or overwrite its report state.
+                if key in snapshot and snapshot[key].get("status") != "completed":
+                    state.update(
+                        key,
+                        status="queued" if enabled else snapshot[key].get("status", "pending"),
+                        preloading=enabled,
+                        preload_start_ts=now,
+                    )
+
+        def _record_preload_failure(model_name, target_info, result, phase_runner):
+            """Record a failed warm-up for the pending runner leg(s)."""
+            error = f"preload failed: {result.error or 'empty preload response'}"
+            source = target_info["source"]
+            if runner_mode == "both" and phase_runner == "opencode":
+                keys = [model_name, f"{model_name} [opencode]"]
+            elif phase_runner == "opencode":
+                keys = [f"{model_name} [opencode]"]
+            else:
+                keys = [model_name]
+            snapshot = state.snapshot()
+            for key in keys:
+                info = snapshot.get(key)
+                if info is None or info.get("status") == "completed":
+                    continue
+                runner = "opencode" if key.endswith(" [opencode]") else "http"
+                state.add_result({
+                    "model": model_name,
+                    "state_key": key,
+                    "api_model": target_info["api_model"],
+                    "source": source,
+                    "runner": runner,
+                    "opencode_model": None,
+                    "is_agent": target_info["is_agent"],
+                    "system_prompt": target_info["system_prompt"],
+                    "status": "error",
+                    "stream_ok": False,
+                    "ttft": None,
+                    "total_time": 0.0,
+                    "error": error,
+                    "preload_time": result.elapsed,
+                    "preload_error": result.error or "empty preload response",
+                    "plugin_versions": plugin_versions,
+                })
+                state.update(
+                    key,
+                    status="failed",
+                    error=error,
+                    last_error=error,
+                    elapsed=0.0,
+                    preloading=False,
+                    preload_start_ts=0,
+                    preload_status="failed",
+                    preload_time=result.elapsed,
+                    preload_error=result.error or "empty preload response",
+                )
+                state.log(key, error)
+
+        def _ensure_preloaded(model_name, target_info, phase_runner):
+            """Warm a target once per source/model for this process."""
+            if not _preload_is_enabled(target_info["source"]):
+                return True
+            key = (target_info["source"], target_info["api_model"])
+            with preload_lock:
+                if key in preloaded_ok:
+                    return True
+                if key in preload_failed:
+                    return False
+                _set_preloading(model_name, target_info, True)
+                run_info["preload"]["attempted"] += 1
+                run_info["preload"]["per_model"][f"{key[0]}/{key[1]}"] = {
+                    "status": "running",
+                    "timeout": resolve_preload_timeout(source_config, target_info["source"]),
+                }
+            started = time.time()
+            timeout_limit = resolve_preload_timeout(source_config, target_info["source"])
+            raw_cfg = raw_targets.get(model_name)
+            drop_params = raw_cfg.get("drop_params", []) if isinstance(raw_cfg, dict) else []
+            log_path = None
+            if args.save_responses:
+                preload_logs = os.path.join(output_dir, "logs")
+                os.makedirs(preload_logs, exist_ok=True)
+                log_path = os.path.join(preload_logs, "preload.log")
+            try:
+                result = preload_model(
+                    source_config,
+                    target_info["source"],
+                    target_info["api_model"],
+                    timeout_limit,
+                    session_seed=session_seed,
+                    stop_event=stop_event,
+                    drop_params=drop_params,
+                    log_path=log_path,
+                )
+            except Exception as exc:
+                # A malformed response or unexpected transport exception is
+                # still a preload failure: record it on the model rows and
+                # advance the source worker instead of treating it as an
+                # unstructured worker crash.
+                result = PreloadResult(
+                    success=False,
+                    elapsed=round(time.time() - started, 1),
+                    error=f"{type(exc).__name__}: {exc}",
+                )
+            # The result's elapsed value is authoritative, but include the
+            # local measurement as a fallback for mocked/custom probes.
+            elapsed = result.elapsed if result.elapsed is not None else round(time.time() - started, 1)
+            model_key = f"{key[0]}/{key[1]}"
+            with preload_lock:
+                run_info["preload"]["total_preload_time"] += elapsed
+                run_info["preload"]["per_model"][model_key] = {
+                    "status": "ok" if result.success else "failed",
+                    "timeout": timeout_limit,
+                    "time": elapsed,
+                }
+                if result.success:
+                    preloaded_ok.add(key)
+                    run_info["preload"]["succeeded"] += 1
+                    for state_key in (model_name, f"{model_name} [opencode]") if runner_mode == "both" else (model_name,):
+                        if state_key in state.snapshot():
+                            state.update(
+                                state_key, preloading=False, preload_start_ts=0,
+                                preload_status="ok", preload_time=elapsed,
+                                preload_error=None,
+                            )
+                    return True
+                preload_failed.add(key)
+                run_info["preload"]["failed"] += 1
+                _record_preload_failure(model_name, target_info, result, phase_runner)
+                return False
 
         def run_target(model_name, phase_runner):
             """Run one target through one runner and persist its progress."""
@@ -1569,6 +1784,11 @@ def main():
             model_blacklist = get_target_plugins_blacklist(raw_targets, model_name)
             model_active_plugins = [p for p in active_plugins if p.id not in model_blacklist]
             target_info = targets[model_name]
+            if not _ensure_preloaded(model_name, target_info, phase_runner):
+                with persistence_lock:
+                    state.save_state(state_file, plugin_versions=plugin_versions)
+                    _save_outputs(state, output_dir, active_plugins)
+                return False
             state_key = model_name if phase_runner == "http" else f"{model_name} [opencode]"
             phase_output_dir = http_output_dir if phase_runner == "http" else opencode_output_dir
             mapped = None

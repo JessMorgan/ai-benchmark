@@ -34,6 +34,8 @@ python3 -m py_compile ai-benchmark.py benchmark_core.py benchmark_http.py benchm
   See `benchmark_http._post_request_context` for the retry math.
 - `--no-rerun-failed` — keep `failed` models on resume; default re-runs them.
 - `--restart` — discard prior state and start every model fresh.
+- `--no-preload` — override per-source `preload: true` and skip model warm-up
+  probes for the run; `preload_timeout` defaults to 300 seconds per source.
 - `--save-responses` — write per-(model, plugin) response files plus
   `meta.json` with rubric breakdown + `error`/`traceback` on crash.
 - `--plugin-temperature ID=VAL` — overrides the matching `_<id>_temperature`

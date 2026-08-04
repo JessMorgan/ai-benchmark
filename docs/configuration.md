@@ -11,6 +11,8 @@ All benchmark configuration lives in a single file (default: `benchmark-config.j
 | `token_levels` | list[int] | `[16384]` | Max-token limits tried in ascending order |
 | `model_token_levels` | object | `{}` | Per-target max-token overrides; keys are target names or `"{source}/{api_model}"` |
 | `plugin_thread_limit` | integer | `1` | Top-level fallback for `sources.*.plugin_thread_limit` |
+| `preload` | boolean | `false` | Per-source model warm-up is opt-in; use `--no-preload` to disable all preload probes for a run |
+| `preload_timeout` | integer | `300` | Maximum seconds for a source's warm-up probe; independent of the benchmark request `timeout` |
 | `plugins_whitelist` | list[string] | `[]` | Run only these plugin IDs (empty = all) |
 | `plugins_blacklist` | list[string] | `[]` | Skip these plugin IDs (empty = none) |
 | `sources` | object | required | Named API endpoint definitions |
@@ -39,6 +41,22 @@ Each entry under `sources` defines an API endpoint. The key is the source name u
 ### Per-Source Plugin Concurrency
 
 Each source can define `plugin_thread_limit` to control how many plugins run concurrently for models against that source. The top-level `plugin_thread_limit` is used as a fallback for sources that do not define their own value. The CLI `--plugin-thread-limit` overrides all sources.
+
+### Model Preloading
+
+Model preloading is opt-in per source. When enabled, the benchmark sends one direct, non-streaming probe before a source reaches a model's first benchmark leg. The probe uses `Reply with the single word OK.`, a small output budget, and does not contribute to test response times, TTFT, TPS, or `total_time`. A successful probe warms the backend so the real leg does not pay cold-load latency. If the probe fails or returns empty content, both runner legs for that model are recorded as failed with a preload error and the source advances to its next model.
+
+```yaml
+sources:
+  Gaming PC:
+    api_url: http://gaming.pc:11434/chat/completions
+    preload: true
+    preload_timeout: 300   # seconds; defaults to 300
+```
+
+`preload_timeout` is independent of the normal benchmark `timeout` and must be positive. Invalid or non-positive values use the 300-second default. The probe is one-shot and disables HTTP 429 retries so an unavailable model is classified promptly. Preload is performed once per `(source, api_model)` per process; in `--runner both`, the HTTP leg reuses the model warmed before OpenCode.
+
+Pass `--no-preload` to disable all source preload settings for a run. Preload status and timing are shown in the TUI and summarized under `preload` in `run-info.json`.
 
 ### HTTP 429 Retry / Backoff
 

@@ -47,6 +47,14 @@ class BenchmarkState:
                 "attempt_start": 0,
                 "last_error": "",
                 "phase_detail": "",
+                # Model warm-up state. These fields are intentionally
+                # session-scoped; preload outcomes are summarized in
+                # run-info.json and failed legs are represented in results.
+                "preloading": False,
+                "preload_start_ts": 0,
+                "preload_status": None,
+                "preload_time": None,
+                "preload_error": None,
                 # In-flight plugin task ids; canonical source-of-truth for the
                 # live TUI's "[streaming]"/"[requested]" bracket cells
                 # (pre-first-tok and post-first-tok transient share the same
@@ -345,8 +353,23 @@ class BenchmarkState:
 
     def save_state(self, path, plugin_versions=None):
         with self._lock:
+            # Preload indicators are session-only. Copy model info while
+            # holding the lock, then omit the transient probe fields so a
+            # resumed process cannot display stale activity or treat an old
+            # warm-up as evidence that the backend is still warm.
+            transient_preload_fields = {
+                "preloading", "preload_start_ts", "preload_status",
+                "preload_time", "preload_error",
+            }
+            persisted_model_info = {
+                name: {
+                    key: value for key, value in info.items()
+                    if key not in transient_preload_fields
+                }
+                for name, info in self._model_info.items()
+            }
             data = {
-                "model_info": self._model_info,
+                "model_info": persisted_model_info,
                 "results": self.results,
                 "active_plugins": self.plugin_ids,
                 "plugin_versions": plugin_versions or {},
@@ -415,6 +438,18 @@ class BenchmarkState:
                 # This keeps backward compatibility with older state files that
                 # may be missing newer keys (e.g. phase_detail, attempt).
                 state._model_info[name].update(info)
+                # Preload indicators are deliberately session-only. A saved
+                # state may have been written while a probe was in progress or
+                # immediately after one finished, but a resumed process must
+                # never display stale preload activity or reuse its outcome as
+                # proof that the backend is warm.
+                state._model_info[name].update({
+                    "preloading": False,
+                    "preload_start_ts": 0,
+                    "preload_status": None,
+                    "preload_time": None,
+                    "preload_error": None,
+                })
                 if new_plugins:
                     for pid in new_plugins:
                         state._model_info[name].setdefault(f"{pid}_score", None)
