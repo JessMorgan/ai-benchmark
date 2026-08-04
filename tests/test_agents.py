@@ -85,6 +85,61 @@ class TestResolveTargets(unittest.TestCase):
         with self.assertRaises(ValueError):
             resolve_targets(cfg)
 
+    def test_resolve_targets_per_model_token_levels(self):
+        """Per-target token_levels resolve from (1) the model dict entry,
+        (2) the top-level model_token_levels map keyed by target name, and
+        (3) the map keyed by "{source}/{api_model}" — in that precedence."""
+        cfg = {
+            "models": {
+                "inline-model": {"source": "S1", "token_levels": [32768]},
+                "by-name": "S2",
+                "by-source-model": "S1",
+                "plain": "S2",
+            },
+            "model_token_levels": {
+                "by-name": [65536],
+                "S1/by-source-model": [4096],
+            },
+        }
+        targets = resolve_targets(cfg)
+        self.assertEqual(targets["inline-model"]["token_levels"], [32768])
+        self.assertEqual(targets["by-name"]["token_levels"], [65536])
+        self.assertEqual(targets["by-source-model"]["token_levels"], [4096])
+        self.assertIsNone(targets["plain"]["token_levels"])
+
+    def test_resolve_targets_agent_token_levels(self):
+        """Agents accept the same per-target token_levels override."""
+        cfg = {
+            "agents": {
+                "agent-a": {
+                    "model": "gpt-4",
+                    "source": "OpenAI",
+                    "system_prompt": "You are a coder.",
+                    "token_levels": [16384],
+                }
+            }
+        }
+        targets = resolve_targets(cfg)
+        self.assertEqual(targets["agent-a"]["token_levels"], [16384])
+
+    def test_resolve_targets_token_levels_normalizes_and_rejects_garbage(self):
+        """A scalar int is coerced to a one-element list; a string or empty
+        list is treated as unset rather than crashing or splintering into
+        per-character levels."""
+        cfg = {
+            "models": {
+                "scalar-model": {"source": "S1", "token_levels": 32768},
+                "bad-model": {"source": "S1", "token_levels": "32768"},
+                "empty-model": {"source": "S1", "token_levels": []},
+                "bool-model": {"source": "S1", "token_levels": True},
+            }
+        }
+        targets = resolve_targets(cfg)
+        self.assertEqual(targets["scalar-model"]["token_levels"], [32768])
+        self.assertIsNone(targets["bad-model"]["token_levels"])
+        self.assertIsNone(targets["empty-model"]["token_levels"])
+        self.assertIsNone(targets["bool-model"]["token_levels"])
+
 
 class TestAgentMetadata(unittest.TestCase):
     @classmethod

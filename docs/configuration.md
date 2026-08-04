@@ -9,6 +9,7 @@ All benchmark configuration lives in a single file (default: `benchmark-config.j
 | `output_dir` | string | `benchmark-results` | Directory for reports, logs, and state |
 | `timeout` | integer | `600` | API request timeout in seconds |
 | `token_levels` | list[int] | `[16384]` | Max-token limits tried in ascending order |
+| `model_token_levels` | object | `{}` | Per-target max-token overrides; keys are target names or `"{source}/{api_model}"` |
 | `plugin_thread_limit` | integer | `1` | Top-level fallback for `sources.*.plugin_thread_limit` |
 | `plugins_whitelist` | list[string] | `[]` | Run only these plugin IDs (empty = all) |
 | `plugins_blacklist` | list[string] | `[]` | Skip these plugin IDs (empty = none) |
@@ -95,6 +96,50 @@ The value is the source name from the `sources` section.
 |---|---|---|
 | `source` | string | Source name from `sources` |
 | `drop_params` | list[string] | Request body keys to omit for this model |
+| `token_levels` | list[int] | (optional) Per-model max-token limits, beat the global `token_levels` |
+
+## Per-Model Token Levels
+
+Thinking-capable models (deepseek-r1/qwen/o1-class) can consume their entire `max_tokens` budget inside `reasoning_content` before a single content token lands, yielding an empty response that scores 0 (see `empty-content-investigation.md`). Give those models a larger budget with a per-target override:
+
+```json
+"models": {
+  "qwen3.5:9b-32k": {
+    "source": "Gaming PC",
+    "token_levels": [32768]
+  }
+}
+```
+
+Or keep the `models` map simple and use the top-level `model_token_levels` map, keyed by target name or `"{source}/{api_model}"`:
+
+```json
+{
+  "model_token_levels": {
+    "qwen3.5:9b-32k": [32768],
+    "Gaming PC/deepseek-v4-flash-free": [32768]
+  }
+}
+```
+
+Precedence: per-target `token_levels` inside the model/agent entry > `model_token_levels` map (matched by target name, then `{source}/{api_model}`) > global `token_levels` / `--token-levels`. The same budget is applied to the target's OpenCode legs via the generated config's `limit.output`.
+
+## Automatic Thinking-Truncation Escalation
+
+Even without per-model config, the benchmark **auto-retries** once when a streaming HTTP plugin produces an empty response classified as `thinking-truncation` (empty content + large `reasoning_content` + `finish_reason="length"` — the budget was consumed by thinking).
+
+The retry uses a doubled `max_tokens` budget, capped at 131072:
+
+| First attempt | Auto-retry |
+|---|---|
+| 16384 (default) | 32768 |
+| 32768 | 65536 |
+| 65536 | 131072 |
+| 131072+ | No retry (already at cap) |
+
+This catches deepseek/qwen/o1-class models whose thinking phase exceeds the default budget without requiring any config changes. The retry result replaces the truncated one and is re-classified (may still be `thinking-truncation` if even the doubled budget is insufficient, but that's now a correctly diagnosed silent 0 rather than a silent 0).
+
+The auto-escalation is **cheap**: it applies at most once per leg, only for HTTP streaming plugins, and only when the response was genuinely empty. It does not apply to non-streaming plugins (which have their own truncation retry loop) or to OpenCode legs.
 
 ## Agents
 
@@ -232,4 +277,5 @@ If a key appears in both `models` and `agents`, the benchmark exits with an erro
 ## Notes
 
 - `token_levels` are tried in order. If a response is truncated, the next level is used.
+- Empty responses are classified (`empty_reason` in `meta.json`, `{pid}_Empty_Reason` in `results.csv`, and a `Reason` column in `results.html`/`results.md`): `error`, `thinking-truncation` (budget consumed by reasoning — auto-retried with doubled budget), `thinking-only`, `max-tokens`, or `empty`.
 - `plugin_thread_limit` controls how many plugins run concurrently for each model against a given source. Set to `1` for sequential execution or `0` for maximum parallelism. Define it per-source or as a top-level fallback.

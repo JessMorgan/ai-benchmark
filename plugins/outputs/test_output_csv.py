@@ -73,3 +73,21 @@ class TestCSVOutputPlugin(unittest.TestCase):
         self.assertIn("partial-model", csv_text)
         self.assertIn("fail", csv_text)
         self.assertIn("10.0", csv_text)
+
+    def test_gen_csv_includes_empty_reason_column(self):
+        """The CSV exposes the empty-response classification column; rows
+        without a classification render blank."""
+        results = [dict(self.sample_results[0])]
+        results[0]["rate-limiter_empty_reason"] = "thinking-truncation"
+        csv_text = self.plugin.generate(results, self.plugins)
+        self.assertIn("rate-limiter_Empty_Reason", csv_text)
+        self.assertIn("thinking-truncation", csv_text)
+
+    def test_gen_csv_empty_reason_blank_when_unset(self):
+        csv_text = self.plugin.generate(self.sample_results, self.plugins)
+        rows = [line.split(",") for line in csv_text.strip().splitlines()]
+        headers = rows[0]
+        self.assertIn("rate-limiter_Empty_Reason", headers)
+        idx = headers.index("rate-limiter_Empty_Reason")
+        for row in rows[1:]:
+            self.assertEqual(row[idx], "")

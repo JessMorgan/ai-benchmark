@@ -89,6 +89,48 @@ OPENCODE_PURE_FLAG = "--pure"
 # step events only and thinking-capable models' reasoning is silently lost.
 OPENCODE_THINKING_FLAG = "--thinking"
 
+# ─── Neutral agent for plain model targets ──────────────────────────────────
+# OpenCode injects its built-in default (Build) agent system prompt — which
+# includes "answer concisely with fewer than 4 lines" and exposes every tool
+# (webfetch, task, todowrite, ...) — whenever a run does not select a custom
+# agent. That prompt is toxic for small function-calling-tuned models (the
+# vibethinker family): they fixate on emitting tool-call dicts instead of
+# producing the benchmark deliverable, and the "concisely" instruction
+# contradicts benchmark prompts that demand full structured output.
+#
+# Plain model targets (``is_agent=False``) therefore register a neutral agent
+# whose system prompt contains no conciseness instruction and whose
+# permission map denies every tool key, so the model sees no tool definitions
+# at all and simply answers the plugin prompt — the same contract the HTTP
+# runner provides. Agent personas keep their own custom system prompts.
+OPENCODE_NEUTRAL_AGENT_PROMPT = (
+    "You are an AI assistant completing a written benchmark task. Read the "
+    "user's request carefully and produce the complete, detailed deliverable "
+    "it asks for. Do not truncate or summarize your response."
+)
+# Every permission key gates a tool family OpenCode could expose (read, edit,
+# glob, grep, list, bash, task, external_directory, todowrite, question,
+# webfetch, websearch, lsp, doom_loop, skill). Denying all of them removes
+# every tool definition from the model's prompt, which is exactly what
+# prevents tool-fixation loops on small function-calling-tuned models.
+OPENCODE_NEUTRAL_AGENT_PERMISSION: dict[str, str] = {
+    "read": "deny",
+    "edit": "deny",
+    "glob": "deny",
+    "grep": "deny",
+    "list": "deny",
+    "bash": "deny",
+    "task": "deny",
+    "external_directory": "deny",
+    "todowrite": "deny",
+    "question": "deny",
+    "webfetch": "deny",
+    "websearch": "deny",
+    "lsp": "deny",
+    "doom_loop": "deny",
+    "skill": "deny",
+}
+
 
 def validate_cli(binary: str = OPENCODE_BINARY, *, timeout: float = 10) -> None:
     """Validate the minimum non-interactive CLI contract before a run.
@@ -570,21 +612,52 @@ def generate_config(
         model_options: dict[str, Any] = {"name": api_model}
         # OpenCode requires both ``context`` and ``output`` inside ``limit``;
         # writing only ``output`` makes the whole config fail validation.
+        # Per-target ``token_levels`` (resolved by ``resolve_targets``) beat
+        # the global list so thinking-heavy models get a bigger output budget
+        # exactly where the operator asked for it.
+        per_target_levels = info.get("token_levels")
+        effective_levels = per_target_levels or token_levels
         model_options["limit"] = {
             "context": _model_context_limit(api_model),
-            "output": max(token_levels) if token_levels else 16384,
+            "output": max(effective_levels) if effective_levels else 16384,
         }
         providers[provider_id]["models"][api_model] = model_options
 
+        # Every target registers an agent so ``--agent`` always selects
+        # explicit context and OpenCode's built-in default agent prompt never
+        # applies. ``_agent_id`` collapses non-alphanumerics to ``-``, so two
+        # targets that differ only in punctuation (e.g. ``foo:3b`` and
+        # ``foo-3b``) would collide on the same agent id and silently
+        # overwrite each other; reject that up front.
+        aid = _agent_id(target_key)
+        if aid in agents:
+            raise ValueError(
+                f"OpenCode agent id collision: {target_key!r} and an earlier "
+                f"target both map to agent {aid!r}"
+            )
+        agent_ids[target_key] = aid
         if info.get("is_agent") and info.get("system_prompt"):
-            aid = _agent_id(target_key)
-            agent_ids[target_key] = aid
+            # Persona targets keep their explicit system prompt.
             agents[aid] = {
                 "description": f"AI Benchmark agent for {target_key}",
                 "mode": "primary",
                 "model": mapped_model,
                 "prompt": info["system_prompt"],
                 "permission": {"edit": "deny", "bash": "deny"},
+            }
+        else:
+            # Plain model target: register the neutral agent so OpenCode does
+            # NOT fall back to its default Build agent prompt ("answer
+            # concisely <4 lines", all tools enabled). The neutral prompt has
+            # no conciseness instruction and the deny-all permission removes
+            # every tool definition, giving small function-calling-tuned
+            # models the same plain "answer the prompt" contract as HTTP.
+            agents[aid] = {
+                "description": f"AI Benchmark neutral agent for {target_key}",
+                "mode": "primary",
+                "model": mapped_model,
+                "prompt": OPENCODE_NEUTRAL_AGENT_PROMPT,
+                "permission": OPENCODE_NEUTRAL_AGENT_PERMISSION,
             }
 
     duplicate_targets = {key: value for key, value in mappings.items() if len(value) > 1}

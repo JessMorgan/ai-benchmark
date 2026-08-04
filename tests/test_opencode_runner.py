@@ -17,6 +17,8 @@ from benchmark_state import BenchmarkState
 from opencode_runner import (
     OPENCODE_BINARY,
     OPENCODE_INSTALL_SUBDIR,
+    OPENCODE_NEUTRAL_AGENT_PERMISSION,
+    OPENCODE_NEUTRAL_AGENT_PROMPT,
     OPENCODE_PURE_FLAG,
     OPENCODE_RUN_FORMAT,
     OPENCODE_THINKING_FLAG,
@@ -129,6 +131,36 @@ class TestOpenCodeConfig(unittest.TestCase):
             }
             self.assertEqual(limits["model-a"], {"context": 131072, "output": 100})
 
+    def test_model_limit_uses_per_target_token_levels(self):
+        """A target's resolved ``token_levels`` beats the global list for its
+        OpenCode output budget (thinking-heavy models get a bigger cap)."""
+        targets = {
+            "thinker": {
+                "source": "Local Server",
+                "api_model": "thinker-model",
+                "is_agent": False,
+                "token_levels": [32768],
+            },
+            "plain": {
+                "source": "Local Server",
+                "api_model": "plain-model",
+                "is_agent": False,
+                "token_levels": None,
+            },
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, "opencode.generated.json")
+            generate_config(self.sources, targets, path, token_levels=[100])
+            with open(path, encoding="utf-8") as handle:
+                on_disk = json.load(handle)
+            limits = {
+                name: model["limit"]["output"]
+                for provider in on_disk["provider"].values()
+                for name, model in provider["models"].items()
+            }
+            self.assertEqual(limits["thinker-model"], 32768)
+            self.assertEqual(limits["plain-model"], 100)
+
     def test_model_context_limit_infers_suffix(self):
         self.assertEqual(_model_context_limit("qwen3.6:27b-128k"), 131072)
         self.assertEqual(_model_context_limit("nemotron-3-nano:30b-1m"), 1048576)
@@ -144,6 +176,66 @@ class TestOpenCodeConfig(unittest.TestCase):
                 generate_config(
                     {"Same Source": {"api_url": "http://localhost/v1"}},
                     targets,
+                    os.path.join(tmpdir, "generated.json"),
+                )
+
+    def test_plain_model_target_registers_neutral_agent(self):
+        """Non-agent targets must get a registered agent whose prompt has no
+        conciseness instruction and whose permission denies every tool, so
+        OpenCode never falls back to its default Build agent."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, "opencode.generated.json")
+            generated = generate_config(self.sources, self.targets, path)
+            with open(path, encoding="utf-8") as handle:
+                on_disk = json.load(handle)
+
+        agents = on_disk["agent"]
+        neutral = agents["benchmark-model-a"]
+        self.assertEqual(neutral["mode"], "primary")
+        self.assertEqual(neutral["prompt"], OPENCODE_NEUTRAL_AGENT_PROMPT)
+        self.assertEqual(neutral["permission"], OPENCODE_NEUTRAL_AGENT_PERMISSION)
+        self.assertEqual(neutral["model"], "local-server/model-a")
+        # The neutral prompt must not contain the default agent's conciseness
+        # instruction nor mention any tool.
+        self.assertNotIn("concisely", OPENCODE_NEUTRAL_AGENT_PROMPT)
+        self.assertNotIn("fewer than 4 lines", OPENCODE_NEUTRAL_AGENT_PROMPT)
+        # No tool *definitions* or tool-family names in the neutral prompt
+        # (webfetch/todowrite/bash are distinctive; plain words like "task"
+        # appear naturally in "written benchmark task").
+        for tool in ("webfetch", "todowrite", "bash", "edit", "websearch",
+                     "tool_use", "<tool", "sequentialthinking"):
+            self.assertNotIn(tool, OPENCODE_NEUTRAL_AGENT_PROMPT)
+        # Every tool family is denied -> no tool definitions reach the model.
+        for key, action in OPENCODE_NEUTRAL_AGENT_PERMISSION.items():
+            self.assertEqual(action, "deny", key)
+        # Both targets are registered, so every invocation passes --agent.
+        self.assertEqual(generated["agent_ids"]["model-a"], "benchmark-model-a")
+        self.assertEqual(generated["agent_ids"]["agent-a"], "benchmark-agent-a")
+        self.assertEqual(agents["benchmark-agent-a"]["prompt"], "You are a coding agent.")
+
+    def test_agent_persona_keeps_custom_prompt_and_edit_bash_deny(self):
+        """Agent persona targets keep their explicit system prompt; only
+        edit/bash are denied so personas can still use read/search tools."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, "opencode.generated.json")
+            generate_config(self.sources, self.targets, path)
+            with open(path, encoding="utf-8") as handle:
+                on_disk = json.load(handle)
+        persona = on_disk["agent"]["benchmark-agent-a"]
+        self.assertEqual(persona["prompt"], "You are a coding agent.")
+        self.assertEqual(persona["permission"], {"edit": "deny", "bash": "deny"})
+
+    def test_agent_id_collision_is_rejected(self):
+        """Targets whose names collide after _agent_id slugging (e.g. ``foo:3b``
+        and ``foo-3b``) must be rejected instead of silently overwriting."""
+        targets = {
+            "model:one": {"source": "Local Server", "api_model": "model-a"},
+            "model-one": {"source": "Local Server", "api_model": "model-b"},
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with self.assertRaisesRegex(ValueError, "agent id collision"):
+                generate_config(
+                    self.sources, targets,
                     os.path.join(tmpdir, "generated.json"),
                 )
 

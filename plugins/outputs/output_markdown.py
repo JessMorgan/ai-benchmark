@@ -39,7 +39,7 @@ class MarkdownOutputPlugin(BenchmarkOutputPlugin):
         has_runner = any(r.get("runner") for r in results)
         header = "| # | Model | Runner | Load (s) |" if has_runner else "| # | Model | Load (s) |"
         for p in active_plugins:
-            header += f" {p.name} Resp (s) | {p.name} TPS | {p.name} Tok | {p.name} Score |"
+            header += f" {p.name} Resp (s) | {p.name} TPS | {p.name} Tok | {p.name} Score | {p.name} Reason |"
             if output_dir:
                 header += f" {p.name} Response |"
         header += " Total | Time | Mode |"
@@ -47,7 +47,7 @@ class MarkdownOutputPlugin(BenchmarkOutputPlugin):
 
         sep = "|---|---|---|---|" if has_runner else "|---|---|---|"
         for _p in active_plugins:
-            sep += "---|---|---|---|"
+            sep += "---|---|---|---|---|"
             if output_dir:
                 sep += "---|"
         sep += "---|---|---|"
@@ -60,10 +60,12 @@ class MarkdownOutputPlugin(BenchmarkOutputPlugin):
             row = (f"| {idx} | {r['model']} | {runner} | {r.get('ttft') or '-'} |"
                    if has_runner else f"| {idx} | {r['model']} | {r.get('ttft') or '-'} |")
             for p in active_plugins:
+                empty_reason = r.get(f'{p.id}_empty_reason', '')
                 row += (f" {r.get(f'{p.id}_response_time','-')} | "
                         f"{r.get(f'{p.id}_tps','-')} | "
                         f"{r.get(f'{p.id}_output_tokens','-')} | "
-                        f"{r.get(f'{p.id}_score','-')} |")
+                        f"{r.get(f'{p.id}_score','-')} | "
+                        f"{empty_reason} |")
                 if output_dir:
                     runner_prefix = f"{runner}/" if runner in ("http", "opencode") else ""
                     rel_path = f"{runner_prefix}responses/{sanitize_filename(r['model'])}/{p.id}.txt"

@@ -1576,8 +1576,12 @@ def main():
             if phase_runner == "opencode":
                 mapped = opencode_model_name(target_info["source"], target_info["api_model"])
                 agent_id = opencode_agent_ids.get(model_name)
+            # Per-target ``token_levels`` (model/agent dict or the
+            # ``model_token_levels`` map, resolved by ``resolve_targets``)
+            # beat the global config/CLI value for this target's legs.
+            effective_token_levels = target_info.get("token_levels") or token_levels
             run_model(state_key, target_info["source"], state, model_active_plugins,
-                      source_config, timeout, token_levels, phase_output_dir,
+                      source_config, timeout, effective_token_levels, phase_output_dir,
                       session_seed=session_seed, global_cfg=cfg, stop_event=stop_event,
                       save_responses=args.save_responses,
                       api_model=target_info["api_model"],

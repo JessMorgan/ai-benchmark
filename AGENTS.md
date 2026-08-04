@@ -51,6 +51,7 @@ per dispatch):
 | `_score` | resume | Float or `"fail"` — **re-run when absent or `"fail"`**, reuse otherwise (the gate `run_model` checks via `latest_results()`) |
 | `_tps`, `_response_time`, `_output_tokens` | both | Last completed run metrics |
 | `_stream_ok`, `_truncated`, `_repeating`, `_rubric` | both | Streaming + scoring flags |
+| `_empty_reason` | both | Empty-response classification (`None`/`error`/`thinking-truncation`/`thinking-only`/`max-tokens`/`empty`); surfaced in meta.json + CSV |
 | `_bytes_received`, `_first_chunk_seen`, `_first_tok_ts`, `_start_ts` | runtime | Live TUI; reset on `start_plugin_run` |
 
 `state.results` is the list of result dicts; `latest_results()` keeps the
@@ -110,6 +111,12 @@ Three (`code-review`, `moe-dense`, `structured-output`) set
 5. **Per-plugin max_score varies** — `code-review=15`, `moe-dense=17`,
    `orchestration=16`, `tool-calling=25`, others=20. Tests in
    `tests/test_tui_cells.py` pin score normalisation.
+6. **Thinking-truncation auto-escalation.** `_run_plugin_task` in
+   `benchmark_core.py` auto-retries once with a doubled `max_tokens` budget
+   when a streaming HTTP leg classifies as `thinking-truncation` (empty
+   content, large `reasoning_content`, `finish_reason="length"`). The retry
+   is capped at 131072 and only fires for HTTP streaming plugins. Regression
+   in `tests/test_cli.py::TestThinkingAutoEscalation`.
 
 ## Freebuff skills
 

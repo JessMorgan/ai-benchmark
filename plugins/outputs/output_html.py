@@ -38,10 +38,13 @@ class HTMLOutputPlugin(BenchmarkOutputPlugin):
                     score_cell = f'<a href="{rel_path}">{score_val}</a>'
                 else:
                     score_cell = f"{score_val}"
+                empty_reason = r.get(f"{p.id}_empty_reason", "")
+                empty_cell = f'<td class="empty-reason" title="{html_lib.escape(str(empty_reason))}">{html_lib.escape(str(empty_reason))}</td>' if empty_reason else "<td></td>"
                 cells += (f'<td>{r.get(f"{p.id}_response_time","-")}</td>'
                           f'<td>{r.get(f"{p.id}_tps","-")}</td>'
                           f'<td>{r.get(f"{p.id}_output_tokens","-")}</td>'
-                          f'<td><strong>{score_cell}</strong></td>')
+                          f'<td><strong>{score_cell}</strong></td>'
+                          f'{empty_cell}')
             cells += (f'<td><strong>{tot}</strong></td>'
                       f'<td>{r["total_time"]}s</td><td>{m}</td>')
             if r["status"] == "ok":
@@ -89,7 +92,7 @@ class HTMLOutputPlugin(BenchmarkOutputPlugin):
 
         header_cells = "<th>Model</th><th>Runner</th><th>Load(s)</th>"
         for p in active_plugins:
-            header_cells += f"<th>{p.name} Resp(s)</th><th>{p.name} TPS</th><th>{p.name} Tok</th><th>{p.name} Score</th>"
+            header_cells += f"<th>{p.name} Resp(s)</th><th>{p.name} TPS</th><th>{p.name} Tok</th><th>{p.name} Score</th><th>{p.name} Reason</th>"
         header_cells += "<th>Total</th><th>Time</th><th>Mode</th><th>Status</th>"
 
         seed_html = f"<br><strong>Seed:</strong> {session_seed}" if session_seed is not None else ""
@@ -111,6 +114,7 @@ tr.fail {{ color:#8b949e; }}
 .leaderboard {{ display:inline-block; vertical-align:top; margin-right:30px; }}
 .leaderboard table {{ width:auto; min-width:300px; }}
 .subtitle {{ color:#8b949e; font-size:0.9em; }}
+.empty-reason {{ font-size:0.85em; color:#8b949e; max-width:120px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }}
 </style>
 </head>
 <body>

@@ -63,6 +63,12 @@ class BenchmarkState:
                 self._model_info[name][f"{pid}_tps"] = None
                 self._model_info[name][f"{pid}_response_time"] = None
                 self._model_info[name][f"{pid}_output_tokens"] = None
+                # Empty-response classification (None when the response had
+                # content; otherwise one of "error", "thinking-truncation",
+                # "thinking-only", "max-tokens", "empty"). Mirrored from
+                # the result dict by ``_run_plugins.run_one`` and surfaced
+                # in meta.json/CSV.
+                self._model_info[name][f"{pid}_empty_reason"] = None
                 # Streaming byte counter for in-flight plugins; incremented
                 # via ``add_bytes_received`` per SSE delta by the runtime.
                 # Starts at 0; ``start_plugin_run`` resets it on each

@@ -38,6 +38,39 @@ def count_tokens(text):
     return max(0, len(text) / 4)
 
 
+def classify_empty_reason(text, think_text="", finish_reason=None, error=None):
+    """Classify why a completed response produced no content tokens.
+
+    Returns ``None`` when the response has content, otherwise a stable
+    machine-readable label surfaced in ``meta.json`` and ``results.csv``:
+
+    - ``"error"`` — the request errored/aborted mid-stream (``stream_error``
+      set, e.g. the litellm/Ollama ``EOF`` backend crash from mechanism B in
+      ``empty-content-investigation.md``). The empty output is a symptom of
+      the failure, not a model behaviour.
+    - ``"thinking-truncation"`` — empty content, but the model emitted
+      thinking/reasoning AND the stream was cut at ``finish_reason ==
+      "length"``: the entire ``max_tokens`` budget was consumed by
+      ``reasoning_content`` before a single content token landed (mechanism
+      A — deepseek/qwen/o1-class behaviour).
+    - ``"thinking-only"`` — empty content and the model only emitted
+      thinking before stopping naturally.
+    - ``"max-tokens"`` — empty content, no thinking, cut at ``length``.
+    - ``"empty"`` — genuinely empty completion with no diagnostics.
+    """
+    if text and text.strip():
+        return None
+    if error:
+        return "error"
+    if think_text and finish_reason == "length":
+        return "thinking-truncation"
+    if think_text:
+        return "thinking-only"
+    if finish_reason == "length":
+        return "max-tokens"
+    return "empty"
+
+
 def is_repeating(text, min_seq=80, repeats=3):
     """Detect if text is stuck in a loop."""
     if len(text) < min_seq * repeats:
@@ -169,10 +202,52 @@ def resolve_targets(cfg):
     - ``is_agent``: whether this target is an agent
     - ``drop_params``: per-target params to drop from API requests
     - ``plugins_blacklist``: per-target plugins to skip
+    - ``token_levels``: per-target max-token override (``None`` = use the
+      global ``token_levels`` / ``--token-levels``)
     """
     models = cfg.get("models", {})
     agents = cfg.get("agents", {})
+    # Per-target max-token overrides for thinking-heavy models whose entire
+    # ``max_tokens`` budget can be consumed by ``reasoning_content`` before a
+    # single content token lands (see ``empty-content-investigation.md``).
+    # Keys are target names or ``"{source}/{api_model}"``; values are
+    # token-level lists that beat the global ``token_levels`` for that target.
+    model_token_levels = cfg.get("model_token_levels") or {}
     targets = {}
+
+    def _normalize_token_levels(levels):
+        """Coerce a configured token-levels value to a list of ints.
+
+        Accepts a single int (``32768``) or a list/tuple of ints
+        (``[32768]``). Anything else — strings, floats, empty lists, or
+        non-numeric members — returns None so a config typo can neither
+        crash target resolution (``list(32768)`` would raise TypeError)
+        nor splinter a string into per-character levels that flow into
+        ``max_tok`` / OpenCode's output budget.
+        """
+        if levels is None:
+            return None
+        if isinstance(levels, bool) or not isinstance(levels, (int, list, tuple)):
+            return None
+        if isinstance(levels, int):
+            return [levels]
+        try:
+            normalized = [int(v) for v in levels]
+        except (TypeError, ValueError):
+            return None
+        return normalized or None
+
+    def _resolve_target_token_levels(name, source, api_model, val):
+        """Return per-target token levels, or None to fall back to global."""
+        if isinstance(val, dict):
+            levels = _normalize_token_levels(val.get("token_levels"))
+            if levels:
+                return levels
+        for key in (name, f"{source}/{api_model}"):
+            levels = _normalize_token_levels(model_token_levels.get(key))
+            if levels:
+                return levels
+        return None
     for name, val in models.items():
         if isinstance(val, dict):
             targets[name] = {
@@ -218,6 +293,13 @@ def resolve_targets(cfg):
             "drop_params": val.get("drop_params", []),
             "plugins_blacklist": val.get("plugins_blacklist", []),
         }
+    # Populate per-target ``token_levels`` after both loops so the resolution
+    # helper sees every configured form (inline dict key, ``model_token_levels``
+    # map keyed by target name, and keyed by ``"{source}/{api_model}"``).
+    for name, info in targets.items():
+        val = models[name] if name in models else agents.get(name)
+        info["token_levels"] = _resolve_target_token_levels(
+            name, info["source"], info["api_model"], val)
     return targets
 
 
@@ -263,6 +345,9 @@ def dump_default_config():
         "output_dir": "benchmark-output-dir",
         "timeout": 1200,
         "token_levels": [16384],
+        # Per-target max-token overrides for thinking models; keys are target
+        # names or "{source}/{api_model}", values beat the global token_levels.
+        "model_token_levels": {},
         "rate-limiter_temperature": 0.2,
         "moe-dense_temperature": 0.7,
         "plugins_whitelist": [],
@@ -298,7 +383,8 @@ def dump_default_config():
             "example-model-2": "Remote Provider 1",
             "example-model-3": {
                 "source": "Local Server 2",
-                "drop_params": ["seed"]
+                "drop_params": ["seed"],
+                "token_levels": [32768]
             }
         },
         "agents": {
@@ -381,6 +467,10 @@ def _run_plugin_task(target_name, api_model, source, plugin, source_config, time
     think_text = ""
     serr = None
     sfr = None
+    # Final finish_reason observed across the token-level loop; feeds
+    # ``classify_empty_reason`` so empty content + ``length`` + thinking is
+    # distinguishable from other empty legs (mechanism A classification).
+    finish_reason = None
 
     if runner == "opencode":
         if not opencode_config_path or not opencode_model:
@@ -557,6 +647,7 @@ def _run_plugin_task(target_name, api_model, source, plugin, source_config, time
                     response_time = round(stream_end - attempt_start, 1)
                     gen_time = stream_end - first_tok if first_tok else 0
                     truncated = (sfr == "length")
+                    finish_reason = sfr
                     stream_ok = False
                 else:
                     nonstream_result = nonstream_request(
@@ -578,11 +669,13 @@ def _run_plugin_task(target_name, api_model, source, plugin, source_config, time
                     response_time = round(ns_time, 1)
                     gen_time = ns_time
                     truncated = (nsfr == "length")
+                    finish_reason = nsfr
             else:
                 stream_ok = True
                 response_time = round(stream_end - attempt_start, 1)
                 gen_time = stream_end - first_tok if first_tok else 0
                 truncated = (sfr == "length")
+                finish_reason = sfr
         else:
             nonstream_result = nonstream_request(
                 source_config, timeout, api_model, source, prompt, max_tok,
@@ -603,6 +696,7 @@ def _run_plugin_task(target_name, api_model, source, plugin, source_config, time
             stream_ok = False
             response_time = round(gen_time, 1)
             truncated = (gen_fr == "length")
+            finish_reason = gen_fr
 
             est_tok = count_tokens(text)
             output_tokens = int(est_tok)
@@ -621,6 +715,79 @@ def _run_plugin_task(target_name, api_model, source, plugin, source_config, time
 
             if attempt < len(token_levels) - 1:
                 pass
+
+    # Classify why a completed HTTP response produced no content tokens so the
+    # empty-score-0 legs are diagnosable instead of silent. Only non-error
+    # completed legs reach this point with ``text == ""`` (transport errors
+    # early-return above); ``finish_reason`` is the last one observed across
+    # the token-level retry loop. Surfaced in ``meta.json`` and the CSV's
+    # ``{pid}_Empty_Reason`` column.
+    empty_reason = classify_empty_reason(text, think_text, finish_reason, serr)
+
+    # ── Auto-escalation for thinking-truncation ──────────────────────────
+    # When the model consumed its entire ``max_tokens`` budget on
+    # ``reasoning_content`` and produced zero content tokens, retry once
+    # with a doubled budget instead of recording a silent 0-score.
+    # This catches deepseek/qwen/o1-class models whose thinking phase
+    # exceeds the default budget, without requiring per-model config.
+    if (empty_reason == "thinking-truncation"
+            and runner == "http"
+            and plugin.supports_streaming):
+        # Use the last ``max_tok`` from the exhausted attempt (or the
+        # max configured level) as the base. Never exceed a hard cap of
+        # 2× the initial budget to avoid unbounded resource burn.
+        base = max(token_levels) if token_levels else 16384
+        escalated = min(base * 2, 131072)
+        if escalated > base or (not token_levels):
+            # Retry with the doubled budget. The retry uses the same
+            # prompt/temperature/seed/stop_event as the original, and
+            # replaces the empty text/think_text left by the truncated
+            # attempt. We reuse the streaming path even for
+            # non-streaming-capable plugins (the loop above already
+            # handled them), but the guard narrows to streaming only.
+            attempt_start = time.time()
+
+            def on_retry():
+                state.start_plugin_run(target_name, pid)
+
+            def on_chunk(delta):
+                state.mark_first_chunk_seen(target_name, pid, ts=time.time())
+                state.add_bytes_received(target_name, pid, len(delta))
+
+            def on_think_chunk(think_delta):
+                state.mark_first_chunk_seen(target_name, pid, ts=time.time())
+                state.add_thinking_bytes_received(target_name, pid, len(think_delta))
+
+            stream_result = stream_request(
+                source_config, timeout, api_model, source, prompt, escalated,
+                log_path=log_file,
+                log_label=f"{plugin.name} (Streaming, thinking-truncation retry, budget={escalated})",
+                session_seed=session_seed, temperature=temperature,
+                drop_params=drop_params, stop_event=stop_event,
+                system_prompt=system_prompt,
+                on_chunk=on_chunk, on_think_chunk=on_think_chunk, pid=pid, on_retry=on_retry)
+            text = stream_result.text
+            think_text = stream_result.think_text
+            first_tok = stream_result.first_tok
+            stream_end = stream_result.stream_end
+            serr = stream_result.error
+            sfr = stream_result.finish_reason
+
+            if serr:
+                # Retry failed — keep the original empty classification
+                # rather than overwriting with a transport error; the
+                # original thinking-truncation is the relevant diagnosis.
+                pass
+            else:
+                # Retry succeeded (or produced a different empty).
+                # Re-classify the new result.
+                stream_ok = True
+                if first_tok:
+                    response_time = round(stream_end - attempt_start, 1)
+                    gen_time = stream_end - first_tok
+                finish_reason = sfr
+                truncated = (sfr == "length")
+                empty_reason = classify_empty_reason(text, think_text, finish_reason, None)
 
     # Compute buffered/partial response metrics uniformly for both transports.
     # Streaming failures and OpenCode both arrive here without the HTTP
@@ -729,6 +896,8 @@ def _run_plugin_task(target_name, api_model, source, plugin, source_config, time
         # plugins cannot produce ``serr``).
         if plugin.supports_streaming and serr is not None:
             meta["stream_error"] = serr
+        if empty_reason is not None:
+            meta["empty_reason"] = empty_reason
         try:
             with open(meta_path, "w", encoding="utf-8") as f:
                 json.dump(meta, f, indent=2, default=str)
@@ -747,6 +916,7 @@ def _run_plugin_task(target_name, api_model, source, plugin, source_config, time
         f"{pid}_truncated": truncated,
         f"{pid}_repeating": repeating,
         f"{pid}_stream_ok": stream_ok,
+        f"{pid}_empty_reason": empty_reason,
     }
     return PluginTaskResult(result, None)
 
@@ -810,6 +980,7 @@ def run_model(model_name, source, state, active_plugins, source_config, timeout,
             r[f"{pid}_output_tokens"] = existing[f"{pid}_output_tokens"]
             r[f"{pid}_tps"] = existing[f"{pid}_tps"]
             r[f"{pid}_stream_ok"] = existing.get(f"{pid}_stream_ok", True)
+            r[f"{pid}_empty_reason"] = existing.get(f"{pid}_empty_reason")
         else:
             plugins_to_run.append(plugin)
 
@@ -911,7 +1082,8 @@ def _run_plugins(target_name, api_model, source, state, active_plugins, plugins_
                      **{f"{pid}_score": result[f"{pid}_score"],
                         f"{pid}_tps": result[f"{pid}_tps"],
                         f"{pid}_response_time": result[f"{pid}_response_time"],
-                        f"{pid}_output_tokens": result[f"{pid}_output_tokens"]})
+                        f"{pid}_output_tokens": result[f"{pid}_output_tokens"],
+                        f"{pid}_empty_reason": result.get(f"{pid}_empty_reason")})
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = {executor.submit(run_one, plugin): plugin for plugin in plugins_to_run}

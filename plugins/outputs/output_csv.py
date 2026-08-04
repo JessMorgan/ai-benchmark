@@ -24,7 +24,10 @@ class CSVOutputPlugin(BenchmarkOutputPlugin):
         w = csv.writer(out)
         headers = ["Model", "Runner", "Source", "TTFT_s"]
         for p in active_plugins:
-            headers.extend([f"{p.id}_Response_s", f"{p.id}_Output_Tokens", f"{p.id}_TPS", f"{p.id}_Score_{int(p.max_score)}"])
+            headers.extend([
+                f"{p.id}_Response_s", f"{p.id}_Output_Tokens", f"{p.id}_TPS",
+                f"{p.id}_Score_{int(p.max_score)}", f"{p.id}_Empty_Reason",
+            ])
         headers.extend(["Total", "Time_s", "Mode", "Status", "Error"])
         w.writerow(headers)
 
@@ -38,6 +41,7 @@ class CSVOutputPlugin(BenchmarkOutputPlugin):
                     r.get(f"{p.id}_output_tokens", ''),
                     r.get(f"{p.id}_tps", ''),
                     r.get(f"{p.id}_score", ''),
+                    r.get(f"{p.id}_empty_reason", ''),
                 ])
             if r["status"] == "ok":
                 row.extend([tot, r['total_time'], m, "OK", ""])

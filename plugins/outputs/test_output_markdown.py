@@ -63,6 +63,21 @@ class TestMarkdownOutputPlugin(unittest.TestCase):
         md = self.plugin.generate(self.sample_results, self.plugins, output_dir="/tmp/benchmark-results")
         self.assertIn("[view]", md)
 
+    def test_gen_markdown_includes_empty_reason_column(self):
+        """Markdown table must include a Reason column per plugin."""
+        results = [dict(self.sample_results[0])]
+        results[0]["rate-limiter_empty_reason"] = "thinking-truncation"
+        md = self.plugin.generate(results, self.plugins)
+        self.assertIn("Reason |", md)
+        self.assertIn("thinking-truncation", md)
+
+    def test_gen_markdown_empty_reason_blank_when_unset(self):
+        """Rows without empty_reason render an empty column."""
+        md = self.plugin.generate(self.sample_results, self.plugins)
+        self.assertIn("Reason |", md)
+        for label in ("thinking-truncation", "thinking-only", "max-tokens", "empty", "error"):
+            self.assertNotIn(label, md)
+
     def test_gen_markdown_no_response_links_without_output_dir(self):
         md = self.plugin.generate(self.sample_results, self.plugins)
         self.assertNotIn("[view]", md)

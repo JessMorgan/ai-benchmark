@@ -695,6 +695,118 @@ class TestNonStreamingPluginRetry(unittest.TestCase):
         )
 
 
+class TestEmptyReasonClassification(unittest.TestCase):
+    """Empty-content HTTP legs are classified so operators can distinguish
+    max_tokens thinking-truncation (mechanism A in
+    ``empty-content-investigation.md``) from genuine model emptiness and
+    backend aborts. The classification lands in the result dict and, when
+    ``--save-responses`` is on, in ``meta.json``."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.module = load_benchmark_module()
+        cls.plugins = discover_plugins()
+
+    def _run_streaming_leg(self, stream_result, save_responses=False, output_dir=None):
+        plugin = next(p for p in self.plugins if p.id == "rate-limiter")
+        state = self.module.BenchmarkState({"dummy-model": "Local"}, [plugin.id])
+        source_config = {
+            "Local": {"api_url": "http://localhost:11434/chat/completions", "headers": {}}
+        }
+        with mock.patch.object(
+            self.module, "stream_request", return_value=stream_result,
+        ):
+            return self.module._run_plugin_task(
+                "dummy-model", "dummy-model", "Local", plugin, source_config,
+                timeout=1, token_levels=[16384], session_seed=12345,
+                log_file=None, global_cfg={}, state=state,
+                output_dir=output_dir, save_responses=save_responses,
+            )
+
+    def test_thinking_truncation_classified_in_result_and_meta(self):
+        """Empty content + huge think_text + finish_reason='length' is the
+        thinking-truncation signature: the max_tokens budget was consumed by
+        reasoning. Must read ``thinking-truncation`` in the result dict and
+        the saved meta.json."""
+        thinking = "Let me reason through this carefully. " * 2300  # ~58K chars
+        with tempfile.TemporaryDirectory() as tmpdir:
+            task_result = self._run_streaming_leg(
+                StreamResult("", thinking, 1.0, 1.5, None, "length", {}),
+                save_responses=True, output_dir=tmpdir,
+            )
+
+            self.assertIsNone(task_result.error)
+            self.assertEqual(
+                task_result.result["rate-limiter_empty_reason"], "thinking-truncation")
+            self.assertTrue(task_result.result["rate-limiter_truncated"])
+            meta_path = os.path.join(
+                tmpdir, "responses", "dummy-model", "rate-limiter.meta.json")
+            with open(meta_path, encoding="utf-8") as f:
+                meta = json.load(f)
+            self.assertEqual(meta["empty_reason"], "thinking-truncation")
+
+    def test_empty_without_thinking_classified_empty(self):
+        task_result = self._run_streaming_leg(
+            StreamResult("", "", 1.0, 1.5, None, "stop", {}))
+        self.assertIsNone(task_result.error)
+        self.assertEqual(task_result.result["rate-limiter_empty_reason"], "empty")
+
+    def test_stream_error_classified_error(self):
+        """Mechanism B: a backend abort mid-reasoning (SSE error line) must
+        read ``error`` — the empty output is a failure symptom, not a model
+        behaviour."""
+        task_result = self._run_streaming_leg(
+            StreamResult("", "planning tool calls...", 1.0, 2.0,
+                         "litellm.APIConnectionError: EOF", None, {}))
+        self.assertIsNone(task_result.error)
+        self.assertEqual(task_result.result["rate-limiter_empty_reason"], "error")
+        self.assertFalse(task_result.result["rate-limiter_stream_ok"])
+
+    def test_nonempty_response_has_no_classification(self):
+        task_result = self._run_streaming_leg(
+            StreamResult("A real answer.", "thought", 1.0, 1.5, None, "stop", {}))
+        self.assertIsNone(task_result.error)
+        self.assertIsNone(task_result.result["rate-limiter_empty_reason"])
+
+    def test_classify_empty_reason_all_labels(self):
+        """Direct unit coverage of every classification label."""
+        cls = self.module.classify_empty_reason
+        self.assertIsNone(cls("real content", "thinking", "stop", None))
+        self.assertEqual(cls("", "thinking", "length", None), "thinking-truncation")
+        self.assertEqual(cls("", "thinking", "stop", None), "thinking-only")
+        self.assertEqual(cls("", "", "length", None), "max-tokens")
+        self.assertEqual(cls("", "", "stop", None), "empty")
+        self.assertEqual(cls("", "thinking", None, "backend EOF"), "error")
+
+    def test_resume_reuses_and_preserves_empty_reason(self):
+        """run_model re-copies {pid}_empty_reason into the rebuilt result
+        dict when it re-uses a previously successful plugin score."""
+        plugins = [p for p in self.plugins if p.id == "rate-limiter"]
+        models = {"dummy-model": "Local"}
+        state = self.module.BenchmarkState(models, [p.id for p in plugins])
+        source_config = {
+            "Local": {
+                "api_url": "http://localhost:11434/chat/completions",
+                "headers": {}, "plugin_thread_limit": 1,
+            }
+        }
+        state.add_result({
+            "model": "dummy-model", "state_key": "dummy-model", "status": "ok",
+            "rate-limiter_score": 0.0, "rate-limiter_response_time": 1.0,
+            "rate-limiter_output_tokens": 0, "rate-limiter_tps": 0.0,
+            "rate-limiter_stream_ok": False,
+            "rate-limiter_empty_reason": "thinking-truncation",
+        })
+        self.module.run_model(
+            "dummy-model", "Local", state, plugins, source_config,
+            timeout=1, token_levels=[100], output_dir="/tmp/benchmark-test",
+            session_seed=0, global_cfg={},
+        )
+        result = state.latest_results()[0]
+        self.assertEqual(result["rate-limiter_score"], 0.0)
+        self.assertEqual(result["rate-limiter_empty_reason"], "thinking-truncation")
+
+
 class TestSeedCLI(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -1501,6 +1613,128 @@ class TestStreamPartialTextKept(unittest.TestCase):
         self.assertEqual(task_result.result["rate-limiter_output_tokens"], 750)
         self.assertFalse(task_result.result["rate-limiter_stream_ok"])
         mock_nonstream.assert_called_once()
+
+
+class TestThinkingAutoEscalation(unittest.TestCase):
+    """Auto-retry for thinking-truncation: when a streaming HTTP leg classifies
+    as thinking-truncation (empty content, large think_text, finish_reason=
+    'length'), the runner retries once with a doubled max_tokens budget."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.module = load_benchmark_module()
+        cls.plugins = discover_plugins()
+
+    def test_thinking_truncation_triggers_escalation_with_doubled_budget(self):
+        """thinking-truncation on the first attempt must call stream_request
+        a second time with a doubled max_tokens (16384 -> 32768)."""
+        plugin = next(p for p in self.plugins if p.id == "rate-limiter")
+        source_config = {
+            "Local": {"api_url": "http://localhost:11434/chat/completions", "headers": {}}
+        }
+        state = self.module.BenchmarkState({"dummy-model": "Local"}, [plugin.id])
+        truncated = StreamResult("", "thinking... " * 5000, 1.0, 1.5, None, "length", {})
+        retry = StreamResult("A real answer after a bigger budget.", "thinking...", 1.5, 2.5, None, "stop", {})
+        captured = []
+
+        def streaming_side(*args, **kwargs):
+            captured.append(args[5] if len(args) > 5 else kwargs.get("max_tokens", -1))
+            if len(captured) == 1:
+                return truncated
+            return retry
+
+        with mock.patch.object(
+            self.module, "stream_request", side_effect=streaming_side,
+        ):
+            task_result = self.module._run_plugin_task(
+                "dummy-model", "dummy-model", "Local", plugin, source_config,
+                timeout=1, token_levels=[16384], session_seed=12345,
+                log_file=None, global_cfg={}, state=state,
+            )
+        self.assertIsNone(task_result.error)
+        self.assertEqual(len(captured), 2, "thinking-truncation must trigger a retry")
+        self.assertEqual(captured[0], 16384)
+        self.assertEqual(captured[1], 32768)
+
+    def test_escalation_only_for_thinking_truncation(self):
+        """A non-thinking empty leg (max-tokens classification) must not escalate."""
+        plugin = next(p for p in self.plugins if p.id == "rate-limiter")
+        source_config = {
+            "Local": {"api_url": "http://localhost:11434/chat/completions", "headers": {}}
+        }
+        state = self.module.BenchmarkState({"dummy-model": "Local"}, [plugin.id])
+        truncated = StreamResult("", "", 1.0, 1.5, None, "length", {})
+        captured = []
+
+        def streaming_side(*args, **kwargs):
+            captured.append(kwargs.get("max_tokens", -1))
+            return truncated
+
+        with mock.patch.object(
+            self.module, "stream_request", side_effect=streaming_side,
+        ):
+            task_result = self.module._run_plugin_task(
+                "dummy-model", "dummy-model", "Local", plugin, source_config,
+                timeout=1, token_levels=[16384], session_seed=12345,
+                log_file=None, global_cfg={}, state=state,
+            )
+        self.assertIsNone(task_result.error)
+        self.assertEqual(len(captured), 1, "max-tokens must not trigger a retry")
+
+    def test_escalation_unnecessary_for_nonempty(self):
+        """A non-empty response (even with think text) must not escalate."""
+        plugin = next(p for p in self.plugins if p.id == "rate-limiter")
+        source_config = {
+            "Local": {"api_url": "http://localhost:11434/chat/completions", "headers": {}}
+        }
+        state = self.module.BenchmarkState({"dummy-model": "Local"}, [plugin.id])
+        result = StreamResult("Real answer.", "thinking... ", 1.0, 1.5, None, "stop", {})
+        captured = []
+
+        def streaming_side(*args, **kwargs):
+            captured.append(kwargs.get("max_tokens", -1))
+            return result
+
+        with mock.patch.object(
+            self.module, "stream_request", side_effect=streaming_side,
+        ):
+            task_result = self.module._run_plugin_task(
+                "dummy-model", "dummy-model", "Local", plugin, source_config,
+                timeout=1, token_levels=[16384], session_seed=12345,
+                log_file=None, global_cfg={}, state=state,
+            )
+        self.assertIsNone(task_result.error)
+        self.assertEqual(len(captured), 1, "non-empty must not trigger a retry")
+
+    def test_escalation_hits_max_cap(self):
+        """The doubled budget must not exceed 131072."""
+        plugin = next(p for p in self.plugins if p.id == "rate-limiter")
+        source_config = {
+            "Local": {"api_url": "http://localhost:11434/chat/completions", "headers": {}}
+        }
+        state = self.module.BenchmarkState({"dummy-model": "Local"}, [plugin.id])
+        truncated = StreamResult("", "thinking... " * 5000, 1.0, 1.5, None, "length", {})
+        retry = StreamResult("Big budget answer.", "thinking...", 1.5, 2.5, None, "stop", {})
+        captured = []
+
+        def streaming_side(*args, **kwargs):
+            captured.append(args[5] if len(args) > 5 else kwargs.get("max_tokens", -1))
+            if len(captured) == 1:
+                return truncated
+            return retry
+
+        with mock.patch.object(
+            self.module, "stream_request", side_effect=streaming_side,
+        ):
+            task_result = self.module._run_plugin_task(
+                "dummy-model", "dummy-model", "Local", plugin, source_config,
+                timeout=1, token_levels=[65536], session_seed=12345,
+                log_file=None, global_cfg={}, state=state,
+            )
+        self.assertIsNone(task_result.error)
+        self.assertEqual(len(captured), 2)
+        self.assertEqual(captured[0], 65536)
+        self.assertEqual(captured[1], 131072)
 
 
 if __name__ == "__main__":

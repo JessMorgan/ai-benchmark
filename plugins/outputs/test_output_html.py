@@ -62,6 +62,28 @@ class TestHTMLOutputPlugin(unittest.TestCase):
         html = self.plugin.generate(self.sample_results, self.plugins, output_dir="/tmp/benchmark-results")
         self.assertIn("responses/", html)
 
+    def test_gen_html_includes_empty_reason_column(self):
+        """The HTML table header must include a Reason column per plugin, and
+        rows with an empty_reason value display it."""
+        results = [dict(self.sample_results[0])]
+        results[0]["rate-limiter_empty_reason"] = "thinking-truncation"
+        html = self.plugin.generate(results, self.plugins)
+        self.assertIn("Rate Limiter Reason", html)
+        self.assertIn("thinking-truncation", html)
+
+    def test_gen_html_empty_reason_blank_when_unset(self):
+        """Rows without empty_reason render an empty cell."""
+        html = self.plugin.generate(self.sample_results, self.plugins)
+        self.assertIn("Rate Limiter Reason", html)
+        # The first data row has no empty_reason set; the reason cell is
+        # an empty <td></td> (not a classification label). Avoid checking
+        # for "empty" which appears in the CSS class name ".empty-reason".
+        for label in ("thinking-truncation", "thinking-only", "max-tokens", "error"):
+            self.assertNotIn(label, html)
+        # Check the data row has an empty reason cell by looking for the
+        # pattern: Rate Limiter Score cell followed by an empty cell.
+        self.assertIn(">15.5</strong></td><td></td>", html)
+
     def test_gen_html_no_response_links_without_output_dir(self):
         html = self.plugin.generate(self.sample_results, self.plugins)
         self.assertNotIn("responses/", html)
