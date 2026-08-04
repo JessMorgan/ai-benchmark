@@ -37,6 +37,15 @@ from benchmark_state import BenchmarkState  # noqa: F401
 
 PRELOAD_PROMPT = "Reply with the single word OK."
 PRELOAD_DEFAULT_TIMEOUT = 300
+# Token budget for the warm-up probe. Must be generous enough that a
+# thinking/reasoning model (deepseek-r1, qwen3.x, gemma4, ...) can emit at
+# least one content token after its reasoning preamble -- the old 16-token
+# budget was fully consumed by ``reasoning_content`` for 68% of the probes
+# in the 2026-08-02 run, producing ``content=""`` + ``finish_reason="length"``
+# responses that were wrongly classified as ``empty preload response`` and
+# skipped the model for the whole benchmark. 256 tokens is comfortably past
+# typical reasoning preambles while keeping the probe cheap.
+PRELOAD_MAX_TOKENS = 256
 
 
 @dataclass(frozen=True)
@@ -69,6 +78,13 @@ def preload_model(source_config, source, api_model, timeout,
     answer the warm-up request should be reported immediately rather than
     occupying its source worker during backoff. The caller owns the probe's
     timing, so this elapsed time never enters a benchmark result's timers.
+
+    Success is any non-error response that produced *something* -- content
+    OR reasoning (``think_text``). Thinking models that burn the entire
+    ``PRELOAD_MAX_TOKENS`` budget on ``reasoning_content`` and return empty
+    content with ``finish_reason="length"`` still prove the model is warm
+    and are treated as preloaded; only a completely empty response (no
+    content, no reasoning) is ``empty preload response``.
     """
     started = time.time()
     cfg = source_config.get(source)
@@ -81,7 +97,8 @@ def preload_model(source_config, source, api_model, timeout,
     probe_cfg["max_429_retries"] = 0
     probe_sources[source] = probe_cfg
     response = nonstream_request(
-        probe_sources, timeout, api_model, source, PRELOAD_PROMPT, 16,
+        probe_sources, timeout, api_model, source, PRELOAD_PROMPT,
+        PRELOAD_MAX_TOKENS,
         log_path=log_path,
         log_label=f"Model preload ({source}/{api_model})",
         session_seed=session_seed,
@@ -90,7 +107,16 @@ def preload_model(source_config, source, api_model, timeout,
         stop_event=stop_event,
     )
     error = response.error
-    if not error and not response.text.strip():
+    # A probe is only a failure when the model produced NOTHING -- no
+    # content AND no reasoning. A response whose probe budget was consumed
+    # by ``reasoning_content`` (empty ``content``, non-empty
+    # ``think_text``, ``finish_reason="length"``) proves the model is warm
+    # and responding; treating it as ``empty preload response`` was a false
+    # negative that skipped thinking models for the entire benchmark (see
+    # the 2026-08-02 run: 83/122 probes were thinking-truncation). A
+    # transport error still fails the probe regardless of ``think_text``
+    # (the ``not error`` guard above this check).
+    if not error and not response.text.strip() and not response.think_text.strip():
         error = "empty preload response"
     return PreloadResult(
         success=not error,

@@ -181,13 +181,36 @@ class TestModelPreload(unittest.TestCase):
         self.assertIsNone(result.error)
         request.assert_called_once()
         args, kwargs = request.call_args
-        self.assertEqual(args[1:6], (23, "model-a", "Local", "Reply with the single word OK.", 16))
+        self.assertEqual(
+            args[1:6],
+            (23, "model-a", "Local", "Reply with the single word OK.",
+             self.module.PRELOAD_MAX_TOKENS),
+        )
         self.assertEqual(kwargs["session_seed"], 9)
         self.assertEqual(kwargs["drop_params"], ["seed"])
         # The helper copies the source config so the caller's retry policy is
         # not mutated while the one-shot probe disables 429 retries.
         self.assertEqual(kwargs["stop_event"], None)
         self.assertEqual(request.call_args.args[0]["Local"]["max_429_retries"], 0)
+
+    def test_preload_model_accepts_reasoning_only_response(self):
+        """A thinking model that burns the probe budget on reasoning_content
+        (empty content, non-empty think_text, finish_reason="length") still
+        proves it is warm and must count as preloaded, not as an
+        ``empty preload response`` failure. Regression for the 2026-08-02
+        run where 83/122 probes were thinking-truncation and the affected
+        models were skipped for the entire benchmark."""
+        response = NonStreamResult(
+            "", "\nOkay, so I need to figure out how to respond",
+            {}, 1.25, None, "length",
+        )
+        with mock.patch.object(self.module, "nonstream_request", return_value=response):
+            result = self.module.preload_model(
+                {"Local": {"api_url": "http://localhost/chat"}},
+                "Local", "model-a", timeout=23,
+            )
+        self.assertTrue(result.success)
+        self.assertIsNone(result.error)
 
     def test_preload_model_rejects_empty_response(self):
         response = NonStreamResult("", "", {}, 0.2, None, "stop")
@@ -198,6 +221,41 @@ class TestModelPreload(unittest.TestCase):
             )
         self.assertFalse(result.success)
         self.assertEqual(result.error, "empty preload response")
+
+    def test_preload_model_error_still_fails_with_reasoning(self):
+        """A transport error must fail the probe even when the response
+        carries reasoning content -- the ``empty preload response`` gate
+        only fires when there is no error, so this pins that precedence
+        so a future refactor cannot let errored reasoning-only responses
+        slip through as "warm"."""
+        response = NonStreamResult(
+            "", "\nSome reasoning despite the error",
+            {}, 0.3, "connection reset", "length",
+        )
+        with mock.patch.object(self.module, "nonstream_request", return_value=response):
+            result = self.module.preload_model(
+                {"Local": {"api_url": "http://localhost/chat"}},
+                "Local", "model-a", timeout=3,
+            )
+        self.assertFalse(result.success)
+        self.assertEqual(result.error, "connection reset")
+
+    def test_preload_model_accepts_thinking_with_escalated_budget(self):
+        """The probe must send a token budget large enough for a thinking
+        model to emit at least one content token after its reasoning
+        preamble -- the old hardcoded 16 was fully consumed by
+        ``reasoning_content``. Assert the constant is well above 16 so a
+        regression to a tiny budget fails loudly."""
+        self.assertGreaterEqual(self.module.PRELOAD_MAX_TOKENS, 64)
+        response = NonStreamResult("OK", "some reasoning", {}, 1.0, None, "stop")
+        with mock.patch.object(self.module, "nonstream_request", return_value=response) as request:
+            result = self.module.preload_model(
+                {"Local": {"api_url": "http://localhost/chat"}},
+                "Local", "model-a", timeout=10,
+            )
+        self.assertTrue(result.success)
+        args, _ = request.call_args
+        self.assertGreaterEqual(args[5], 64)
 
     def test_save_state_omits_session_only_preload_fields(self):
         state = self.module.BenchmarkState({"model-a": "Local"}, ["rate-limiter"])
