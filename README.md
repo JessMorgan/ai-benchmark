@@ -122,6 +122,8 @@ python ai-benchmark.py [options]
 
 By default, re-running resumes from where you left off — completed models are skipped, and failed models are retried. Saved state is stored in `benchmark_state.json` inside the output directory and is preserved after completion so you can re-run to retry any failures. New models added to the config between runs are picked up automatically. Use `--restart` to force a clean run.
 
+If the saved state file is unreadable or fails to load (e.g. a corrupt `benchmark_state.json`), the run **aborts with an error** instead of silently discarding prior results — inspect or repair the state file, or pass `--restart` to explicitly discard it.
+
 If the set of active plugins changes between runs, the app detects this and asks whether to **restart** or **continue**. If you continue, newly added plugins are run for models that already completed, and data for removed plugins is preserved but not run again.
 
 ## OpenCode runner

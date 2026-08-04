@@ -1108,6 +1108,33 @@ class TestConfigFallback(unittest.TestCase):
             self.assertEqual(os.path.basename(run_info["config_file"]), "benchmark-config.yaml")
             self.assertTrue(os.path.isfile(os.path.join(output_dir, "benchmark-config.yaml")))
 
+    def test_corrupt_state_file_aborts_resume(self):
+        """A corrupt benchmark_state.json aborts the run instead of silently
+        discarding prior results and starting fresh."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_path = os.path.join(tmpdir, "config.yaml")
+            output_dir = os.path.join(tmpdir, "output")
+            os.makedirs(output_dir)
+            with open(config_path, "w") as f:
+                f.write(f"output_dir: {output_dir}\n")
+            state_file = os.path.join(output_dir, "benchmark_state.json")
+            with open(state_file, "w") as f:
+                f.write("{ this is not valid json !!")
+
+            result = subprocess.run(
+                [sys.executable, "ai-benchmark.py", "--config", config_path],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("Could not resume run", result.stderr)
+            self.assertIn("Aborting instead of silently discarding prior results", result.stderr)
+            self.assertIn("--restart", result.stderr)
+            self.assertNotIn("starting fresh", result.stderr)
+            # The failed resume must not destroy the prior state file.
+            self.assertTrue(os.path.isfile(state_file))
+
 
 class TestTimeCapsule(unittest.TestCase):
     def test_config_file_is_copied_to_output_dir_json(self):

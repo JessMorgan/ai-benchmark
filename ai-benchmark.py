@@ -1584,9 +1584,18 @@ def main():
                         print(f"{'='*70}")
                         sys.exit(0)
             except Exception as e:
-                print(f"⚠️  Could not load state file ({e}), starting fresh.",
+                # A failed resume must not silently discard prior results by
+                # starting a fresh run: the operator may have hours of
+                # completed work in this state file. Abort with the underlying
+                # error so the state can be inspected or repaired, or the run
+                # can be explicitly discarded with --restart.
+                print(f"❌ Could not resume run: failed to load or clear the state file ({e}).",
                       file=sys.stderr)
-                state = BenchmarkState(state_models, plugin_ids, runner=runner_mode)
+                print("   Aborting instead of silently discarding prior results.",
+                      file=sys.stderr)
+                print(f"   Inspect or fix {state_file}, or pass --restart to discard it and start fresh.",
+                      file=sys.stderr)
+                sys.exit(1)
         else:
             state = BenchmarkState(state_models, plugin_ids, runner=runner_mode)
 

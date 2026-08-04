@@ -164,4 +164,6 @@ python ai-benchmark.py \
 
 By default, re-running resumes from the saved state. Completed models are skipped, failed models are retried, and newly added models are picked up automatically. Use `--restart` to force a clean run.
 
+If the saved state file is unreadable or fails to load (for example a corrupt `benchmark_state.json`), the run **aborts with a non-zero exit code** rather than silently discarding prior results and starting fresh. Inspect or repair the state file, or pass `--restart` to explicitly discard it.
+
 If the active plugin set changes between runs, the CLI prompts whether to restart or continue. Continuing keeps old data and runs only the newly added plugins for models that already completed.
