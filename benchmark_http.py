@@ -15,7 +15,7 @@ import threading
 import time
 import traceback
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Callable, Iterator, Optional
 
@@ -41,6 +41,16 @@ class SSEParseResult:
     finish_reason: Optional[str]
     usage: dict[str, Any]
     done: bool
+    # Accumulated native ``tool_calls`` deltas (merged by index, with
+    # ``function.arguments`` fragments concatenated). Empty when the model
+    # emitted no tool calls. See ``_merge_tool_calls``.
+    tool_calls: list = field(default_factory=list)
+    # Server-side error surfaced inside the SSE stream (e.g. litellm/Ollama
+    # emitting ``{"error": {...}}`` as a final data line before closing the
+    # connection mid-reasoning). None for healthy streams. Detecting this is
+    # what turns an aborted stream from a silent empty completion into a
+    # diagnosed ``stream_error``.
+    error: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -54,6 +64,11 @@ class StreamResult:
     error: Optional[str]
     finish_reason: Optional[str]
     usage: dict[str, Any]
+    # Native tool calls accumulated from the stream (merged by index),
+    # also rendered into ``text`` as ``<tool_call>{...}</tool_call>`` blocks
+    # so the tool-calling plugin can score them. Empty when the model
+    # emitted no tool calls.
+    tool_calls: list = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -66,6 +81,10 @@ class NonStreamResult:
     gen_time: float
     error: Optional[str]
     finish_reason: Optional[str]
+    # Native tool calls from the response message (also rendered into
+    # ``text`` as ``<tool_call>{...}</tool_call>`` blocks). Empty when the
+    # model emitted no tool calls.
+    tool_calls: list = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -515,9 +534,61 @@ def _post_request_context(source_config, source, body, timeout, stream, log_path
                 pass
 
 
+def _merge_tool_calls(acc: list, fragments) -> list:
+    """Merge SSE ``tool_calls`` delta fragments into the accumulated list.
+
+    Streaming APIs send tool calls as partial objects keyed by ``index``:
+    the first fragment carries ``id``/``type``/``function.name`` and
+    subsequent fragments append ``function.arguments`` chunks. This helper
+    merges them into a list of complete tool-call objects, preserving the
+    server's ``index`` ordering.
+    """
+    result = list(acc)
+    for frag in fragments or []:
+        if not isinstance(frag, dict):
+            continue
+        idx = frag.get("index", 0)
+        while len(result) <= idx:
+            result.append({})
+        slot = result[idx]
+        if frag.get("id"):
+            slot["id"] = frag["id"]
+        if frag.get("type"):
+            slot["type"] = frag["type"]
+        fn_frag = frag.get("function") or {}
+        fn = slot.setdefault("function", {})
+        if fn_frag.get("name"):
+            fn["name"] = fn_frag["name"]
+        if fn_frag.get("arguments"):
+            fn["arguments"] = fn.get("arguments", "") + fn_frag["arguments"]
+    return result
+
+
+def _render_tool_calls(tool_calls: list) -> str:
+    """Render accumulated native tool calls as ``<tool_call>`` blocks.
+
+    Converts the OpenAI-style ``{id, type, function: {name, arguments}}``
+    form (with ``arguments`` as a JSON string) into the benchmark's textual
+    ``<tool_call>{"name": ..., "args": {...}}</tool_call>`` format so the
+    tool-calling plugin can score native tool-call emissions.
+    """
+    blocks = []
+    for tc in tool_calls:
+        fn = tc.get("function") or {}
+        name = fn.get("name") or ""
+        raw_args = fn.get("arguments") or ""
+        try:
+            args = json.loads(raw_args) if raw_args else {}
+        except (json.JSONDecodeError, ValueError):
+            args = raw_args
+        blocks.append(f"<tool_call>{json.dumps({'name': name, 'args': args}, ensure_ascii=False)}</tool_call>")
+    return "\n".join(blocks)
+
+
 def _parse_sse_line(line: str, first_tok: Optional[float], text: str,
                     think_text: str, finish_reason: Optional[str],
-                    usage: dict[str, Any]) -> SSEParseResult:
+                    usage: dict[str, Any],
+                    tool_calls: Optional[list] = None) -> SSEParseResult:
     """Parse a single Server-Sent Events line and update streaming state.
 
     Returns an :class:`SSEParseResult`. ``done`` is True when the ``[DONE]``
@@ -527,28 +598,50 @@ def _parse_sse_line(line: str, first_tok: Optional[float], text: str,
     thinking-capable models' chain-of-thought is preserved separately from
     the final content. Models that don't emit ``reasoning_content`` leave
     ``think_text`` unchanged (empty string).
+
+    ``tool_calls`` accumulates native ``tool_calls`` delta fragments so
+    agent-style responses that emit tool calls instead of text are not
+    silently dropped (previously ``delta["tool_calls"]`` was ignored and
+    those legs scored 0 with empty content).
+
+    A data payload with an ``error`` key (how litellm/Ollama and several
+    OpenAI-compatible proxies signal a mid-stream failure) is surfaced via
+    the returned ``error`` field instead of being swallowed -- the stream
+    that produced it is aborted, not treated as a clean empty completion.
     """
+    tool_calls = tool_calls or []
+    error = None
     if not line.startswith("data: "):
-        return SSEParseResult(first_tok, text, think_text, finish_reason, usage, False)
+        return SSEParseResult(first_tok, text, think_text, finish_reason, usage, False, tool_calls, error)
     payload = line[6:]
     if payload.strip() == "[DONE]":
-        return SSEParseResult(first_tok, text, think_text, finish_reason, usage, True)
+        return SSEParseResult(first_tok, text, think_text, finish_reason, usage, True, tool_calls, error)
     try:
         data = json.loads(payload)
     except json.JSONDecodeError:
-        return SSEParseResult(first_tok, text, think_text, finish_reason, usage, False)
+        return SSEParseResult(first_tok, text, think_text, finish_reason, usage, False, tool_calls, error)
+    if isinstance(data, dict) and data.get("error"):
+        err = data["error"]
+        if isinstance(err, dict):
+            error = err.get("message") or json.dumps(err)
+        else:
+            error = str(err)
+        return SSEParseResult(first_tok, text, think_text, finish_reason, usage, False, tool_calls, error)
     if first_tok is None:
         first_tok = time.time()
     for ch in data.get("choices", []):
         delta = ch.get("delta", {})
         text += delta.get("content", "")
         think_text += delta.get("reasoning_content", "")
+        tc = delta.get("tool_calls")
+        if tc:
+            tool_calls = _merge_tool_calls(tool_calls, tc)
         fr = ch.get("finish_reason")
         if fr:
             finish_reason = fr
     if "usage" in data:
         usage = data["usage"]
-    return SSEParseResult(first_tok, text, think_text, finish_reason, usage, False)
+    return SSEParseResult(first_tok, text, think_text, finish_reason, usage, False, tool_calls, error)
 
 
 def stream_request(source_config, timeout, model, source, prompt, max_tokens=2048,
@@ -580,6 +673,7 @@ def stream_request(source_config, timeout, model, source, prompt, max_tokens=204
     error = None
     finish_reason = None
     usage = {}
+    tool_calls: list = []
     body = _build_request_body(model, prompt, max_tokens, session_seed, temperature, drop_params,
                                stream=True, system_prompt=system_prompt)
     with _post_request_context(source_config, source, body, timeout, True, log_path, log_label,
@@ -604,7 +698,7 @@ def stream_request(source_config, timeout, model, source, prompt, max_tokens=204
                 continue
             try:
                 parsed = _parse_sse_line(
-                    line, first_tok, text, think_text, finish_reason, usage)
+                    line, first_tok, text, think_text, finish_reason, usage, tool_calls)
             except Exception as exc:
                 error = f"SSE parse error: {type(exc).__name__}: {exc}"
                 break
@@ -613,6 +707,14 @@ def stream_request(source_config, timeout, model, source, prompt, max_tokens=204
             think_text = parsed.think_text
             finish_reason = parsed.finish_reason
             usage = parsed.usage
+            tool_calls = parsed.tool_calls
+            if parsed.error:
+                # The server sent ``{"error": ...}`` inside the stream
+                # (litellm/Ollama abort mid-reasoning with EOF). Abort and
+                # surface it: without this the aborted stream was treated
+                # as a clean empty completion (`stream_ok=True`, score 0).
+                error = parsed.error
+                break
             if parsed.done:
                 break
             # Notify the caller of the content delta accumulated in this
@@ -650,9 +752,17 @@ def stream_request(source_config, timeout, model, source, prompt, max_tokens=204
                     # A buggy observer must not abort the stream read.
                     pass
         error = _check_total_timeout(start, timeout, error, finish_reason)
+        # Render any captured native tool calls into the final text so the
+        # tool-calling plugin can score them (they arrive in ``tool_calls``
+        # deltas, not ``content``, and were previously dropped -> empty
+        # response with score 0).
+        if tool_calls:
+            rendered = _render_tool_calls(tool_calls)
+            if rendered:
+                text = (text.rstrip() + "\n" + rendered) if text else rendered
         _log_response(log_path, request.curl_cmd, text, log_label)
     return StreamResult(text, think_text, first_tok, time.time(), error,
-                        finish_reason, usage)
+                        finish_reason, usage, tool_calls)
 
 
 def _read_response_body(resp: requests.Response, stop_event) -> ResponseBodyResult:
@@ -690,6 +800,7 @@ def nonstream_request(source_config, timeout, model, source, prompt, max_tokens=
     think_text = ""
     usage = {}
     finish_reason = None
+    tool_calls: list = []
     body = _build_request_body(model, prompt, max_tokens, session_seed, temperature, drop_params,
                                stream=False, system_prompt=system_prompt)
     raw_resp_text = None
@@ -711,13 +822,23 @@ def nonstream_request(source_config, timeout, model, source, prompt, max_tokens=
                                    "Empty response body", finish_reason)
         try:
             data = json.loads(raw_resp_text)
-            text = data["choices"][0]["message"]["content"]
-            think_text = data["choices"][0]["message"].get("reasoning_content", "")
+            message = data["choices"][0]["message"]
+            text = message["content"] or ""
+            think_text = message.get("reasoning_content", "")
             usage = data.get("usage", {})
             finish_reason = data.get("choices", [{}])[0].get("finish_reason")
+            tool_calls = message.get("tool_calls") or []
+            # Native tool calls (OpenAI-style ``message.tool_calls``) are
+            # rendered into the final text so the tool-calling plugin can
+            # score them, mirroring the streaming path.
+            if tool_calls:
+                rendered = _render_tool_calls(tool_calls)
+                if rendered:
+                    text = (text.rstrip() + "\n" + rendered) if text else rendered
         except (json.JSONDecodeError, KeyError, IndexError, TypeError) as exc:
             error = f"Invalid completion response: {type(exc).__name__}: {exc}"
+            tool_calls = []
         _log_response(log_path, request.curl_cmd, raw_resp_text, log_label)
     error = _check_total_timeout(start, timeout, error, finish_reason)
     return NonStreamResult(text, think_text, usage, time.time() - start,
-                           error, finish_reason)
+                           error, finish_reason, tool_calls)

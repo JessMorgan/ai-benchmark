@@ -269,6 +269,10 @@ The invocation must:
 - use the generated config through OpenCode's supported config override mechanism, such as `OPENCODE_CONFIG` or the documented equivalent;
 - pass the plugin prompt as the task/user prompt;
 - preserve the existing agent system prompt separately for agent targets;
+- register an agent for **every** target (personas with their own prompt; plain
+  model targets with a neutral agent) so `--agent` always selects explicit
+  context and OpenCode's built-in default agent prompt ("answer concisely <4
+  lines", all tools enabled) never applies;
 - avoid interactive confirmation prompts and TUI output;
 - capture stdout and stderr separately;
 - use an argument list, not a shell command string, to avoid quoting/injection issues.
@@ -282,6 +286,16 @@ Thinking content: every invocation passes `--thinking`, because non-interactive 
 - For ordinary model targets, the plugin prompt is the OpenCode task prompt.
 - For existing ai-benchmark agent targets, the `system_prompt` must be supplied as a separate system-level context using the OpenCode-supported mechanism.
 - The plugin prompt must remain the user/task content and must not be silently replaced by the agent prompt.
+- Plain model targets (not personas) must register a **neutral agent** whose
+  system prompt contains no conciseness instruction and whose permission map
+  denies every tool family. Rationale: OpenCode injects its built-in default
+  Build agent prompt ("You MUST answer concisely with fewer than 4 lines" +
+  every tool definition) whenever no agent is selected; on small
+  function-calling-tuned models that prompt causes tool-fixation (the model
+  emits `webfetch`/`task` tool-call dicts instead of the deliverable) and
+  contradicts benchmark prompts that demand full structured output. The
+  neutral agent restores the plain "answer the prompt" contract the HTTP
+  runner provides.
 - Prompt serialization must preserve Unicode and newlines.
 
 ### Timeout and cancellation

@@ -133,6 +133,238 @@ class TestStreamRequest(unittest.TestCase):
         self.assertEqual(result.finish_reason, "stop")
         self.assertEqual(result.usage, {"prompt_tokens": 1, "completion_tokens": 1})
 
+    def test_stream_request_captures_native_tool_calls(self):
+        """Native ``tool_calls`` SSE deltas are merged and rendered into text.
+
+        Agent-style responses emit tool calls in ``delta.tool_calls`` (not
+        ``delta.content``). Previously those deltas were ignored and the
+        leg scored 0 with an empty response; now they must accumulate into
+        the ``tool_calls`` field AND render as ``<tool_call>{...}</tool_call>``
+        blocks in ``text`` so the tool-calling plugin can score them.
+        """
+        source_config = {"Local": {"api_url": "http://localhost/chat/completions", "headers": {}}}
+
+        class MockResponse:
+            status_code = 200
+
+            def iter_lines(self, decode_unicode=False):
+                # First fragment: id + type + function name.
+                yield "data: " + json.dumps({
+                    "choices": [{"delta": {
+                        "tool_calls": [{
+                            "index": 0, "id": "call_abc", "type": "function",
+                            "function": {"name": "get_weather", "arguments": ""},
+                        }]
+                    }, "finish_reason": None}]
+                })
+                # Second fragment: arguments chunk 1.
+                yield "data: " + json.dumps({
+                    "choices": [{"delta": {
+                        "tool_calls": [{"index": 0, "function": {"arguments": "{\"location\": "}}]
+                    }}]
+                })
+                # Third fragment: arguments chunk 2.
+                yield "data: " + json.dumps({
+                    "choices": [{"delta": {
+                        "tool_calls": [{"index": 0, "function": {"arguments": "\"Tokyo\", \"unit\": \"celsius\"}"}}]
+                    }}]
+                })
+                yield "data: [DONE]"
+
+            def close(self):
+                pass
+
+        with mock.patch("requests.post", return_value=MockResponse()):
+            result = stream_request(
+                source_config, timeout=5, model="m", source="Local",
+                prompt="hi", max_tokens=10,
+            )
+
+        self.assertEqual(result.error, None)
+        # Merged arguments across fragments, rendered as the plugin format.
+        self.assertIn("<tool_call>", result.text)
+        self.assertIn('"name": "get_weather"', result.text)
+        self.assertIn('"location": "Tokyo"', result.text)
+        # The raw merged tool call is retained for diagnostics.
+        self.assertEqual(len(result.tool_calls), 1)
+        self.assertEqual(result.tool_calls[0]["function"]["name"], "get_weather")
+        self.assertEqual(
+            json.loads(result.tool_calls[0]["function"]["arguments"]),
+            {"location": "Tokyo", "unit": "celsius"},
+        )
+
+    def test_stream_request_tool_calls_appended_after_content(self):
+        """Content and native tool calls in the same stream are both kept."""
+        source_config = {"Local": {"api_url": "http://localhost/chat/completions", "headers": {}}}
+
+        class MockResponse:
+            status_code = 200
+
+            def iter_lines(self, decode_unicode=False):
+                yield "data: " + json.dumps({
+                    "choices": [{"delta": {"content": "Let me check the weather."}, "finish_reason": None}]
+                })
+                yield "data: " + json.dumps({
+                    "choices": [{"delta": {
+                        "tool_calls": [{
+                            "index": 0, "id": "call_xyz", "type": "function",
+                            "function": {"name": "get_weather", "arguments": "{\"location\": \"Tokyo\"}"},
+                        }]
+                    }, "finish_reason": "tool_calls"}]
+                })
+                yield "data: [DONE]"
+
+            def close(self):
+                pass
+
+        with mock.patch("requests.post", return_value=MockResponse()):
+            result = stream_request(
+                source_config, timeout=5, model="m", source="Local",
+                prompt="hi", max_tokens=10,
+            )
+
+        self.assertEqual(result.error, None)
+        self.assertIn("Let me check the weather.", result.text)
+        self.assertIn("<tool_call>", result.text)
+        # Tool calls are appended AFTER content, never clobbering it.
+        self.assertLess(result.text.index("Let me check"), result.text.index("<tool_call>"))
+
+    def test_stream_request_tool_calls_are_scorable_by_plugin(self):
+        """End-to-end: rendered tool calls score with the real plugin.
+
+        The whole point of capturing native ``tool_calls`` deltas is that
+        the tool-calling plugin (which regex-scans ``<tool_call>`` blocks)
+        can score a response that emitted tools instead of text. This test
+        drives a stream with two parallel tool calls through
+        ``stream_request`` and asserts the assembled text earns a non-zero
+        score from the actual plugin.
+        """
+        from plugins.challenges.tool_calling import ToolCallingPlugin
+
+        source_config = {"Local": {"api_url": "http://localhost/chat/completions", "headers": {}}}
+
+        class MockResponse:
+            status_code = 200
+
+            def iter_lines(self, decode_unicode=False):
+                # Parallel tool calls: two indices interleaved by the server.
+                yield "data: " + json.dumps({
+                    "choices": [{"delta": {
+                        "tool_calls": [{
+                            "index": 0, "id": "call_a", "type": "function",
+                            "function": {"name": "get_weather", "arguments": "{\"location\": \"Tokyo\", \"unit\": \"celsius\"}"},
+                        }, {
+                            "index": 1, "id": "call_b", "type": "function",
+                            "function": {"name": "search_flights", "arguments": "{\"origin\": \"JFK\", \"destination\": \"Tokyo\", \"date\": \"2024-08-15\"}"},
+                        }]
+                    }, "finish_reason": "tool_calls"}]
+                })
+                yield "data: [DONE]"
+
+            def close(self):
+                pass
+
+        with mock.patch("requests.post", return_value=MockResponse()):
+            result = stream_request(
+                source_config, timeout=5, model="m", source="Local",
+                prompt="hi", max_tokens=10,
+            )
+
+        self.assertEqual(result.error, None)
+        self.assertEqual(len(result.tool_calls), 2, "both parallel tool calls must be captured")
+        # The rendered text must be scorable by the real plugin.
+        score = ToolCallingPlugin().score(result.text)
+        self.assertGreater(score, 0.0,
+                           "rendered native tool calls should earn plugin points, not 0")
+
+    def test_stream_request_surfaces_sse_error_line(self):
+        """SSE ``{"error": …}`` payloads abort the stream with the error.
+
+        litellm/Ollama signal a mid-reasoning connection drop (EOF) by
+        emitting a final data line ``{"error": {...}}`` and closing the
+        stream without ``[DONE]``. Previously ``_parse_sse_line`` ignored
+        the payload (it only reads ``choices``), so the aborted stream
+        looked like a clean empty completion: ``stream_ok=True``, score 0.
+        Now the error must surface on the result so ``benchmark_core``
+        records ``stream_ok=False`` + ``stream_error`` instead.
+        """
+        source_config = {"Local": {"api_url": "http://localhost/chat/completions", "headers": {}}}
+
+        class MockResponse:
+            status_code = 200
+
+            def iter_lines(self, decode_unicode=False):
+                # Model starts reasoning, then the backend dies with EOF.
+                yield "data: " + json.dumps({
+                    "choices": [{"delta": {"reasoning_content": "Let me think about the tools..."}, "finish_reason": None}]
+                })
+                yield "data: " + json.dumps({
+                    "error": {"message": "litellm.APIConnectionError: Ollama_chatException - EOF", "type": None},
+                })
+                # No [DONE] sentinel -- stream just ends after the error.
+
+            def close(self):
+                pass
+
+        with mock.patch("requests.post", return_value=MockResponse()):
+            result = stream_request(
+                source_config, timeout=5, model="m", source="Local",
+                prompt="hi", max_tokens=10,
+            )
+
+        self.assertIsNotNone(result.error)
+        self.assertIn("EOF", result.error)
+        self.assertIn("Ollama_chatException", result.error)
+        # Reasoning captured before the abort is preserved for think.txt.
+        self.assertIn("Let me think", result.think_text)
+        # No content was produced, and no finish_reason was ever seen.
+        self.assertEqual(result.text, "")
+        self.assertIsNone(result.finish_reason)
+
+    def test_stream_request_surfaces_plain_error_string(self):
+        """An SSE ``{"error": "string"}`` form is surfaced too."""
+        source_config = {"Local": {"api_url": "http://localhost/chat/completions", "headers": {}}}
+
+        class MockResponse:
+            status_code = 200
+
+            def iter_lines(self, decode_unicode=False):
+                yield "data: " + json.dumps({"error": "upstream failure"})
+
+            def close(self):
+                pass
+
+        with mock.patch("requests.post", return_value=MockResponse()):
+            result = stream_request(
+                source_config, timeout=5, model="m", source="Local",
+                prompt="hi", max_tokens=10,
+            )
+        self.assertEqual(result.error, "upstream failure")
+
+    def test_stream_request_without_tool_calls_unchanged(self):
+        """Ordinary content streams keep an empty ``tool_calls`` field."""
+        source_config = {"Local": {"api_url": "http://localhost/chat/completions", "headers": {}}}
+
+        class MockResponse:
+            status_code = 200
+
+            def iter_lines(self, decode_unicode=False):
+                yield "data: " + json.dumps({
+                    "choices": [{"delta": {"content": "Hello"}, "finish_reason": "stop"}]
+                })
+                yield "data: [DONE]"
+
+            def close(self):
+                pass
+
+        with mock.patch("requests.post", return_value=MockResponse()):
+            result = stream_request(
+                source_config, timeout=5, model="m", source="Local",
+                prompt="hi", max_tokens=10,
+            )
+        self.assertEqual(result.text, "Hello")
+        self.assertEqual(result.tool_calls, [])
+
     def test_stream_request_respects_stop_event(self):
         """stream_request returns 'Cancelled' when stop_event is set mid-stream."""
         source_config = {"Local": {"api_url": "http://localhost/chat/completions", "headers": {}}}
@@ -198,6 +430,49 @@ class TestNonstreamRequest(unittest.TestCase):
         self.assertEqual(result.text, "Hello world")
         self.assertEqual(result.finish_reason, "stop")
         self.assertEqual(result.usage, {"prompt_tokens": 1, "completion_tokens": 2})
+
+    def test_nonstream_request_captures_native_tool_calls(self):
+        """Non-streaming ``message.tool_calls`` render into text + field."""
+        source_config = {"Local": {"api_url": "http://localhost/chat/completions", "headers": {}}}
+
+        body = json.dumps({
+            "choices": [{
+                "message": {
+                    "content": None,
+                    "tool_calls": [{
+                        "id": "call_1", "type": "function",
+                        "function": {
+                            "name": "search_flights",
+                            "arguments": "{\"origin\": \"JFK\", \"destination\": \"Tokyo\", \"date\": \"2024-08-15\"}",
+                        },
+                    }],
+                },
+                "finish_reason": "tool_calls",
+            }],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 2},
+        })
+
+        class MockResponse:
+            status_code = 200
+
+            def iter_content(self, chunk_size=8192):
+                yield body.encode("utf-8")
+
+            def close(self):
+                pass
+
+        with mock.patch("requests.post", return_value=MockResponse()):
+            result = nonstream_request(
+                source_config, timeout=5, model="m", source="Local",
+                prompt="hi", max_tokens=10,
+            )
+
+        self.assertEqual(result.error, None)
+        self.assertEqual(result.finish_reason, "tool_calls")
+        self.assertIn("<tool_call>", result.text)
+        self.assertIn('"name": "search_flights"', result.text)
+        self.assertEqual(len(result.tool_calls), 1)
+        self.assertEqual(result.tool_calls[0]["function"]["name"], "search_flights")
 
     def test_nonstream_request_respects_stop_event(self):
         """nonstream_request returns 'Cancelled' when stop_event is set mid-read."""
