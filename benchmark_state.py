@@ -71,6 +71,11 @@ class BenchmarkState:
                 self._model_info[name][f"{pid}_tps"] = None
                 self._model_info[name][f"{pid}_response_time"] = None
                 self._model_info[name][f"{pid}_output_tokens"] = None
+                # Thinking/reasoning token count (from ``reasoning_content``)
+                # and the combined content+thinking total, so reports can
+                # break token usage down. ``None`` until the plugin runs.
+                self._model_info[name][f"{pid}_thinking_tokens"] = None
+                self._model_info[name][f"{pid}_total_tokens"] = None
                 # Empty-response classification (None when the response had
                 # content; otherwise one of "error", "thinking-truncation",
                 # "thinking-only", "max-tokens", "empty"). Mirrored from
@@ -456,6 +461,8 @@ class BenchmarkState:
                         state._model_info[name].setdefault(f"{pid}_tps", None)
                         state._model_info[name].setdefault(f"{pid}_response_time", None)
                         state._model_info[name].setdefault(f"{pid}_output_tokens", None)
+                        state._model_info[name].setdefault(f"{pid}_thinking_tokens", None)
+                        state._model_info[name].setdefault(f"{pid}_total_tokens", None)
                     if state._model_info[name].get("status") == "completed":
                         state._model_info[name]["status"] = "pending"
                 elif info.get("status") == "completed":

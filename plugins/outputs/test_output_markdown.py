@@ -78,6 +78,19 @@ class TestMarkdownOutputPlugin(unittest.TestCase):
         for label in ("thinking-truncation", "thinking-only", "max-tokens", "empty", "error"):
             self.assertNotIn(label, md)
 
+    def test_gen_markdown_includes_thinking_content_total_token_columns(self):
+        """The Markdown table breaks token usage into Think Tok / Cont Tok
+        / Total Tok columns per plugin."""
+        results = [dict(self.sample_results[0])]
+        results[0]["rate-limiter_thinking_tokens"] = 40
+        results[0]["rate-limiter_total_tokens"] = 140
+        md = self.plugin.generate(results, self.plugins)
+        self.assertIn("Rate Limiter Think Tok", md)
+        self.assertIn("Rate Limiter Cont Tok", md)
+        self.assertIn("Rate Limiter Total Tok", md)
+        # 40 | 100 | 140 for the thinking/content/total split.
+        self.assertIn("| 40 | 100 | 140 |", md)
+
     def test_gen_markdown_no_response_links_without_output_dir(self):
         md = self.plugin.generate(self.sample_results, self.plugins)
         self.assertNotIn("[view]", md)

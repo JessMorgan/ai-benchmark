@@ -3,7 +3,7 @@ import os
 from datetime import datetime
 
 from benchmark_plugin import BenchmarkOutputPlugin
-from benchmark_outputs import sanitize_filename, _plugin_total_score, _numeric_score
+from benchmark_outputs import sanitize_filename, _plugin_total_score, _numeric_score, _plugin_token_counts
 
 
 class HTMLOutputPlugin(BenchmarkOutputPlugin):
@@ -40,9 +40,12 @@ class HTMLOutputPlugin(BenchmarkOutputPlugin):
                     score_cell = f"{score_val}"
                 empty_reason = r.get(f"{p.id}_empty_reason", "")
                 empty_cell = f'<td class="empty-reason" title="{html_lib.escape(str(empty_reason))}">{html_lib.escape(str(empty_reason))}</td>' if empty_reason else "<td></td>"
+                thinking, content, total = _plugin_token_counts(r, p.id)
                 cells += (f'<td>{r.get(f"{p.id}_response_time","-")}</td>'
                           f'<td>{r.get(f"{p.id}_tps","-")}</td>'
-                          f'<td>{r.get(f"{p.id}_output_tokens","-")}</td>'
+                          f'<td>{thinking}</td>'
+                          f'<td>{content}</td>'
+                          f'<td><strong>{total}</strong></td>'
                           f'<td><strong>{score_cell}</strong></td>'
                           f'{empty_cell}')
             cells += (f'<td><strong>{tot}</strong></td>'
@@ -92,7 +95,9 @@ class HTMLOutputPlugin(BenchmarkOutputPlugin):
 
         header_cells = "<th>Model</th><th>Runner</th><th>Load(s)</th>"
         for p in active_plugins:
-            header_cells += f"<th>{p.name} Resp(s)</th><th>{p.name} TPS</th><th>{p.name} Tok</th><th>{p.name} Score</th><th>{p.name} Reason</th>"
+            header_cells += (f"<th>{p.name} Resp(s)</th><th>{p.name} TPS</th>"
+                             f"<th>{p.name} Think Tok</th><th>{p.name} Cont Tok</th><th>{p.name} Total Tok</th>"
+                             f"<th>{p.name} Score</th><th>{p.name} Reason</th>")
         header_cells += "<th>Total</th><th>Time</th><th>Mode</th><th>Status</th>"
 
         seed_html = f"<br><strong>Seed:</strong> {session_seed}" if session_seed is not None else ""

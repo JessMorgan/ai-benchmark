@@ -631,9 +631,16 @@ def _plugin_cell_block(pid, s, p, sleeping_lookup=None):
         return f"{text:^{PLUGIN_BLOCK_WIDTH}}"
     # Standard 4-cell results layout -- widths sum to 5+6+6+6=23 with 3
     # single-space separators between cells = 26 chars, matching the
-    # merged status width.
+    # merged status width. The token cell shows the TOTAL (thinking +
+    # content) count; the per-kind split is exposed in the CSV/MD/HTML/PDF
+    # reports. Falls back to the legacy content-only count for state files
+    # that predate the thinking/content split.
     sc = _fmt_value(s.get(f"{pid}_score"))
-    tok = _fmt_value(s.get(f"{pid}_output_tokens"), "d")
+    total_tokens = s.get(f"{pid}_total_tokens")
+    tok = _fmt_value(
+        total_tokens if total_tokens is not None else s.get(f"{pid}_output_tokens"),
+        "d",
+    )
     tm = _fmt_value(s.get(f"{pid}_response_time"))
     tps = _fmt_value(s.get(f"{pid}_tps"))
     return f"{sc:>5} {tok:>6} {tm:>6} {tps:>6}"

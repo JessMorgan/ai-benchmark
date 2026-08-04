@@ -3,7 +3,7 @@ import io
 import os
 
 from benchmark_plugin import BenchmarkOutputPlugin
-from benchmark_outputs import _plugin_total_score
+from benchmark_outputs import _plugin_total_score, _plugin_token_counts
 
 
 class CSVOutputPlugin(BenchmarkOutputPlugin):
@@ -25,7 +25,9 @@ class CSVOutputPlugin(BenchmarkOutputPlugin):
         headers = ["Model", "Runner", "Source", "TTFT_s"]
         for p in active_plugins:
             headers.extend([
-                f"{p.id}_Response_s", f"{p.id}_Output_Tokens", f"{p.id}_TPS",
+                f"{p.id}_Response_s", f"{p.id}_Thinking_Tokens",
+                f"{p.id}_Content_Tokens", f"{p.id}_Total_Tokens",
+                f"{p.id}_TPS",
                 f"{p.id}_Score_{int(p.max_score)}", f"{p.id}_Empty_Reason",
             ])
         headers.extend(["Total", "Time_s", "Mode", "Status", "Error"])
@@ -36,9 +38,12 @@ class CSVOutputPlugin(BenchmarkOutputPlugin):
             m = "stream" if r.get('stream_ok') else "non-streaming"
             row = [r['model'], r.get('runner', 'http'), r.get('source', ''), r.get('ttft') or '']
             for p in active_plugins:
+                thinking, content, total = _plugin_token_counts(r, p.id)
                 row.extend([
                     r.get(f"{p.id}_response_time", ''),
-                    r.get(f"{p.id}_output_tokens", ''),
+                    thinking,
+                    content,
+                    total,
                     r.get(f"{p.id}_tps", ''),
                     r.get(f"{p.id}_score", ''),
                     r.get(f"{p.id}_empty_reason", ''),

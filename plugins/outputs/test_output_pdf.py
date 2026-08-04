@@ -50,6 +50,20 @@ class TestPDFOutputPlugin(unittest.TestCase):
             if pdf_path:
                 self.assertTrue(os.path.exists(pdf_path))
 
+    def test_gen_pdf_with_thinking_token_split(self):
+        """PDF generation must not crash when results carry the
+        thinking/content/total token split (binary output; presence of
+        the file is the assertion)."""
+        results = [dict(self.sample_results[0])]
+        results[0]["rate-limiter_thinking_tokens"] = 40
+        results[0]["rate-limiter_total_tokens"] = 140
+        results[0]["moe-dense_thinking_tokens"] = 10
+        results[0]["moe-dense_total_tokens"] = 60
+        with tempfile.TemporaryDirectory() as tmpdir:
+            pdf_path = self.plugin.generate(results, self.plugins, tmpdir)
+            if pdf_path:
+                self.assertTrue(os.path.exists(pdf_path))
+
     def test_output_generators_render_partial_failure(self):
         results = [
             {

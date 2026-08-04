@@ -156,6 +156,7 @@ import time
 # alongside the {pid}_score field in __init__.
 SCORE_SUFFIXES = (
     "score", "tps", "response_time", "output_tokens",
+    "thinking_tokens", "total_tokens",
     "stream_ok", "truncated", "repeating", "rubric",
 )
 

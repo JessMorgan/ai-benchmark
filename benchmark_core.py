@@ -627,6 +627,8 @@ def _run_plugin_task(target_name, api_model, source, plugin, source_config, time
                             "rubric": [],
                             "response_time": response_time,
                             "output_tokens": int(count_tokens(text)),
+                            "thinking_tokens": int(count_tokens(think_text)),
+                            "total_tokens": int(count_tokens(text)) + int(count_tokens(think_text)),
                             "tps": None,
                             "seed": session_seed,
                             "timestamp": datetime.now().isoformat(),
@@ -891,6 +893,13 @@ def _run_plugin_task(target_name, api_model, source, plugin, source_config, time
     # Streaming failures and OpenCode both arrive here without the HTTP
     # usage-based bookkeeping used by some non-streaming responses.
     output_tokens = int(count_tokens(text))
+    # Thinking/reasoning tokens are counted from ``think_text`` and stored
+    # alongside the content count so reports can break the total down. The
+    # content-only count stays in ``{pid}_output_tokens`` (backward
+    # compatible); the split lives in ``{pid}_thinking_tokens`` and
+    # ``{pid}_total_tokens``.
+    thinking_tokens = int(count_tokens(think_text))
+    total_tokens = output_tokens + thinking_tokens
     if gen_time > 0:
         tps = round(output_tokens / gen_time, 2)
 
@@ -977,6 +986,8 @@ def _run_plugin_task(target_name, api_model, source, plugin, source_config, time
             "rubric": rubric,
             "response_time": response_time,
             "output_tokens": output_tokens,
+            "thinking_tokens": thinking_tokens,
+            "total_tokens": total_tokens,
             "tps": tps,
             "seed": session_seed,
             "timestamp": datetime.now().isoformat(),
@@ -1010,6 +1021,8 @@ def _run_plugin_task(target_name, api_model, source, plugin, source_config, time
         f"{pid}_rubric": rubric,
         f"{pid}_response_time": response_time,
         f"{pid}_output_tokens": output_tokens,
+        f"{pid}_thinking_tokens": thinking_tokens,
+        f"{pid}_total_tokens": total_tokens,
         f"{pid}_tps": tps,
         f"{pid}_truncated": truncated,
         f"{pid}_repeating": repeating,
@@ -1076,6 +1089,8 @@ def run_model(model_name, source, state, active_plugins, source_config, timeout,
             r[f"{pid}_score"] = existing[score_key]
             r[f"{pid}_response_time"] = existing[f"{pid}_response_time"]
             r[f"{pid}_output_tokens"] = existing[f"{pid}_output_tokens"]
+            r[f"{pid}_thinking_tokens"] = existing.get(f"{pid}_thinking_tokens")
+            r[f"{pid}_total_tokens"] = existing.get(f"{pid}_total_tokens")
             r[f"{pid}_tps"] = existing[f"{pid}_tps"]
             r[f"{pid}_stream_ok"] = existing.get(f"{pid}_stream_ok", True)
             r[f"{pid}_empty_reason"] = existing.get(f"{pid}_empty_reason")
@@ -1181,6 +1196,8 @@ def _run_plugins(target_name, api_model, source, state, active_plugins, plugins_
                         f"{pid}_tps": result[f"{pid}_tps"],
                         f"{pid}_response_time": result[f"{pid}_response_time"],
                         f"{pid}_output_tokens": result[f"{pid}_output_tokens"],
+                        f"{pid}_thinking_tokens": result.get(f"{pid}_thinking_tokens"),
+                        f"{pid}_total_tokens": result.get(f"{pid}_total_tokens"),
                         f"{pid}_empty_reason": result.get(f"{pid}_empty_reason")})
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
@@ -1208,6 +1225,8 @@ def _run_plugins(target_name, api_model, source, state, active_plugins, plugins_
                 f"{pid}_score": "fail",
                 f"{pid}_response_time": "fail",
                 f"{pid}_output_tokens": "fail",
+                f"{pid}_thinking_tokens": "fail",
+                f"{pid}_total_tokens": "fail",
                 f"{pid}_tps": "fail",
                 f"{pid}_stream_ok": False,
             }

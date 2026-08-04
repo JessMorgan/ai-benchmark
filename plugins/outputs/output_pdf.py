@@ -2,7 +2,7 @@ import os
 from datetime import datetime
 
 from benchmark_plugin import BenchmarkOutputPlugin
-from benchmark_outputs import _plugin_total_score, _numeric_score
+from benchmark_outputs import _plugin_total_score, _numeric_score, _plugin_token_counts
 
 
 class PDFOutputPlugin(BenchmarkOutputPlugin):
@@ -46,8 +46,15 @@ class PDFOutputPlugin(BenchmarkOutputPlugin):
             col_w = [28, 12, 9]
             headers = ["Model", "Runner", "Load"]
         for p in active_plugins:
-            col_w.extend([9, 9, 9, 9])
-            headers.extend([f"{p.id[:3].upper()}Rsp", f"{p.id[:3].upper()}TPS", f"{p.id[:3].upper()}Tok", f"{p.id[:3].upper()}Sc"])
+            # Keep the token columns narrow (6 units) so the extra
+            # thinking/content/total columns don't widen the already
+            # page-bound PDF table more than necessary.
+            col_w.extend([9, 8, 6, 6, 6, 8])
+            headers.extend([
+                f"{p.id[:3].upper()}Rsp", f"{p.id[:3].upper()}TPS",
+                f"{p.id[:3].upper()}Thk", f"{p.id[:3].upper()}Ctn",
+                f"{p.id[:3].upper()}Tot", f"{p.id[:3].upper()}Sc",
+            ])
         col_w.extend([9, 9])
         headers.extend(["Tot", "Mode"])
         pdf.set_font("Helvetica", "B", 6.5)
@@ -63,10 +70,13 @@ class PDFOutputPlugin(BenchmarkOutputPlugin):
                 vals.append(str(r.get("runner", "http")))
             vals.append(str(r.get('ttft') or '-'))
             for p in active_plugins:
+                thinking, content, total = _plugin_token_counts(r, p.id)
                 vals.extend([
                     str(r.get(f'{p.id}_response_time', '-')),
                     str(r.get(f'{p.id}_tps', '-')),
-                    str(r.get(f'{p.id}_output_tokens', '-')),
+                    str(thinking),
+                    str(content),
+                    str(total),
                     str(r.get(f'{p.id}_score', '-')),
                 ])
             if r["status"] == "ok":

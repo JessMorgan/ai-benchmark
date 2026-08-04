@@ -222,7 +222,9 @@ class TestPluginCellBlock(unittest.TestCase):
             ({
                 "running_pids": [],
                 "rate-limiter_score": 95.0,
-                "rate-limiter_output_tokens": 123,
+                "rate-limiter_output_tokens": 100,
+                "rate-limiter_thinking_tokens": 23,
+                "rate-limiter_total_tokens": 123,
                 "rate-limiter_response_time": 45.6,
                 "rate-limiter_tps": 2.5,
             }, None),                                                   # completed
@@ -442,7 +444,9 @@ class TestPluginCellBlock(unittest.TestCase):
         s = {
             "running_pids": [],
             "rate-limiter_score": 95.0,
-            "rate-limiter_output_tokens": 123,
+            "rate-limiter_output_tokens": 100,
+            "rate-limiter_thinking_tokens": 23,
+            "rate-limiter_total_tokens": 123,
             "rate-limiter_response_time": 45.6,
             "rate-limiter_tps": 2.5,
         }
@@ -451,9 +455,11 @@ class TestPluginCellBlock(unittest.TestCase):
         # No bracket text in completed state.
         self.assertNotIn("[", block)
         self.assertNotIn("]", block)
-        # Numeric results present in their respective columns.
+        # Numeric results present in their respective columns. The token
+        # cell shows the TOTAL (123), not the content-only count (100).
         self.assertIn("95.0", block)
         self.assertIn("123", block)
+        self.assertNotIn(" 100 ", block)
         self.assertIn("45.6", block)
         self.assertIn("2.5", block)
         # Block width matches PLUGIN_BLOCK_WIDTH (no separate st column).
@@ -461,6 +467,23 @@ class TestPluginCellBlock(unittest.TestCase):
         # Last token is the tps value (no trailing '-' st glyph).
         self.assertEqual(block.strip().split()[-1], "2.5",
                          "block ends with the tps value (st column deleted)")
+
+    def test_completed_plugin_falls_back_to_content_tokens_without_total(self):
+        """Legacy state files that predate the thinking/content split only
+        carry ``{pid}_output_tokens`` (content); the cell must still render
+        a numeric token count instead of ``-``."""
+        s = {
+            "running_pids": [],
+            "rate-limiter_score": 95.0,
+            "rate-limiter_output_tokens": 123,
+            "rate-limiter_response_time": 45.6,
+            "rate-limiter_tps": 2.5,
+        }
+        block = ai_benchmark._plugin_cell_block(
+            "rate-limiter", s, self.p_streaming, None)
+        # The legacy content-only count must surface as the token cell.
+        self.assertIn("123", block)
+        self.assertEqual(len(block), ai_benchmark.PLUGIN_BLOCK_WIDTH)
 
     def test_streaming_plugin_shows_tok_count_after_bytes_accumulate(self):
         """Once the streaming callback has accumulated chars (mocked

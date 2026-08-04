@@ -23,6 +23,35 @@ def _plugin_total_score(result, active_plugins):
     return total
 
 
+def _plugin_token_counts(result, plugin_id):
+    """Return ``(thinking, content, total)`` token counts for a plugin result.
+
+    ``{pid}_output_tokens`` is the content-only count (backward compatible);
+    ``{pid}_thinking_tokens`` and ``{pid}_total_tokens`` are the split added
+    for thinking models. Handles legacy state files that predate the split
+    by deriving ``thinking=0`` / ``total=content`` from the content-only
+    value, and non-numeric (``fail``/``-``) values by passing them through
+    unchanged.
+    """
+    content = result.get(f"{plugin_id}_output_tokens", "-")
+    thinking = result.get(f"{plugin_id}_thinking_tokens", "-")
+    total = result.get(f"{plugin_id}_total_tokens", "-")
+    # Legacy pre-split results: derive the split from the content-only count.
+    if thinking in (None, "-", "") and isinstance(content, (int, float)):
+        thinking = 0
+    if total in (None, "-", "") and isinstance(content, (int, float)):
+        thinking = thinking if isinstance(thinking, (int, float)) else 0
+        total = int(content) + int(thinking)
+    # Non-numeric content (``fail``) from a legacy state file predating the
+    # split: mirror it into thinking/total so old and new fail rows render
+    # identically (new fail rows carry ``fail`` in all three fields).
+    if isinstance(content, str) and not isinstance(thinking, (int, float)):
+        thinking = content if thinking in (None, "-", "") else thinking
+    if isinstance(content, str) and not isinstance(total, (int, float)):
+        total = content if total in (None, "-", "") else total
+    return thinking, content, total
+
+
 def _numeric_score(result, plugin_id, default=0):
     """Return a numeric score for sorting, falling back to default for non-numeric values."""
     score = result.get(f"{plugin_id}_score", default)

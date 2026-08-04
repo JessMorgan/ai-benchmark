@@ -91,3 +91,40 @@ class TestCSVOutputPlugin(unittest.TestCase):
         idx = headers.index("rate-limiter_Empty_Reason")
         for row in rows[1:]:
             self.assertEqual(row[idx], "")
+
+    def test_gen_csv_includes_thinking_content_total_token_columns(self):
+        """The CSV breaks token usage into thinking / content / total
+        columns per plugin (thinking from ``reasoning_content``)."""
+        results = [dict(self.sample_results[0])]
+        results[0]["rate-limiter_thinking_tokens"] = 40
+        results[0]["rate-limiter_total_tokens"] = 140
+        csv_text = self.plugin.generate(results, self.plugins)
+        rows = [line.split(",") for line in csv_text.strip().splitlines()]
+        headers = rows[0]
+        for col in ("rate-limiter_Thinking_Tokens",
+                    "rate-limiter_Content_Tokens",
+                    "rate-limiter_Total_Tokens"):
+            self.assertIn(col, headers)
+        t_idx = headers.index("rate-limiter_Thinking_Tokens")
+        c_idx = headers.index("rate-limiter_Content_Tokens")
+        tot_idx = headers.index("rate-limiter_Total_Tokens")
+        for row in rows[1:]:
+            self.assertEqual(row[t_idx], "40")
+            self.assertEqual(row[c_idx], "100")
+            self.assertEqual(row[tot_idx], "140")
+
+    def test_gen_csv_derives_total_when_split_absent(self):
+        """Legacy results without thinking/total tokens derive total from
+        the content-only count (thinking = 0)."""
+        csv_text = self.plugin.generate(self.sample_results, self.plugins)
+        rows = [line.split(",") for line in csv_text.strip().splitlines()]
+        headers = rows[0]
+        t_idx = headers.index("rate-limiter_Thinking_Tokens")
+        c_idx = headers.index("rate-limiter_Content_Tokens")
+        tot_idx = headers.index("rate-limiter_Total_Tokens")
+        for row in rows[1:]:
+            if row[headers.index("Model")] != "test-model":
+                continue
+            self.assertEqual(row[t_idx], "0")
+            self.assertEqual(row[c_idx], "100")
+            self.assertEqual(row[tot_idx], "100")

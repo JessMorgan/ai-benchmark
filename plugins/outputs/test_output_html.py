@@ -88,6 +88,20 @@ class TestHTMLOutputPlugin(unittest.TestCase):
         html = self.plugin.generate(self.sample_results, self.plugins)
         self.assertNotIn("responses/", html)
 
+    def test_gen_html_includes_thinking_content_total_token_columns(self):
+        """The HTML table breaks token usage into Think Tok / Cont Tok /
+        Total Tok header cells, with Total Tok emphasised."""
+        results = [dict(self.sample_results[0])]
+        results[0]["rate-limiter_thinking_tokens"] = 40
+        results[0]["rate-limiter_total_tokens"] = 140
+        html = self.plugin.generate(results, self.plugins)
+        self.assertIn("Rate Limiter Think Tok", html)
+        self.assertIn("Rate Limiter Cont Tok", html)
+        self.assertIn("Rate Limiter Total Tok", html)
+        self.assertIn("<td>40</td>", html)
+        self.assertIn("<td>100</td>", html)
+        self.assertIn("<td><strong>140</strong></td>", html)
+
     def test_output_generators_render_partial_failure(self):
         results = [
             {
