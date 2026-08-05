@@ -43,7 +43,7 @@ from plugins import discover_plugins
 
 class TestOpenCodeMapping(unittest.TestCase):
     def test_cli_imports_model_mapping_helper(self):
-        spec = importlib.util.spec_from_file_location("ai_benchmark_cli_test", "ai-benchmark.py")
+        spec = importlib.util.spec_from_file_location("ai_benchmark_cli_test", "benchmark/cli.py")
         self.assertIsNotNone(spec)
         self.assertIsNotNone(spec.loader)
         module = importlib.util.module_from_spec(spec)

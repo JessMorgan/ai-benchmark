@@ -4,6 +4,9 @@ The cell tests use a lightweight fake window. This module additionally starts
 curses in a real child process attached to a pseudoterminal, which catches
 terminal-size, bottom-row, and initialization problems that a fake window
 cannot reproduce.
+
+The CLI lives in ``benchmark/cli.py`` (the root ``ai-benchmark.py`` is a thin
+launcher); the child process loads it via ``spec_from_file_location``.
 """
 import os
 import pathlib
@@ -17,7 +20,7 @@ import unittest
 
 
 _THIS_DIR = pathlib.Path(__file__).resolve().parent
-_AI_BENCHMARK_PATH = _THIS_DIR.parent / "ai-benchmark.py"
+_AI_BENCHMARK_PATH = _THIS_DIR.parent / "benchmark" / "cli.py"
 
 
 class TestTuiPty(unittest.TestCase):

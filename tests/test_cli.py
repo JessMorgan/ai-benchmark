@@ -927,7 +927,7 @@ class TestStopEventInterruption(unittest.TestCase):
 class TestRunnerPipeline(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        spec = importlib.util.spec_from_file_location("ai_benchmark_pipeline_test", "ai-benchmark.py")
+        spec = importlib.util.spec_from_file_location("ai_benchmark_pipeline_test", "benchmark/cli.py")
         cls.module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(cls.module)
 
@@ -1011,7 +1011,7 @@ class TestScriptedMode(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         import importlib.util
-        spec = importlib.util.spec_from_file_location("ai_benchmark", "ai-benchmark.py")
+        spec = importlib.util.spec_from_file_location("ai_benchmark", "benchmark/cli.py")
         cls.ai_benchmark = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(cls.ai_benchmark)
 
@@ -1042,7 +1042,7 @@ class TestConfigFallback(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         import importlib.util
-        spec = importlib.util.spec_from_file_location("ai_benchmark", "ai-benchmark.py")
+        spec = importlib.util.spec_from_file_location("ai_benchmark", "benchmark/cli.py")
         cls.ai_benchmark = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(cls.ai_benchmark)
 
@@ -1192,7 +1192,7 @@ class TestRunInfo(unittest.TestCase):
     def test_write_run_info_persists_status(self):
         """_write_run_info persists the supplied status to run-info.json."""
         import importlib.util
-        spec = importlib.util.spec_from_file_location("ai_benchmark", "ai-benchmark.py")
+        spec = importlib.util.spec_from_file_location("ai_benchmark", "benchmark/cli.py")
         ai_benchmark = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(ai_benchmark)
 
@@ -1267,7 +1267,7 @@ class TestRunInfo(unittest.TestCase):
                     "{'retries': 1, 'total_sleep_time': 12.0}\n"
                     "\n"
                     "spec = importlib.util.spec_from_file_location("
-                    "    'ai_benchmark', os.path.abspath('ai-benchmark.py'))\n"
+                    "    'ai_benchmark', os.path.abspath('benchmark/cli.py'))\n"
                     "ai = importlib.util.module_from_spec(spec)\n"
                     "spec.loader.exec_module(ai)\n"
                     "run_info = ai._inject_429_stats({})\n"

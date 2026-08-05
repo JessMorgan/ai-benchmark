@@ -1,7 +1,8 @@
-"""Tests for the per-plugin merged-cell visualization in ``ai-benchmark.py``.
+"""Tests for the per-plugin merged-cell visualization in ``benchmark.cli``.
 
-Python identifiers disallow hyphens so the file ``ai-benchmark.py`` cannot
-be imported by ``import ai_benchmark`` directly. We load the module via
+Python identifiers disallow hyphens so the root file ``ai-benchmark.py`` cannot
+be imported by ``import ai_benchmark`` directly. The CLI lives in
+``benchmark/cli.py``; we load that module via
 ``importlib.util.spec_from_file_location`` so unittest can still exercise
 the helper functions.
 """
@@ -14,7 +15,7 @@ from unittest import mock
 
 
 _THIS_DIR = pathlib.Path(__file__).resolve().parent
-_AI_BENCHMARK_PATH = _THIS_DIR.parent / "ai-benchmark.py"
+_AI_BENCHMARK_PATH = _THIS_DIR.parent / "benchmark" / "cli.py"
 _spec = importlib.util.spec_from_file_location("_ai_benchmark_module", _AI_BENCHMARK_PATH)
 if _spec is None or _spec.loader is None:
     raise ImportError(f"cannot load spec for {_AI_BENCHMARK_PATH}")
@@ -798,7 +799,7 @@ class TestPluginCellBlock(unittest.TestCase):
 
 
 class TestBuildLiveIndicators(unittest.TestCase):
-    """Tests for ``_build_live_indicators`` in ai-benchmark.py.
+    """Tests for ``_build_live_indicators`` in benchmark.cli.
 
     The helper feeds the per-model row of the live TUI's ``Live:``
     section. With parallel plugin threads (``max_workers > 1``), a
