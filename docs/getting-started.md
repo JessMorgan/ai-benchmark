@@ -5,19 +5,20 @@ This guide walks you through installing AI Benchmark, configuring it, and runnin
 ## Prerequisites
 
 - Python 3.10 or newer
-- `pip` or another Python package manager
+- [uv](https://docs.astral.sh/uv/) (the project uses `uv` for environment and dependency management)
 - One or more OpenAI-compatible API endpoints
 
 ## Installation
 
 1. Clone or download the repository.
-2. Install the required packages:
+2. Create the environment and install all dependencies (runtime + dev) from
+   `pyproject.toml`, pinned by `uv.lock`:
 
 ```sh
-pip install -r requirements.txt
+uv sync
 ```
 
-If you want PDF report generation, `fpdf2` is required (already listed in `requirements.txt`).
+If you want PDF report generation, `fpdf2` is required (already installed by `uv sync`).
 
 ## Generate a Default Config
 

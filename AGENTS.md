@@ -20,18 +20,22 @@ to know what to grep first.
   - **`benchmark/completions.py`** — `--generate-shell-completion`.
   - **`benchmark/opencode.py`** — the optional OpenCode subprocess runner.
 - **`plugins/challenges/`** — 13 task plugins; auto-discovered and metadata-validated. **`plugins/outputs/`** — md/csv/html/pdf output plugins.
-- **`tests/`** — unittest suite. **`pyproject.toml`** — project metadata, runtime deps, dev extras, pytest/coverage/mypy/ruff config.
+- **`tests/`** — unittest suite. **`pyproject.toml`** — project metadata, runtime deps, `dev` dependency group, pytest/coverage/mypy/ruff config. **`uv.lock`** — pinned dependency tree (managed by `uv`).
 
 ## Smoke / test commands (no API key needed)
 
+The project is managed with `uv` (`uv.lock` pins the dependency tree).
+`uv sync` installs the package editable plus the `dev` dependency group; all
+project commands run through `uv run`.
+
 ```sh
-ai-benchmark --list-plugins                  # installed console script (pip install -e .)
-python3 ai-benchmark.py --list-plugins       # every discovered plugin (repo launcher)
-python3 ai-benchmark.py --dump-default-config       # YAML config template
-python3 ai-benchmark.py --convert-config in.yml     # convert JSON<->YAML (stdout)
-python3 -m pytest tests/ plugins/challenges/ plugins/outputs/ -q
-python3 -m mypy benchmark/ ai-benchmark.py
-python3 -m py_compile ai-benchmark.py benchmark/*.py
+uv run ai-benchmark --list-plugins          # installed console script
+python3 ai-benchmark.py --list-plugins      # every discovered plugin (repo launcher)
+python3 ai-benchmark.py --dump-default-config      # YAML config template
+python3 ai-benchmark.py --convert-config in.yml    # convert JSON<->YAML (stdout)
+uv run pytest tests/ plugins/challenges/ plugins/outputs/ -q
+uv run mypy benchmark/ ai-benchmark.py
+uv run python -m py_compile ai-benchmark.py benchmark/*.py
 ```
 
 ## Key CLI flags (full reference in `docs/cli.md`)

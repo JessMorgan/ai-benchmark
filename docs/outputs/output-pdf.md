@@ -20,10 +20,11 @@ The PDF output plugin generates a `results.pdf` report with summary statistics, 
 
 ## Requirements
 
-The PDF plugin requires the `fpdf2` package:
+The PDF plugin requires the `fpdf2` package. It is a runtime dependency of
+this project, so a plain `uv sync` installs it:
 
 ```bash
-pip install fpdf2
+uv sync
 ```
 
 If `fpdf2` is not installed, the plugin silently returns `None`.

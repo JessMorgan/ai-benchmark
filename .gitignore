@@ -11,6 +11,11 @@ htmlcov/
 coverage.xml
 .coverage.*
 
+# uv/editable-install build artifacts
+*.egg-info/
+build/
+dist/
+
 # Locally auto-installed tool binaries (e.g. OpenCode)
 .tools/
 

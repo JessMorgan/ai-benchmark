@@ -52,7 +52,7 @@ the simplest version of structural parsing.  We should grow it into:
   usually enough because our agents emit a constrained subset.
 - **JSON / YAML code blocks**: extract fenced ` ```json ` blocks and
   validate against a JSON Schema.  This is cleaner than fuzzing the rest
-  of the document.  Library: `jsonschema` (already in `requirements.txt`
+  of the document.  Library: `jsonschema` (install via `uv add jsonschema`
   family of schema validators).
 - **Markdown tables**: extract pipe-delimited tables, parse into rows,
   and assert structure (e.g., KPI table MUST have columns for `metric`,

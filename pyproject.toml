@@ -22,22 +22,23 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 dependencies = [
-    "requests>=2.28.0",
-    "fpdf2>=2.7.0",
-    "pyyaml>=6.0",
+    "requests>=2.32.0",
+    "fpdf2>=2.8.0",
+    "pyyaml>=6.0.2",
 ]
 
 [project.scripts]
 ai-benchmark = "benchmark.cli:main"
 
-[project.optional-dependencies]
+# Dev tooling installs with `uv sync` (dev is a default group).
+[dependency-groups]
 dev = [
-    "coverage>=7.0.0",
-    "mypy>=1.0.0",
-    "pre-commit>=3.0.0",
-    "pytest>=7.0.0",
-    "pytest-cov>=4.0.0",
-    "ruff>=0.4.0",
+    "coverage>=7.6.0",
+    "mypy>=1.11.0",
+    "pre-commit>=4.0.0",
+    "pytest>=8.3.0",
+    "pytest-cov>=6.0.0",
+    "ruff>=0.8.0",
 ]
 
 [tool.setuptools]

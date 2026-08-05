@@ -22,6 +22,6 @@ if ! git diff --quiet HEAD || [ -n "$(git ls-files --others --exclude-standard)"
     STASH_CREATED=1
 fi
 
-coverage run -m pytest tests/ plugins/challenges/ plugins/outputs/ -q
-coverage report -m
-coverage report --fail-under=90
+uv run coverage run -m pytest tests/ plugins/challenges/ plugins/outputs/ -q
+uv run coverage report -m
+uv run coverage report --fail-under=90

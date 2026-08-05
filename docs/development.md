@@ -5,11 +5,18 @@ This guide covers how to set up a development environment, run tests, write plug
 ## Development Setup
 
 Install the project and its dev dependencies (pytest, mypy, ruff, ...) from
-`pyproject.toml`:
+`pyproject.toml` — `uv sync` installs the project editable plus the `dev`
+dependency group, resolving exactly the tree pinned in `uv.lock`:
 
 ```sh
-pip install -e ".[dev]"
+uv sync
 ```
+
+Run any project tool through the managed environment with `uv run`, e.g.
+`uv run pytest`, `uv run mypy`, or `uv run ai-benchmark`.
+
+To refresh the lock file against newer releases: `uv lock --upgrade`, then
+`uv sync` (see the `README` for the test commands).
 
 ## Project Layout
 

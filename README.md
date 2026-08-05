@@ -10,9 +10,9 @@ Install the package to get the `ai-benchmark` command (or use the `python
 ai-benchmark.py` launcher from a checkout — both are the same CLI):
 
 ```sh
-pip install -e .
-aio-benchmark --dump-default-config > benchmark-config.json
-ai-benchmark
+uv sync
+uv run ai-benchmark --dump-default-config > benchmark-config.json
+uv run ai-benchmark
 ```
 
 Or, from a repository checkout:
@@ -192,18 +192,14 @@ Each plugin exposes a `version` attribute so results can be correlated to a spec
 
 ## Tests & Coverage
 
-The `pip install -e .` above installs the `ai-benchmark` console script. For
-development, install the project and its dev dependencies (`pytest`, `coverage`,
-`mypy`, `ruff`):
-
-```sh
-pip install -e ".[dev]"
-```
+The `uv sync` above installs the `ai-benchmark` console script plus its dev
+dependencies (`pytest`, `coverage`, `mypy`, `ruff`), which live in the `dev`
+dependency group of `pyproject.toml`. `uv.lock` pins the full resolved tree.
 
 Run the test suite with pytest:
 
 ```sh
-python -m pytest tests/ plugins/challenges/ plugins/outputs/ -q
+uv run pytest tests/ plugins/challenges/ plugins/outputs/ -q
 ```
 
 Generate a coverage report for the `benchmark/` package and `plugins/`:

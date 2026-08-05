@@ -6,8 +6,8 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-coverage run -m pytest tests/ plugins/challenges/ plugins/outputs/ -q
-coverage report -m
-coverage html
-coverage xml
-coverage report --fail-under=90
+uv run coverage run -m pytest tests/ plugins/challenges/ plugins/outputs/ -q
+uv run coverage report -m
+uv run coverage html
+uv run coverage xml
+uv run coverage report --fail-under=90

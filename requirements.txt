@@ -1,5 +1,0 @@
-# Runtime and dev dependencies are declared in pyproject.toml
-# ([project] dependencies and [project.optional-dependencies] dev).
-# Install everything with:
-#   pip install -e ".[dev]"
--e .[dev]
