@@ -1,15 +1,16 @@
 default_stages: [pre-commit]
 
 repos:
-  - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.4.0
-    hooks:
-      - id: ruff
-        args: ["--fix"]
-        name: ruff check
-
   - repo: local
     hooks:
+      # Ruff version comes from the uv-managed dev group (pyproject.toml),
+      # so CI and local runs always use the same linter.
+      - id: ruff
+        name: ruff check
+        entry: ruff check --fix
+        language: system
+        types: [python]
+
       - id: python-syntax-check
         name: Python syntax check
         entry: python -m py_compile
