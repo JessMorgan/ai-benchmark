@@ -594,7 +594,12 @@ class TestRateLimitRetries(unittest.TestCase):
         cfg_no_opt = {"Local": {
             "api_url": "http://localhost/chat/completions", "headers": {}}}
         sequence = [self._mock_429(), self._mock_429(), self._mock_200()]
-        with mock.patch("requests.post", side_effect=sequence) as mp:
+        # The factory defaults (backoff_seconds=30, factor 2.0) would make the
+        # two real retries sleep ~90s wall-clock. The point of this test is the
+        # DEFAULT RETRY COUNT, not the backoff timing, so mock the sleep: the
+        # delay math still runs (30s, then 60s) but returns instantly.
+        with mock.patch("benchmark.http.time.sleep"), \
+             mock.patch("requests.post", side_effect=sequence) as mp:
             result = stream_request(
                 cfg_no_opt, timeout=5, model="m", source="Local",
                 prompt="hi", max_tokens=10,
