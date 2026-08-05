@@ -38,6 +38,22 @@ Each entry under `sources` defines an API endpoint. The key is the source name u
 }
 ```
 
+### OpenCode Timeout
+
+When using `--runner opencode` or `--runner both`, each source can configure how long OpenCode may remain silent before the subprocess is terminated. The setting measures inactivity on OpenCode's stdout/stderr, so it covers cold model loads and provider/agent stalls without changing the separate benchmark-wide request timeout.
+
+```yaml
+sources:
+  Gaming PC:
+    api_url: http://gaming.pc:11434/chat/completions
+    opencode_timeout: 600   # seconds; defaults to 300
+  Fast Provider:
+    api_url: https://api.example.com/v1/chat/completions
+    opencode_timeout: 120
+```
+
+`opencode_timeout` must be a non-negative number. Invalid or negative values use the 300-second default. Set it to `0` to disable the inactivity guard for a source; the outer benchmark timeout still applies.
+
 ### Per-Source Plugin Concurrency
 
 Each source can define `plugin_thread_limit` to control how many plugins run concurrently for models against that source. The top-level `plugin_thread_limit` is used as a fallback for sources that do not define their own value. The CLI `--plugin-thread-limit` overrides all sources.
@@ -268,7 +284,8 @@ agents:
         "Authorization": "Bearer ${LOCAL_API_KEY:sk-fallback}",
         "Content-Type": "application/json"
       },
-      "plugin_thread_limit": 1
+      "plugin_thread_limit": 1,
+      "opencode_timeout": 300
     },
     "Remote Provider": {
       "api_url": "https://api.example.com/v1/chat/completions",

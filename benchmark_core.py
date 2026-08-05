@@ -20,8 +20,10 @@ from benchmark_http import (  # noqa: F401
 from benchmark_plugin import PluginTaskResult
 from opencode_runner import (
     OPENCODE_BINARY,
+    OPENCODE_NO_OUTPUT_GRACE,
     OpenCodeProcessResult,
     opencode_model_name,
+    resolve_opencode_timeout,
     run_process,
 )
 from benchmark_outputs import (  # noqa: F401
@@ -453,7 +455,8 @@ def dump_default_config():
                 },
                 "plugin_thread_limit": 1,
                 "preload": False,
-                "preload_timeout": PRELOAD_DEFAULT_TIMEOUT
+                "preload_timeout": PRELOAD_DEFAULT_TIMEOUT,
+                "opencode_timeout": int(OPENCODE_NO_OUTPUT_GRACE)
             },
             "Local Server 2": {
                 "api_url": "http://other.server:11434/chat/completions",
@@ -463,7 +466,8 @@ def dump_default_config():
                 },
                 "plugin_thread_limit": 1,
                 "preload": False,
-                "preload_timeout": PRELOAD_DEFAULT_TIMEOUT
+                "preload_timeout": PRELOAD_DEFAULT_TIMEOUT,
+                "opencode_timeout": int(OPENCODE_NO_OUTPUT_GRACE)
             },
             "Remote Provider 1": {
                 "api_url": "http://remote.provider:11434/chat/completions",
@@ -473,7 +477,8 @@ def dump_default_config():
                 },
                 "plugin_thread_limit": 1,
                 "preload": False,
-                "preload_timeout": PRELOAD_DEFAULT_TIMEOUT
+                "preload_timeout": PRELOAD_DEFAULT_TIMEOUT,
+                "opencode_timeout": int(OPENCODE_NO_OUTPUT_GRACE)
             }
         },
         "models": {
@@ -584,6 +589,7 @@ def _run_plugin_task(target_name, api_model, source, plugin, source_config, time
             target_key=artifact_target_name or config_target_name,
             plugin_id=pid,
             stop_event=stop_event,
+            no_output_grace=resolve_opencode_timeout(source_config, source),
         )
         text = process_result.text
         think_text = process_result.think_text

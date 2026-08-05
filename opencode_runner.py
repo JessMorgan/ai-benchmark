@@ -63,7 +63,28 @@ OPENCODE_VERSION_MARKER = "version.txt"
 # many seconds. Catches silent hangs (provider never returns even a
 # ``step_start``) and mid-stream stalls (``step_start`` then silence, or a
 # tool round-trip whose follow-up request never returns).
-OPENCODE_NO_OUTPUT_GRACE = 120.0
+OPENCODE_NO_OUTPUT_GRACE = 300.0
+
+
+def resolve_opencode_timeout(source_config: Mapping[str, Any], source: str,
+                             default: float = OPENCODE_NO_OUTPUT_GRACE) -> float:
+    """Return the per-source OpenCode inactivity timeout in seconds.
+
+    ``opencode_timeout`` controls the staleness guard that terminates an
+    OpenCode task when neither stdout nor stderr has produced bytes. A value
+    of zero disables that guard, matching ``run_process``'s direct-call
+    behavior. Invalid or negative values fall back to the default.
+    """
+    cfg = source_config.get(source) or {}
+    value = cfg.get("opencode_timeout", default) if isinstance(cfg, Mapping) else default
+    if isinstance(value, bool):
+        return default
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return default
+    return value if value >= 0 else default
+
 # Kill after this many completed agent steps (``step_finish`` events). Catches
 # reasoning/tool planning loops (e.g. 683 ``todowrite`` calls with zero final
 # text) long before the outer timeout.
@@ -533,7 +554,9 @@ def _provider_options(source_cfg: Mapping[str, Any]) -> dict[str, Any]:
         options["headers"] = custom_headers
 
     # OpenCode's provider options support a request timeout.  The benchmark
-    # timeout is injected by generate_config() when available.
+    # timeout is injected by generate_config() when available. The separate
+    # per-source ``opencode_timeout`` setting controls the subprocess
+    # inactivity guard, not this provider request timeout.
     if "timeout" in source_cfg:
         options["timeout"] = source_cfg["timeout"]
     return options

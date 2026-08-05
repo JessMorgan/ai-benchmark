@@ -78,7 +78,7 @@ OpenCode has buffered final-output semantics in this adapter. Direct HTTP stream
 
 OpenCode's agent loop has no internal liveness detection: once it emits a step it waits for the provider's next response indefinitely, and a stalled or looping task would otherwise burn the full benchmark timeout with zero diagnostics. `run_process()` therefore runs three loop guards against the live NDJSON stream, each aborting the subprocess early with an actionable error (any partial stdout is retained):
 
-- **Staleness fast-fail** (`no_output_grace`, default 120 s): kills the process when no bytes arrive on stdout *or* stderr for that long. Catches silent hangs (the provider never answers the initial request — a 0-byte stream) and mid-stream/tool round-trip stalls (`step_start` or a `tool_use` event, then silence).
+- **Staleness fast-fail** (`sources.<name>.opencode_timeout`, default 300 s): kills the process when no bytes arrive on stdout *or* stderr for that source-specific interval. Catches silent hangs (the provider never answers the initial request — a 0-byte stream) and mid-stream/tool round-trip stalls (`step_start` or a `tool_use` event, then silence). Set the source value to `0` to disable this guard; the outer benchmark timeout remains active.
 - **Step budget** (`step_limit`, default 50): kills when `step_finish` events exceed the cap. Catches reasoning/tool planning loops that churn steps (e.g. hundreds of `todowrite` calls) without ever producing a final answer.
 - **Text-repetition** (`repeat_threshold` 5 / `repeat_min_len` 20): kills when the same non-trivial text event appears repeatedly. Catches canned-continuation loops (a short canned string fed back into the loop thousands of times).
 

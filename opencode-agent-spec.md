@@ -312,7 +312,7 @@ Each subprocess is governed by the existing benchmark timeout policy. The implem
 
 The subprocess additionally runs three loop guards against the live NDJSON stream so stalled/looping tasks fast-fail instead of burning the full timeout with zero diagnostics (all implemented; defaults data-backed from the `2026-08-02-more-tests-more-models-opencode` run):
 
-- **Staleness fast-fail** — kill when no bytes arrive on stdout or stderr for 120 s (`no_output_grace`). Catches silent hangs (0-byte streams) and mid-stream/tool round-trip stalls (`step_start` or `tool_use` followed by silence).
+- **Staleness fast-fail** — kill when no bytes arrive on stdout or stderr for the source's `opencode_timeout` (default 300 s). Catches silent hangs (0-byte streams) and mid-stream/tool round-trip stalls (`step_start` or `tool_use` followed by silence); `0` disables this guard.
 - **Step budget** — kill after 50 `step_finish` events (`step_limit`). Catches reasoning/tool planning loops that never produce a final answer.
 - **Text-repetition guard** — kill when the same non-trivial text event (≥ 20 chars) appears 5× (`repeat_threshold`/`repeat_min_len`). Catches canned-continuation loops.
 

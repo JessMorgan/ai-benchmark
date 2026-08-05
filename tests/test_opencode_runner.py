@@ -17,6 +17,7 @@ from benchmark_state import BenchmarkState
 from opencode_runner import (
     OPENCODE_BINARY,
     OPENCODE_INSTALL_SUBDIR,
+    OPENCODE_NO_OUTPUT_GRACE,
     OPENCODE_NEUTRAL_AGENT_PERMISSION,
     OPENCODE_NEUTRAL_AGENT_PROMPT,
     OPENCODE_PURE_FLAG,
@@ -33,6 +34,7 @@ from opencode_runner import (
     install_opencode,
     opencode_model_name,
     resolve_opencode_binary,
+    resolve_opencode_timeout,
     run_process,
     slugify_source,
     validate_cli,
@@ -99,6 +101,35 @@ class TestOpenCodeConfig(unittest.TestCase):
             },
         }
 
+    def test_per_source_opencode_timeout_defaults_and_overrides(self):
+        sources = {
+            "Default Source": {"api_url": "https://example.test/chat/completions"},
+            "Slow Source": {
+                "api_url": "https://slow.example.test/chat/completions",
+                "opencode_timeout": 900,
+            },
+            "Disabled Source": {
+                "api_url": "https://disabled.example.test/chat/completions",
+                "opencode_timeout": 0,
+            },
+            "Invalid Source": {
+                "api_url": "https://invalid.example.test/chat/completions",
+                "opencode_timeout": -1,
+            },
+        }
+        self.assertEqual(OPENCODE_NO_OUTPUT_GRACE, 300.0)
+        self.assertEqual(resolve_opencode_timeout(sources, "Default Source"),
+                         OPENCODE_NO_OUTPUT_GRACE)
+        self.assertEqual(resolve_opencode_timeout(sources, "Slow Source"), 900)
+        self.assertEqual(resolve_opencode_timeout(sources, "Disabled Source"), 0)
+        self.assertEqual(resolve_opencode_timeout(sources, "Invalid Source"),
+                         OPENCODE_NO_OUTPUT_GRACE)
+        self.assertEqual(resolve_opencode_timeout(
+            {"Boolean Source": {"opencode_timeout": True}}, "Boolean Source"),
+            OPENCODE_NO_OUTPUT_GRACE)
+        self.assertEqual(resolve_opencode_timeout(sources, "Missing Source"),
+                         OPENCODE_NO_OUTPUT_GRACE)
+
     def test_config_merges_models_and_retains_exact_artifact(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             path = os.path.join(tmpdir, "opencode.generated.json")
@@ -111,6 +142,10 @@ class TestOpenCodeConfig(unittest.TestCase):
             self.assertEqual(provider["options"]["baseURL"], "https://example.test/v1")
             self.assertEqual(provider["options"]["apiKey"], "secret-value")
             self.assertEqual(provider["options"]["headers"]["X-Tenant"], "benchmark")
+            # The source's OpenCode inactivity timeout is consumed by the
+            # subprocess runner rather than projected into the provider request
+            # timeout, which remains the benchmark-wide request setting.
+            self.assertNotIn("opencode_timeout", provider["options"])
             self.assertEqual(set(provider["models"]), {"model-a", "model-b"})
             self.assertEqual(on_disk, generated["config"])
             self.assertEqual(generated["mappings"]["local-server/model-b"], ["agent-a"])
@@ -662,6 +697,56 @@ class TestOpenCodeLoopGuards(unittest.TestCase):
         result = run_process("prompt", config_path="/tmp/config.json",
                              model="provider/model", **run_kwargs)
         return result, fake, term_mock
+
+    def test_run_model_passes_source_opencode_timeout_to_staleness_guard(self):
+        plugin = next(p for p in discover_plugins() if p.id == "rate-limiter")
+        target_key = "model-a [opencode]"
+        state = BenchmarkState({
+            target_key: {
+                "source": "Local",
+                "api_model": "model-a",
+                "runner": "opencode",
+            }
+        }, [plugin.id])
+        source_config = {
+            "Local": {"plugin_thread_limit": 1, "opencode_timeout": 777}
+        }
+        process_result = OpenCodeProcessResult(
+            "valid benchmark response", "", 0.2, None, 0)
+        with mock.patch("benchmark_core.run_process", return_value=process_result) as run:
+            run_model(
+                target_key, "Local", state, [plugin], source_config,
+                timeout=5, token_levels=[100], output_dir="/tmp/opencode-test",
+                global_cfg={}, runner="opencode", api_model="model-a",
+                opencode_config_path="/tmp/config.json",
+                opencode_model="local/model-a", display_name="model-a",
+                config_target_name="model-a",
+            )
+        self.assertEqual(run.call_args.kwargs["no_output_grace"], 777)
+
+    def test_run_model_uses_300_second_default_for_omitted_source_timeout(self):
+        plugin = next(p for p in discover_plugins() if p.id == "rate-limiter")
+        target_key = "model-a [opencode]"
+        state = BenchmarkState({
+            target_key: {
+                "source": "Local",
+                "api_model": "model-a",
+                "runner": "opencode",
+            }
+        }, [plugin.id])
+        process_result = OpenCodeProcessResult(
+            "valid benchmark response", "", 0.2, None, 0)
+        with mock.patch("benchmark_core.run_process", return_value=process_result) as run:
+            run_model(
+                target_key, "Local", state, [plugin],
+                {"Local": {"plugin_thread_limit": 1}},
+                timeout=5, token_levels=[100], output_dir="/tmp/opencode-test",
+                global_cfg={}, runner="opencode", api_model="model-a",
+                opencode_config_path="/tmp/config.json",
+                opencode_model="local/model-a", display_name="model-a",
+                config_target_name="model-a",
+            )
+        self.assertEqual(run.call_args.kwargs["no_output_grace"], 300.0)
 
     def test_fast_fail_when_no_output_for_grace_period(self):
         """A subprocess that emits nothing for the grace period is killed early."""
