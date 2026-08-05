@@ -33,19 +33,19 @@ class BenchmarkOutputPlugin(abc.ABC):
     @abc.abstractmethod
     def id(self) -> str:
         """Stable machine-readable identifier, e.g. 'output-markdown'."""
-        ...
+        raise NotImplementedError
 
     @property
     @abc.abstractmethod
     def name(self) -> str:
         """Human-readable name, e.g. 'Markdown Report'."""
-        ...
+        raise NotImplementedError
 
     @property
     @abc.abstractmethod
     def extension(self) -> str:
         """File extension (without dot), e.g. 'md', 'csv', 'html'."""
-        ...
+        raise NotImplementedError
 
     @abc.abstractmethod
     def generate(self, results, active_plugins, output_dir=None, session_seed=None):
@@ -67,7 +67,7 @@ class BenchmarkOutputPlugin(abc.ABC):
         str or None
             The path to the generated file, or None if nothing was written.
         """
-        ...
+        raise NotImplementedError
 
 
 class BenchmarkTaskPlugin(abc.ABC):
@@ -83,25 +83,25 @@ class BenchmarkTaskPlugin(abc.ABC):
     @abc.abstractmethod
     def id(self) -> str:
         """Stable machine-readable identifier, e.g. 'rate-limiter'."""
-        ...
+        raise NotImplementedError
 
     @property
     @abc.abstractmethod
     def version(self) -> str:
         """Semantic version for result correlation, e.g. '1.0.0'."""
-        ...
+        raise NotImplementedError
 
     @property
     @abc.abstractmethod
     def name(self) -> str:
         """Human-readable task name, e.g. 'Rate Limiter'."""
-        ...
+        raise NotImplementedError
 
     @property
     @abc.abstractmethod
     def max_score(self) -> float:
         """Maximum possible score for this task."""
-        ...
+        raise NotImplementedError
 
     @property
     def supports_streaming(self) -> bool:
@@ -115,17 +115,17 @@ class BenchmarkTaskPlugin(abc.ABC):
     @abc.abstractmethod
     def get_prompt(self) -> str:
         """Return the prompt text sent to the model."""
-        ...
+        raise NotImplementedError
 
     @abc.abstractmethod
     def get_temperature(self, global_config: dict) -> float | None:
         """Return the temperature to use for this task, or None to omit it."""
-        ...
+        raise NotImplementedError
 
     @abc.abstractmethod
     def score(self, response_text: str) -> float:
         """Score the model's response and return a float."""
-        ...
+        raise NotImplementedError
 
     def evaluate(self, response_text: str) -> EvaluationResult:
         """Score the model's response and return a detailed rubric.

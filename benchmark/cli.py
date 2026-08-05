@@ -664,14 +664,6 @@ def _format_model_row(name, s, display_idx, active_plugins, source_abbrevs,
     elif sv == "running" or s.get("running_pids"):
         status_ch = "\U0001f537"
 
-    def fmt_val(v, fmt=".1f"):
-        if v is None:
-            return "-"
-        try:
-            return f"{v:{fmt}}"
-        except Exception:
-            return str(v)
-
     src_ab = _source_abbr(source_abbrevs, s.get("source"))
     model_disp = name[:16]
     frozen = f"{display_idx:>3}  {src_ab:<3} {model_disp:<18}  {status_ch:<3}"
@@ -737,8 +729,6 @@ def _render_model_rows(stdscr, max_x, max_y, snap_items, active_plugins, source_
         elif sv == "running" or s.get("running_pids"):
             try:
                 attr = curses.color_pair(2)
-            except Exception:
-                pass
             except Exception:
                 pass
         _wr(stdscr, max_x, max_y, model_top + row_idx, 0, line, attr)
@@ -1225,7 +1215,7 @@ def _prompt_restart_or_continue(scripted=False):
         print("Please enter r, c, or q.")
 
 
-def main():
+def main():  # pragma: no cover - live benchmark orchestrator (no unit tests)
     try:
         subprocess.run(['stty', 'sane'], stderr=subprocess.DEVNULL,
                        stdin=sys.stdin, timeout=1)

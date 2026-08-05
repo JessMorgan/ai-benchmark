@@ -5,6 +5,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest import mock
 
 from plugins import discover_plugins
 from tests.utils import load_benchmark_module
@@ -729,6 +730,79 @@ class TestBenchmarkState(unittest.TestCase):
                 "missing first_tok_ts key in legacy state file must default to 0 "
                 "so the live footer treats it as 'no chunk landed yet'"
             )
+
+
+class TestStateCoverage(unittest.TestCase):
+    """Coverage-gap tests for BenchmarkState edge paths."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.module = load_benchmark_module()
+
+    def test_add_thinking_bytes_before_first_chunk_raises(self):
+        """The wiring self-check fires when reasoning arrives before the
+        first-chunk marker (mirrors add_bytes_received)."""
+        state = self.module.BenchmarkState({"m1": "S"}, ["p"])
+        with self.assertRaises(RuntimeError):
+            state.add_thinking_bytes_received("m1", "p", 5)
+
+    def test_add_thinking_bytes_requires_positive(self):
+        state = self.module.BenchmarkState({"m1": "S"}, ["p"])
+        state.mark_first_chunk_seen("m1", "p")
+        state.add_thinking_bytes_received("m1", "p", 0)  # no-op
+        self.assertEqual(
+            state.snapshot()["m1"]["p_thinking_bytes_received"], 0)
+
+    def test_add_thinking_bytes_accumulates(self):
+        state = self.module.BenchmarkState({"m1": "S"}, ["p"])
+        state.mark_first_chunk_seen("m1", "p", ts=100.0)
+        state.add_thinking_bytes_received("m1", "p", 3)
+        state.add_thinking_bytes_received("m1", "p", 4)
+        snap = state.snapshot()["m1"]
+        self.assertEqual(snap["p_thinking_bytes_received"], 7)
+        # First-chunk timestamp only written on the False->True transition.
+        state.mark_first_chunk_seen("m1", "p", ts=200.0)
+        self.assertEqual(snap["p_first_tok_ts"], 100.0)
+
+    def test_log_truncates_at_100_entries(self):
+        state = self.module.BenchmarkState({"m1": "S"}, ["p"])
+        for i in range(120):
+            state.log("m1", f"msg-{i}")
+        recent = state.recent_log(5)
+        self.assertEqual(len(recent), 5)
+        self.assertIn("msg-119", [entry[2] for entry in recent])
+        self.assertNotIn("msg-0", [entry[2] for entry in recent])
+
+    def test_total_counts_all_models(self):
+        state = self.module.BenchmarkState({"m1": "S", "m2": "S"}, ["p"])
+        self.assertEqual(state.total, 2)
+        self.assertEqual(state.completed, 0)
+
+    def test_save_state_removes_tmp_on_write_failure(self):
+        state = self.module.BenchmarkState({"m1": "S"}, ["p"])
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, "state.json")
+            # The tmp file is created first; json.dump then fails, so the
+            # except branch must clean the tmp file up. A further OSError
+            # during that cleanup is swallowed, not re-raised.
+            with mock.patch("json.dump", side_effect=OSError("disk full")):
+                with mock.patch("os.remove", side_effect=OSError("already gone")):
+                    state.save_state(path)  # must not raise
+            self.assertFalse(os.path.exists(path))
+
+    def test_load_state_ignores_unknown_models(self):
+        """Saved info for models no longer in the config is skipped."""
+        state = self.module.BenchmarkState({"old-model": "S"}, ["p"])
+        state.update("old-model", status="completed")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, "state.json")
+            state.save_state(path)
+            loaded = self.module.BenchmarkState.load_state(
+                path, {"new-model": "S"}, ["p"]
+            )
+            self.assertIn("new-model", loaded.snapshot())
+            self.assertNotIn("old-model", loaded.snapshot())
+
 
 if __name__ == "__main__":
     unittest.main()

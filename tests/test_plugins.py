@@ -11,7 +11,57 @@ from plugins import (
     format_plugin_list,
     plugin_inventory,
 )
-from benchmark.plugin import BenchmarkTaskPlugin
+from benchmark.plugin import BenchmarkOutputPlugin, BenchmarkTaskPlugin, EvaluationResult
+
+
+class _ConcreteTaskPlugin(BenchmarkTaskPlugin):
+    """Minimal concrete subclass exercising the non-abstract defaults."""
+
+    id = "concrete"
+    version = "1.0.0"
+    name = "Concrete"
+    max_score = 20.0
+
+    def get_prompt(self):
+        return "prompt"
+
+    def get_temperature(self, global_config):
+        return None
+
+    def score(self, response_text):
+        return 10.0
+
+
+class TestPluginBaseDefaults(unittest.TestCase):
+    def test_supports_streaming_defaults_to_true(self):
+        self.assertTrue(_ConcreteTaskPlugin().supports_streaming)
+
+    def test_evaluate_wraps_score_with_empty_rubric(self):
+        result = _ConcreteTaskPlugin().evaluate("some answer")
+        self.assertIsInstance(result, EvaluationResult)
+        self.assertEqual(result.score, 10.0)
+        self.assertEqual(result.rubric, [])
+
+    def test_output_plugin_is_abstract(self):
+        with self.assertRaises(TypeError):
+            BenchmarkOutputPlugin()  # abstract: id/name/extension/generate missing
+
+    def test_output_plugin_concrete_round_trip(self):
+        class Out(BenchmarkOutputPlugin):
+            id = "output-x"
+            name = "X"
+            extension = "x"
+
+            def generate(self, results, active_plugins, output_dir=None, session_seed=None):
+                return "path"
+
+        self.assertEqual(Out().generate([], []), "path")
+
+    def test_abstract_base_cannot_be_instantiated(self):
+        with self.assertRaises(TypeError):
+            BenchmarkTaskPlugin()
+        with self.assertRaises(TypeError):
+            BenchmarkOutputPlugin()
 
 
 class TestPluginDiscovery(unittest.TestCase):

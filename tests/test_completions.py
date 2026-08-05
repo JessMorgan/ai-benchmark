@@ -5,7 +5,56 @@ import sys
 import unittest
 
 from plugins import discover_plugins
-from benchmark.completions import generate_shell_completion
+from benchmark.completions import COMMAND_NAMES, generate_shell_completion
+
+
+class TestCompletionBranches(unittest.TestCase):
+    """Direct-call tests for every shell branch.
+
+    The subprocess tests below invoke the CLI end-to-end, but coverage only
+    sees in-process calls, so the zsh/fish/unknown branches are exercised
+    here by calling ``generate_shell_completion`` directly.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.plugins = discover_plugins()
+
+    def test_bash_registers_both_command_names(self):
+        script = generate_shell_completion("bash", self.plugins)
+        self.assertIn("complete -F _ai_benchmark_complete ai-benchmark ai-benchmark.py", script)
+
+    def test_zsh_has_compdef_for_both_names_and_plugin_case(self):
+        script = generate_shell_completion("zsh", self.plugins)
+        self.assertIn("#compdef ai-benchmark ai-benchmark.py", script)
+        self.assertIn("case \"$state\" in", script)
+        self.assertIn("_describe -t plugin-ids 'plugin IDs' plugin_ids", script)
+        for flag in ("--restart", "--config", "--runner"):
+            self.assertIn(flag, script)
+
+    def test_zsh_quotes_plugin_ids_with_special_chars(self):
+        plugin = type("P", (), {"id": "plugin with spaces"})()
+        script = generate_shell_completion("zsh", [plugin])
+        self.assertIn("'plugin with spaces'", script)
+
+    def test_fish_emits_lines_for_both_command_names(self):
+        script = generate_shell_completion("fish", self.plugins)
+        lines = script.strip().splitlines()
+        self.assertTrue(lines)
+        for line in lines:
+            self.assertTrue(line.startswith("complete -c "), line)
+        # Every flag appears once per registered command name.
+        self.assertEqual(
+            sum(1 for line in lines if "-l restart" in line),
+            len(COMMAND_NAMES),
+        )
+        self.assertEqual(
+            sum(1 for line in lines if "-l runner" in line),
+            len(COMMAND_NAMES),
+        )
+
+    def test_unknown_shell_returns_empty_string(self):
+        self.assertEqual(generate_shell_completion("tcsh", self.plugins), "")
 
 
 class TestShellCompletions(unittest.TestCase):
