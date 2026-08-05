@@ -6,8 +6,11 @@ This document describes the high-level design of AI Benchmark.
 
 ```
 ┌─────────────────────────────────────────┐
-│           ai-benchmark.py             │
+│         benchmark/cli.py              │
 │  CLI parsing, config loading, TUI     │
+│  (installed as the `ai-benchmark`     │
+│   command; ai-benchmark.py is a       │
+│   thin launcher)                      │
 └─────────────────┬───────────────────────┘
                   │
                   ▼

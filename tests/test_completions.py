@@ -37,7 +37,7 @@ class TestShellCompletions(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0)
         output = result.stdout
-        self.assertIn("#compdef ai-benchmark.py", output)
+        self.assertIn("#compdef ai-benchmark ai-benchmark.py", output)
         self.assertIn("--plugins-whitelist", output)
         self.assertIn("--plugins-blacklist", output)
         self.assertIn("--generate-shell-completion", output)

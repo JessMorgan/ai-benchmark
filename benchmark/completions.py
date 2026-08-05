@@ -1,6 +1,10 @@
 """Shell completion script generation for the AI benchmark CLI."""
 import shlex
 
+# Both the installed console script (``ai-benchmark``) and the repository
+# launcher (``ai-benchmark.py``) share one completion function.
+COMMAND_NAMES = ("ai-benchmark", "ai-benchmark.py")
+
 
 def generate_shell_completion(shell, plugins):
     """Return a shell completion script for the specified shell."""
@@ -57,12 +61,12 @@ def generate_shell_completion(shell, plugins):
         COMPREPLY=( $(compgen -W "$flags" -- "$cur") )
     fi
 }}
-complete -F _ai_benchmark_complete ai-benchmark.py
+complete -F _ai_benchmark_complete ai-benchmark ai-benchmark.py
 """
     if shell == "zsh":
         plugin_quoted = " ".join(shlex.quote(p.id) for p in plugins)
         flags_quoted = " ".join(f'"{f}"' for f in flags)
-        return f"""#compdef ai-benchmark.py
+        return f"""#compdef ai-benchmark ai-benchmark.py
 
 local plugin_ids=({plugin_quoted})
 local flags=({flags_quoted})
@@ -95,24 +99,29 @@ esac
 """
     if shell == "fish":
         plugin_ids_escaped = " ".join(p.id for p in plugins)
+        flag_specs = [
+            "-l restart -d 'Restart the run from scratch, discarding prior results'",
+            "-l config -r -F -d 'Config file path'",
+            "-l out -r -d 'Override output directory from config'",
+            "-l timeout -r -d 'Override request timeout in seconds from config'",
+            "-l token-levels -r -d 'Override token levels'",
+            "-l plugin-temperature -r -d 'Per-plugin temperatures'",
+            "-l plugin-thread-limit -r -d 'Max threads per model for plugin execution'",
+            f"-l plugins-whitelist -x -a '{plugin_ids_escaped}' -d 'Run only these plugins'",
+            f"-l plugins-blacklist -x -a '{plugin_ids_escaped}' -d 'Run all plugins except these'",
+            "-l list-plugins -d 'List discovered plugins with their IDs, names, and versions'",
+            "-l generate-shell-completion -x -a 'bash zsh fish' -d 'Generate shell completion script'",
+            "-l dump-default-config -d 'Print a default config file to stdout and exit'",
+            "-l base-url -F -d 'Base URL for model discovery via /v1/models API'",
+            "-l api-key -F -d 'API key for model discovery'",
+            "-l save-responses -d 'Save each model\\'s plugin response text to <output_dir>/responses/'",
+            "-l no-preload -d 'Disable per-source model pre-loading for this run'",
+            "-l runner -x -a 'http opencode both' -d 'Execution runner'",
+        ]
         lines = [
-            "complete -c ai-benchmark.py -l restart -d 'Restart the run from scratch, discarding prior results'",
-            "complete -c ai-benchmark.py -l config -r -F -d 'Config file path'",
-            "complete -c ai-benchmark.py -l out -r -d 'Override output directory from config'",
-            "complete -c ai-benchmark.py -l timeout -r -d 'Override request timeout in seconds from config'",
-            "complete -c ai-benchmark.py -l token-levels -r -d 'Override token levels'",
-            "complete -c ai-benchmark.py -l plugin-temperature -r -d 'Per-plugin temperatures'",
-            "complete -c ai-benchmark.py -l plugin-thread-limit -r -d 'Max threads per model for plugin execution'",
-            f"complete -c ai-benchmark.py -l plugins-whitelist -x -a '{plugin_ids_escaped}' -d 'Run only these plugins'",
-            f"complete -c ai-benchmark.py -l plugins-blacklist -x -a '{plugin_ids_escaped}' -d 'Run all plugins except these'",
-            "complete -c ai-benchmark.py -l list-plugins -d 'List discovered plugins with their IDs, names, and versions'",
-            "complete -c ai-benchmark.py -l generate-shell-completion -x -a 'bash zsh fish' -d 'Generate shell completion script'",
-            "complete -c ai-benchmark.py -l dump-default-config -d 'Print a default config file to stdout and exit'",
-            "complete -c ai-benchmark.py -l base-url -F -d 'Base URL for model discovery via /v1/models API'",
-            "complete -c ai-benchmark.py -l api-key -F -d 'API key for model discovery'",
-            "complete -c ai-benchmark.py -l save-responses -d 'Save each model\\'s plugin response text to <output_dir>/responses/'",
-            "complete -c ai-benchmark.py -l no-preload -d 'Disable per-source model pre-loading for this run'",
-            "complete -c ai-benchmark.py -l runner -x -a 'http opencode both' -d 'Execution runner'",
+            f"complete -c {cmd} {spec}"
+            for cmd in COMMAND_NAMES
+            for spec in flag_specs
         ]
         return "\n".join(lines) + "\n"
 

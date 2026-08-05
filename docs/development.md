@@ -15,8 +15,9 @@ pip install -e ".[dev]"
 
 ```
 .
-├── ai-benchmark.py      # CLI entry point and TUI
+├── ai-benchmark.py      # Thin launcher -> benchmark.cli.main
 ├── benchmark/           # Core library package
+│   ├── cli.py           # CLI entry point, argparse, TUI
 │   ├── core.py          # Core benchmark logic, state, output generators
 │   ├── http.py          # Streaming / non-streaming HTTP request helpers
 │   ├── plugin.py        # Abstract base classes for plugins
@@ -131,7 +132,7 @@ def test_my_task_scores_function():
 
 ## Adding Tests for Core Changes
 
-Core changes in `benchmark/core.py` or `ai-benchmark.py` should include tests in `tests/test_cli.py` or `tests/test_output.py`.
+Core changes in `benchmark/core.py` or `benchmark/cli.py` should include tests in `tests/test_cli.py` or `tests/test_output.py`.
 
 ## Pre-Commit Hooks
 

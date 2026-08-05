@@ -1,11 +1,14 @@
 # CLI Reference
 
-The benchmark is driven by `ai-benchmark.py`.
+The benchmark is driven by `ai-benchmark.py` (a thin launcher) or the
+installed `ai-benchmark` console script, both of which delegate to
+`benchmark.cli.main`.
 
 ## Usage
 
 ```sh
-python ai-benchmark.py [options]
+aio-benchmark [options]            # installed console script
+python ai-benchmark.py [options]    # repository launcher
 ```
 
 ## Arguments

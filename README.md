@@ -6,6 +6,17 @@ Plugins live in the `plugins/` directory. Each plugin defines a prompt, a scorin
 
 ## Quickstart
 
+Install the package to get the `ai-benchmark` command (or use the `python
+ai-benchmark.py` launcher from a checkout — both are the same CLI):
+
+```sh
+pip install -e .
+aio-benchmark --dump-default-config > benchmark-config.json
+ai-benchmark
+```
+
+Or, from a repository checkout:
+
 ```sh
 # Generate a default config, then run
 python ai-benchmark.py --dump-default-config > benchmark-config.json
@@ -104,7 +115,8 @@ The extended form allows per-model settings such as dropping specific API parame
 ## CLI Reference
 
 ```
-python ai-benchmark.py [options]
+aio-benchmark [options]           # installed console script
+python ai-benchmark.py [options]  # repository launcher
 ```
 
 | Argument | Description |
@@ -180,7 +192,9 @@ Each plugin exposes a `version` attribute so results can be correlated to a spec
 
 ## Tests & Coverage
 
-Install the project and its dev dependencies (`pytest`, `coverage`, `mypy`, `ruff`):
+The `pip install -e .` above installs the `ai-benchmark` console script. For
+development, install the project and its dev dependencies (`pytest`, `coverage`,
+`mypy`, `ruff`):
 
 ```sh
 pip install -e ".[dev]"

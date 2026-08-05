@@ -6,8 +6,12 @@ to know what to grep first.
 
 ## Project map
 
-- **`ai-benchmark.py`** — CLI, argparse, TUI, main orchestrator (the entry point).
-- **`benchmark/`** — the core library package (moved out of the repo root):
+- **`benchmark/cli.py`** — CLI, argparse, TUI, main orchestrator (the entry point).
+  Importable as a module and exposed as the installed `ai-benchmark` console
+  script via `[project.scripts]` in `pyproject.toml`.
+- **`ai-benchmark.py`** — thin root launcher that delegates to `benchmark.cli.main`;
+  kept so `python ai-benchmark.py` works for docs, hooks, and tests.
+- **`benchmark/`** — the core library package:
   - **`benchmark/core.py`** — `_run_plugin_task`, `run_model`, `_run_plugins`, plugin dispatch + per-token bookkeeping.
   - **`benchmark/http.py`** — `stream_request`, `nonstream_request`, `_post_request_context`, 429 retry/backoff with jitter & `Retry-After`, `_set_429_sleep / _clear_429_sleep / get_429_stats / reset_429_stats`, `build_curl_cmd`, SSE parser.
   - **`benchmark/state.py`** — thread-safe `BenchmarkState`: `save_state`, `load_state`, `add_result`, `start_plugin_run`, `finish_plugin_run`, `mark_first_chunk_seen`, `add_bytes_received`, resume semantics.
@@ -21,7 +25,8 @@ to know what to grep first.
 ## Smoke / test commands (no API key needed)
 
 ```sh
-python3 ai-benchmark.py --list-plugins              # every discovered plugin
+ai-benchmark --list-plugins                  # installed console script (pip install -e .)
+python3 ai-benchmark.py --list-plugins       # every discovered plugin (repo launcher)
 python3 ai-benchmark.py --dump-default-config       # YAML config template
 python3 ai-benchmark.py --convert-config in.yml     # convert JSON<->YAML (stdout)
 python3 -m pytest tests/ plugins/challenges/ plugins/outputs/ -q
@@ -67,7 +72,7 @@ LAST entry per model.
 - `benchmark_state.json` — resume state.
 - `run-info.json` — run metadata; **includes `backoff_429`
   (`{total_retries, per_plugin: {pid: {retries, total_sleep_time}}}`)**
-  for post-run 429 analysis (see `_inject_429_stats` in `ai-benchmark.py`).
+  for post-run 429 analysis (see `_inject_429_stats` in `benchmark.cli`).
 - `benchmark-config.{yaml,json}` — **copy of the input config persisted
   as a time capsule**; diff against the in-repo config to see what the
   operator actually ran.
@@ -129,7 +134,8 @@ when the user invokes a skill workflow (`skill <name>`).
 
 - **`purge-results`** — surgically removes `(model, plugin)` entries from
   `benchmark_state.json` so they re-run on the next `ai-benchmark.py`
-  resume. Self-discovers plugin ids from `state.active_plugins`, default
+  run (or `ai-benchmark` console script) resume. Self-discovers plugin
+  ids from `state.active_plugins`, default
   dry-run, microsecond backup `benchmark_state.json.pre-purge-<ts>.bak`,
   `--quiet` gates per-pair table + main() banners, `--diff` reads a
   backup to show what was removed.

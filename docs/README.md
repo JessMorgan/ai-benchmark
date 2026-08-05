@@ -31,7 +31,7 @@ AI Benchmark lets you:
 
 ## Quick Links
 
-- Main entry point: [`ai-benchmark.py`](../ai-benchmark.py)
+- Main entry point: [`benchmark/cli.py`](../benchmark/cli.py) (installed as the `ai-benchmark` command; [`ai-benchmark.py`](../ai-benchmark.py) is a thin launcher)
 - Core library package: [`benchmark/`](../benchmark/)
 - Plugin base class: [`benchmark/plugin.py`](../benchmark/plugin.py)
 - Built-in plugins: [`plugins/`](../plugins/)
