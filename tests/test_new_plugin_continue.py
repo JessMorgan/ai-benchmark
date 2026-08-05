@@ -6,7 +6,7 @@ from unittest import mock
 
 from plugins import discover_plugins
 from tests.utils import load_benchmark_module
-from benchmark_plugin import PluginTaskResult
+from benchmark.plugin import PluginTaskResult
 
 
 class TestNewPluginContinue(unittest.TestCase):

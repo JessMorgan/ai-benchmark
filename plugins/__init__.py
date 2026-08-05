@@ -4,7 +4,7 @@ import inspect
 import os
 import sys
 
-from benchmark_plugin import BenchmarkOutputPlugin, BenchmarkTaskPlugin
+from benchmark.plugin import BenchmarkOutputPlugin, BenchmarkTaskPlugin
 
 
 class PluginDiscoveryError(RuntimeError):

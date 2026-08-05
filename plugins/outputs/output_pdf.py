@@ -1,8 +1,8 @@
 import os
 from datetime import datetime
 
-from benchmark_plugin import BenchmarkOutputPlugin
-from benchmark_outputs import _plugin_total_score, _numeric_score, _plugin_token_counts
+from benchmark.plugin import BenchmarkOutputPlugin
+from benchmark.outputs import _plugin_total_score, _numeric_score, _plugin_token_counts
 
 
 class PDFOutputPlugin(BenchmarkOutputPlugin):

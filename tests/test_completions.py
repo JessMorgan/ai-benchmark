@@ -5,7 +5,7 @@ import sys
 import unittest
 
 from plugins import discover_plugins
-from shell_completion import generate_shell_completion
+from benchmark.completions import generate_shell_completion
 
 
 class TestShellCompletions(unittest.TestCase):

@@ -1,7 +1,7 @@
 """Product Requirements Document (PRD) creation benchmark task."""
 import re
 
-from benchmark_plugin import BenchmarkTaskPlugin, EvaluationResult
+from benchmark.plugin import BenchmarkTaskPlugin, EvaluationResult
 from plugins.challenges._rubric import Rubric
 
 
@@ -12,7 +12,7 @@ class PRDCreationPlugin(BenchmarkTaskPlugin):
 
     @property
     def version(self):
-        return "0.2.0"
+        return "0.2.1"
 
     @property
     def name(self):

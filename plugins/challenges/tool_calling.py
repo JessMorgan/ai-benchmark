@@ -2,7 +2,7 @@
 import json
 import re
 
-from benchmark_plugin import BenchmarkTaskPlugin
+from benchmark.plugin import BenchmarkTaskPlugin
 from plugins.challenges._rubric import Rubric
 
 
@@ -13,7 +13,7 @@ class ToolCallingPlugin(BenchmarkTaskPlugin):
 
     @property
     def version(self):
-        return "0.3.0"
+        return "0.3.1"
 
     @property
     def name(self):

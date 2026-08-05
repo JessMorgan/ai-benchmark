@@ -7,14 +7,16 @@ to know what to grep first.
 ## Project map
 
 - **`ai-benchmark.py`** — CLI, argparse, TUI, main orchestrator (the entry point).
-- **`benchmark_core.py`** — `_run_plugin_task`, `run_model`, `_run_plugins`, plugin dispatch + per-token bookkeeping.
-- **`benchmark_http.py`** — `stream_request`, `nonstream_request`, `_post_request_context`, 429 retry/backoff with jitter & `Retry-After`, `_set_429_sleep / _clear_429_sleep / get_429_stats / reset_429_stats`, `build_curl_cmd`, SSE parser.
-- **`benchmark_state.py`** — thread-safe `BenchmarkState`: `save_state`, `load_state`, `add_result`, `start_plugin_run`, `finish_plugin_run`, `mark_first_chunk_seen`, `add_bytes_received`, resume semantics.
-- **`benchmark_plugin.py`** — abstract base classes (`BenchmarkTaskPlugin`, `BenchmarkOutputPlugin`).
-- **`benchmark_outputs.py`** — `gen_markdown / gen_csv / gen_html / gen_pdf`.
-- **`shell_completion.py`** — `--generate-shell-completion`.
+- **`benchmark/`** — the core library package (moved out of the repo root):
+  - **`benchmark/core.py`** — `_run_plugin_task`, `run_model`, `_run_plugins`, plugin dispatch + per-token bookkeeping.
+  - **`benchmark/http.py`** — `stream_request`, `nonstream_request`, `_post_request_context`, 429 retry/backoff with jitter & `Retry-After`, `_set_429_sleep / _clear_429_sleep / get_429_stats / reset_429_stats`, `build_curl_cmd`, SSE parser.
+  - **`benchmark/state.py`** — thread-safe `BenchmarkState`: `save_state`, `load_state`, `add_result`, `start_plugin_run`, `finish_plugin_run`, `mark_first_chunk_seen`, `add_bytes_received`, resume semantics.
+  - **`benchmark/plugin.py`** — abstract base classes (`BenchmarkTaskPlugin`, `BenchmarkOutputPlugin`).
+  - **`benchmark/outputs.py`** — `gen_markdown / gen_csv / gen_html / gen_pdf`.
+  - **`benchmark/completions.py`** — `--generate-shell-completion`.
+  - **`benchmark/opencode.py`** — the optional OpenCode subprocess runner.
 - **`plugins/challenges/`** — 13 task plugins; auto-discovered and metadata-validated. **`plugins/outputs/`** — md/csv/html/pdf output plugins.
-- **`tests/`** — unittest suite. **`requirements.txt`** — runtime deps.
+- **`tests/`** — unittest suite. **`pyproject.toml`** — project metadata, runtime deps, dev extras, pytest/coverage/mypy/ruff config.
 
 ## Smoke / test commands (no API key needed)
 
@@ -23,15 +25,15 @@ python3 ai-benchmark.py --list-plugins              # every discovered plugin
 python3 ai-benchmark.py --dump-default-config       # YAML config template
 python3 ai-benchmark.py --convert-config in.yml     # convert JSON<->YAML (stdout)
 python3 -m pytest tests/ plugins/challenges/ plugins/outputs/ -q
-python3 -m mypy benchmark_core.py benchmark_http.py benchmark_state.py benchmark_plugin.py ai-benchmark.py
-python3 -m py_compile ai-benchmark.py benchmark_core.py benchmark_http.py benchmark_state.py
+python3 -m mypy benchmark/ ai-benchmark.py
+python3 -m py_compile ai-benchmark.py benchmark/*.py
 ```
 
 ## Key CLI flags (full reference in `docs/cli.md`)
 
 - `--retry-on-429` / `--no-retry-on-429` — toggle HTTP 429 backoff (default
   ON; per-source `max_429_retries` overrides are preserved either way).
-  See `benchmark_http._post_request_context` for the retry math.
+  See `benchmark.http._post_request_context` for the retry math.
 - `--no-rerun-failed` — keep `failed` models on resume; default re-runs them.
 - `--restart` — discard prior state and start every model fresh.
 - `--no-preload` — override per-source `preload: true` and skip model warm-up
@@ -114,7 +116,7 @@ Three (`code-review`, `moe-dense`, `structured-output`) set
    `orchestration=16`, `tool-calling=25`, others=20. Tests in
    `tests/test_tui_cells.py` pin score normalisation.
 6. **Thinking-truncation auto-escalation.** `_run_plugin_task` in
-   `benchmark_core.py` auto-retries once with a doubled `max_tokens` budget
+   `benchmark/core.py` auto-retries once with a doubled `max_tokens` budget
    when a streaming HTTP leg classifies as `thinking-truncation` (empty
    content, large `reasoning_content`, `finish_reason="length"`). The retry
    is capped at 131072 and only fires for HTTP streaming plugins. Regression

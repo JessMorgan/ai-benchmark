@@ -11,9 +11,9 @@ import tempfile
 import unittest
 from unittest import mock
 
-from benchmark_core import run_model
-from benchmark_state import BenchmarkState
-from opencode_runner import (
+from benchmark.core import run_model
+from benchmark.state import BenchmarkState
+from benchmark.opencode import (
     OPENCODE_BINARY,
     OPENCODE_INSTALL_SUBDIR,
     OPENCODE_NO_OUTPUT_GRACE,
@@ -383,7 +383,7 @@ class TestOpenCodeProcess(unittest.TestCase):
             open(config_path, "w", encoding="utf-8").close()
             stdout = b"\n".join([_text_event("final answer")])
             fake = _FakeProcess(stdout=stdout)
-            with mock.patch("opencode_runner.subprocess.Popen", return_value=fake) as popen:
+            with mock.patch("benchmark.opencode.subprocess.Popen", return_value=fake) as popen:
                 result = run_process(
                     "line one\nline two",
                     config_path=config_path,
@@ -415,7 +415,7 @@ class TestOpenCodeProcess(unittest.TestCase):
 
     def test_nonzero_exit_is_reported(self):
         fake = _FakeProcess(returncode=7, stderr=b"bad config")
-        with mock.patch("opencode_runner.subprocess.Popen", return_value=fake):
+        with mock.patch("benchmark.opencode.subprocess.Popen", return_value=fake):
             result = run_process("prompt", config_path="/tmp/config.json",
                                  model="provider/model", timeout=5,
                                  binary="opencode-test")
@@ -424,7 +424,7 @@ class TestOpenCodeProcess(unittest.TestCase):
     def test_session_error_is_reported(self):
         stream = _ndjson_event("error", error={"message": "provider down"})
         fake = _FakeProcess(stdout=stream)
-        with mock.patch("opencode_runner.subprocess.Popen", return_value=fake):
+        with mock.patch("benchmark.opencode.subprocess.Popen", return_value=fake):
             result = run_process("prompt", config_path="/tmp/config.json",
                                  model="provider/model", timeout=5,
                                  binary="opencode-test")
@@ -443,7 +443,7 @@ class TestOpenCodeProcess(unittest.TestCase):
         probe.returncode = 0
         probe.stdout = help_text
         probe.stderr = ""
-        with mock.patch("opencode_runner.subprocess.run", return_value=probe):
+        with mock.patch("benchmark.opencode.subprocess.run", return_value=probe):
             with self.assertRaisesRegex(RuntimeError, "'json' run format"):
                 validate_cli("opencode-test")
 
@@ -458,7 +458,7 @@ class TestOpenCodeProcess(unittest.TestCase):
         probe.returncode = 0
         probe.stdout = help_text
         probe.stderr = ""
-        with mock.patch("opencode_runner.subprocess.run", return_value=probe):
+        with mock.patch("benchmark.opencode.subprocess.run", return_value=probe):
             with self.assertRaisesRegex(RuntimeError, "--pure"):
                 validate_cli("opencode-test")
 
@@ -474,7 +474,7 @@ class TestOpenCodeProcess(unittest.TestCase):
         probe.returncode = 0
         probe.stdout = help_text
         probe.stderr = ""
-        with mock.patch("opencode_runner.subprocess.run", return_value=probe):
+        with mock.patch("benchmark.opencode.subprocess.run", return_value=probe):
             with self.assertRaisesRegex(RuntimeError, "--thinking"):
                 validate_cli("opencode-test")
 
@@ -491,7 +491,7 @@ class TestOpenCodeProcess(unittest.TestCase):
         probe.returncode = 0
         probe.stdout = help_text
         probe.stderr = ""
-        with mock.patch("opencode_runner.subprocess.run", return_value=probe):
+        with mock.patch("benchmark.opencode.subprocess.run", return_value=probe):
             validate_cli("opencode-test")
 
 
@@ -518,10 +518,10 @@ def _make_archive(tmpdir, name="opencode-linux-x64.tar.gz", binary_name="opencod
 class TestOpenCodeAutoInstall(unittest.TestCase):
     def setUp(self):
         patchers = [
-            mock.patch("opencode_runner.platform.system", return_value="Linux"),
-            mock.patch("opencode_runner.platform.machine", return_value="x86_64"),
-            mock.patch("opencode_runner._cpu_has_avx2", return_value=True),
-            mock.patch("opencode_runner._is_musl_libc", return_value=False),
+            mock.patch("benchmark.opencode.platform.system", return_value="Linux"),
+            mock.patch("benchmark.opencode.platform.machine", return_value="x86_64"),
+            mock.patch("benchmark.opencode._cpu_has_avx2", return_value=True),
+            mock.patch("benchmark.opencode._is_musl_libc", return_value=False),
         ]
         for patcher in patchers:
             patcher.start()
@@ -531,30 +531,30 @@ class TestOpenCodeAutoInstall(unittest.TestCase):
         self.assertEqual(_platform_asset_name(), "opencode-linux-x64.tar.gz")
 
     def test_platform_asset_linux_baseline_without_avx2(self):
-        with mock.patch("opencode_runner._cpu_has_avx2", return_value=False):
+        with mock.patch("benchmark.opencode._cpu_has_avx2", return_value=False):
             self.assertEqual(_platform_asset_name(), "opencode-linux-x64-baseline.tar.gz")
 
     def test_platform_asset_linux_musl(self):
-        with mock.patch("opencode_runner._is_musl_libc", return_value=True):
+        with mock.patch("benchmark.opencode._is_musl_libc", return_value=True):
             self.assertEqual(_platform_asset_name(), "opencode-linux-x64-musl.tar.gz")
 
     def test_platform_asset_arm64(self):
-        with mock.patch("opencode_runner.platform.machine", return_value="aarch64"):
+        with mock.patch("benchmark.opencode.platform.machine", return_value="aarch64"):
             self.assertEqual(_platform_asset_name(), "opencode-linux-arm64.tar.gz")
 
     def test_platform_asset_macos_zip(self):
-        with mock.patch("opencode_runner.platform.system", return_value="Darwin"), \
-             mock.patch("opencode_runner._darwin_translated", return_value=False), \
-             mock.patch("opencode_runner._darwin_avx2", return_value=True):
+        with mock.patch("benchmark.opencode.platform.system", return_value="Darwin"), \
+             mock.patch("benchmark.opencode._darwin_translated", return_value=False), \
+             mock.patch("benchmark.opencode._darwin_avx2", return_value=True):
             self.assertEqual(_platform_asset_name(), "opencode-darwin-x64.zip")
 
     def test_platform_asset_macos_rosetta_uses_arm64(self):
-        with mock.patch("opencode_runner.platform.system", return_value="Darwin"), \
-             mock.patch("opencode_runner._darwin_translated", return_value=True):
+        with mock.patch("benchmark.opencode.platform.system", return_value="Darwin"), \
+             mock.patch("benchmark.opencode._darwin_translated", return_value=True):
             self.assertEqual(_platform_asset_name(), "opencode-darwin-arm64.zip")
 
     def test_platform_asset_unsupported_os_raises(self):
-        with mock.patch("opencode_runner.platform.system", return_value="Plan9"):
+        with mock.patch("benchmark.opencode.platform.system", return_value="Plan9"):
             with self.assertRaisesRegex(RuntimeError, "Unsupported OS"):
                 _platform_asset_name()
 
@@ -569,8 +569,8 @@ class TestOpenCodeAutoInstall(unittest.TestCase):
                     with open(archive, "rb") as src:
                         handle.write(src.read())
 
-            with mock.patch("opencode_runner._download_to", side_effect=fake_download) as dl, \
-                 mock.patch("opencode_runner._latest_opencode_version", return_value="9.9.9"):
+            with mock.patch("benchmark.opencode._download_to", side_effect=fake_download) as dl, \
+                 mock.patch("benchmark.opencode._latest_opencode_version", return_value="9.9.9"):
                 binary = install_opencode(install_dir)
 
             self.assertTrue(os.path.isfile(binary))
@@ -591,10 +591,10 @@ class TestOpenCodeAutoInstall(unittest.TestCase):
                     with open(archive, "rb") as src:
                         handle.write(src.read())
 
-            with mock.patch("opencode_runner._platform_asset_name",
+            with mock.patch("benchmark.opencode._platform_asset_name",
                             return_value="opencode-windows-x64.zip"), \
-                 mock.patch("opencode_runner._download_to", side_effect=fake_download), \
-                 mock.patch("opencode_runner._latest_opencode_version", return_value=None):
+                 mock.patch("benchmark.opencode._download_to", side_effect=fake_download), \
+                 mock.patch("benchmark.opencode._latest_opencode_version", return_value=None):
                 binary = install_opencode(install_dir)
 
             self.assertTrue(binary.endswith("opencode.exe"))
@@ -602,17 +602,17 @@ class TestOpenCodeAutoInstall(unittest.TestCase):
 
     def test_install_opencode_download_failure_raises_actionable_error(self):
         with tempfile.TemporaryDirectory() as tmpdir:
-            with mock.patch("opencode_runner._download_to",
+            with mock.patch("benchmark.opencode._download_to",
                             side_effect=OSError("network down")), \
-                 mock.patch("opencode_runner._latest_opencode_version", return_value="1.0.0"):
+                 mock.patch("benchmark.opencode._latest_opencode_version", return_value="1.0.0"):
                 with self.assertRaisesRegex(RuntimeError, "Could not auto-install OpenCode"):
                     install_opencode(os.path.join(tmpdir, "install"))
 
 
 class TestOpenCodeBinaryResolution(unittest.TestCase):
     def test_path_binary_that_validates_is_used(self):
-        with mock.patch("opencode_runner.shutil.which", return_value="/usr/bin/opencode") as which, \
-             mock.patch("opencode_runner.validate_cli") as validate:
+        with mock.patch("benchmark.opencode.shutil.which", return_value="/usr/bin/opencode") as which, \
+             mock.patch("benchmark.opencode.validate_cli") as validate:
             resolved = resolve_opencode_binary()
         self.assertEqual(resolved, "/usr/bin/opencode")
         which.assert_called_once_with("opencode")
@@ -624,28 +624,28 @@ class TestOpenCodeBinaryResolution(unittest.TestCase):
             if binary == "/usr/bin/opencode":
                 raise RuntimeError("missing --pure")
 
-        with mock.patch("opencode_runner.shutil.which", return_value="/usr/bin/opencode"), \
-             mock.patch("opencode_runner._local_binary_path",
+        with mock.patch("benchmark.opencode.shutil.which", return_value="/usr/bin/opencode"), \
+             mock.patch("benchmark.opencode._local_binary_path",
                         return_value=mock.Mock(is_file=lambda: False)), \
-             mock.patch("opencode_runner.validate_cli", side_effect=selective_validate), \
-             mock.patch("opencode_runner.install_opencode", return_value="/proj/.tools/opencode/opencode") as install:
+             mock.patch("benchmark.opencode.validate_cli", side_effect=selective_validate), \
+             mock.patch("benchmark.opencode.install_opencode", return_value="/proj/.tools/opencode/opencode") as install:
             resolved = resolve_opencode_binary()
         self.assertEqual(resolved, "/proj/.tools/opencode/opencode")
         install.assert_called_once()
 
     def test_reuses_valid_local_copy_when_path_missing(self):
         local = os.path.join(tempfile.gettempdir(), "tools-opencode", "opencode")
-        with mock.patch("opencode_runner.shutil.which", return_value=None), \
-             mock.patch("opencode_runner._local_binary_path", return_value=mock.Mock(
+        with mock.patch("benchmark.opencode.shutil.which", return_value=None), \
+             mock.patch("benchmark.opencode._local_binary_path", return_value=mock.Mock(
                  is_file=lambda: True, __str__=lambda self: local)), \
-             mock.patch("opencode_runner.validate_cli") as validate:
+             mock.patch("benchmark.opencode.validate_cli") as validate:
             resolved = resolve_opencode_binary()
         self.assertEqual(resolved, local)
         validate.assert_called_once_with(local, timeout=10)
 
     def test_install_disabled_and_missing_raises_actionable_error(self):
-        with mock.patch("opencode_runner.shutil.which", return_value=None), \
-             mock.patch("opencode_runner._local_binary_path",
+        with mock.patch("benchmark.opencode.shutil.which", return_value=None), \
+             mock.patch("benchmark.opencode._local_binary_path",
                         return_value=mock.Mock(is_file=lambda: False)):
             with self.assertRaisesRegex(RuntimeError, "not found on PATH"):
                 resolve_opencode_binary(allow_install=False)
@@ -654,10 +654,10 @@ class TestOpenCodeBinaryResolution(unittest.TestCase):
         def bad_validate(binary, **kwargs):
             raise RuntimeError("missing --thinking")
 
-        with mock.patch("opencode_runner.shutil.which", return_value="/usr/bin/opencode"), \
-             mock.patch("opencode_runner._local_binary_path",
+        with mock.patch("benchmark.opencode.shutil.which", return_value="/usr/bin/opencode"), \
+             mock.patch("benchmark.opencode._local_binary_path",
                         return_value=mock.Mock(is_file=lambda: False)), \
-             mock.patch("opencode_runner.validate_cli", side_effect=bad_validate):
+             mock.patch("benchmark.opencode.validate_cli", side_effect=bad_validate):
             with self.assertRaisesRegex(RuntimeError, "incompatible"):
                 resolve_opencode_binary(allow_install=False)
 
@@ -665,12 +665,12 @@ class TestOpenCodeBinaryResolution(unittest.TestCase):
         def bad_validate(binary, **kwargs):
             raise RuntimeError("missing --pure")
 
-        with mock.patch("opencode_runner.shutil.which", return_value=None), \
-             mock.patch("opencode_runner._local_binary_path",
+        with mock.patch("benchmark.opencode.shutil.which", return_value=None), \
+             mock.patch("benchmark.opencode._local_binary_path",
                         return_value=mock.Mock(is_file=lambda: False)), \
-             mock.patch("opencode_runner.install_opencode",
+             mock.patch("benchmark.opencode.install_opencode",
                         return_value="/proj/.tools/opencode/opencode"), \
-             mock.patch("opencode_runner.validate_cli", side_effect=bad_validate):
+             mock.patch("benchmark.opencode.validate_cli", side_effect=bad_validate):
             with self.assertRaisesRegex(RuntimeError, "failed preflight"):
                 resolve_opencode_binary()
 
@@ -685,8 +685,8 @@ class TestOpenCodeLoopGuards(unittest.TestCase):
 
     def _stall(self, stdout=b"", **run_kwargs):
         fake = _StallingFakeProcess(stdout=stdout)
-        popen = mock.patch("opencode_runner.subprocess.Popen", return_value=fake)
-        term = mock.patch("opencode_runner._terminate_process")
+        popen = mock.patch("benchmark.opencode.subprocess.Popen", return_value=fake)
+        term = mock.patch("benchmark.opencode._terminate_process")
         popen.start()
         term_mock = term.start()
         self.addCleanup(popen.stop)
@@ -712,7 +712,7 @@ class TestOpenCodeLoopGuards(unittest.TestCase):
         }
         process_result = OpenCodeProcessResult(
             "valid benchmark response", "", 0.2, None, 0)
-        with mock.patch("benchmark_core.run_process", return_value=process_result) as run:
+        with mock.patch("benchmark.core.run_process", return_value=process_result) as run:
             run_model(
                 target_key, "Local", state, [plugin], source_config,
                 timeout=5, token_levels=[100], output_dir="/tmp/opencode-test",
@@ -735,7 +735,7 @@ class TestOpenCodeLoopGuards(unittest.TestCase):
         }, [plugin.id])
         process_result = OpenCodeProcessResult(
             "valid benchmark response", "", 0.2, None, 0)
-        with mock.patch("benchmark_core.run_process", return_value=process_result) as run:
+        with mock.patch("benchmark.core.run_process", return_value=process_result) as run:
             run_model(
                 target_key, "Local", state, [plugin],
                 {"Local": {"plugin_thread_limit": 1}},
@@ -834,7 +834,7 @@ class TestOpenCodeLoopGuards(unittest.TestCase):
             _text_event("A complete final answer that finishes the task."),
         ])
         fake = _FakeProcess(returncode=0, stdout=stream)
-        with mock.patch("opencode_runner.subprocess.Popen", return_value=fake):
+        with mock.patch("benchmark.opencode.subprocess.Popen", return_value=fake):
             result = run_process(
                 "prompt", config_path="/tmp/config.json",
                 model="provider/model", timeout=0,  # deadline already passed
@@ -860,7 +860,7 @@ class TestRunnerAwareExecution(unittest.TestCase):
         process_result = OpenCodeProcessResult(
             "This is a valid benchmark response.", "", 0.2, None, 0)
 
-        with mock.patch("benchmark_core.run_process", return_value=process_result):
+        with mock.patch("benchmark.core.run_process", return_value=process_result):
             run_model(
                 target_key, "Local", state, [plugin], source_config,
                 timeout=5, token_levels=[100], output_dir="/tmp/opencode-test",
@@ -892,7 +892,7 @@ class TestRunnerAwareExecution(unittest.TestCase):
             "final answer", "", 0.2, None, 0, think_text="chain of thought")
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            with mock.patch("benchmark_core.run_process", return_value=process_result):
+            with mock.patch("benchmark.core.run_process", return_value=process_result):
                 run_model(
                     target_key, "Local", state, [plugin], source_config,
                     timeout=5, token_levels=[100], output_dir=tmpdir,
@@ -929,7 +929,7 @@ class TestRunnerAwareExecution(unittest.TestCase):
         )
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            with mock.patch("benchmark_core.run_process", return_value=process_result):
+            with mock.patch("benchmark.core.run_process", return_value=process_result):
                 run_model(
                     target_key, "Local", state, [plugin], source_config,
                     timeout=5, token_levels=[100], output_dir=tmpdir,
@@ -970,7 +970,7 @@ class TestRunnerAwareExecution(unittest.TestCase):
         process_result = OpenCodeProcessResult(
             "This is a valid benchmark response.", "", 0.2, None, 0)
 
-        with mock.patch("benchmark_core.run_process", return_value=process_result) as run:
+        with mock.patch("benchmark.core.run_process", return_value=process_result) as run:
             run_model(
                 target_key, "Local", state, [plugin], source_config,
                 timeout=5, token_levels=[100], output_dir="/tmp/opencode-test",
@@ -999,7 +999,7 @@ class TestRunnerAwareExecution(unittest.TestCase):
         process_result = OpenCodeProcessResult(
             "This is a valid benchmark response.", "", 0.2, None, 0)
 
-        with mock.patch("benchmark_core.run_process", return_value=process_result) as run:
+        with mock.patch("benchmark.core.run_process", return_value=process_result) as run:
             run_model(
                 target_key, "Local", state, [plugin], source_config,
                 timeout=5, token_levels=[100], output_dir="/tmp/opencode-test",

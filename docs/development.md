@@ -4,16 +4,11 @@ This guide covers how to set up a development environment, run tests, write plug
 
 ## Development Setup
 
-Install dependencies:
+Install the project and its dev dependencies (pytest, mypy, ruff, ...) from
+`pyproject.toml`:
 
 ```sh
-pip install -r requirements.txt
-```
-
-For linting and type checking:
-
-```sh
-pip install ruff mypy
+pip install -e ".[dev]"
 ```
 
 ## Project Layout
@@ -21,9 +16,13 @@ pip install ruff mypy
 ```
 .
 ├── ai-benchmark.py      # CLI entry point and TUI
-├── benchmark_core.py    # Core benchmark logic, state, output generators
-├── benchmark_plugin.py  # Abstract base class for plugins
-├── shell_completion.py  # Shell completion script generation
+├── benchmark/           # Core library package
+│   ├── core.py          # Core benchmark logic, state, output generators
+│   ├── http.py          # Streaming / non-streaming HTTP request helpers
+│   ├── plugin.py        # Abstract base classes for plugins
+│   ├── outputs.py       # Markdown/CSV/HTML/PDF report generators
+│   ├── completions.py   # Shell completion script generation
+│   └── opencode.py      # Optional OpenCode subprocess runner
 ├── plugins/             # Built-in benchmark task plugins
 ├── tests/               # Unit tests
 └── docs/                # Documentation
@@ -48,7 +47,7 @@ python -m pytest tests/test_cli.py -v
 Run `mypy` on the core modules:
 
 ```sh
-python -m mypy benchmark_core.py ai-benchmark.py
+python -m mypy benchmark/ ai-benchmark.py
 ```
 
 ## Linting
@@ -70,7 +69,7 @@ Minimal example:
 
 ```python
 """My custom benchmark task."""
-from benchmark_plugin import BenchmarkTaskPlugin
+from benchmark.plugin import BenchmarkTaskPlugin
 
 
 class MyTaskPlugin(BenchmarkTaskPlugin):
@@ -132,7 +131,7 @@ def test_my_task_scores_function():
 
 ## Adding Tests for Core Changes
 
-Core changes in `benchmark_core.py` or `ai-benchmark.py` should include tests in `tests/test_cli.py` or `tests/test_output.py`.
+Core changes in `benchmark/core.py` or `ai-benchmark.py` should include tests in `tests/test_cli.py` or `tests/test_output.py`.
 
 ## Pre-Commit Hooks
 

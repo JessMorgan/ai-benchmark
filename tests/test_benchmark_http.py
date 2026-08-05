@@ -1,4 +1,4 @@
-"""Tests for benchmark_http request helpers."""
+"""Tests for benchmark.http request helpers."""
 import contextlib
 import json
 import shlex
@@ -8,7 +8,7 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from unittest import mock
 
-from benchmark_http import (
+from benchmark.http import (
     build_curl_cmd,
     fetch_models_v1,
     get_429_stats,
@@ -65,7 +65,7 @@ class TestStreamRequest(unittest.TestCase):
             (joined across all ``choices`` in the same data event)
 
         The first-chunk marker called before ``add_bytes_received`` in
-        the runtime (``benchmark_core._run_plugin_task``) relies on
+        the runtime (``benchmark.core._run_plugin_task``) relies on
         this gating: if it ever fires on a role-only delta, the cell
         would render `[streaming - 0 tok]` (or worse, the runtime would
         fire `mark_first_chunk_seen` then call `add_bytes_received``
@@ -88,7 +88,7 @@ class TestStreamRequest(unittest.TestCase):
         def fake_ctx(*a, **kw):
             yield PostRequestResult(fake_response, None, None)
 
-        with mock.patch("benchmark_http._post_request_context", fake_ctx):
+        with mock.patch("benchmark.http._post_request_context", fake_ctx):
             result = stream_request(
                 {"src": {"api_url": "http://x", "headers": {}}},
                 10, "m", "src", "p", 100,
@@ -285,7 +285,7 @@ class TestStreamRequest(unittest.TestCase):
         stream without ``[DONE]``. Previously ``_parse_sse_line`` ignored
         the payload (it only reads ``choices``), so the aborted stream
         looked like a clean empty completion: ``stream_ok=True``, score 0.
-        Now the error must surface on the result so ``benchmark_core``
+        Now the error must surface on the result so ``benchmark.core``
         records ``stream_ok=False`` + ``stream_error`` instead.
         """
         source_config = {"Local": {"api_url": "http://localhost/chat/completions", "headers": {}}}
@@ -696,7 +696,7 @@ class TestRateLimitRetries(unittest.TestCase):
         def record_set(source, model, pid, wake_ts, attempts, max_attempts, delay):
             captured["key"] = (source, model, pid)
 
-        with mock.patch("benchmark_http._set_429_sleep", side_effect=record_set):
+        with mock.patch("benchmark.http._set_429_sleep", side_effect=record_set):
             with mock.patch("requests.post", side_effect=sequence):
                 result = stream_request(
                     cfg, timeout=5, model="m", source="Local",
@@ -708,7 +708,7 @@ class TestRateLimitRetries(unittest.TestCase):
 
     def test_429_tracks_per_plugin_stats(self):
         """get_429_stats returns aggregate retry attempts and sleep time per plugin."""
-        from benchmark_http import reset_429_stats, _set_429_sleep
+        from benchmark.http import reset_429_stats, _set_429_sleep
 
         reset_429_stats()
         self.addCleanup(reset_429_stats)
@@ -800,7 +800,7 @@ class TestRateLimitRetries(unittest.TestCase):
 
             return _Resp200()
 
-        from benchmark_http import nonstream_request
+        from benchmark.http import nonstream_request
 
         with mock.patch("requests.post", side_effect=[_Resp429(), _mk_200()]):
             nonstream_request(

@@ -13,3 +13,6 @@ coverage.xml
 
 # Locally auto-installed tool binaries (e.g. OpenCode)
 .tools/
+
+# Standalone scratch/experiment scripts not part of the project
+scratch/

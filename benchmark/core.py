@@ -11,20 +11,20 @@ from datetime import datetime
 
 import yaml
 
-from benchmark_http import (  # noqa: F401
+from .http import (  # noqa: F401
     close_active_requests,
     fetch_models_v1,
     stream_request,
     nonstream_request,
 )
-from benchmark_plugin import PluginTaskResult
-from opencode_runner import (
+from .plugin import PluginTaskResult
+from .opencode import (
     OPENCODE_BINARY,
     OPENCODE_NO_OUTPUT_GRACE,
     resolve_opencode_timeout,
     run_process,
 )
-from benchmark_outputs import (  # noqa: F401
+from .outputs import (  # noqa: F401
     _save_outputs,
     gen_csv,
     gen_html,
@@ -32,7 +32,7 @@ from benchmark_outputs import (  # noqa: F401
     gen_pdf,
     sanitize_filename,
 )
-from benchmark_state import BenchmarkState  # noqa: F401
+from .state import BenchmarkState  # noqa: F401
 
 
 PRELOAD_PROMPT = "Reply with the single word OK."

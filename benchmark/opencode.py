@@ -195,10 +195,11 @@ def validate_cli(binary: str = OPENCODE_BINARY, *, timeout: float = 10) -> None:
 def _local_install_dir() -> Path:
     """Return the project-scoped directory for a locally installed OpenCode.
 
-    The project root is the directory containing this module, so the install
-    location is stable regardless of the current working directory.
+    The project root is two levels above this module (``benchmark/opencode.py``
+    inside the repo root), so the install location is stable regardless of the
+    current working directory.
     """
-    return Path(__file__).resolve().parent / OPENCODE_INSTALL_SUBDIR
+    return Path(__file__).resolve().parent.parent / OPENCODE_INSTALL_SUBDIR
 
 
 def _local_binary_path(install_dir: str | os.PathLike[str] | None = None) -> Path:

@@ -489,7 +489,7 @@ class TestPluginCellBlock(unittest.TestCase):
         """Once the streaming callback has accumulated chars (mocked
         here as a stored counter), the cell shows
         ``[streaming - N tok]`` where N is chars // 4 (matching the
-        ``count_tokens`` estimator + ``benchmark_core.add_bytes_received``
+        ``count_tokens`` estimator + ``benchmark.core.add_bytes_received``
         which counts chars, not bytes, so live and completion numbers
         align for ASCII=CJK=emoji alike). The indicator gives the
         operator a wall-clock ticker on the in-flight progress.

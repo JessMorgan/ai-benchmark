@@ -31,7 +31,7 @@ You cannot use both whitelist and blacklist at the same time.
 
 ## Plugin Base Class
 
-All plugins inherit from `BenchmarkTaskPlugin` in `benchmark_plugin.py`:
+All plugins inherit from `BenchmarkTaskPlugin` in `benchmark/plugin.py`:
 
 ```python
 class BenchmarkTaskPlugin(abc.ABC):

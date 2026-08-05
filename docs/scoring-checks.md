@@ -91,7 +91,7 @@ check is to ask another LLM to grade.  Pattern:
 
 This is implemented in several open-source agentic eval frameworks
 (Patronus, Promptfoo, RAGAS).  In this codebase, the same
-`stream_request` / `nonstream_request` plumbing in `benchmark_http.py`
+`stream_request` / `nonstream_request` plumbing in `benchmark/http.py`
 already works — call it recursively with the criterion as the prompt.
 
 The two big caveats:
@@ -242,12 +242,12 @@ their format, and the leaderboard view is unchanged.
 
 - `plugins/challenges/_rubric.py` — extend with `eval_struct`,
   `eval_consistency`, `eval_judge` helpers so every plugin can opt in.
-- `benchmark_http.py::stream_request` — already what an LLM-as-judge
+- `benchmark/http.py::stream_request` — already what an LLM-as-judge
   call would use; no new plumbing required.
-- `benchmark_core.py::_run_plugin_task` — accepts `system_prompt` and
+- `benchmark/core.py::_run_plugin_task` — accepts `system_prompt` and
   `is_agent`; a judge model should pass `is_agent=False` and a
   system_prompt describing the rubric.
-- `benchmark_state.py::update` — already stores per-criterion `rubric`
+- `benchmark/state.py::update` — already stores per-criterion `rubric`
   breakdown; nothing to migrate.
 
 ## Final note

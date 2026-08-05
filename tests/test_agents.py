@@ -5,11 +5,11 @@ import tempfile
 import unittest
 from unittest import mock
 
-from benchmark_core import resolve_targets
+from benchmark.core import resolve_targets
 from plugins import discover_plugins
 from tests.utils import load_benchmark_module
-from benchmark_http import NonStreamResult, StreamResult
-from benchmark_plugin import PluginTaskResult
+from benchmark.http import NonStreamResult, StreamResult
+from benchmark.plugin import PluginTaskResult
 
 
 class TestResolveTargets(unittest.TestCase):

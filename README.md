@@ -180,19 +180,25 @@ Each plugin exposes a `version` attribute so results can be correlated to a spec
 
 ## Tests & Coverage
 
+Install the project and its dev dependencies (`pytest`, `coverage`, `mypy`, `ruff`):
+
+```sh
+pip install -e ".[dev]"
+```
+
 Run the test suite with pytest:
 
 ```sh
 python -m pytest tests/ plugins/challenges/ plugins/outputs/ -q
 ```
 
-Generate a coverage report for the plugins:
+Generate a coverage report for the `benchmark/` package and `plugins/`:
 
 ```sh
 ./scripts/run-coverage.sh
 ```
 
-This produces a terminal summary, an HTML report in `htmlcov/`, and an XML report in `coverage.xml`.
+Coverage configuration lives in `pyproject.toml` (`[tool.coverage]`). This produces a terminal summary, an HTML report in `htmlcov/`, and an XML report in `coverage.xml`.
 
 ## Reports
 

@@ -2,7 +2,7 @@
 import re
 from typing import Any
 
-from benchmark_plugin import EvaluationResult
+from benchmark.plugin import EvaluationResult
 
 
 class Rubric:

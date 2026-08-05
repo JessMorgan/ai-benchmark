@@ -21,7 +21,7 @@ import traceback
 import unicodedata
 from datetime import datetime
 
-from benchmark_core import (
+from benchmark.core import (
     BenchmarkState,
     _apply_http_retry_default,
     _unique_source_abbrevs,
@@ -37,15 +37,15 @@ from benchmark_core import (
     run_model,
     _save_outputs,
 )
-from benchmark_http import (
+from benchmark.http import (
     close_active_requests,
     get_429_stats,
     get_active_request_count,
     reset_429_stats,
 )
 from plugins import discover_plugins, format_plugin_list
-from shell_completion import generate_shell_completion
-from opencode_runner import (
+from benchmark.completions import generate_shell_completion
+from benchmark.opencode import (
     generate_config as generate_opencode_config,
     opencode_model_name,
     opencode_version,

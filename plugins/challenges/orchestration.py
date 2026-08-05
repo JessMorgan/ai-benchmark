@@ -1,7 +1,7 @@
 """Multi-step workflow orchestration benchmark task."""
 import re
 
-from benchmark_plugin import BenchmarkTaskPlugin
+from benchmark.plugin import BenchmarkTaskPlugin
 from plugins.challenges._rubric import Rubric
 
 
@@ -12,7 +12,7 @@ class OrchestrationPlugin(BenchmarkTaskPlugin):
 
     @property
     def version(self):
-        return "0.2.0"
+        return "0.2.1"
 
     @property
     def name(self):

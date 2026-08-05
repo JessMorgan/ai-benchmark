@@ -1,7 +1,7 @@
 """Wireframe creation benchmark task for frontend/UX design capability."""
 import re
 
-from benchmark_plugin import BenchmarkTaskPlugin, EvaluationResult
+from benchmark.plugin import BenchmarkTaskPlugin, EvaluationResult
 from plugins.challenges._rubric import Rubric
 
 
@@ -68,7 +68,7 @@ class WireframesPlugin(BenchmarkTaskPlugin):
 
     @property
     def version(self):
-        return "0.3.0"
+        return "0.3.1"
 
     @property
     def name(self):

@@ -11,7 +11,7 @@ from plugins import (
     format_plugin_list,
     plugin_inventory,
 )
-from benchmark_plugin import BenchmarkTaskPlugin
+from benchmark.plugin import BenchmarkTaskPlugin
 
 
 class TestPluginDiscovery(unittest.TestCase):
@@ -51,7 +51,7 @@ class TestPluginDiscovery(unittest.TestCase):
     def test_discovery_rejects_duplicate_ids(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             source = (
-                "from benchmark_plugin import BenchmarkTaskPlugin\n"
+                "from benchmark.plugin import BenchmarkTaskPlugin\n"
                 "class Plugin(BenchmarkTaskPlugin):\n"
                 "    @property\n"
                 "    def id(self): return 'duplicate'\n"
@@ -77,7 +77,7 @@ class TestPluginDiscovery(unittest.TestCase):
             plugin_path = os.path.join(tmpdir, "bad_streaming.py")
             with open(plugin_path, "w") as f:
                 f.write(
-                    "from benchmark_plugin import BenchmarkTaskPlugin\n"
+                    "from benchmark.plugin import BenchmarkTaskPlugin\n"
                     "class BadStreaming(BenchmarkTaskPlugin):\n"
                     "    id = 'bad-streaming'\n"
                     "    version = '1.0.0'\n"
@@ -97,7 +97,7 @@ class TestPluginDiscovery(unittest.TestCase):
             plugin_path = os.path.join(tmpdir, "bad_metadata.py")
             with open(plugin_path, "w") as f:
                 f.write(
-                    "from benchmark_plugin import BenchmarkTaskPlugin\n"
+                    "from benchmark.plugin import BenchmarkTaskPlugin\n"
                     "class BadMetadata(BenchmarkTaskPlugin):\n"
                     "    id = ''\n"
                     "    version = '1.0.0'\n"
@@ -148,7 +148,7 @@ class TestPluginDiscovery(unittest.TestCase):
             plugin_path = os.path.join(tmpdir, "bad_plugin.py")
             with open(plugin_path, "w") as f:
                 f.write(
-                    "from benchmark_plugin import BenchmarkTaskPlugin\n"
+                    "from benchmark.plugin import BenchmarkTaskPlugin\n"
                     "class BadPlugin(BenchmarkTaskPlugin):\n"
                     "    @property\n"
                     "    def id(self):\n"

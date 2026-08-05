@@ -32,7 +32,7 @@ AI Benchmark lets you:
 ## Quick Links
 
 - Main entry point: [`ai-benchmark.py`](../ai-benchmark.py)
-- Core benchmark logic: [`benchmark_core.py`](../benchmark_core.py)
-- Plugin base class: [`benchmark_plugin.py`](../benchmark_plugin.py)
+- Core library package: [`benchmark/`](../benchmark/)
+- Plugin base class: [`benchmark/plugin.py`](../benchmark/plugin.py)
 - Built-in plugins: [`plugins/`](../plugins/)
 - Unit tests: [`tests/`](../tests/)

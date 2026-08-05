@@ -12,7 +12,7 @@ This document describes the high-level design of AI Benchmark.
                   │
                   ▼
 ┌─────────────────────────────────────────┐
-│           benchmark_core.py           │
+│           benchmark/core.py           │
 │  State management, API requests,        │
 │  plugin execution, output generation   │
 └─────────────────────────────────────────┘

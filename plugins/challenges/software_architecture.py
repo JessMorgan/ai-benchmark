@@ -1,7 +1,7 @@
 """Software architecture document creation benchmark task."""
 import re
 
-from benchmark_plugin import BenchmarkTaskPlugin, EvaluationResult
+from benchmark.plugin import BenchmarkTaskPlugin, EvaluationResult
 from plugins.challenges._rubric import Rubric
 
 
@@ -12,7 +12,7 @@ class SoftwareArchitecturePlugin(BenchmarkTaskPlugin):
 
     @property
     def version(self):
-        return "0.3.0"
+        return "0.3.1"
 
     @property
     def name(self):

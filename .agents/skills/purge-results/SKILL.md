@@ -43,7 +43,7 @@ Load this skill when the user asks to:
 
 Plugin IDs are read from `state["active_plugins"]` (saved by
 `BenchmarkState.save_state` at every checkpoint) rather than hard-coded.
-This keeps the skill in step with `benchmark_state.py` automatically; if
+This keeps the skill in step with `benchmark/state.py` automatically; if
 a new plugin is added there, it becomes available to `--plugin` /
 `--target` here without any edit.
 
@@ -676,7 +676,7 @@ if __name__ == "__main__":
 
 ## Resume semantics — what changes after the purge
 
-`benchmark_core.py`'s `run_model` resume path consults the latest result
+`benchmark/core.py`'s `run_model` resume path consults the latest result
 dict per model (deduped by `BenchmarkState.latest_results()`) and re-uses a
 plugin's score only when `_score != "fail"`. Removing the `{pid}_score`
 key for a pair makes the resume path re-execute that plugin while keeping

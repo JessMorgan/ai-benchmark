@@ -9,7 +9,7 @@ Tests the model's ability to:
 """
 import re
 
-from benchmark_plugin import BenchmarkTaskPlugin
+from benchmark.plugin import BenchmarkTaskPlugin
 from plugins.challenges._rubric import Rubric
 
 
@@ -20,7 +20,7 @@ class ErrorRecoveryPlugin(BenchmarkTaskPlugin):
 
     @property
     def version(self):
-        return "0.1.0"
+        return "0.1.1"
 
     @property
     def name(self):
