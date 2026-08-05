@@ -489,10 +489,11 @@ def _post_request_context(source_config, source, body, timeout, stream, log_path
 
             # Tear down the current response before sleeping so we don't
             # leak the connection or hold a watchdog reference.
-            try:
-                watchdog.cancel()
-            except Exception:
-                pass
+            if watchdog is not None:
+                try:
+                    watchdog.cancel()
+                except Exception:
+                    pass
             with _active_requests_lock:
                 _active_requests.discard(resp)
             try:
@@ -672,7 +673,7 @@ def stream_request(source_config, timeout, model, source, prompt, max_tokens=204
     think_text = ""
     error = None
     finish_reason = None
-    usage = {}
+    usage: dict[str, Any] = {}
     tool_calls: list = []
     body = _build_request_body(model, prompt, max_tokens, session_seed, temperature, drop_params,
                                stream=True, system_prompt=system_prompt)
@@ -798,7 +799,7 @@ def nonstream_request(source_config, timeout, model, source, prompt, max_tokens=
     error = None
     text = ""
     think_text = ""
-    usage = {}
+    usage: dict[str, Any] = {}
     finish_reason = None
     tool_calls: list = []
     body = _build_request_body(model, prompt, max_tokens, session_seed, temperature, drop_params,

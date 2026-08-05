@@ -713,8 +713,6 @@ def _render_model_rows(stdscr, max_x, max_y, snap_items, active_plugins, source_
             break
         name, s = snap_items[abs_idx]
         display_idx = abs_idx + 1
-        src_name = s.get("source")
-        api_model = s.get("api_model", name)
         frozen, plugin_str = _format_model_row(
             name, s, display_idx, active_plugins, source_abbrevs,
             sleeping_lookup=sleeping_lookup,
@@ -1067,7 +1065,6 @@ def tui_main(state, stop_event, num_sources, active_plugins, session_seed=None):
 
                 http_threads = get_active_request_count()
                 backoff_429 = get_429_stats()
-                sleeping_count = len(backoff_429.get("sleeping", {}))
                 # Per-plugin 429 lookup keyed by ``(source, api_model, pid)``
                 # so each plugin cell can fold its own backoff countdown
                 # into the model row. Plugins whose key is absent render
@@ -1458,7 +1455,6 @@ def main():
     if runner_mode in ("http", "both"):
         os.makedirs(http_output_dir, exist_ok=True)
     opencode_config_path = None
-    opencode_mappings = {}
     opencode_agent_ids = {}
     opencode_projection = None
     if runner_mode in ("opencode", "both"):
@@ -1473,7 +1469,6 @@ def main():
                 plugin_temperatures=cfg.get("plugin_temperatures"),
             )
             opencode_config_path = generated["path"]
-            opencode_mappings = generated["mappings"]
             opencode_agent_ids = generated["agent_ids"]
             opencode_projection = generated["projection"]
         except (OSError, ValueError) as exc:

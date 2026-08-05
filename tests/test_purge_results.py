@@ -36,6 +36,7 @@ entries, totalling exactly 14.
 """
 import copy
 import json
+from typing import Any
 import os
 import subprocess
 import sys
@@ -88,7 +89,7 @@ def _extract_purge_script(skill_path: str = _SKILL_PATH) -> str:
     # trailing call is indented under ``if __name__ == "__main__":``
     # so its raw text is four-space ``    main()``, not bare
     # ``main()``.
-    non_blank = [l for l in script.splitlines() if l.strip()]
+    non_blank = [line for line in script.splitlines() if line.strip()]
     assert non_blank[-1].strip() == "main()", (
         "SKILL.md extraction now drops the trailing main() call -- "
         "agents invoking `python3 /tmp/purge-results.py --apply` "
@@ -125,7 +126,7 @@ class TestPurgeResultsExtraction(unittest.TestCase):
         self.assertEqual(self.script.splitlines()[0], "#!/usr/bin/env python3")
 
     def test_last_visible_line_is_main_call(self):
-        non_blank = [l for l in self.script.splitlines() if l.strip()]
+        non_blank = [line for line in self.script.splitlines() if line.strip()]
         self.assertEqual(non_blank[-1].strip(), "main()")
 
     def test_imports_as_python_module(self):
@@ -168,7 +169,7 @@ def _build_14_targets_state() -> dict:
     pluginA in BOTH dicts but NOT matching the filter, to confirm the
     filter doesn't over-match.
     """
-    state = {
+    state: dict[str, Any] = {
         "active_plugins": ["pluginA", "pluginB"],
         "results": [],
         "model_info": {},

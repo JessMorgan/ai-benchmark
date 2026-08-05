@@ -21,8 +21,6 @@ from benchmark_plugin import PluginTaskResult
 from opencode_runner import (
     OPENCODE_BINARY,
     OPENCODE_NO_OUTPUT_GRACE,
-    OpenCodeProcessResult,
-    opencode_model_name,
     resolve_opencode_timeout,
     run_process,
 )
@@ -559,14 +557,14 @@ def _run_plugin_task(target_name, api_model, source, plugin, source_config, time
     if isinstance(raw_model_cfg, dict):
         drop_params = raw_model_cfg.get("drop_params", [])
     text = ""
-    response_time = 0
+    response_time = 0.0
     output_tokens = 0
     tps = None
     truncated = False
     repeating = False
     stream_ok = True
     first_tok = None
-    gen_time = 0
+    gen_time = 0.0
     think_text = ""
     serr = None
     sfr = None
@@ -765,7 +763,6 @@ def _run_plugin_task(target_name, api_model, source, plugin, source_config, time
                         system_prompt=system_prompt, pid=pid, on_retry=on_retry)
                     text = nonstream_result.text
                     think_text = nonstream_result.think_text
-                    nsusage = nonstream_result.usage
                     ns_time = nonstream_result.gen_time
                     nserr = nonstream_result.error
                     nsfr = nonstream_result.finish_reason
@@ -792,7 +789,6 @@ def _run_plugin_task(target_name, api_model, source, plugin, source_config, time
                 system_prompt=system_prompt, pid=pid, on_retry=on_retry)
             text = nonstream_result.text
             think_text = nonstream_result.think_text
-            usage = nonstream_result.usage
             gen_time = nonstream_result.gen_time
             gen_err = nonstream_result.error
             gen_fr = nonstream_result.finish_reason

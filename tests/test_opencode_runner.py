@@ -12,7 +12,6 @@ import unittest
 from unittest import mock
 
 from benchmark_core import run_model
-from benchmark_plugin import PluginTaskResult
 from benchmark_state import BenchmarkState
 from opencode_runner import (
     OPENCODE_BINARY,

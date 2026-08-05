@@ -606,8 +606,7 @@ def generate_config(
     providers: dict[str, Any] = {}
     agents: dict[str, Any] = {}
     agent_ids: dict[str, str] = {}
-    mappings: dict[str, str] = {}
-    collisions: dict[str, list[str]] = {}
+    mappings: dict[str, list[str]] = {}
 
     for target_key, info in targets.items():
         source = info.get("source")

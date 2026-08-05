@@ -5,8 +5,6 @@ curses in a real child process attached to a pseudoterminal, which catches
 terminal-size, bottom-row, and initialization problems that a fake window
 cannot reproduce.
 """
-import importlib.util
-import json
 import os
 import pathlib
 import pty

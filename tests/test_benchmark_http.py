@@ -708,7 +708,7 @@ class TestRateLimitRetries(unittest.TestCase):
 
     def test_429_tracks_per_plugin_stats(self):
         """get_429_stats returns aggregate retry attempts and sleep time per plugin."""
-        from benchmark_http import get_429_stats, reset_429_stats, _set_429_sleep
+        from benchmark_http import reset_429_stats, _set_429_sleep
 
         reset_429_stats()
         self.addCleanup(reset_429_stats)
