@@ -13,7 +13,7 @@ class MoEDensePlugin(BenchmarkTaskPlugin):
 
     @property
     def version(self):
-        return "0.3.1"
+        return "0.3.2"
 
     @property
     def name(self):
@@ -147,7 +147,7 @@ class MoEDensePlugin(BenchmarkTaskPlugin):
                     # hyphens, spaces, underscores between tokens.  The
                     # `more\\s+compute` arm allows trailing adjectives like
                     # "more compute intensive / required / overhead".
-                    r'\b\d+(?:\.\d+)?\s*(?:%|x\b|'
+                    (r'\b\d+(?:\.\d+)?\s*(?:%|x\b|'
                     r'TFLOPs?|GFLOPs?|FLOPs?|BFLOPs|'
                     r'billion|trillion|million|billion\s+parameters?|trillion\s+parameters?|'
                     r'TOPS(?:/s)?\b|'
@@ -158,7 +158,7 @@ class MoEDensePlugin(BenchmarkTaskPlugin):
                     r'trainable\s+params?|'
                     r'total\s+parameters?|active\s+parameters?|inference\s+parameters?|'
                     r'trainable\s+parameters?|total\s+parameter\s+count)|'
-                    r'\b\d+(?:\.\d+)?\s*(?:tokens?\s*[/]?\s*s\b|tokens?\s+per\s+second\b)',
+                    r'\b\d+(?:\.\d+)?\s*(?:tokens?\s*[/]?\s*s\b|tokens?\s+per\s+second\b)'),
                     1.0,
                 ),
             ],
@@ -177,10 +177,10 @@ class MoEDensePlugin(BenchmarkTaskPlugin):
                     # comparative - rather than as variable-width
                     # lookbehinds, which Python's stdlib `re` rejects (it
                     # only supports fixed-width lookbehinds).
-                    r'\b\d+(?:\.\d+)?%[\s\S]{0,200}?(?:vs\.?|versus|compared\s+to|over|higher\s+than|lower\s+than)[\s\S]{0,200}?\b\d+(?:\.\d+)?%|'
+                    (r'\b\d+(?:\.\d+)?%[\s\S]{0,200}?(?:vs\.?|versus|compared\s+to|over|higher\s+than|lower\s+than)[\s\S]{0,200}?\b\d+(?:\.\d+)?%|'
                     r'\b\d+(?:\.\d+)?\s*(?:B|M|K)\s*(?:params?|parameters?)[\s\S]{0,200}?(?:vs\.?|versus|compared\s+to)[\s\S]{0,200}?\b\d+(?:\.\d+)?\s*(?:B|M|K)\s*(?:params?|parameters?)|'
                     r'\b\d+(?:\.\d+)?\s*[xX][\s\S]{0,80}?\b(?:faster|slower|cheaper|more\s+expensive|larger|smaller)\s+than[\s\S]{0,80}?\b(?:dense|MoE|mixture[\s\-_]of[\s\-_]experts?|mixtral|llama|gemma|gpt-4)\b|'
-                    r'\b(?:dense|MoE|mixture[\s\-_]of[\s\-_]experts?|mixtral|llama|gemma|gpt-4)[\s\S]{0,80}?\b(?:faster|slower|cheaper|more\s+expensive|larger|smaller|denser|sparser)\s+than[\s\S]{0,200}?\b\d+(?:\.\d+)?',
+                    r'\b(?:dense|MoE|mixture[\s\-_]of[\s\-_]experts?|mixtral|llama|gemma|gpt-4)[\s\S]{0,80}?\b(?:faster|slower|cheaper|more\s+expensive|larger|smaller|denser|sparser)\s+than[\s\S]{0,200}?\b\d+(?:\.\d+)?'),
                     1.0,
                 ),
             ],

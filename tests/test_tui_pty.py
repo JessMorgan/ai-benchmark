@@ -18,7 +18,6 @@ import termios
 import time
 import unittest
 
-
 _THIS_DIR = pathlib.Path(__file__).resolve().parent
 _AI_BENCHMARK_PATH = _THIS_DIR.parent / "benchmark" / "cli.py"
 

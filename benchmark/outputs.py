@@ -3,6 +3,7 @@
 This module contains the report generators (Markdown, CSV, HTML, PDF) and the
 helper used to persist them to disk.
 """
+import contextlib
 import re
 
 
@@ -110,7 +111,5 @@ def _save_outputs(state, output_dir, active_plugins):
 
     output_plugins = discover_output_plugins()
     for plugin in output_plugins:
-        try:
+        with contextlib.suppress(Exception):
             plugin.generate(results, active_plugins, output_dir=output_dir, session_seed=session_seed)
-        except Exception:
-            pass

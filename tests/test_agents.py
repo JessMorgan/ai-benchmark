@@ -6,10 +6,10 @@ import unittest
 from unittest import mock
 
 from benchmark.core import resolve_targets
-from plugins import discover_plugins
-from tests.utils import load_benchmark_module
 from benchmark.http import NonStreamResult, StreamResult
 from benchmark.plugin import PluginTaskResult
+from plugins import discover_plugins
+from tests.utils import load_benchmark_module
 
 
 class TestResolveTargets(unittest.TestCase):
@@ -373,14 +373,16 @@ class TestAgentHTTPRequest(unittest.TestCase):
             return NonStreamResult("ok", "", {}, 0.1, None, "stop")
 
         state = module.BenchmarkState({"my-agent": "Local"}, ["rate-limiter"])
-        with mock.patch.object(module, "nonstream_request", side_effect=fake_nonstream):
-            with mock.patch.object(module, "stream_request", return_value=StreamResult("", "", None, 0, "no tokens", None, {})):
-                module._run_plugin_task(
-                    "my-agent", "underlying-model", "Local", plugins[0], source_config,
-                    timeout=1, token_levels=[100], session_seed=12345,
-                    log_file=None, global_cfg={}, state=state,
-                    system_prompt="You are a coding agent.",
-                )
+        with (
+            mock.patch.object(module, "nonstream_request", side_effect=fake_nonstream),
+            mock.patch.object(module, "stream_request", return_value=StreamResult("", "", None, 0, "no tokens", None, {})),
+        ):
+            module._run_plugin_task(
+                "my-agent", "underlying-model", "Local", plugins[0], source_config,
+                timeout=1, token_levels=[100], session_seed=12345,
+                log_file=None, global_cfg={}, state=state,
+                system_prompt="You are a coding agent.",
+            )
 
         self.assertIn("body", captured)
         messages = captured["body"]["messages"]

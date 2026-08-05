@@ -13,7 +13,6 @@ import time
 import unittest
 from unittest import mock
 
-
 _THIS_DIR = pathlib.Path(__file__).resolve().parent
 _AI_BENCHMARK_PATH = _THIS_DIR.parent / "benchmark" / "cli.py"
 _spec = importlib.util.spec_from_file_location("_ai_benchmark_module", _AI_BENCHMARK_PATH)

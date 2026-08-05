@@ -7,17 +7,16 @@ import time
 import traceback
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 
 import yaml
 
 from .http import (  # noqa: F401
     close_active_requests,
     fetch_models_v1,
-    stream_request,
     nonstream_request,
+    stream_request,
 )
-from .plugin import PluginTaskResult
 from .opencode import (
     OPENCODE_BINARY,
     OPENCODE_NO_OUTPUT_GRACE,
@@ -32,8 +31,8 @@ from .outputs import (  # noqa: F401
     gen_pdf,
     sanitize_filename,
 )
+from .plugin import PluginTaskResult
 from .state import BenchmarkState  # noqa: F401
-
 
 PRELOAD_PROMPT = "Reply with the single word OK."
 PRELOAD_DEFAULT_TIMEOUT = 300
@@ -370,7 +369,9 @@ def resolve_targets(cfg):
             }
     for name, val in agents.items():
         if not isinstance(val, dict):
-            raise ValueError(
+            # TRY004 would suggest TypeError, but config-validation errors are
+            # ValueError throughout this codebase (and tests pin it).
+            raise ValueError(  # noqa: TRY004 - config errors are ValueError throughout
                 f"Agent '{name}' must be an object with at least 'model' and 'system_prompt' keys"
             )
         if "model" not in val:
@@ -635,7 +636,7 @@ def _run_plugin_task(target_name, api_model, source, plugin, source_config, time
                             "total_tokens": int(count_tokens(text)) + int(count_tokens(think_text)),
                             "tps": None,
                             "seed": session_seed,
-                            "timestamp": datetime.now().isoformat(),
+                            "timestamp": datetime.now(timezone.utc).isoformat(),
                             "error": serr,
                             "think_text": think_text,
                         }, handle, indent=2, default=str)
@@ -969,7 +970,7 @@ def _run_plugin_task(target_name, api_model, source, plugin, source_config, time
         evaluation = plugin.evaluate(text)
         score = evaluation.score
         rubric = evaluation.rubric
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - a crashing evaluator is recorded, not fatal
         score_error = f"plugin.evaluate raised {type(exc).__name__}: {exc}"
         score_traceback_text = traceback.format_exc()
 
@@ -992,7 +993,7 @@ def _run_plugin_task(target_name, api_model, source, plugin, source_config, time
             "total_tokens": total_tokens,
             "tps": tps,
             "seed": session_seed,
-            "timestamp": datetime.now().isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
         }
         if score_error is not None:
             meta["error"] = score_error
@@ -1215,7 +1216,7 @@ def _run_plugins(target_name, api_model, source, state, active_plugins, plugins_
             for fut in done:
                 try:
                     fut.result()
-                except Exception as exc:
+                except Exception as exc:  # noqa: BLE001 - per-plugin errors are collected, not fatal
                     plugin = futures[fut]
                     with lock:
                         errors[plugin.id] = f"{type(exc).__name__}: {exc}"

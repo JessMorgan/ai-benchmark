@@ -6,15 +6,16 @@ import threading
 import time
 import unittest
 from datetime import datetime, timedelta, timezone
+from typing import ClassVar
 from unittest import mock
 
 from benchmark.http import (
+    PostRequestResult,
     build_curl_cmd,
     fetch_models_v1,
     get_429_stats,
     nonstream_request,
     stream_request,
-    PostRequestResult,
 )
 
 
@@ -701,19 +702,21 @@ class TestRateLimitRetries(unittest.TestCase):
         def record_set(source, model, pid, wake_ts, attempts, max_attempts, delay):
             captured["key"] = (source, model, pid)
 
-        with mock.patch("benchmark.http._set_429_sleep", side_effect=record_set):
-            with mock.patch("requests.post", side_effect=sequence):
-                result = stream_request(
-                    cfg, timeout=5, model="m", source="Local",
-                    prompt="hi", max_tokens=10, pid="rate-limiter",
-                )
+        with (
+            mock.patch("benchmark.http._set_429_sleep", side_effect=record_set),
+            mock.patch("requests.post", side_effect=sequence),
+        ):
+            result = stream_request(
+                cfg, timeout=5, model="m", source="Local",
+                prompt="hi", max_tokens=10, pid="rate-limiter",
+            )
         self.assertEqual(result.error, None)
         self.assertEqual(result.text, "ok")
         self.assertEqual(captured["key"], ("Local", "m", "rate-limiter"))
 
     def test_429_tracks_per_plugin_stats(self):
         """get_429_stats returns aggregate retry attempts and sleep time per plugin."""
-        from benchmark.http import reset_429_stats, _set_429_sleep
+        from benchmark.http import _set_429_sleep, reset_429_stats
 
         reset_429_stats()
         self.addCleanup(reset_429_stats)
@@ -775,7 +778,7 @@ class TestRateLimitRetries(unittest.TestCase):
         class _Resp429:
             status_code = 429
             text = "rate limited"
-            headers = {}
+            headers: ClassVar[dict] = {}
 
             def close(self):
                 pass
@@ -791,7 +794,7 @@ class TestRateLimitRetries(unittest.TestCase):
             class _Resp200:
                 status_code = 200
                 text = json.dumps(_body)
-                headers = {}
+                headers: ClassVar[dict] = {}
                 body = _body
 
                 def iter_content(self, chunk_size=8192):

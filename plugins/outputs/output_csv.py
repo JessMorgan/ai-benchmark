@@ -2,8 +2,8 @@ import csv
 import io
 import os
 
+from benchmark.outputs import _plugin_token_counts, _plugin_total_score
 from benchmark.plugin import BenchmarkOutputPlugin
-from benchmark.outputs import _plugin_total_score, _plugin_token_counts
 
 
 class CSVOutputPlugin(BenchmarkOutputPlugin):

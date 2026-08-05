@@ -1,8 +1,13 @@
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 
+from benchmark.outputs import (
+    _numeric_score,
+    _plugin_token_counts,
+    _plugin_total_score,
+    sanitize_filename,
+)
 from benchmark.plugin import BenchmarkOutputPlugin
-from benchmark.outputs import sanitize_filename, _plugin_total_score, _numeric_score, _plugin_token_counts
 
 
 class MarkdownOutputPlugin(BenchmarkOutputPlugin):
@@ -24,7 +29,7 @@ class MarkdownOutputPlugin(BenchmarkOutputPlugin):
         seed_line = f"**Seed:** {session_seed}" if session_seed is not None else ""
         lines = [
             "# AI Benchmark — Plugin-Based",
-            f"**Date:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+            f"**Date:** {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')}",
             f"**Tasks:** {plugin_names}",
             f"**Total:** {len(results)} models | **✅ {len(ok)} successful** | **❌ {len(results)-len(ok)} failed**",
         ]

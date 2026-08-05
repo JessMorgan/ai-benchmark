@@ -12,23 +12,22 @@ import unittest
 from unittest import mock
 
 from benchmark.core import run_model
-from benchmark.state import BenchmarkState
 from benchmark.opencode import (
     OPENCODE_BINARY,
     OPENCODE_INSTALL_SUBDIR,
-    OPENCODE_NO_OUTPUT_GRACE,
     OPENCODE_NEUTRAL_AGENT_PERMISSION,
     OPENCODE_NEUTRAL_AGENT_PROMPT,
+    OPENCODE_NO_OUTPUT_GRACE,
     OPENCODE_PURE_FLAG,
     OPENCODE_RUN_FORMAT,
     OPENCODE_THINKING_FLAG,
     OpenCodeExtract,
     OpenCodeProcessResult,
-    _StreamGuard,
     _extract_final_text,
     _local_binary_path,
     _model_context_limit,
     _platform_asset_name,
+    _StreamGuard,
     generate_config,
     install_opencode,
     opencode_model_name,
@@ -38,6 +37,7 @@ from benchmark.opencode import (
     slugify_source,
     validate_cli,
 )
+from benchmark.state import BenchmarkState
 from plugins import discover_plugins
 
 
@@ -57,7 +57,7 @@ class TestOpenCodeMapping(unittest.TestCase):
         result = subprocess.run(
             [sys.executable, "ai-benchmark.py",
              "--no-install-opencode", "--dump-default-config"],
-            capture_output=True, text=True,
+            capture_output=True, text=True, check=False,
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("output_dir", result.stdout)
@@ -205,13 +205,15 @@ class TestOpenCodeConfig(unittest.TestCase):
             "one": {"source": "Same Source", "api_model": "model"},
             "two": {"source": "Same Source", "api_model": "model"},
         }
-        with tempfile.TemporaryDirectory() as tmpdir:
-            with self.assertRaisesRegex(ValueError, "collision"):
-                generate_config(
-                    {"Same Source": {"api_url": "http://localhost/v1"}},
-                    targets,
-                    os.path.join(tmpdir, "generated.json"),
-                )
+        with (
+            tempfile.TemporaryDirectory() as tmpdir,
+            self.assertRaisesRegex(ValueError, "collision"),
+        ):
+            generate_config(
+                {"Same Source": {"api_url": "http://localhost/v1"}},
+                targets,
+                os.path.join(tmpdir, "generated.json"),
+            )
 
     def test_plain_model_target_registers_neutral_agent(self):
         """Non-agent targets must get a registered agent whose prompt has no
@@ -266,12 +268,14 @@ class TestOpenCodeConfig(unittest.TestCase):
             "model:one": {"source": "Local Server", "api_model": "model-a"},
             "model-one": {"source": "Local Server", "api_model": "model-b"},
         }
-        with tempfile.TemporaryDirectory() as tmpdir:
-            with self.assertRaisesRegex(ValueError, "agent id collision"):
-                generate_config(
-                    self.sources, targets,
-                    os.path.join(tmpdir, "generated.json"),
-                )
+        with (
+            tempfile.TemporaryDirectory() as tmpdir,
+            self.assertRaisesRegex(ValueError, "agent id collision"),
+        ):
+            generate_config(
+                self.sources, targets,
+                os.path.join(tmpdir, "generated.json"),
+            )
 
 
 def _ndjson_event(event_type, **extra):
@@ -443,9 +447,11 @@ class TestOpenCodeProcess(unittest.TestCase):
         probe.returncode = 0
         probe.stdout = help_text
         probe.stderr = ""
-        with mock.patch("benchmark.opencode.subprocess.run", return_value=probe):
-            with self.assertRaisesRegex(RuntimeError, "'json' run format"):
-                validate_cli("opencode-test")
+        with (
+            mock.patch("benchmark.opencode.subprocess.run", return_value=probe),
+            self.assertRaisesRegex(RuntimeError, "'json' run format"),
+        ):
+            validate_cli("opencode-test")
 
     def test_help_without_pure_is_rejected(self):
         help_text = (
@@ -458,9 +464,11 @@ class TestOpenCodeProcess(unittest.TestCase):
         probe.returncode = 0
         probe.stdout = help_text
         probe.stderr = ""
-        with mock.patch("benchmark.opencode.subprocess.run", return_value=probe):
-            with self.assertRaisesRegex(RuntimeError, "--pure"):
-                validate_cli("opencode-test")
+        with (
+            mock.patch("benchmark.opencode.subprocess.run", return_value=probe),
+            self.assertRaisesRegex(RuntimeError, "--pure"),
+        ):
+            validate_cli("opencode-test")
 
     def test_help_without_thinking_is_rejected(self):
         help_text = (
@@ -474,9 +482,11 @@ class TestOpenCodeProcess(unittest.TestCase):
         probe.returncode = 0
         probe.stdout = help_text
         probe.stderr = ""
-        with mock.patch("benchmark.opencode.subprocess.run", return_value=probe):
-            with self.assertRaisesRegex(RuntimeError, "--thinking"):
-                validate_cli("opencode-test")
+        with (
+            mock.patch("benchmark.opencode.subprocess.run", return_value=probe),
+            self.assertRaisesRegex(RuntimeError, "--thinking"),
+        ):
+            validate_cli("opencode-test")
 
     def test_help_advertising_json_format_passes(self):
         help_text = (
@@ -554,9 +564,11 @@ class TestOpenCodeAutoInstall(unittest.TestCase):
             self.assertEqual(_platform_asset_name(), "opencode-darwin-arm64.zip")
 
     def test_platform_asset_unsupported_os_raises(self):
-        with mock.patch("benchmark.opencode.platform.system", return_value="Plan9"):
-            with self.assertRaisesRegex(RuntimeError, "Unsupported OS"):
-                _platform_asset_name()
+        with (
+            mock.patch("benchmark.opencode.platform.system", return_value="Plan9"),
+            self.assertRaisesRegex(RuntimeError, "Unsupported OS"),
+        ):
+            _platform_asset_name()
 
     def test_install_opencode_downloads_extracts_and_chmods(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -565,9 +577,11 @@ class TestOpenCodeAutoInstall(unittest.TestCase):
 
             def fake_download(url, dest, *, timeout):
                 self.assertIn("releases/latest/download/opencode-linux-x64.tar.gz", url)
-                with open(dest, "wb") as handle:
-                    with open(archive, "rb") as src:
-                        handle.write(src.read())
+                with (
+                    open(dest, "wb") as handle,
+                    open(archive, "rb") as src,
+                ):
+                    handle.write(src.read())
 
             with mock.patch("benchmark.opencode._download_to", side_effect=fake_download) as dl, \
                  mock.patch("benchmark.opencode._latest_opencode_version", return_value="9.9.9"):
@@ -587,9 +601,11 @@ class TestOpenCodeAutoInstall(unittest.TestCase):
                                     binary_name="opencode.exe")
 
             def fake_download(url, dest, *, timeout):
-                with open(dest, "wb") as handle:
-                    with open(archive, "rb") as src:
-                        handle.write(src.read())
+                with (
+                    open(dest, "wb") as handle,
+                    open(archive, "rb") as src,
+                ):
+                    handle.write(src.read())
 
             with mock.patch("benchmark.opencode._platform_asset_name",
                             return_value="opencode-windows-x64.zip"), \
@@ -601,12 +617,11 @@ class TestOpenCodeAutoInstall(unittest.TestCase):
             self.assertTrue(os.path.isfile(binary))
 
     def test_install_opencode_download_failure_raises_actionable_error(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            with mock.patch("benchmark.opencode._download_to",
-                            side_effect=OSError("network down")), \
-                 mock.patch("benchmark.opencode._latest_opencode_version", return_value="1.0.0"):
-                with self.assertRaisesRegex(RuntimeError, "Could not auto-install OpenCode"):
-                    install_opencode(os.path.join(tmpdir, "install"))
+        with (
+            tempfile.TemporaryDirectory() as tmpdir, mock.patch("benchmark.opencode._download_to", side_effect=OSError("network down")), mock.patch("benchmark.opencode._latest_opencode_version", return_value="1.0.0"),
+            self.assertRaisesRegex(RuntimeError, "Could not auto-install OpenCode"),
+        ):
+            install_opencode(os.path.join(tmpdir, "install"))
 
 
 class TestOpenCodeBinaryResolution(unittest.TestCase):
@@ -644,35 +659,31 @@ class TestOpenCodeBinaryResolution(unittest.TestCase):
         validate.assert_called_once_with(local, timeout=10)
 
     def test_install_disabled_and_missing_raises_actionable_error(self):
-        with mock.patch("benchmark.opencode.shutil.which", return_value=None), \
-             mock.patch("benchmark.opencode._local_binary_path",
-                        return_value=mock.Mock(is_file=lambda: False)):
-            with self.assertRaisesRegex(RuntimeError, "not found on PATH"):
-                resolve_opencode_binary(allow_install=False)
+        with (
+            mock.patch("benchmark.opencode.shutil.which", return_value=None), mock.patch("benchmark.opencode._local_binary_path", return_value=mock.Mock(is_file=lambda: False)),
+            self.assertRaisesRegex(RuntimeError, "not found on PATH"),
+        ):
+            resolve_opencode_binary(allow_install=False)
 
     def test_install_disabled_and_stale_path_raises(self):
         def bad_validate(binary, **kwargs):
             raise RuntimeError("missing --thinking")
 
-        with mock.patch("benchmark.opencode.shutil.which", return_value="/usr/bin/opencode"), \
-             mock.patch("benchmark.opencode._local_binary_path",
-                        return_value=mock.Mock(is_file=lambda: False)), \
-             mock.patch("benchmark.opencode.validate_cli", side_effect=bad_validate):
-            with self.assertRaisesRegex(RuntimeError, "incompatible"):
-                resolve_opencode_binary(allow_install=False)
+        with (
+            mock.patch("benchmark.opencode.shutil.which", return_value="/usr/bin/opencode"), mock.patch("benchmark.opencode._local_binary_path", return_value=mock.Mock(is_file=lambda: False)), mock.patch("benchmark.opencode.validate_cli", side_effect=bad_validate),
+            self.assertRaisesRegex(RuntimeError, "incompatible"),
+        ):
+            resolve_opencode_binary(allow_install=False)
 
     def test_fresh_install_failing_preflight_raises(self):
         def bad_validate(binary, **kwargs):
             raise RuntimeError("missing --pure")
 
-        with mock.patch("benchmark.opencode.shutil.which", return_value=None), \
-             mock.patch("benchmark.opencode._local_binary_path",
-                        return_value=mock.Mock(is_file=lambda: False)), \
-             mock.patch("benchmark.opencode.install_opencode",
-                        return_value="/proj/.tools/opencode/opencode"), \
-             mock.patch("benchmark.opencode.validate_cli", side_effect=bad_validate):
-            with self.assertRaisesRegex(RuntimeError, "failed preflight"):
-                resolve_opencode_binary()
+        with (
+            mock.patch("benchmark.opencode.shutil.which", return_value=None), mock.patch("benchmark.opencode._local_binary_path", return_value=mock.Mock(is_file=lambda: False)), mock.patch("benchmark.opencode.install_opencode", return_value="/proj/.tools/opencode/opencode"), mock.patch("benchmark.opencode.validate_cli", side_effect=bad_validate),
+            self.assertRaisesRegex(RuntimeError, "failed preflight"),
+        ):
+            resolve_opencode_binary()
 
     def test_local_binary_path_defaults_to_project_tools_dir(self):
         project = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -749,14 +760,14 @@ class TestOpenCodeLoopGuards(unittest.TestCase):
 
     def test_fast_fail_when_no_output_for_grace_period(self):
         """A subprocess that emits nothing for the grace period is killed early."""
-        result, fake, term = self._stall(stdout=b"", no_output_grace=0.15)
+        result, _, term = self._stall(stdout=b"", no_output_grace=0.15)
         self.assertIn("produced no output within", result.error)
         self.assertTrue(term.called)
 
     def test_steps_only_stream_is_killed_when_grace_elapses(self):
         """step_start then silence (mid-stream stall) must also fast-fail."""
         stream = _ndjson_event("step_start", part={"type": "step-start"})
-        result, fake, term = self._stall(stdout=stream, no_output_grace=0.15)
+        result, _, _ = self._stall(stdout=stream, no_output_grace=0.15)
         self.assertIn("produced no output within", result.error)
 
     def test_step_budget_kills_planning_loop(self):
@@ -765,20 +776,20 @@ class TestOpenCodeLoopGuards(unittest.TestCase):
             _ndjson_event("step_finish", part={"type": "step-finish"})
             for _ in range(60)
         ])
-        result, fake, term = self._stall(stdout=stream, step_limit=10)
+        result, _, term = self._stall(stdout=stream, step_limit=10)
         self.assertIn("reached 10 agent steps", result.error)
         self.assertTrue(term.called)
 
     def test_text_repetition_kills_loop(self):
         """The same non-trivial text event repeated past the threshold trips the guard."""
         event = _text_event("Continue if you have next steps, or stop and ask for clarification.")
-        result, fake, term = self._stall(stdout=b"\n".join([event] * 7), repeat_threshold=5)
+        result, _, term = self._stall(stdout=b"\n".join([event] * 7), repeat_threshold=5)
         self.assertIn("repeated the same text 5 times", result.error)
         self.assertTrue(term.called)
 
     def test_repeat_guard_ignores_short_acknowledgements(self):
         """Trivial short repeats below repeat_min_len must not false-positive."""
-        result, fake, term = self._stall(
+        result, _, _ = self._stall(
             stdout=b"\n".join([_text_event("Yes")] * 10),
             timeout=0.3, repeat_threshold=3,
         )
@@ -787,7 +798,7 @@ class TestOpenCodeLoopGuards(unittest.TestCase):
 
     def test_guards_can_be_disabled(self):
         """All guards off: a silent process burns the outer timeout instead."""
-        result, fake, term = self._stall(
+        result, _, term = self._stall(
             stdout=b"", timeout=0.3, no_output_grace=0, step_limit=0, repeat_threshold=0)
         self.assertIn("timed out after 0.3s", result.error)
         self.assertTrue(term.called)
@@ -800,7 +811,7 @@ class TestOpenCodeLoopGuards(unittest.TestCase):
             _text_event("A real answer with enough text to exceed the repeat-min length."),
             _ndjson_event("step_finish", part={"type": "step-finish"}),
         ])
-        result, fake, term = self._stall(stdout=stream, timeout=0.3, no_output_grace=5)
+        result, _, _ = self._stall(stdout=stream, timeout=0.3, no_output_grace=5)
         self.assertIn("timed out", result.error)
         self.assertNotIn("loop", result.error)
         self.assertNotIn("no output", result.error)
@@ -891,16 +902,18 @@ class TestRunnerAwareExecution(unittest.TestCase):
         process_result = OpenCodeProcessResult(
             "final answer", "", 0.2, None, 0, think_text="chain of thought")
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            with mock.patch("benchmark.core.run_process", return_value=process_result):
-                run_model(
-                    target_key, "Local", state, [plugin], source_config,
-                    timeout=5, token_levels=[100], output_dir=tmpdir,
-                    global_cfg={}, runner="opencode", api_model="model-a",
-                    opencode_config_path="/tmp/config.json",
-                    opencode_model="local/model-a", display_name="model-a",
-                    config_target_name="model-a", save_responses=True,
-                )
+        with (
+            tempfile.TemporaryDirectory() as tmpdir,
+            mock.patch("benchmark.core.run_process", return_value=process_result),
+        ):
+            run_model(
+                target_key, "Local", state, [plugin], source_config,
+                timeout=5, token_levels=[100], output_dir=tmpdir,
+                global_cfg={}, runner="opencode", api_model="model-a",
+                opencode_config_path="/tmp/config.json",
+                opencode_model="local/model-a", display_name="model-a",
+                config_target_name="model-a", save_responses=True,
+            )
 
             responses_dir = os.path.join(tmpdir, "responses", "model-a")
             think_path = os.path.join(responses_dir, f"{plugin.id}.think.txt")
@@ -928,16 +941,18 @@ class TestRunnerAwareExecution(unittest.TestCase):
             think_text="reasoning before timeout",
         )
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            with mock.patch("benchmark.core.run_process", return_value=process_result):
-                run_model(
-                    target_key, "Local", state, [plugin], source_config,
-                    timeout=5, token_levels=[100], output_dir=tmpdir,
-                    global_cfg={}, runner="opencode", api_model="model-a",
-                    opencode_config_path="/tmp/config.json",
-                    opencode_model="local/model-a", display_name="model-a",
-                    config_target_name="model-a", save_responses=True,
-                )
+        with (
+            tempfile.TemporaryDirectory() as tmpdir,
+            mock.patch("benchmark.core.run_process", return_value=process_result),
+        ):
+            run_model(
+                target_key, "Local", state, [plugin], source_config,
+                timeout=5, token_levels=[100], output_dir=tmpdir,
+                global_cfg={}, runner="opencode", api_model="model-a",
+                opencode_config_path="/tmp/config.json",
+                opencode_model="local/model-a", display_name="model-a",
+                config_target_name="model-a", save_responses=True,
+            )
 
             responses_dir = os.path.join(tmpdir, "responses", "model-a")
             think_path = os.path.join(responses_dir, f"{plugin.id}.think.txt")

@@ -4,7 +4,6 @@ import re
 from benchmark.plugin import BenchmarkTaskPlugin, EvaluationResult
 from plugins.challenges._rubric import Rubric
 
-
 # Canonical set of header texts that count as a real screen for the
 # "Multiple screens present" criterion.  A header matches if, after
 # stripping markdown decoration (bold / italics / leading numbering /
@@ -68,7 +67,7 @@ class WireframesPlugin(BenchmarkTaskPlugin):
 
     @property
     def version(self):
-        return "0.3.1"
+        return "0.3.2"
 
     @property
     def name(self):

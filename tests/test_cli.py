@@ -8,12 +8,13 @@ import tempfile
 import threading
 import time
 import unittest
+from typing import ClassVar
 from unittest import mock
 
-from plugins import discover_plugins
-from tests.utils import load_benchmark_module, MockResponse
 from benchmark.http import NonStreamResult, StreamResult
 from benchmark.plugin import PluginTaskResult
+from plugins import discover_plugins
+from tests.utils import MockResponse, load_benchmark_module
 
 
 class TestCLIArgs(unittest.TestCase):
@@ -21,7 +22,7 @@ class TestCLIArgs(unittest.TestCase):
         result = subprocess.run(
             [sys.executable, "ai-benchmark.py", "--list-plugins"],
             capture_output=True,
-            text=True,
+            text=True, check=False,
         )
         self.assertEqual(result.returncode, 0)
         output = result.stdout
@@ -50,7 +51,7 @@ class TestCLIArgs(unittest.TestCase):
         result = subprocess.run(
             [sys.executable, "ai-benchmark.py", "--dump-default-config"],
             capture_output=True,
-            text=True,
+            text=True, check=False,
         )
         self.assertEqual(result.returncode, 0)
         cfg = json.loads(result.stdout)
@@ -65,7 +66,7 @@ class TestCLIArgs(unittest.TestCase):
         result = subprocess.run(
             [sys.executable, "ai-benchmark.py", "--help"],
             capture_output=True,
-            text=True,
+            text=True, check=False,
         )
         self.assertEqual(result.returncode, 0)
         self.assertIn("--no-preload", result.stdout)
@@ -74,7 +75,7 @@ class TestCLIArgs(unittest.TestCase):
         result = subprocess.run(
             [sys.executable, "ai-benchmark.py", "--dump-default-config"],
             capture_output=True,
-            text=True,
+            text=True, check=False,
         )
         self.assertEqual(result.returncode, 0)
         cfg = json.loads(result.stdout)
@@ -87,7 +88,7 @@ class TestCLIArgs(unittest.TestCase):
         result = subprocess.run(
             [sys.executable, "ai-benchmark.py", "--dump-default-config"],
             capture_output=True,
-            text=True,
+            text=True, check=False,
         )
         self.assertEqual(result.returncode, 0)
         cfg = json.loads(result.stdout)
@@ -109,13 +110,15 @@ class TestPluginExecutionMode(unittest.TestCase):
         state = self.module.BenchmarkState(models, [p.id for p in plugins])
         source_config = {"Local": {"api_url": "http://localhost:11434/chat/completions", "headers": {}, "plugin_thread_limit": 1}}
 
-        with mock.patch.object(self.module, "stream_request", return_value=StreamResult("", "", None, 0, "connection refused", None, {})):
-                with mock.patch.object(self.module, "nonstream_request", return_value=NonStreamResult("", "", {}, 0.1, "connection refused", None)):
-                    self.module.run_model(
-                        "dummy-model", "Local", state, plugins, source_config,
-                        timeout=1, token_levels=[100], output_dir="/tmp/benchmark-test",
-                        session_seed=0, global_cfg={},
-                    )
+        with (
+            mock.patch.object(self.module, "stream_request", return_value=StreamResult("", "", None, 0, "connection refused", None, {})),
+            mock.patch.object(self.module, "nonstream_request", return_value=NonStreamResult("", "", {}, 0.1, "connection refused", None)),
+        ):
+                self.module.run_model(
+                    "dummy-model", "Local", state, plugins, source_config,
+                    timeout=1, token_levels=[100], output_dir="/tmp/benchmark-test",
+                    session_seed=0, global_cfg={},
+                )
 
         snap = state.snapshot()["dummy-model"]
         self.assertIn(snap["status"], ("completed", "failed"))
@@ -126,13 +129,15 @@ class TestPluginExecutionMode(unittest.TestCase):
         state = self.module.BenchmarkState(models, [p.id for p in plugins])
         source_config = {"Local": {"api_url": "http://localhost:11434/chat/completions", "headers": {}, "plugin_thread_limit": 0}}
 
-        with mock.patch.object(self.module, "stream_request", return_value=StreamResult("", "", None, 0, "connection refused", None, {})):
-            with mock.patch.object(self.module, "nonstream_request", return_value=NonStreamResult("", "", {}, 0.1, "connection refused", None)):
-                self.module.run_model(
-                    "dummy-model", "Local", state, plugins, source_config,
-                    timeout=1, token_levels=[100], output_dir="/tmp/benchmark-test",
-                    session_seed=0, global_cfg={},
-                )
+        with (
+            mock.patch.object(self.module, "stream_request", return_value=StreamResult("", "", None, 0, "connection refused", None, {})),
+            mock.patch.object(self.module, "nonstream_request", return_value=NonStreamResult("", "", {}, 0.1, "connection refused", None)),
+        ):
+            self.module.run_model(
+                "dummy-model", "Local", state, plugins, source_config,
+                timeout=1, token_levels=[100], output_dir="/tmp/benchmark-test",
+                session_seed=0, global_cfg={},
+            )
 
         snap = state.snapshot()["dummy-model"]
         self.assertIn(snap["status"], ("completed", "failed"))
@@ -143,13 +148,15 @@ class TestPluginExecutionMode(unittest.TestCase):
         state = self.module.BenchmarkState(models, [p.id for p in plugins])
         source_config = {"Local": {"api_url": "http://localhost:11434/chat/completions", "headers": {}, "plugin_thread_limit": 2}}
 
-        with mock.patch.object(self.module, "stream_request", return_value=StreamResult("", "", None, 0, "connection refused", None, {})):
-            with mock.patch.object(self.module, "nonstream_request", return_value=NonStreamResult("", "", {}, 0.1, "connection refused", None)):
-                self.module.run_model(
-                    "dummy-model", "Local", state, plugins, source_config,
-                    timeout=1, token_levels=[100], output_dir="/tmp/benchmark-test",
-                    session_seed=0, global_cfg={},
-                )
+        with (
+            mock.patch.object(self.module, "stream_request", return_value=StreamResult("", "", None, 0, "connection refused", None, {})),
+            mock.patch.object(self.module, "nonstream_request", return_value=NonStreamResult("", "", {}, 0.1, "connection refused", None)),
+        ):
+            self.module.run_model(
+                "dummy-model", "Local", state, plugins, source_config,
+                timeout=1, token_levels=[100], output_dir="/tmp/benchmark-test",
+                session_seed=0, global_cfg={},
+            )
 
         snap = state.snapshot()["dummy-model"]
         self.assertIn(snap["status"], ("completed", "failed"))
@@ -265,19 +272,16 @@ class TestSaveResponses(unittest.TestCase):
 
         expected_response = "This is the model response for rate limiter."
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            with mock.patch.object(
-                self.module, "stream_request", return_value=StreamResult(expected_response, "", 1.0, 1.5, None, "stop", {})
-            ):
-                with mock.patch.object(
-                    self.module, "nonstream_request", return_value=NonStreamResult(expected_response, "", {}, 0.1, None, "stop")
-                ):
-                    self.module.run_model(
-                        "dummy-model", "Local", state, plugins, source_config,
-                        timeout=1, token_levels=[100], output_dir=tmpdir,
-                        session_seed=12345, global_cfg={},
-                        save_responses=True,
-                    )
+        with (
+            tempfile.TemporaryDirectory() as tmpdir, mock.patch.object( self.module, "stream_request", return_value=StreamResult(expected_response, "", 1.0, 1.5, None, "stop", {}) ),
+            mock.patch.object( self.module, "nonstream_request", return_value=NonStreamResult(expected_response, "", {}, 0.1, None, "stop") ),
+        ):
+            self.module.run_model(
+                "dummy-model", "Local", state, plugins, source_config,
+                timeout=1, token_levels=[100], output_dir=tmpdir,
+                session_seed=12345, global_cfg={},
+                save_responses=True,
+            )
 
             responses_dir = os.path.join(tmpdir, "responses", "dummy-model")
             prompt_path = os.path.join(responses_dir, "rate-limiter.prompt.txt")
@@ -348,19 +352,16 @@ class TestSaveResponses(unittest.TestCase):
         final_content = "This is the final answer."
         thinking = "Let me think through this step by step.\nFirst, I need to understand the problem.\nThen I can craft a solution."
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            with mock.patch.object(
-                self.module, "stream_request", return_value=StreamResult(final_content, thinking, 1.0, 1.5, None, "stop", {})
-            ):
-                with mock.patch.object(
-                    self.module, "nonstream_request", return_value=NonStreamResult(final_content, thinking, {}, 0.1, None, "stop")
-                ):
-                    self.module.run_model(
-                        "dummy-model", "Local", state, plugins, source_config,
-                        timeout=1, token_levels=[100], output_dir=tmpdir,
-                        session_seed=12345, global_cfg={},
-                        save_responses=True,
-                    )
+        with (
+            tempfile.TemporaryDirectory() as tmpdir, mock.patch.object( self.module, "stream_request", return_value=StreamResult(final_content, thinking, 1.0, 1.5, None, "stop", {}) ),
+            mock.patch.object( self.module, "nonstream_request", return_value=NonStreamResult(final_content, thinking, {}, 0.1, None, "stop") ),
+        ):
+            self.module.run_model(
+                "dummy-model", "Local", state, plugins, source_config,
+                timeout=1, token_levels=[100], output_dir=tmpdir,
+                session_seed=12345, global_cfg={},
+                save_responses=True,
+            )
 
             responses_dir = os.path.join(tmpdir, "responses", "dummy-model")
             response_path = os.path.join(responses_dir, "rate-limiter.txt")
@@ -393,19 +394,16 @@ class TestSaveResponses(unittest.TestCase):
         state = self.module.BenchmarkState(models, [p.id for p in plugins])
         source_config = {"Local": {"api_url": "http://localhost:11434/chat/completions", "headers": {}, "plugin_thread_limit": 1}}
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            with mock.patch.object(
-                self.module, "stream_request", return_value=StreamResult("response", "", 1.0, 1.5, None, "stop", {})
-            ):
-                with mock.patch.object(
-                    self.module, "nonstream_request", return_value=NonStreamResult("response", "", {}, 0.1, None, "stop")
-                ):
-                    self.module.run_model(
-                        "dummy-model", "Local", state, plugins, source_config,
-                        timeout=1, token_levels=[100], output_dir=tmpdir,
-                        session_seed=0, global_cfg={},
-                        save_responses=False,
-                    )
+        with (
+            tempfile.TemporaryDirectory() as tmpdir, mock.patch.object( self.module, "stream_request", return_value=StreamResult("response", "", 1.0, 1.5, None, "stop", {}) ),
+            mock.patch.object( self.module, "nonstream_request", return_value=NonStreamResult("response", "", {}, 0.1, None, "stop") ),
+        ):
+            self.module.run_model(
+                "dummy-model", "Local", state, plugins, source_config,
+                timeout=1, token_levels=[100], output_dir=tmpdir,
+                session_seed=0, global_cfg={},
+                save_responses=False,
+            )
 
             responses_dir = os.path.join(tmpdir, "responses")
             self.assertFalse(os.path.exists(responses_dir))
@@ -519,13 +517,15 @@ class TestDropParams(unittest.TestCase):
                     on_chunk(delta)
             return StreamResult("Hello, world", "", 1.0, 1.5, None, "stop", {})
 
-        with mock.patch.object(self.module, "stream_request", side_effect=fake_stream_request):
-            with mock.patch.object(self.module, "nonstream_request", return_value=NonStreamResult("", "", {}, 0.1, "no tokens", "stop")):
-                task_result = self.module._run_plugin_task(
-                    "dummy-model", "dummy-model", "Local", plugins[0], source_config,
-                    timeout=1, token_levels=[100], session_seed=12345,
-                    log_file=None, global_cfg={}, state=state,
-                )
+        with (
+            mock.patch.object(self.module, "stream_request", side_effect=fake_stream_request),
+            mock.patch.object(self.module, "nonstream_request", return_value=NonStreamResult("", "", {}, 0.1, "no tokens", "stop")),
+        ):
+            task_result = self.module._run_plugin_task(
+                "dummy-model", "dummy-model", "Local", plugins[0], source_config,
+                timeout=1, token_levels=[100], session_seed=12345,
+                log_file=None, global_cfg={}, state=state,
+            )
 
         self.assertIsNone(task_result.error)
         snap = state.snapshot()["dummy-model"]
@@ -647,7 +647,7 @@ class TestNonStreamingPluginRetry(unittest.TestCase):
         class _Resp429:
             status_code = 429
             text = "rate limited"
-            headers = {}
+            headers: ClassVar[dict] = {}
 
             def close(self):
                 pass
@@ -663,7 +663,7 @@ class TestNonStreamingPluginRetry(unittest.TestCase):
             class _Resp200:
                 status_code = 200
                 text = json.dumps(_body)
-                headers = {}
+                headers: ClassVar[dict] = {}
                 body = _body
 
                 def iter_content(self, chunk_size=8192):
@@ -1078,7 +1078,7 @@ class TestConfigFallback(unittest.TestCase):
                 [sys.executable, os.path.abspath("ai-benchmark.py")],
                 cwd=tmpdir,
                 capture_output=True,
-                text=True,
+                text=True, check=False,
             )
             self.assertEqual(result.returncode, 1)
             self.assertIn("Config file not found", result.stderr)
@@ -1098,7 +1098,7 @@ class TestConfigFallback(unittest.TestCase):
                 [sys.executable, os.path.abspath("ai-benchmark.py")],
                 cwd=tmpdir,
                 capture_output=True,
-                text=True,
+                text=True, check=False,
             )
             self.assertEqual(result.returncode, 0, result.stderr)
             run_info_path = os.path.join(output_dir, "run-info.json")
@@ -1148,7 +1148,7 @@ class TestTimeCapsule(unittest.TestCase):
             result = subprocess.run(
                 [sys.executable, "ai-benchmark.py", "--config", config_path],
                 capture_output=True,
-                text=True,
+                text=True, check=False,
             )
             self.assertEqual(result.returncode, 0, result.stderr)
             copied = os.path.join(output_dir, "config.json")
@@ -1169,7 +1169,7 @@ class TestRunInfo(unittest.TestCase):
             result = subprocess.run(
                 [sys.executable, "ai-benchmark.py", "--config", config_path],
                 capture_output=True,
-                text=True,
+                text=True, check=False,
             )
             self.assertEqual(result.returncode, 0, result.stderr)
 
@@ -1231,7 +1231,7 @@ class TestRunInfo(unittest.TestCase):
             result = subprocess.run(
                 [sys.executable, "ai-benchmark.py", "--config", config_path],
                 capture_output=True,
-                text=True,
+                text=True, check=False,
             )
             self.assertEqual(result.returncode, 0, result.stderr)
 
@@ -1278,7 +1278,7 @@ class TestRunInfo(unittest.TestCase):
                 [sys.executable, script],
                 capture_output=True,
                 text=True,
-                cwd=project_root,
+                cwd=project_root, check=False,
             )
             self.assertEqual(result.returncode, 0, result.stderr)
             run_info = json.loads(result.stdout)
@@ -1363,7 +1363,7 @@ class TestCLIRetryOn429(unittest.TestCase):
         """ai-benchmark.py --help mentions both flag forms."""
         result = subprocess.run(
             [sys.executable, "ai-benchmark.py", "--help"],
-            capture_output=True, text=True,
+            capture_output=True, text=True, check=False,
         )
         self.assertEqual(result.returncode, 0)
         self.assertIn("--retry-on-429", result.stdout)
@@ -1379,7 +1379,7 @@ class TestCLIRetryOn429(unittest.TestCase):
             [sys.executable, "ai-benchmark.py",
              "--retry-on-429", "--no-retry-on-429",
              "--dump-default-config"],
-            capture_output=True, text=True,
+            capture_output=True, text=True, check=False,
         )
         self.assertEqual(result.returncode, 2,
                          "passing both retry flags must fail (exit 2); "
@@ -1396,7 +1396,7 @@ class TestCLIRetryOn429(unittest.TestCase):
         max_429_retries injection (default-ON path is a no-op at the helper)."""
         result = subprocess.run(
             [sys.executable, "ai-benchmark.py", "--dump-default-config"],
-            capture_output=True, text=True,
+            capture_output=True, text=True, check=False,
         )
         self.assertEqual(result.returncode, 0)
         cfg = json.loads(result.stdout)
@@ -1480,7 +1480,7 @@ class TestRetryResetsStartTimestamp(unittest.TestCase):
         class _Mock429:
             status_code = 429
             text = "rate limited"
-            headers = {}
+            headers: ClassVar[dict] = {}
 
             def close(self):
                 pass
@@ -1509,14 +1509,15 @@ class TestRetryResetsStartTimestamp(unittest.TestCase):
             start_calls.append((time.monotonic(), model_name, pid))
             return original_start(model_name, pid)
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            with mock.patch.object(state, "start_plugin_run", side_effect=tracking_start):
-                with mock.patch("requests.post", side_effect=[_Mock429(), _Mock200()]):
-                    self.module.run_model(
-                        "dummy-model", "Local", state, plugins, source_config,
-                        timeout=5, token_levels=[100], output_dir=tmpdir,
-                        session_seed=0, global_cfg={},
-                    )
+        with (
+            tempfile.TemporaryDirectory() as tmpdir, mock.patch.object(state, "start_plugin_run", side_effect=tracking_start),
+            mock.patch("requests.post", side_effect=[_Mock429(), _Mock200()]),
+        ):
+            self.module.run_model(
+                "dummy-model", "Local", state, plugins, source_config,
+                timeout=5, token_levels=[100], output_dir=tmpdir,
+                session_seed=0, global_cfg={},
+            )
 
         self.assertEqual(len(start_calls), 2,
                          "start_plugin_run should fire once at dispatch and once on retry")
@@ -1584,21 +1585,15 @@ class TestStreamPartialTextKept(unittest.TestCase):
 
         streamed_text = "a" * 40000  # 40 K chars -> 10 K tokens by len/4.
 
-        with mock.patch.object(
-            self.module, "stream_request",                return_value=StreamResult(
-                streamed_text, "", 1.0, 2000.0,
-                "Total timeout (2000s) exceeded",
-                "length", {},
-            ),
+        with (
+            mock.patch.object( self.module, "stream_request", return_value=StreamResult( streamed_text, "", 1.0, 2000.0, "Total timeout (2000s) exceeded", "length", {}, ), ),
+            mock.patch.object( self.module, "nonstream_request", ) as mock_nonstream,
         ):
-            with mock.patch.object(
-                self.module, "nonstream_request",
-            ) as mock_nonstream:
-                task_result = self.module._run_plugin_task(
-                    "dummy-model", "dummy-model", "Local", plugin, source_config,
-                    timeout=1, token_levels=[100], session_seed=12345,
-                    log_file=None, global_cfg={}, state=state,
-                )
+            task_result = self.module._run_plugin_task(
+                "dummy-model", "dummy-model", "Local", plugin, source_config,
+                timeout=1, token_levels=[100], session_seed=12345,
+                log_file=None, global_cfg={}, state=state,
+            )
 
         self.assertIsNone(task_result.error)
         # The streamed text was kept -- output_tokens reflects the real
@@ -1635,18 +1630,15 @@ class TestStreamPartialTextKept(unittest.TestCase):
 
         # 3 000 chars from a successful nonstream retry -> 750 tokens.
         nonstream_text = "x" * 3000
-        with mock.patch.object(
-            self.module, "stream_request",                return_value=StreamResult("", "", None, 1.0, "connection refused", None, {}),
+        with (
+            mock.patch.object( self.module, "stream_request", return_value=StreamResult("", "", None, 1.0, "connection refused", None, {}), ),
+            mock.patch.object( self.module, "nonstream_request", return_value=NonStreamResult(nonstream_text, "", {}, 0.1, None, "stop"), ) as mock_nonstream,
         ):
-            with mock.patch.object(
-                self.module, "nonstream_request",
-                return_value=NonStreamResult(nonstream_text, "", {}, 0.1, None, "stop"),
-            ) as mock_nonstream:
-                task_result = self.module._run_plugin_task(
-                    "dummy-model", "dummy-model", "Local", plugin, source_config,
-                    timeout=1, token_levels=[100], session_seed=12345,
-                    log_file=None, global_cfg={}, state=state,
-                )
+            task_result = self.module._run_plugin_task(
+                "dummy-model", "dummy-model", "Local", plugin, source_config,
+                timeout=1, token_levels=[100], session_seed=12345,
+                log_file=None, global_cfg={}, state=state,
+            )
 
         self.assertIsNone(task_result.error)
         self.assertEqual(task_result.result["rate-limiter_output_tokens"], 750)

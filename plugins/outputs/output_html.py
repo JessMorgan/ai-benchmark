@@ -1,9 +1,14 @@
 import html as html_lib
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 
+from benchmark.outputs import (
+    _numeric_score,
+    _plugin_token_counts,
+    _plugin_total_score,
+    sanitize_filename,
+)
 from benchmark.plugin import BenchmarkOutputPlugin
-from benchmark.outputs import sanitize_filename, _plugin_total_score, _numeric_score, _plugin_token_counts
 
 
 class HTMLOutputPlugin(BenchmarkOutputPlugin):
@@ -125,7 +130,7 @@ tr.fail {{ color:#8b949e; }}
 <body>
 <h1>AI Benchmark</h1>
 <p class="subtitle">Tasks: {', '.join(p.name for p in active_plugins)}</p>
-<p><strong>Date:</strong> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | <strong>Total:</strong> {len(results)} | <strong>Successful:</strong> {len(ok)} | <strong>Failed:</strong> {len(results)-len(ok)}{seed_html}</p>
+<p><strong>Date:</strong> {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} | <strong>Total:</strong> {len(results)} | <strong>Successful:</strong> {len(ok)} | <strong>Failed:</strong> {len(results)-len(ok)}{seed_html}</p>
 
 <h2>🏆 Leaderboards</h2>
 <div class="leaderboard">

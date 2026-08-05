@@ -9,7 +9,6 @@ import tempfile
 import unittest
 from unittest import mock
 
-from benchmark import outputs
 from benchmark.outputs import (
     _get_output_plugin,
     _numeric_score,
@@ -145,7 +144,7 @@ class TestGenWrappers(unittest.TestCase):
     def test_gen_markdown_delegates_without_output_dir(self):
         # The wrappers must tolerate output_dir=None (the plugin picks its own
         # default location or returns None) without raising.
-        with tempfile.TemporaryDirectory() as tmpdir, \
+        with tempfile.TemporaryDirectory(), \
                 mock.patch("benchmark.outputs._get_output_plugin") as getter:
             fake = mock.MagicMock()
             fake.id = "output-markdown"

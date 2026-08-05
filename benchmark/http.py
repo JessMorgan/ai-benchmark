@@ -4,6 +4,7 @@ This module contains the low-level request logic (streaming and non-streaming)
 used by ``benchmark_core.py``. Keeping it separate makes ``benchmark_core.py"
 smaller and makes the request helpers easier to test and reason about.
 """
+import contextlib
 import copy
 import email.utils
 import json
@@ -14,10 +15,11 @@ import sys
 import threading
 import time
 import traceback
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Callable, Iterator, Optional
+from typing import Any
 
 import requests
 
@@ -26,19 +28,19 @@ import requests
 class PostRequestResult:
     """Outcome yielded by the HTTP request context manager."""
 
-    response: Optional[requests.Response]
-    error: Optional[str]
-    curl_cmd: Optional[str]
+    response: requests.Response | None
+    error: str | None
+    curl_cmd: str | None
 
 
 @dataclass(frozen=True)
 class SSEParseResult:
     """Updated state after parsing one SSE line."""
 
-    first_tok: Optional[float]
+    first_tok: float | None
     text: str
     think_text: str
-    finish_reason: Optional[str]
+    finish_reason: str | None
     usage: dict[str, Any]
     done: bool
     # Accumulated native ``tool_calls`` deltas (merged by index, with
@@ -50,7 +52,7 @@ class SSEParseResult:
     # connection mid-reasoning). None for healthy streams. Detecting this is
     # what turns an aborted stream from a silent empty completion into a
     # diagnosed ``stream_error``.
-    error: Optional[str] = None
+    error: str | None = None
 
 
 @dataclass(frozen=True)
@@ -59,10 +61,10 @@ class StreamResult:
 
     text: str
     think_text: str
-    first_tok: Optional[float]
+    first_tok: float | None
     stream_end: float
-    error: Optional[str]
-    finish_reason: Optional[str]
+    error: str | None
+    finish_reason: str | None
     usage: dict[str, Any]
     # Native tool calls accumulated from the stream (merged by index),
     # also rendered into ``text`` as ``<tool_call>{...}</tool_call>`` blocks
@@ -79,8 +81,8 @@ class NonStreamResult:
     think_text: str
     usage: dict[str, Any]
     gen_time: float
-    error: Optional[str]
-    finish_reason: Optional[str]
+    error: str | None
+    finish_reason: str | None
     # Native tool calls from the response message (also rendered into
     # ``text`` as ``<tool_call>{...}</tool_call>`` blocks). Empty when the
     # model emitted no tool calls.
@@ -91,8 +93,8 @@ class NonStreamResult:
 class ResponseBodyResult:
     """Result of reading a non-streaming response body."""
 
-    text: Optional[str]
-    error: Optional[str]
+    text: str | None
+    error: str | None
 
 
 @dataclass(frozen=True)
@@ -106,7 +108,7 @@ def _safe_iter_lines(resp: requests.Response):
     """Yield SSE lines while converting iterator failures to a sentinel."""
     try:
         yield from resp.iter_lines(decode_unicode=True)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - any iterator failure becomes a stream error sentinel
         yield _StreamLineError(f"{type(exc).__name__}: {exc}")
 
 
@@ -121,10 +123,8 @@ def close_active_requests():
     """Close all in-flight HTTP responses to unblock worker threads."""
     with _active_requests_lock:
         for resp in list(_active_requests):
-            try:
+            with contextlib.suppress(Exception):
                 resp.close()
-            except Exception:
-                pass
 
 
 # HTTP 429 activity tracked for the TUI live status section. Keyed by
@@ -248,13 +248,12 @@ def build_curl_cmd(model, prompt, max_tokens, stream, api_url, headers, system_p
 def log_request_entry(log_path, curl_cmd, response_body, request_label=None):
     """Append a curl command and response body to the log file."""
     os.makedirs(os.path.dirname(log_path), exist_ok=True)
-    with _log_lock:
-        with open(log_path, 'a') as f:
-            if request_label:
-                f.write(f"\n# === {request_label} ===\n")
-            f.write(f"{curl_cmd}\n\n")
-            f.write(f"{response_body}\n")
-            f.write("\n" + "-" * 60 + "\n")
+    with _log_lock, open(log_path, 'a') as f:
+        if request_label:
+            f.write(f"\n# === {request_label} ===\n")
+        f.write(f"{curl_cmd}\n\n")
+        f.write(f"{response_body}\n")
+        f.write("\n" + "-" * 60 + "\n")
 
 
 def _check_total_timeout(start_time, timeout, error, finish_reason=None):
@@ -369,22 +368,19 @@ def _post_request_context(source_config, source, body, timeout, stream, log_path
             if attempt > 0 and on_retry is not None:
                 try:
                     on_retry()
-                except Exception as exc:
-                    # A buggy observer must not abort the retry loop, but
+                except Exception as exc:  # noqa: BLE001 - a buggy observer must not abort the retry loop
                     # swallowing it silently makes state bugs hard to find.
-                    try:
+                    with contextlib.suppress(Exception):
                         sys.stderr.write(
                             f"benchmark_http: on_retry observer failed: {exc}\n"
                         )
                         traceback.print_exc(file=sys.stderr)
-                    except Exception:
-                        pass
 
             try:
                 resp = requests.post(
                     api_url, headers=headers, json=body, stream=True,
                     timeout=request_timeout)
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 - a transport failure becomes a failed request result
                 error = f"{type(e).__name__}: {e}"
                 if log_path and curl_cmd:
                     log_request_entry(log_path, curl_cmd, f"ERROR: {error}", log_label)
@@ -490,16 +486,12 @@ def _post_request_context(source_config, source, body, timeout, stream, log_path
             # Tear down the current response before sleeping so we don't
             # leak the connection or hold a watchdog reference.
             if watchdog is not None:
-                try:
+                with contextlib.suppress(Exception):
                     watchdog.cancel()
-                except Exception:
-                    pass
             with _active_requests_lock:
                 _active_requests.discard(resp)
-            try:
+            with contextlib.suppress(Exception):
                 resp.close()
-            except Exception:
-                pass
             resp = None
             watchdog = None
 
@@ -519,20 +511,13 @@ def _post_request_context(source_config, source, body, timeout, stream, log_path
                 _clear_429_sleep(source, model, plugin_id)
     finally:
         if watchdog is not None:
-            try:
+            with contextlib.suppress(Exception):
                 watchdog.cancel()
-            except Exception:
-                pass
         if resp is not None:
-            try:
-                with _active_requests_lock:
-                    _active_requests.discard(resp)
-            except Exception:
-                pass
-            try:
+            with contextlib.suppress(Exception), _active_requests_lock:
+                _active_requests.discard(resp)
+            with contextlib.suppress(Exception):
                 resp.close()
-            except Exception:
-                pass
 
 
 def _merge_tool_calls(acc: list, fragments) -> list:
@@ -586,10 +571,10 @@ def _render_tool_calls(tool_calls: list) -> str:
     return "\n".join(blocks)
 
 
-def _parse_sse_line(line: str, first_tok: Optional[float], text: str,
-                    think_text: str, finish_reason: Optional[str],
+def _parse_sse_line(line: str, first_tok: float | None, text: str,
+                    think_text: str, finish_reason: str | None,
                     usage: dict[str, Any],
-                    tool_calls: Optional[list] = None) -> SSEParseResult:
+                    tool_calls: list | None = None) -> SSEParseResult:
     """Parse a single Server-Sent Events line and update streaming state.
 
     Returns an :class:`SSEParseResult`. ``done`` is True when the ``[DONE]``
@@ -648,10 +633,10 @@ def _parse_sse_line(line: str, first_tok: Optional[float], text: str,
 def stream_request(source_config, timeout, model, source, prompt, max_tokens=2048,
                    log_path=None, log_label=None, session_seed=0, temperature=None,
                    drop_params=None, stop_event=None, system_prompt=None,
-                   on_chunk: Optional[Callable[[str], None]] = None,
-                   on_think_chunk: Optional[Callable[[str], None]] = None,
-                   pid: Optional[str] = None,
-                   on_retry: Optional[Callable[[], None]] = None) -> StreamResult:
+                   on_chunk: Callable[[str], None] | None = None,
+                   on_think_chunk: Callable[[str], None] | None = None,
+                   pid: str | None = None,
+                   on_retry: Callable[[], None] | None = None) -> StreamResult:
     """Make a streaming chat-completion request and return parsed results.
 
     Returns a :class:`StreamResult` with named fields for the assembled text,
@@ -700,7 +685,7 @@ def stream_request(source_config, timeout, model, source, prompt, max_tokens=204
             try:
                 parsed = _parse_sse_line(
                     line, first_tok, text, think_text, finish_reason, usage, tool_calls)
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 - malformed server lines become a stream error
                 error = f"SSE parse error: {type(exc).__name__}: {exc}"
                 break
             first_tok = parsed.first_tok
@@ -727,11 +712,9 @@ def stream_request(source_config, timeout, model, source, prompt, max_tokens=204
             if on_chunk is not None and len(text) > prev_text_len:
                 delta = text[prev_text_len:]
                 prev_text_len = len(text)
-                try:
-                    on_chunk(delta)
-                except Exception:
+                with contextlib.suppress(Exception):
                     # A buggy observer must not abort the stream read.
-                    pass
+                    on_chunk(delta)
             # Parallel reasoning / thinking callback. The thinking
             # counter increments independently of the content counter so
             # a deepseek-r1 / Qwen3 / o1-style stream that emits 2 000
@@ -747,11 +730,9 @@ def stream_request(source_config, timeout, model, source, prompt, max_tokens=204
             if on_think_chunk is not None and len(think_text) > prev_think_len:
                 think_delta = think_text[prev_think_len:]
                 prev_think_len = len(think_text)
-                try:
-                    on_think_chunk(think_delta)
-                except Exception:
+                with contextlib.suppress(Exception):
                     # A buggy observer must not abort the stream read.
-                    pass
+                    on_think_chunk(think_delta)
         error = _check_total_timeout(start, timeout, error, finish_reason)
         # Render any captured native tool calls into the final text so the
         # tool-calling plugin can score them (they arrive in ``tool_calls``
@@ -775,7 +756,7 @@ def _read_response_body(resp: requests.Response, stop_event) -> ResponseBodyResu
                 return ResponseBodyResult(None, "Cancelled")
             if chunk:
                 chunks.append(chunk)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - body read failures become a failed result
         return ResponseBodyResult(None, f"{type(exc).__name__}: {exc}")
     return ResponseBodyResult(
         b"".join(chunks).decode("utf-8", errors="replace"), None
@@ -785,8 +766,8 @@ def _read_response_body(resp: requests.Response, stop_event) -> ResponseBodyResu
 def nonstream_request(source_config, timeout, model, source, prompt, max_tokens=2048,
                       log_path=None, log_label=None, session_seed=0, temperature=None,
                       drop_params=None, stop_event=None, system_prompt=None,
-                      pid: Optional[str] = None,
-                      on_retry: Optional[Callable[[], None]] = None) -> NonStreamResult:
+                      pid: str | None = None,
+                      on_retry: Callable[[], None] | None = None) -> NonStreamResult:
     """Make a non-streaming chat-completion request and return parsed results.
 
     Returns a :class:`NonStreamResult` with named fields for response text,

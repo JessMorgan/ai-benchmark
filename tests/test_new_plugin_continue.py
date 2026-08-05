@@ -4,9 +4,9 @@ import tempfile
 import unittest
 from unittest import mock
 
+from benchmark.plugin import PluginTaskResult
 from plugins import discover_plugins
 from tests.utils import load_benchmark_module
-from benchmark.plugin import PluginTaskResult
 
 
 class TestNewPluginContinue(unittest.TestCase):
@@ -168,7 +168,7 @@ class TestNewPluginContinue(unittest.TestCase):
             loaded = self.module.BenchmarkState.load_state(path, models, ["rate-limiter"])
 
             source_queues = {"Src1": []}
-            for name, src in models.items():
+            for name in models:
                 info = loaded.snapshot().get(name, {})
                 if info.get("status") in ("completed",):
                     continue
@@ -237,9 +237,9 @@ class TestNewPluginContinue(unittest.TestCase):
 
             loaded = self.module.BenchmarkState.load_state(path, models, ["rate-limiter", "moe-dense"])
             snap = loaded.snapshot()
-            for name in models:
+            for name, model_cfg in models.items():
                 self.assertEqual(snap[name]["status"], "pending",
-                                 f"{name} on {models[name]} should be pending")
+                                 f"{name} on {model_cfg} should be pending")
 
     def test_load_state_resets_model_when_plugin_listed_but_not_scored(self):
         """Plugin in active_plugins without a score for a model resets that model."""

@@ -4,8 +4,8 @@ import subprocess
 import sys
 import unittest
 
-from plugins import discover_plugins
 from benchmark.completions import COMMAND_NAMES, generate_shell_completion
+from plugins import discover_plugins
 
 
 class TestCompletionBranches(unittest.TestCase):
@@ -67,7 +67,7 @@ class TestShellCompletions(unittest.TestCase):
         result = subprocess.run(
             [sys.executable, "ai-benchmark.py", "--generate-shell-completion", "bash"],
             capture_output=True,
-            text=True,
+            text=True, check=False,
         )
         self.assertEqual(result.returncode, 0)
         output = result.stdout
@@ -82,7 +82,7 @@ class TestShellCompletions(unittest.TestCase):
         result = subprocess.run(
             [sys.executable, "ai-benchmark.py", "--generate-shell-completion", "zsh"],
             capture_output=True,
-            text=True,
+            text=True, check=False,
         )
         self.assertEqual(result.returncode, 0)
         output = result.stdout
@@ -97,7 +97,7 @@ class TestShellCompletions(unittest.TestCase):
         result = subprocess.run(
             [sys.executable, "ai-benchmark.py", "--generate-shell-completion", "fish"],
             capture_output=True,
-            text=True,
+            text=True, check=False,
         )
         self.assertEqual(result.returncode, 0)
         output = result.stdout
@@ -112,7 +112,7 @@ class TestShellCompletions(unittest.TestCase):
         result = subprocess.run(
             [sys.executable, "ai-benchmark.py", "--help"],
             capture_output=True,
-            text=True,
+            text=True, check=False,
         )
         self.assertEqual(result.returncode, 0)
         self.assertIn("--generate-shell-completion", result.stdout)
@@ -125,7 +125,7 @@ class TestShellCompletions(unittest.TestCase):
         result = subprocess.run(
             ["bash", "-n", "-c", script],
             capture_output=True,
-            text=True,
+            text=True, check=False,
         )
         self.assertEqual(result.returncode, 0, result.stderr)
 
@@ -136,7 +136,7 @@ class TestShellCompletions(unittest.TestCase):
         result = subprocess.run(
             ["zsh", "-n", "-c", script],
             capture_output=True,
-            text=True,
+            text=True, check=False,
         )
         self.assertEqual(result.returncode, 0, result.stderr)
 
@@ -147,7 +147,7 @@ class TestShellCompletions(unittest.TestCase):
         probe = subprocess.run(
             ["fish", "--parse-only", "-c", "echo ok"],
             capture_output=True,
-            text=True,
+            text=True, check=False,
         )
         if probe.returncode != 0:
             self.skipTest("fish version does not support --parse-only")
@@ -155,7 +155,7 @@ class TestShellCompletions(unittest.TestCase):
         result = subprocess.run(
             ["fish", "--parse-only", "-c", script],
             capture_output=True,
-            text=True,
+            text=True, check=False,
         )
         self.assertEqual(result.returncode, 0, result.stderr)
 

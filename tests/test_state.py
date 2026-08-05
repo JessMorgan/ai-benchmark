@@ -785,9 +785,11 @@ class TestStateCoverage(unittest.TestCase):
             # The tmp file is created first; json.dump then fails, so the
             # except branch must clean the tmp file up. A further OSError
             # during that cleanup is swallowed, not re-raised.
-            with mock.patch("json.dump", side_effect=OSError("disk full")):
-                with mock.patch("os.remove", side_effect=OSError("already gone")):
-                    state.save_state(path)  # must not raise
+            with (
+                mock.patch("json.dump", side_effect=OSError("disk full")),
+                mock.patch("os.remove", side_effect=OSError("already gone")),
+            ):
+                state.save_state(path)  # must not raise
             self.assertFalse(os.path.exists(path))
 
     def test_load_state_ignores_unknown_models(self):

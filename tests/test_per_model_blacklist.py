@@ -1,6 +1,6 @@
 import unittest
 
-from benchmark.core import get_target_plugins_blacklist, get_model_plugins_blacklist
+from benchmark.core import get_model_plugins_blacklist, get_target_plugins_blacklist
 
 
 class TestPerModelPluginBlacklist(unittest.TestCase):

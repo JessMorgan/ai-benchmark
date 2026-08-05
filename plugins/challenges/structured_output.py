@@ -18,7 +18,7 @@ class StructuredOutputPlugin(BenchmarkTaskPlugin):
 
     @property
     def version(self):
-        return "0.3.1"
+        return "0.3.2"
 
     @property
     def name(self):
@@ -124,7 +124,7 @@ class StructuredOutputPlugin(BenchmarkTaskPlugin):
     def _parse_data(self, candidate):
         """Try to parse candidate as JSON then YAML."""
         stripped = candidate.strip()
-        looks_like_json = stripped.startswith("{") or stripped.startswith("[")
+        looks_like_json = stripped.startswith(("{", "["))
         if looks_like_json:
             try:
                 return json.loads(candidate)

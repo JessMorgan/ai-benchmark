@@ -10,7 +10,7 @@ import time
 import unittest
 from unittest import mock
 
-import benchmark.cli as cli
+from benchmark import cli
 
 
 class _FakeWindow:

@@ -3,6 +3,7 @@ import os
 import tempfile
 import unittest
 
+from benchmark.plugin import BenchmarkOutputPlugin, BenchmarkTaskPlugin, EvaluationResult
 from plugins import (
     PluginDiscoveryError,
     _discover_plugins_in_dir,
@@ -11,7 +12,6 @@ from plugins import (
     format_plugin_list,
     plugin_inventory,
 )
-from benchmark.plugin import BenchmarkOutputPlugin, BenchmarkTaskPlugin, EvaluationResult
 
 
 class _ConcreteTaskPlugin(BenchmarkTaskPlugin):

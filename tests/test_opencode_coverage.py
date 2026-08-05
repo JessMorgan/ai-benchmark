@@ -17,10 +17,6 @@ from pathlib import Path
 from unittest import mock
 
 from benchmark.opencode import (
-    OPENCODE_NEUTRAL_AGENT_PERMISSION,
-    OpenCodeExtract,
-    OpenCodeProcessResult,
-    _StreamGuard,
     _cpu_has_avx2,
     _darwin_avx2,
     _darwin_translated,
@@ -33,6 +29,7 @@ from benchmark.opencode import (
     _platform_asset_name,
     _provider_options,
     _pump_stream,
+    _StreamGuard,
     _terminate_process,
     generate_config,
     opencode_version,
@@ -66,37 +63,44 @@ class TestResolveOpencodeTimeout(unittest.TestCase):
 
 class TestValidateCli(unittest.TestCase):
     def test_subprocess_failure_raises(self):
-        with mock.patch("benchmark.opencode.subprocess.run",
-                        side_effect=OSError("no binary")):
-            with self.assertRaisesRegex(RuntimeError, "Could not validate"):
-                validate_cli("opencode")
+        with (
+            mock.patch("benchmark.opencode.subprocess.run", side_effect=OSError("no binary")),
+            self.assertRaisesRegex(RuntimeError, "Could not validate"),
+        ):
+            validate_cli("opencode")
 
     def test_nonzero_help_status_raises(self):
         probe = mock.Mock()
         probe.returncode = 3
         probe.stdout = ""
         probe.stderr = ""
-        with mock.patch("benchmark.opencode.subprocess.run", return_value=probe):
-            with self.assertRaisesRegex(RuntimeError, "status 3"):
-                validate_cli("opencode")
+        with (
+            mock.patch("benchmark.opencode.subprocess.run", return_value=probe),
+            self.assertRaisesRegex(RuntimeError, "status 3"),
+        ):
+            validate_cli("opencode")
 
     def test_missing_required_flags_raises(self):
         probe = mock.Mock()
         probe.returncode = 0
         probe.stdout = "run --help text"
         probe.stderr = ""
-        with mock.patch("benchmark.opencode.subprocess.run", return_value=probe):
-            with self.assertRaisesRegex(RuntimeError, "missing required run options"):
-                validate_cli("opencode")
+        with (
+            mock.patch("benchmark.opencode.subprocess.run", return_value=probe),
+            self.assertRaisesRegex(RuntimeError, "missing required run options"),
+        ):
+            validate_cli("opencode")
 
     def test_help_without_json_choice_raises(self):
         probe = mock.Mock()
         probe.returncode = 0
         probe.stdout = "--model --format --agent --pure --thinking --format choices: default"
         probe.stderr = ""
-        with mock.patch("benchmark.opencode.subprocess.run", return_value=probe):
-            with self.assertRaisesRegex(RuntimeError, "json"):
-                validate_cli("opencode")
+        with (
+            mock.patch("benchmark.opencode.subprocess.run", return_value=probe),
+            self.assertRaisesRegex(RuntimeError, "json"),
+        ):
+            validate_cli("opencode")
 
 
 class TestLocalBinaryPath(unittest.TestCase):
@@ -184,15 +188,18 @@ class TestPlatformAssetName(unittest.TestCase):
             self.assertTrue(_platform_asset_name().endswith(".zip"))
 
     def test_unsupported_os_raises(self):
-        with mock.patch("platform.system", return_value="BeOS"):
-            with self.assertRaises(RuntimeError):
-                _platform_asset_name()
+        with (
+            mock.patch("platform.system", return_value="BeOS"),
+            self.assertRaises(RuntimeError),
+        ):
+            _platform_asset_name()
 
     def test_unsupported_arch_raises(self):
-        with mock.patch("platform.system", return_value="Linux"), \
-                mock.patch("platform.machine", return_value="mips"):
-            with self.assertRaises(RuntimeError):
-                _platform_asset_name()
+        with (
+            mock.patch("platform.system", return_value="Linux"), mock.patch("platform.machine", return_value="mips"),
+            self.assertRaises(RuntimeError),
+        ):
+            _platform_asset_name()
 
 
 class TestDownloadAndExtract(unittest.TestCase):
@@ -295,41 +302,34 @@ class TestOpencodeVersion(unittest.TestCase):
 
 class TestResolveOpencodeBinary(unittest.TestCase):
     def test_path_binary_incompatible_without_install_raises(self):
-        with mock.patch("benchmark.opencode.shutil.which", return_value="/usr/bin/opencode"), \
-                mock.patch("benchmark.opencode.validate_cli",
-                           side_effect=RuntimeError("old")), \
-                mock.patch("benchmark.opencode._local_binary_path",
-                           return_value=Path("/nonexistent/opencode")):
-            with self.assertRaisesRegex(RuntimeError, "incompatible"):
-                resolve_opencode_binary(allow_install=False)
+        with (
+            mock.patch("benchmark.opencode.shutil.which", return_value="/usr/bin/opencode"), mock.patch("benchmark.opencode.validate_cli", side_effect=RuntimeError("old")), mock.patch("benchmark.opencode._local_binary_path", return_value=Path("/nonexistent/opencode")),
+            self.assertRaisesRegex(RuntimeError, "incompatible"),
+        ):
+            resolve_opencode_binary(allow_install=False)
 
     def test_stale_local_without_install_raises(self):
         local = Path(tempfile.mkdtemp()) / "opencode"
         local.write_text("old binary")
-        with mock.patch("benchmark.opencode.shutil.which", return_value=None), \
-                mock.patch("benchmark.opencode.validate_cli",
-                           side_effect=RuntimeError("stale")), \
-                mock.patch("benchmark.opencode._local_binary_path", return_value=local):
-            with self.assertRaisesRegex(RuntimeError, "does not pass"):
-                resolve_opencode_binary(allow_install=False)
+        with (
+            mock.patch("benchmark.opencode.shutil.which", return_value=None), mock.patch("benchmark.opencode.validate_cli", side_effect=RuntimeError("stale")), mock.patch("benchmark.opencode._local_binary_path", return_value=local),
+            self.assertRaisesRegex(RuntimeError, "does not pass"),
+        ):
+            resolve_opencode_binary(allow_install=False)
 
     def test_nothing_anywhere_without_install_raises(self):
-        with mock.patch("benchmark.opencode.shutil.which", return_value=None), \
-                mock.patch("benchmark.opencode._local_binary_path",
-                           return_value=Path("/nonexistent/opencode")):
-            with self.assertRaisesRegex(RuntimeError, "not found on PATH"):
-                resolve_opencode_binary(allow_install=False)
+        with (
+            mock.patch("benchmark.opencode.shutil.which", return_value=None), mock.patch("benchmark.opencode._local_binary_path", return_value=Path("/nonexistent/opencode")),
+            self.assertRaisesRegex(RuntimeError, "not found on PATH"),
+        ):
+            resolve_opencode_binary(allow_install=False)
 
     def test_fresh_install_failing_preflight_raises(self):
-        with mock.patch("benchmark.opencode.shutil.which", return_value=None), \
-                mock.patch("benchmark.opencode._local_binary_path",
-                           return_value=Path("/nonexistent/opencode")), \
-                mock.patch("benchmark.opencode.install_opencode",
-                           return_value="/installed/opencode"), \
-                mock.patch("benchmark.opencode.validate_cli",
-                           side_effect=RuntimeError("nope")):
-            with self.assertRaisesRegex(RuntimeError, "failed preflight"):
-                resolve_opencode_binary(allow_install=True)
+        with (
+            mock.patch("benchmark.opencode.shutil.which", return_value=None), mock.patch("benchmark.opencode._local_binary_path", return_value=Path("/nonexistent/opencode")), mock.patch("benchmark.opencode.install_opencode", return_value="/installed/opencode"), mock.patch("benchmark.opencode.validate_cli", side_effect=RuntimeError("nope")),
+            self.assertRaisesRegex(RuntimeError, "failed preflight"),
+        ):
+            resolve_opencode_binary(allow_install=True)
 
 
 class TestProviderOptions(unittest.TestCase):

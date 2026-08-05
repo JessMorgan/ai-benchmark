@@ -19,7 +19,7 @@ class TestConvertConfig(unittest.TestCase):
             result = subprocess.run(
                 [sys.executable, "ai-benchmark.py", "--convert-config", config_path],
                 capture_output=True,
-                text=True,
+                text=True, check=False,
             )
             self.assertEqual(result.returncode, 0)
             parsed = json.loads(result.stdout)
@@ -35,7 +35,7 @@ class TestConvertConfig(unittest.TestCase):
             result = subprocess.run(
                 [sys.executable, "ai-benchmark.py", "--convert-config", config_path],
                 capture_output=True,
-                text=True,
+                text=True, check=False,
             )
             self.assertEqual(result.returncode, 0)
             parsed = yaml.safe_load(result.stdout)
@@ -46,7 +46,7 @@ class TestConvertConfig(unittest.TestCase):
         result = subprocess.run(
             [sys.executable, "ai-benchmark.py", "--convert-config", "/tmp/does-not-exist.yaml"],
             capture_output=True,
-            text=True,
+            text=True, check=False,
         )
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("not found", result.stderr)
@@ -60,7 +60,7 @@ class TestConvertConfig(unittest.TestCase):
             result = subprocess.run(
                 [sys.executable, "ai-benchmark.py", "--convert-config", config_path],
                 capture_output=True,
-                text=True,
+                text=True, check=False,
             )
             self.assertEqual(result.returncode, 0)
             parsed = json.loads(result.stdout)
@@ -76,7 +76,7 @@ class TestConvertConfig(unittest.TestCase):
             result = subprocess.run(
                 [sys.executable, "ai-benchmark.py", "--convert-config", config_path],
                 capture_output=True,
-                text=True,
+                text=True, check=False,
             )
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("Unsupported config format", result.stderr)

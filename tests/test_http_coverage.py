@@ -15,6 +15,8 @@ import unittest
 from unittest import mock
 
 from benchmark.http import (
+    PostRequestResult,
+    ResponseBodyResult,
     _check_total_timeout,
     _merge_tool_calls,
     _parse_sse_line,
@@ -26,8 +28,6 @@ from benchmark.http import (
     get_active_request_count,
     log_request_entry,
     nonstream_request,
-    PostRequestResult,
-    ResponseBodyResult,
     stream_request,
 )
 from tests.utils import MockResponse
@@ -389,7 +389,7 @@ class TestBackoffTeardownAndCancellation(unittest.TestCase):
         resp.iter_lines.return_value = []
         resp.close.side_effect = RuntimeError("close boom")
         with mock.patch("benchmark.http.requests.post", return_value=resp):
-            result = stream_request(self._cfg(), 5, "m", "S", "p", 100)
+            stream_request(self._cfg(), 5, "m", "S", "p", 100)
         resp.close.assert_called()  # cleanup still attempted despite the raise
 
 

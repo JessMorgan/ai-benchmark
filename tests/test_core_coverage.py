@@ -206,9 +206,11 @@ class TestDumpDefaultConfig(unittest.TestCase):
 
 class TestGenerateConfigFromApi(unittest.TestCase):
     def test_no_models_raises(self):
-        with mock.patch("benchmark.core.fetch_models_v1", return_value=[]):
-            with self.assertRaises(RuntimeError):
-                generate_config_from_api("http://x")
+        with (
+            mock.patch("benchmark.core.fetch_models_v1", return_value=[]),
+            self.assertRaises(RuntimeError),
+        ):
+            generate_config_from_api("http://x")
 
     def test_with_models_builds_config(self):
         with mock.patch("benchmark.core.fetch_models_v1",
@@ -274,12 +276,12 @@ class TestRunModelGuards(unittest.TestCase):
         state = BenchmarkState({"m": "S"}, [p.id for p in plugins])
         source_config = {"S": {"api_url": "http://x", "headers": {},
                                "plugin_thread_limit": "banana"}}
-        with mock.patch("benchmark.core.stream_request",
-                        return_value=StreamResult("", "", None, 0, "boom", None, {})):
-            with mock.patch("benchmark.core.nonstream_request",
-                            return_value=NonStreamResult("", "", {}, 0.1, "boom", None)):
-                run_model("m", "S", state, plugins, source_config, 1,
-                          [100], "/tmp/out", session_seed=0)
+        with (
+            mock.patch("benchmark.core.stream_request", return_value=StreamResult("", "", None, 0, "boom", None, {})),
+            mock.patch("benchmark.core.nonstream_request", return_value=NonStreamResult("", "", {}, 0.1, "boom", None)),
+        ):
+            run_model("m", "S", state, plugins, source_config, 1,
+                      [100], "/tmp/out", session_seed=0)
         snap = state.snapshot()["m"]
         self.assertIn(snap["status"], ("completed", "failed"))
 

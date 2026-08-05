@@ -13,7 +13,7 @@ class CodeReviewPlugin(BenchmarkTaskPlugin):
 
     @property
     def version(self):
-        return "0.3.1"
+        return "0.3.2"
 
     @property
     def name(self):
@@ -77,7 +77,7 @@ class CodeReviewPlugin(BenchmarkTaskPlugin):
         for line in response_text.splitlines():
             line = line.strip()
             if line.startswith(("- ", "* ", "1. ", "2. ", "3. ", "4. ", "5. ", "6. ", "7. ", "8. ", "9. ")):
-                descriptions.append(line[2:].lower() if line[0] != "*" else line[2:].lower())
+                descriptions.append(line[2:].lower())
         return descriptions
 
     def evaluate(self, response_text):

@@ -23,11 +23,11 @@ import threading
 import time
 import urllib.request
 import zipfile
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any
 from urllib.parse import urlsplit, urlunsplit
-
 
 OPENCODE_BINARY = "opencode"
 
@@ -312,9 +312,11 @@ def _download_to(url: str, dest: Path, *, timeout: float) -> None:
     request = urllib.request.Request(
         url, headers={"User-Agent": "ai-benchmark/opencode-installer"}
     )
-    with urllib.request.urlopen(request, timeout=timeout) as response:
-        with open(dest, "wb") as handle:
-            shutil.copyfileobj(response, handle)
+    with (
+        urllib.request.urlopen(request, timeout=timeout) as response,
+        open(dest, "wb") as handle,
+    ):
+        shutil.copyfileobj(response, handle)
 
 
 def _latest_opencode_version(*, timeout: float = 15) -> str | None:
@@ -323,11 +325,11 @@ def _latest_opencode_version(*, timeout: float = 15) -> str | None:
         with urllib.request.urlopen(OPENCODE_LATEST_API_URL, timeout=timeout) as response:
             payload = json.load(response)
         tag = payload.get("tag_name", "")
-    except Exception:
+    except Exception:  # noqa: BLE001 - best-effort version probe; None means unknown
         return None
     if not isinstance(tag, str) or not tag:
         return None
-    return tag[1:] if tag.startswith("v") else tag
+    return tag.removeprefix("v")
 
 
 def _extract_binary(archive: Path, dest_dir: Path) -> Path:
@@ -539,7 +541,11 @@ def _provider_options(source_cfg: Mapping[str, Any]) -> dict[str, Any]:
 
     headers = source_cfg.get("headers") or {}
     if not isinstance(headers, Mapping):
-        raise ValueError("source headers must be an object")
+        # TRY004 would suggest TypeError, but config-validation errors are
+        # ValueError throughout this codebase (and tests pin it).
+        raise ValueError(  # noqa: TRY004 - config errors are ValueError throughout
+            "source headers must be an object"
+        )
     custom_headers: dict[str, str] = {}
     for key, value in headers.items():
         if not isinstance(key, str):
@@ -592,7 +598,7 @@ def generate_config(
     targets: Mapping[str, Mapping[str, Any]],
     path: str | os.PathLike[str],
     *,
-    timeout: int | float | None = None,
+    timeout: float | None = None,
     token_levels: Sequence[int] | None = None,
     benchmark_config: Mapping[str, Any] | None = None,
     plugin_temperatures: Mapping[str, Any] | None = None,
@@ -613,7 +619,7 @@ def generate_config(
         source = info.get("source")
         api_model = info.get("api_model")
         if not isinstance(source, str):
-            raise ValueError(f"Target {target_key!r} has no valid source")
+            raise TypeError(f"Target {target_key!r} has no valid source")
         if not isinstance(api_model, str) or not api_model:
             raise ValueError(f"Target {target_key!r} has no valid api_model")
         mapped_model = opencode_model_name(source, api_model)
@@ -830,8 +836,15 @@ class _StreamGuard:
     only add contention to the hot pump path.
     """
 
-    __slots__ = ("step_limit", "repeat_threshold", "repeat_min_len",
-                 "_pending", "_text_counts", "step_count", "repeated")
+    __slots__ = (
+        "_pending",
+        "_text_counts",
+        "repeat_min_len",
+        "repeat_threshold",
+        "repeated",
+        "step_count",
+        "step_limit",
+    )
 
     def __init__(self, step_limit: int = 0, repeat_threshold: int = 0,
                  repeat_min_len: int = 20) -> None:
@@ -907,7 +920,7 @@ def run_process(
     *,
     config_path: str,
     model: str,
-    timeout: int | float,
+    timeout: float,
     binary: str = OPENCODE_BINARY,
     agent: str | None = None,
     output_dir: str | os.PathLike[str] | None = None,

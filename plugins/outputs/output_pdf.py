@@ -1,8 +1,8 @@
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 
+from benchmark.outputs import _numeric_score, _plugin_token_counts, _plugin_total_score
 from benchmark.plugin import BenchmarkOutputPlugin
-from benchmark.outputs import _plugin_total_score, _numeric_score, _plugin_token_counts
 
 
 class PDFOutputPlugin(BenchmarkOutputPlugin):
@@ -33,7 +33,7 @@ class PDFOutputPlugin(BenchmarkOutputPlugin):
         pdf.set_font("Helvetica", "B", 16)
         pdf.cell(0, 10, "AI Benchmark", align="C", new_x="LMARGIN", new_y="NEXT")
         pdf.set_font("Helvetica", "", 9)
-        pdf.cell(0, 6, f"Tasks: {', '.join(p.name for p in active_plugins)}  |  {datetime.now().strftime('%Y-%m-%d %H:%M')}", align="C", new_x="LMARGIN", new_y="NEXT")
+        pdf.cell(0, 6, f"Tasks: {', '.join(p.name for p in active_plugins)}  |  {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')}", align="C", new_x="LMARGIN", new_y="NEXT")
         ok = [r for r in results if r["status"] == "ok"]
         seed_part = f"  |  Seed: {session_seed}" if session_seed is not None else ""
         pdf.cell(0, 6, f"Total: {len(results)}  |  OK: {len(ok)}  |  Failed: {len(results)-len(ok)}{seed_part}", align="C", new_x="LMARGIN", new_y="NEXT")

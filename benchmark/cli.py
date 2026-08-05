@@ -7,6 +7,7 @@ Configuration: edit benchmark-config.json (or pass --config <path>).
 API keys can use ${VAR} or ${VAR:default} syntax for env-var expansion.
 """
 import argparse
+import contextlib
 import curses
 import glob
 import json
@@ -19,23 +20,24 @@ import threading
 import time
 import traceback
 import unicodedata
-from datetime import datetime
+from datetime import datetime, timezone
 
+from benchmark.completions import generate_shell_completion
 from benchmark.core import (
     BenchmarkState,
+    PreloadResult,
     _apply_http_retry_default,
+    _save_outputs,
     _unique_source_abbrevs,
     dump_default_config,
     generate_config_from_api,
     get_target_plugins_blacklist,
     load_config,
     parse_plugin_temperatures,
-    PreloadResult,
     preload_model,
     resolve_preload_timeout,
     resolve_targets,
     run_model,
-    _save_outputs,
 )
 from benchmark.http import (
     close_active_requests,
@@ -43,14 +45,15 @@ from benchmark.http import (
     get_active_request_count,
     reset_429_stats,
 )
-from plugins import discover_plugins, format_plugin_list
-from benchmark.completions import generate_shell_completion
 from benchmark.opencode import (
     generate_config as generate_opencode_config,
+)
+from benchmark.opencode import (
     opencode_model_name,
     opencode_version,
     resolve_opencode_binary,
 )
+from plugins import discover_plugins, format_plugin_list
 
 DEFAULT_CONFIG_PATH = "benchmark-config.json"
 
@@ -79,7 +82,7 @@ def _write_run_info(output_dir, run_info):
     try:
         with open(path, "w", encoding="utf-8") as f:
             json.dump(run_info, f, indent=2, default=str)
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - a report-write failure must not abort the run
         print(f"⚠️  Could not write run-info.json: {e}", file=sys.stderr)
 
 
@@ -229,8 +232,7 @@ def _slice_display_width(text, start, max_width):
     the raw string can split a ZWJ/combining cluster and can also disagree
     with the terminal when wide characters occur before the viewport.
     """
-    if start < 0:
-        start = 0
+    start = max(start, 0)
     if max_width <= 0:
         return ""
     result = []
@@ -312,8 +314,8 @@ def _fallback_tui_loop(state, stop_event, session_seed=None):
             for key in (backoff_429.get("sleeping") or {})
         })
         parts = [
-            f"{seed_info}🔄 {active} active  |  ✅ {done}/{total} completed"
-            f"  |  HTTP: {http_threads}  |  429⏸ {sleeping_model_count}"
+            (f"{seed_info}🔄 {active} active  |  ✅ {done}/{total} completed"
+            f"  |  HTTP: {http_threads}  |  429⏸ {sleeping_model_count}")
         ]
         for name, s in snap.items():
             if s.get("preloading"):
@@ -338,7 +340,7 @@ def _handle_tui_input(stdscr, scroll_y, scroll_x, max_row_offset, visible_rows, 
     """Handle keyboard navigation and return updated scroll offsets."""
     try:
         key = stdscr.getch()
-    except Exception:
+    except Exception:  # noqa: BLE001 - getch() can raise on resize or stdin interruption
         # getch() can raise on terminal resize or when stdin is interrupted.
         key = -1
     if key == curses.KEY_UP:
@@ -376,8 +378,8 @@ def _render_header_and_summary(stdscr, max_x, max_y, snap, done, total, running,
     operator notices that the benchmark is rate-limited rather than making
     progress.
     """
-    from datetime import datetime
-    ts = datetime.now().strftime('%H:%M:%S')
+    from datetime import datetime, timezone
+    ts = datetime.now(timezone.utc).astimezone().strftime('%H:%M:%S')
     seed_info = f"Seed: {session_seed}  |  " if session_seed is not None else ""
     hdr = f"AI Benchmark \u2014 Parallel  |  {seed_info}{ts}"
     # Always draw through _wr, even when the terminal is narrower than the
@@ -451,7 +453,7 @@ def _fmt_value(v, fmt=".1f"):
         return "-"
     try:
         return f"{v:{fmt}}"
-    except Exception:
+    except (ValueError, TypeError):
         return str(v)
 
 
@@ -565,7 +567,7 @@ def _plugin_cell_block(pid, s, p, sleeping_lookup=None):
     if in_flight and sleeping_lookup:
         sleep_info = sleeping_lookup.get((source, api_model, pid))
         if sleep_info is not None:
-            remaining = max(0, int(round(sleep_info["wake_ts"] - time.time())))
+            remaining = max(0, round(sleep_info["wake_ts"] - time.time()))
             text = f"[429 sleeping {remaining}s]"
             return f"{text:^{PLUGIN_BLOCK_WIDTH}}"
     if in_flight:
@@ -719,17 +721,17 @@ def _render_model_rows(stdscr, max_x, max_y, snap_items, active_plugins, source_
         if sv == "completed":
             try:
                 attr = curses.color_pair(1)
-            except Exception:
+            except Exception:  # noqa: BLE001, S110 - color_pair() fails when colors are unavailable
                 pass
         elif sv == "failed":
             try:
                 attr = curses.color_pair(3)
-            except Exception:
+            except Exception:  # noqa: BLE001, S110 - color_pair() fails when colors are unavailable
                 pass
         elif sv == "running" or s.get("running_pids"):
             try:
                 attr = curses.color_pair(2)
-            except Exception:
+            except Exception:  # noqa: BLE001, S110 - color_pair() fails when colors are unavailable
                 pass
         _wr(stdscr, max_x, max_y, model_top + row_idx, 0, line, attr)
 
@@ -737,7 +739,7 @@ def _render_model_rows(stdscr, max_x, max_y, snap_items, active_plugins, source_
         try:
             stdscr.move(r, 0)
             stdscr.clrtoeol()
-        except Exception:
+        except Exception:  # noqa: BLE001, S110 - window may resize between getmaxyx() and paint
             pass
 
 
@@ -904,7 +906,7 @@ def _render_live_activity(stdscr, max_x, max_y, snap, source_abbrevs, live_model
                 break
             src_ab = _source_abbr(source_abbrevs, src_name)
             wake_ts = info["wake_ts"]
-            remaining = max(0, int(round(wake_ts - time.time())))
+            remaining = max(0, round(wake_ts - time.time()))
             msg = (f" \U0001f4a4 [{src_ab}] {api_model[:36]} ({pid}) "
                    f"[429 {info['attempts']}/{info['max_attempts']} {remaining}s]")
             _wr(stdscr, max_x, max_y, live_row, 0, msg)
@@ -914,13 +916,13 @@ def _render_live_activity(stdscr, max_x, max_y, snap, source_abbrevs, live_model
         try:
             stdscr.move(r, 0)
             stdscr.clrtoeol()
-        except Exception:
+        except Exception:  # noqa: BLE001, S110 - window may resize between getmaxyx() and paint
             pass
 
 
 def _render_recent_errors(stdscr, max_x, max_y, state, log_top, footer_line):
     """Render the recent errors section."""
-    from datetime import datetime
+    from datetime import datetime, timezone
     log_row = log_top
     recent_errors = state.recent_log(2)
     if recent_errors:
@@ -929,7 +931,7 @@ def _render_recent_errors(stdscr, max_x, max_y, state, log_top, footer_line):
         for ts_entry, model_entry, msg_entry in recent_errors:
             if log_row >= footer_line:
                 break
-            t_str = datetime.fromtimestamp(ts_entry).strftime('%H:%M:%S')
+            t_str = datetime.fromtimestamp(ts_entry, tz=timezone.utc).astimezone().strftime('%H:%M:%S')
             err_msg = f"  {t_str} [{model_entry[:20]}]: {msg_entry}"
             _wr(stdscr, max_x, max_y, log_row, 0, err_msg, curses.color_pair(3))
             log_row += 1
@@ -937,7 +939,7 @@ def _render_recent_errors(stdscr, max_x, max_y, state, log_top, footer_line):
         try:
             stdscr.move(r, 0)
             stdscr.clrtoeol()
-        except Exception:
+        except Exception:  # noqa: BLE001, S110 - window may resize between getmaxyx() and paint
             pass
 
 
@@ -987,7 +989,7 @@ def tui_main(state, stop_event, num_sources, active_plugins, session_seed=None):
             curses.init_pair(1, curses.COLOR_GREEN, -1)
             curses.init_pair(2, curses.COLOR_YELLOW, -1)
             curses.init_pair(3, curses.COLOR_RED, -1)
-    except Exception:
+    except Exception:  # noqa: BLE001 - any curses init failure falls back to a plain loop
         _fallback_tui_loop(state, stop_event, session_seed)
         return
 
@@ -1111,8 +1113,7 @@ def tui_main(state, stop_event, num_sources, active_plugins, session_seed=None):
                 )
 
                 stdscr.refresh()
-            except Exception:
-                # Don't let a transient curses/render error kill the TUI thread.
+            except Exception:  # noqa: BLE001 - a render error must not kill the TUI thread
                 # Log to a file so the screen isn't corrupted and the benchmark
                 # workers can keep running. Throttle to avoid a runaway log.
                 now = time.time()
@@ -1121,7 +1122,7 @@ def tui_main(state, stop_event, num_sources, active_plugins, session_seed=None):
                     try:
                         with open("tui_render_errors.log", "a", encoding="utf-8") as f:
                             traceback.print_exc(file=f)
-                    except Exception:
+                    except Exception:  # noqa: BLE001, S110 - logging a render error must not crash the TUI thread
                         pass
             time.sleep(0.2)
 
@@ -1130,7 +1131,7 @@ def tui_main(state, stop_event, num_sources, active_plugins, session_seed=None):
         curses.nocbreak()
         try:
             curses.endwin()
-        except Exception:
+        except Exception:  # noqa: BLE001, S110 - endwin() can fail on a broken terminal
             pass
 
 
@@ -1160,7 +1161,7 @@ def _start_runner_pipeline(targets_by_source, opencode_pending, http_pending,
             if target_name in opencode_pending.get(source, []):
                 try:
                     skip_target = run_target(target_name, "opencode") is False
-                except Exception as exc:
+                except Exception as exc:  # noqa: BLE001 - a runner crash is reported, not fatal
                     # An OpenCode failure must not prevent the independent HTTP
                     # comparison for this target from being attempted.
                     on_error(target_name, "opencode", exc)
@@ -1169,7 +1170,7 @@ def _start_runner_pipeline(targets_by_source, opencode_pending, http_pending,
             if target_name in http_pending.get(source, set()):
                 try:
                     run_target(target_name, "http")
-                except Exception as exc:
+                except Exception as exc:  # noqa: BLE001 - a runner crash is reported, not fatal
                     on_error(target_name, "http", exc)
 
     for source, target_names in targets_by_source.items():
@@ -1218,8 +1219,8 @@ def _prompt_restart_or_continue(scripted=False):
 def main():  # pragma: no cover - live benchmark orchestrator (no unit tests)
     try:
         subprocess.run(['stty', 'sane'], stderr=subprocess.DEVNULL,
-                       stdin=sys.stdin, timeout=1)
-    except Exception:
+                       stdin=sys.stdin, timeout=1, check=False)
+    except (OSError, subprocess.TimeoutExpired):
         pass
     sys.stderr.write('\033[2J\033[H')
     sys.stderr.flush()
@@ -1394,7 +1395,7 @@ def main():  # pragma: no cover - live benchmark orchestrator (no unit tests)
         sys.exit(1)
     try:
         active_plugins = discover_plugins(whitelist=whitelist, blacklist=blacklist)
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - a broken plugin must fail loudly, not silently
         print(f"❌ Failed to discover plugins: {e}", file=sys.stderr)
         sys.exit(1)
 
@@ -1467,7 +1468,7 @@ def main():  # pragma: no cover - live benchmark orchestrator (no unit tests)
 
     try:
         shutil.copy2(config_path, os.path.join(output_dir, os.path.basename(config_path)))
-    except Exception as e:
+    except (OSError, shutil.Error) as e:
         print(f"⚠️  Could not copy config file to output directory: {e}", file=sys.stderr)
     state = None
     worker_errors = 0
@@ -1478,7 +1479,7 @@ def main():  # pragma: no cover - live benchmark orchestrator (no unit tests)
         "config_file": config_path,
         "cli_args": vars(args),
         "output_dir": output_dir,
-        "start_time": datetime.now().isoformat(),
+        "start_time": datetime.now(timezone.utc).isoformat(),
         "end_time": None,
         "status": "running",
         "total_targets": len(targets) * (2 if runner_mode == "both" else 1),
@@ -1568,7 +1569,7 @@ def main():  # pragma: no cover - live benchmark orchestrator (no unit tests)
                         print(f"   Results: {output_dir}/")
                         print(f"{'='*70}")
                         sys.exit(0)
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 - abort rather than silently restarting
                 # A failed resume must not silently discard prior results by
                 # starting a fresh run: the operator may have hours of
                 # completed work in this state file. Abort with the underlying
@@ -1742,7 +1743,7 @@ def main():  # pragma: no cover - live benchmark orchestrator (no unit tests)
                     drop_params=drop_params,
                     log_path=log_path,
                 )
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 - any preload failure is recorded as such
                 # A malformed response or unexpected transport exception is
                 # still a preload failure: record it on the model rows and
                 # advance the source worker instead of treating it as an
@@ -1864,7 +1865,7 @@ def main():  # pragma: no cover - live benchmark orchestrator (no unit tests)
             # Preserve the original single-runner source workers. Only
             # --runner both needs cross-runner coordination.
             phase_runner = runner_mode
-            source_queues = {src: [] for src in set(t["source"] for t in targets.values())}
+            source_queues = {src: [] for src in {t["source"] for t in targets.values()}}
             snapshot = state.snapshot()
             for name, info in targets.items():
                 state_key = name if phase_runner == "http" else f"{name} [opencode]"
@@ -1883,7 +1884,7 @@ def main():  # pragma: no cover - live benchmark orchestrator (no unit tests)
                             break
                         try:
                             run_target(model_name, phase_runner)
-                        except Exception as exc:
+                        except Exception as exc:  # noqa: BLE001 - a worker crash is recorded per model
                             on_worker_error(model_name, phase_runner, exc)
 
                 thread = threading.Thread(target=worker, args=(), daemon=True)
@@ -1906,10 +1907,8 @@ def main():  # pragma: no cover - live benchmark orchestrator (no unit tests)
         # timeout keeps the terminal tidy if it happens to finish quickly.
         tui_thread.join(timeout=0.5)
 
-        try:
+        with contextlib.suppress(Exception):
             state.save_state(state_file, plugin_versions=plugin_versions)
-        except Exception:
-            pass
 
         if interrupted:
             done = state.completed
@@ -1934,7 +1933,7 @@ def main():  # pragma: no cover - live benchmark orchestrator (no unit tests)
         run_info["error"] = f"{type(exc).__name__}: {exc}"
         raise
     finally:
-        run_info["end_time"] = datetime.now().isoformat()
+        run_info["end_time"] = datetime.now(timezone.utc).isoformat()
         run_info["completed_targets"] = state.completed if state is not None else 0
         run_info["worker_errors"] = worker_errors
         if run_info["status"] == "running":

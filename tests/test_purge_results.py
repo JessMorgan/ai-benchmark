@@ -1,4 +1,4 @@
-"""Regression tests for the `purge-results` SKILL embedded script.
+r"""Regression tests for the `purge-results` SKILL embedded script.
 
 These tests pin two independent contracts that have already shipped as
 distinct fixes:
@@ -36,14 +36,13 @@ entries, totalling exactly 14.
 """
 import copy
 import json
-from typing import Any
 import os
 import subprocess
 import sys
 import tempfile
 import types
 import unittest
-
+from typing import Any
 
 _SKILL_PATH = os.path.join(
     os.path.dirname(__file__),
@@ -56,7 +55,7 @@ _SKILL_PATH = os.path.join(
 
 
 def _extract_purge_script(skill_path: str = _SKILL_PATH) -> str:
-    """Recover the embedded ``purge-results`` script using the exact
+    r"""Recover the embedded ``purge-results`` script using the exact
     awk command the SKILL.md "How to invoke" section prescribes.
 
     The shebang pattern and the closing-fence exit pinpoint the
@@ -106,7 +105,7 @@ class _PurgeScriptNs:
 
     def __init__(self, src: str):
         ns: dict = {"__name__": "purge_results_test"}
-        exec(compile(src, "<extracted>", "exec"), ns)
+        exec(compile(src, "<extracted>", "exec"), ns)  # noqa: S102 - executing the extracted test code is the point
         self.src = src
         self.ns = ns
 

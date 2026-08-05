@@ -386,7 +386,7 @@ class BenchmarkState:
             with open(tmp, "w") as f:
                 json.dump(data, f, indent=2, default=str)
             os.replace(tmp, path)
-        except Exception:
+        except Exception:  # noqa: BLE001 - clean up the temp file on any save failure
             try:
                 if os.path.exists(tmp):
                     os.remove(tmp)
