@@ -6,6 +6,7 @@ from unittest import mock
 from benchmark.core import (
     JudgeResult,
     build_judge_prompt,
+    confidence_weighted_consensus,
     judge_response,
     parse_judge_response,
     prepare_judge_sidecar,
@@ -27,6 +28,14 @@ class FakePlugin:
 
 
 class TestJudgeCore(unittest.TestCase):
+    def test_confidence_weighted_consensus(self):
+        result = confidence_weighted_consensus([
+            {"score": 90, "confidence": "high", "rationale": "strong"},
+            {"score": 50, "confidence": "low", "rationale": "weak"},
+        ])
+        self.assertEqual(result["score"], 81)
+        self.assertEqual(result["confidence"], "high")
+
     def test_parse_judge_json_and_rejects_invalid(self):
         self.assertEqual(
             parse_judge_response('{"score": 82.4, "confidence": "high", "rationale": "complete"}'),
@@ -84,6 +93,7 @@ class TestJudgeStateAndReports(unittest.TestCase):
             f"{self.plugin.id}_judge_score": 91,
             f"{self.plugin.id}_judge_confidence": "high",
             f"{self.plugin.id}_judge_error": "",
+            f"{self.plugin.id}_judge_votes": [{"model": "judge", "score": 91, "confidence": "high"}],
         }
         self.assertIn("Judge Confidence", MarkdownOutputPlugin().generate([result], [self.plugin]))
         self.assertIn("91", HTMLOutputPlugin().generate([result], [self.plugin]))

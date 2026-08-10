@@ -28,7 +28,8 @@ class HTMLOutputPlugin(BenchmarkOutputPlugin):
     def generate(self, results, active_plugins, output_dir=None, session_seed=None):
         ok = [r for r in results if r["status"] == "ok"]
         judge_enabled = any(
-            r.get("judge_model")
+            r.get("judge_models")
+            or r.get("judge_model")
             or any(key.endswith(("_judge_score", "_judge_error")) for key in r)
             for r in results
         )
@@ -64,7 +65,8 @@ class HTMLOutputPlugin(BenchmarkOutputPlugin):
                 if judge_enabled:
                     cells += (f'<td class="judge-score">{html_lib.escape(str(judge_score))}</td>'
                               f'<td class="judge-confidence">{html_lib.escape(str(judge_confidence))}</td>'
-                              f'<td class="judge-error">{html_lib.escape(str(judge_error))}</td>')
+                              f'<td class="judge-error">{html_lib.escape(str(judge_error))}</td>'
+                              f'<td class="judge-votes">{len(r.get(f"{p.id}_judge_votes", []))}</td>')
                 cells += empty_cell
             overall = r.get("overall_score_100", tot)
             scored_plugins = r.get("overall_scored_plugins", _scored_plugin_count(r, active_plugins))
@@ -120,7 +122,8 @@ class HTMLOutputPlugin(BenchmarkOutputPlugin):
                              f"<th>{p.name} Score (0–100)</th>")
             if judge_enabled:
                 header_cells += (f"<th>{p.name} Judge (0–100)</th>"
-                                 f"<th>{p.name} Judge Confidence</th><th>{p.name} Judge Error</th>")
+                                 f"<th>{p.name} Judge Confidence</th><th>{p.name} Judge Error</th>"
+                                 f"<th>{p.name} Judge Votes</th>")
             header_cells += f"<th>{p.name} Reason</th>"
         header_cells += "<th>Overall Score (0–100)</th><th>Scored Plugins</th><th>Time</th><th>Mode</th><th>Status</th>"
 
@@ -158,7 +161,7 @@ tr.fail {{ color:#8b949e; }}
 {lb_ttft()}
 </table></div>
 {leaderboard_html}        <h2>📊 Complete Results</h2>
-<p class="subtitle">Judge: {html_lib.escape(str(next((r.get('judge_model') for r in results if r.get('judge_model')), '—')))} | Status: {html_lib.escape(str(next((r.get('judge_status') for r in results if r.get('judge_status')), '—')))}</p>
+<p class="subtitle">Judges: {html_lib.escape(', '.join(next((r.get('judge_models') for r in results if r.get('judge_models')), []) or ([next((r.get('judge_model') for r in results if r.get('judge_model')), '')] if any(r.get('judge_model') for r in results) else [])) or '—')} | Status: {html_lib.escape(str(next((r.get('judge_status') for r in results if r.get('judge_status')), '—')))}</p>
 <table>
 <tr>{header_cells}</tr>
 {rows}

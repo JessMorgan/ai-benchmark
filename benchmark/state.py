@@ -386,6 +386,7 @@ class BenchmarkState:
                 self._model_info[name][f"{pid}_judge_rationale"] = None
                 self._model_info[name][f"{pid}_judge_error"] = None
                 self._model_info[name][f"{pid}_judge_input_sha256"] = None
+                self._model_info[name][f"{pid}_judge_votes"] = []
                 self._model_info[name][f"{pid}_tps"] = None
                 self._model_info[name][f"{pid}_response_time"] = None
                 self._model_info[name][f"{pid}_output_tokens"] = None
@@ -653,7 +654,7 @@ class BenchmarkState:
 
     def update_judge_result(self, state_key, runner, plugin_id, *, score=None,
                             confidence=None, rationale=None, error=None,
-                            input_sha256=None):
+                            input_sha256=None, votes=None, status=None):
         """Persist one judge outcome in live model info and latest result.
 
         Judge updates are independent of benchmark completion and therefore
@@ -667,6 +668,10 @@ class BenchmarkState:
         }
         if input_sha256 is not None:
             fields[f"{plugin_id}_judge_input_sha256"] = input_sha256
+        if votes is not None:
+            fields[f"{plugin_id}_judge_votes"] = votes
+        if status is not None:
+            fields["judge_status"] = status
         with self._lock:
             if state_key in self._model_info:
                 self._model_info[state_key].update(fields)
@@ -812,6 +817,7 @@ class BenchmarkState:
                         state._model_info[name].setdefault(f"{pid}_judge_rationale", None)
                         state._model_info[name].setdefault(f"{pid}_judge_error", None)
                         state._model_info[name].setdefault(f"{pid}_judge_input_sha256", None)
+                        state._model_info[name].setdefault(f"{pid}_judge_votes", [])
                         state._model_info[name].setdefault(f"{pid}_tps", None)
                         state._model_info[name].setdefault(f"{pid}_response_time", None)
                         state._model_info[name].setdefault(f"{pid}_output_tokens", None)

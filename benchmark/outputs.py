@@ -85,7 +85,8 @@ def _numeric_judge_score(result, plugin_id, default=0):
 def _judge_enabled(results):
     """Return whether any result carries judge metadata."""
     return any(
-        result.get("judge_model") is not None
+        result.get("judge_models")
+        or result.get("judge_model") is not None
         or result.get("judge_status") not in (None, "disabled")
         or any(key.endswith(("_judge_score", "_judge_error")) for key in result)
         for result in results

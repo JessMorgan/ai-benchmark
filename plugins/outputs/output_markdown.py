@@ -27,7 +27,8 @@ class MarkdownOutputPlugin(BenchmarkOutputPlugin):
     def generate(self, results, active_plugins, output_dir=None, session_seed=None):
         ok = [r for r in results if r["status"] == "ok"]
         judge_enabled = any(
-            r.get("judge_model") is not None
+            r.get("judge_models")
+            or r.get("judge_model") is not None
             or r.get("judge_status") not in (None, "disabled")
             or any(key.endswith(("_judge_score", "_judge_error")) for key in r)
             for r in results
@@ -50,18 +51,17 @@ class MarkdownOutputPlugin(BenchmarkOutputPlugin):
 
         has_runner = any(r.get("runner") for r in results)
         header = "| # | Model | Runner |"
-        if judge_enabled:
-            header += " Judge Model | Judge Status |"
+        if judge_enabled:                header += " Judge Models | Judge Status |"
         header += " Load (s) |" if has_runner else "| # | Model |"
         if not has_runner:
             if judge_enabled:
-                header = "| # | Model | Judge Model | Judge Status | Load (s) |"
+                header = "| # | Model | Judge Models | Judge Status | Load (s) |"
             else:
                 header = "| # | Model | Load (s) |"
         for p in active_plugins:
             header += f" {p.name} Resp (s) | {p.name} TPS | {p.name} Think Tok | {p.name} Cont Tok | {p.name} Total Tok | {p.name} Score (0–100) |"
             if judge_enabled:
-                header += f" {p.name} Judge (0–100) | {p.name} Judge Confidence | {p.name} Judge Error |"
+                header += f" {p.name} Judge (0–100) | {p.name} Judge Confidence | {p.name} Judge Error | {p.name} Judge Votes |"
             header += f" {p.name} Reason |"
             if output_dir:
                 header += f" {p.name} Response |"
@@ -80,7 +80,8 @@ class MarkdownOutputPlugin(BenchmarkOutputPlugin):
             else:
                 row = f"| {idx} | {r['model']} |"
             if judge_enabled:
-                row += f" {r.get('judge_model', '-')} | {r.get('judge_status', '-')} |"
+                models = r.get("judge_models", []) or ([r.get("judge_model")] if r.get("judge_model") else [])
+                row += f" {', '.join(models) or '-'} | {r.get('judge_status', '-')} |"
             row += f" {r.get('ttft') or '-'} |"
             for p in active_plugins:
                 empty_reason = r.get(f'{p.id}_empty_reason', '')
@@ -94,7 +95,8 @@ class MarkdownOutputPlugin(BenchmarkOutputPlugin):
                 if judge_enabled:
                     row += (f"{r.get(f'{p.id}_judge_score', '-')} | "
                             f"{r.get(f'{p.id}_judge_confidence', '-')} | "
-                            f"{r.get(f'{p.id}_judge_error', '')} | ")
+                            f"{r.get(f'{p.id}_judge_error', '')} | "
+                            f"{len(r.get(f'{p.id}_judge_votes', []))} votes | ")
                 row += f"{empty_reason} |"
                 if output_dir:
                     runner_prefix = f"{runner}/" if runner in ("http", "opencode") else ""

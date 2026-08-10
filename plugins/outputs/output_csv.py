@@ -1,5 +1,6 @@
 import csv
 import io
+import json
 import os
 
 from benchmark.outputs import (
@@ -39,12 +40,13 @@ class CSVOutputPlugin(BenchmarkOutputPlugin):
                     f"{p.id}_Judge_Score_100",
                     f"{p.id}_Judge_Confidence",
                     f"{p.id}_Judge_Error",
+                    f"{p.id}_Judge_Votes",
                 ] if judge_enabled else []),
                 f"{p.id}_Empty_Reason",
             ])
         headers.extend(["Overall_Score_100", "Overall_Scored_Plugins", "Time_s", "Mode", "Status", "Error"])
         if judge_enabled:
-            headers.insert(3, "Judge_Model")
+            headers.insert(3, "Judge_Models")
             headers.insert(4, "Judge_Status")
         w.writerow(headers)
 
@@ -53,7 +55,7 @@ class CSVOutputPlugin(BenchmarkOutputPlugin):
             m = "stream" if r.get('stream_ok') else "non-streaming"
             row = [r['model'], r.get('runner', 'http'), r.get('source', ''), r.get('ttft') or '']
             if judge_enabled:
-                row[3:3] = [r.get("judge_model", ""), r.get("judge_status", "")]
+                row[3:3] = [", ".join(r.get("judge_models", []) or ([r.get("judge_model")] if r.get("judge_model") else [])), r.get("judge_status", "")]
             for p in active_plugins:
                 thinking, content, total = _plugin_token_counts(r, p.id)
                 row.extend([
@@ -67,6 +69,7 @@ class CSVOutputPlugin(BenchmarkOutputPlugin):
                         r.get(f"{p.id}_judge_score", ''),
                         r.get(f"{p.id}_judge_confidence", ''),
                         r.get(f"{p.id}_judge_error", ''),
+                        json.dumps(r.get(f"{p.id}_judge_votes", []), ensure_ascii=False),
                     ] if judge_enabled else []),
                     r.get(f"{p.id}_empty_reason", ''),
                 ])

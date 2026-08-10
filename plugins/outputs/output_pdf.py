@@ -51,7 +51,8 @@ class PDFOutputPlugin(BenchmarkOutputPlugin):
             col_w = [28, 12, 9]
             headers = ["Model", "Runner", "Load"]
         judge_enabled = any(
-            r.get("judge_model") is not None
+            r.get("judge_models")
+            or r.get("judge_model") is not None
             or r.get("judge_status") not in (None, "disabled")
             or any(key.endswith(("_judge_score", "_judge_error")) for key in r)
             for r in results
@@ -67,8 +68,8 @@ class PDFOutputPlugin(BenchmarkOutputPlugin):
                 f"{p.id[:3].upper()}Tot", f"{p.id[:3].upper()}Sc",
             ])
             if judge_enabled:
-                col_w.extend([8, 8])
-                headers.extend([f"{p.id[:3].upper()}Jdg", f"{p.id[:3].upper()}Conf"])
+                col_w.extend([8, 8, 7])
+                headers.extend([f"{p.id[:3].upper()}Jdg", f"{p.id[:3].upper()}Conf", f"{p.id[:3].upper()}Vts"])
         col_w.extend([9, 9, 9])
         headers.extend(["Overall", "Scored", "Mode"])
         pdf.set_font("Helvetica", "B", 6.5)
@@ -97,6 +98,7 @@ class PDFOutputPlugin(BenchmarkOutputPlugin):
                     vals.extend([
                         str(r.get(f"{p.id}_judge_score", "-")),
                         str(r.get(f"{p.id}_judge_confidence", "-")),
+                        str(len(r.get(f"{p.id}_judge_votes", []))),
                     ])
             overall = r.get("overall_score_100", tot)
             scored_plugins = r.get("overall_scored_plugins", _scored_plugin_count(r, active_plugins))

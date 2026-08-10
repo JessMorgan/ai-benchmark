@@ -55,6 +55,7 @@ PRELOAD_MAX_TOKENS = 256
 JUDGE_PROMPT_VERSION = "judge-v1"
 JUDGE_DEFAULT_MAX_TOKENS = 1024
 JUDGE_MAX_RATIONALE_CHARS = 2000
+JUDGE_CONFIDENCE_WEIGHTS = {"high": 1.0, "medium": 0.6, "low": 0.3}
 
 
 @dataclass(frozen=True)
@@ -255,6 +256,34 @@ def publish_judge_sidecars(judge_input_dir, target, runner, plugins, callback):
         sidecar = judge_sidecar_path(judge_input_dir, target, runner, plugin.id)
         if os.path.isfile(sidecar):
             callback(sidecar, target, runner, plugin.id)
+
+
+def confidence_weighted_consensus(votes):
+    """Combine valid judge votes using confidence weights.
+
+    High/medium/low confidence maps to 1.0/0.6/0.3. Invalid votes are
+    excluded; the returned confidence is the strongest confidence represented
+    by the votes that contributed to the weighted mean.
+    """
+    valid = [
+        vote for vote in votes
+        if isinstance(vote, dict)
+        and isinstance(vote.get("score"), (int, float))
+        and not isinstance(vote.get("score"), bool)
+        and vote.get("confidence") in JUDGE_CONFIDENCE_WEIGHTS
+    ]
+    if not valid:
+        return {"score": None, "confidence": None, "rationale": None, "error": "no valid judge votes"}
+    weighted = sum(vote["score"] * JUDGE_CONFIDENCE_WEIGHTS[vote["confidence"]] for vote in valid)
+    weight = sum(JUDGE_CONFIDENCE_WEIGHTS[vote["confidence"]] for vote in valid)
+    strongest = max(valid, key=lambda vote: JUDGE_CONFIDENCE_WEIGHTS[vote["confidence"]])
+    rationales = [str(vote.get("rationale", "")).strip() for vote in valid if vote.get("rationale")]
+    return {
+        "score": normalize_score(weighted / weight, 100),
+        "confidence": strongest["confidence"],
+        "rationale": " | ".join(rationales)[:JUDGE_MAX_RATIONALE_CHARS] or None,
+        "error": None,
+    }
 
 
 def judge_response(source_config, judge_source, judge_api_model, sidecar,
@@ -1244,7 +1273,7 @@ def run_model(model_name, source, state, active_plugins, source_config, timeout,
               token_levels, output_dir, session_seed=0, global_cfg=None,
               stop_event=None, save_responses=False, api_model=None,
               judge_input_dir=None, judge_enqueue=None,
-              judge_model=None, judge_prompt_version=None,
+              judge_model=None, judge_models=None, judge_prompt_version=None,
               system_prompt=None, is_agent=False, runner="http",
               opencode_config_path=None, opencode_model=None,
               opencode_agent=None, opencode_binary=None, display_name=None,
@@ -1265,9 +1294,10 @@ def run_model(model_name, source, state, active_plugins, source_config, timeout,
         "runner": runner,
         "opencode_model": opencode_model,
         "is_agent": is_agent,
-        "system_prompt": system_prompt,                "judge_model": judge_model,
-
+        "system_prompt": system_prompt,        "judge_model": judge_model,
+        "judge_models": list(judge_models or ([judge_model] if judge_model else [])),
         "judge_prompt_version": judge_prompt_version,
+
         "judge_status": "disabled" if not judge_model else "pending",
         "status": "ok",
         "stream_ok": True,
@@ -1315,6 +1345,7 @@ def run_model(model_name, source, state, active_plugins, source_config, timeout,
             r[f"{pid}_judge_rationale"] = existing.get(f"{pid}_judge_rationale")
             r[f"{pid}_judge_error"] = existing.get(f"{pid}_judge_error")
             r[f"{pid}_judge_input_sha256"] = existing.get(f"{pid}_judge_input_sha256")
+            r[f"{pid}_judge_votes"] = existing.get(f"{pid}_judge_votes", [])
         else:
             plugins_to_run.append(plugin)
 
