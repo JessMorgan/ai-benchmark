@@ -2,6 +2,7 @@
 import re
 
 from benchmark.plugin import BenchmarkTaskPlugin
+from plugins.challenges._execution import extract_python_source, run_python_check
 from plugins.challenges._rubric import Rubric
 from plugins.challenges._validators import parse_python, stub_definitions
 
@@ -13,7 +14,7 @@ class RateLimiterPlugin(BenchmarkTaskPlugin):
 
     @property
     def version(self):
-        return "0.4.0"
+        return "0.5.0"
 
     @property
     def name(self):
@@ -142,6 +143,66 @@ class RateLimiterPlugin(BenchmarkTaskPlugin):
             rubric.penalize_criterion(
                 "Thread safety", 1.5,
                 "lock object is mentioned without evidence of guarded critical sections",
+            )
+
+        source = extract_python_source(t)
+        if source:
+            harness = """
+import inspect
+import threading
+
+_bucket_type = globals().get("TokenBucket")
+assert _bucket_type is not None, "TokenBucket definition is required"
+_signature = inspect.signature(_bucket_type)
+_kwargs = {}
+for _name, _parameter in _signature.parameters.items():
+    if _parameter.default is not inspect.Parameter.empty:
+        continue
+    if "rate" in _name or "refill" in _name:
+        _kwargs[_name] = 10.0
+    elif "capacity" in _name or "burst" in _name or "limit" in _name:
+        _kwargs[_name] = 10
+    elif "window" in _name:
+        _kwargs[_name] = 60.0
+    elif "client" in _name:
+        continue
+    else:
+        _kwargs[_name] = 10
+try:
+    _bucket = _bucket_type(**_kwargs)
+except (TypeError, ValueError) as _exc:
+    print(f"PHASE4_HARNESS_SKIPPED: incompatible constructor: {_exc}")
+else:
+    assert hasattr(_bucket, "allow_request")
+    assert isinstance(_bucket.allow_request("phase4-client"), bool)
+    if hasattr(_bucket, "get_usage_stats"):
+        assert isinstance(_bucket.get_usage_stats("phase4-client"), dict)
+
+    _results = []
+    def _call():
+        _results.append(_bucket.allow_request("phase4-concurrent"))
+    _threads = [threading.Thread(target=_call) for _ in range(16)]
+    for _thread in _threads:
+        _thread.start()
+    for _thread in _threads:
+        _thread.join(timeout=1)
+        assert not _thread.is_alive()
+    assert len(_results) == 16
+"""
+            try:
+                execution = run_python_check(source, harness)
+            except (TypeError, ValueError) as exc:
+                from plugins.challenges._execution import ExecutionResult
+                execution = ExecutionResult(
+                    "skipped",
+                    error=f"harness could not construct TokenBucket: {exc}",
+                    skipped_reason="incompatible constructor",
+                )
+            rubric.record_execution(
+                execution,
+                criterion="Token Bucket",
+                penalty=1.0,
+                failure_reason="isolated deterministic/concurrency check failed",
             )
         return rubric.results()
 

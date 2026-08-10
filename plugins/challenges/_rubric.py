@@ -84,12 +84,22 @@ class Rubric:
 
     def record_validation(self, validation) -> None:
         """Attach a typed-validator result without changing score totals."""
+        if hasattr(validation, "as_evidence"):
+            self.validations.append(validation.as_evidence())
+            return
         self.validations.append({
             "valid": bool(validation.valid),
             "evidence": list(validation.evidence or []),
             "errors": [str(error) for error in (validation.errors or [])],
         })
         self.errors.extend(str(error) for error in (validation.errors or []))
+
+    def record_execution(self, execution, *, criterion=None, penalty=0.0,
+                         failure_reason="isolated execution check failed") -> None:
+        """Record an execution result and optionally deduct only on failure."""
+        self.validations.append(execution.as_evidence())
+        if criterion and execution.status in {"failed", "timeout"}:
+            self.penalize_criterion(criterion, penalty, failure_reason)
 
     def results(self) -> EvaluationResult:
         """Return the final score, rubric list, and evaluation diagnostics."""

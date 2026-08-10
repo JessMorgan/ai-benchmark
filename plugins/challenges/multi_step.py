@@ -2,6 +2,7 @@
 import re
 
 from benchmark.plugin import BenchmarkTaskPlugin, EvaluationResult
+from plugins.challenges._execution import extract_python_source, run_python_check
 from plugins.challenges._rubric import Rubric
 from plugins.challenges._validators import find_definitions, parse_python, stub_definitions
 
@@ -13,7 +14,7 @@ class MultiStepPlugin(BenchmarkTaskPlugin):
 
     @property
     def version(self):
-        return "0.5.0"
+        return "0.6.0"
 
     @property
     def name(self):
@@ -136,6 +137,39 @@ class MultiStepPlugin(BenchmarkTaskPlugin):
                 {"greet_user", "validate_name", "format_greeting"},
         ):
             rubric.penalize_criterion("No extra prose/main block", 0.5, "response contains a required-function stub")
+
+        source = extract_python_source(t)
+        if source:
+            checks = (
+                (
+                    "greet_user function",
+                    'assert greet_user("Ada") == "Hello, Ada! Welcome."',
+                ),
+                (
+                    "validate_name function",
+                    (
+                        "assert validate_name(\"Ada Lovelace\") is True\n"
+                        "assert validate_name(\"\") is False\n"
+                        "assert validate_name(\"Ada123\") is False\n"
+                        "assert validate_name(\"x\" * 51) is False"
+                    ),
+                ),
+                (
+                    "format_greeting function",
+                    (
+                        'assert format_greeting("Hi", 3) == "Hi\\nHi\\nHi"\n'
+                        'assert format_greeting("Hi", 0) == ""'
+                    ),
+                ),
+            )
+            for criterion, harness in checks:
+                execution = run_python_check(source, harness)
+                rubric.record_execution(
+                    execution,
+                    criterion=criterion,
+                    penalty=1.0,
+                    failure_reason=f"isolated {criterion} harness failed",
+                )
 
         return rubric.results()
 

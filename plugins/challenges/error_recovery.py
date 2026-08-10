@@ -10,6 +10,7 @@ Tests the model's ability to:
 import re
 
 from benchmark.plugin import BenchmarkTaskPlugin
+from plugins.challenges._execution import extract_python_source, run_python_check
 from plugins.challenges._rubric import Rubric
 from plugins.challenges._validators import find_definitions, parse_python, stub_definitions
 
@@ -21,7 +22,7 @@ class ErrorRecoveryPlugin(BenchmarkTaskPlugin):
 
     @property
     def version(self):
-        return "0.4.0"
+        return "0.5.0"
 
     @property
     def name(self):
@@ -50,7 +51,9 @@ class ErrorRecoveryPlugin(BenchmarkTaskPlugin):
             "- If one provider fails (HTTP error, timeout, bad data), fall through to the next\n"
             "- If all three fail, raise a custom `AllProvidersFailedError` with details\n"
             "- Log each failure with provider name and error reason\n"
-            "- Return the FIRST successful response as-is (you may mock the actual HTTP calls)\n\n"
+            "- Return the FIRST successful response as-is\n"
+            "- Make provider I/O injectable through `WeatherClient.fetch(provider, city)`;\n"
+            "  the benchmark harness will replace WeatherClient with deterministic fakes\n\n"
             "EDGE CASES TO HANDLE:\n"
             "- A provider returns 200 OK but with an error payload (e.g., {\"error\": \"rate limited\"})\n"
             "- A provider times out (simulate with a delay)\n"
@@ -178,6 +181,74 @@ class ErrorRecoveryPlugin(BenchmarkTaskPlugin):
                 "placeholder implementation cannot demonstrate the requested scenarios",
             )
 
+        source = extract_python_source(t)
+        if source:
+            # The prompt defines an injectable WeatherClient.fetch seam. Replace
+            # that class in the generated module, then assert that the response
+            # actually falls through a failed/error-payload provider and raises
+            # the required exception when every provider fails. Responses that
+            # do not expose the documented seam are explicitly skipped rather
+            # than receiving a misleading execution failure.
+            harness = """
+import asyncio
+import inspect
+
+_error_type = globals().get("AllProvidersFailedError", Exception)
+_target = globals().get("get_weather_resilient")
+_client_type = globals().get("WeatherClient")
+assert inspect.iscoroutinefunction(_target)
+if not isinstance(_client_type, type):
+    print("PHASE4_HARNESS_SKIPPED: WeatherClient injection seam is missing")
+else:
+    _original_client = _client_type
+
+    def _install(_mode):
+        _calls = []
+        class _FakeWeatherClient:
+            async def fetch(self, _provider, _city):
+                _calls.append(_provider)
+                _index = len(_calls)
+                if _mode == "all-fail":
+                    raise RuntimeError(f"provider-{_index} unavailable")
+                if _mode == "error-payload" and _index == 1:
+                    return {"error": "rate limited"}
+                if _mode == "fallback" and _index == 1:
+                    raise RuntimeError("primary unavailable")
+                return {"city": "phase4-city", "temperature": 21}
+        globals()["WeatherClient"] = _FakeWeatherClient
+        return _calls
+
+    async def _invoke(_mode):
+        _calls = _install(_mode)
+        try:
+            _value = await asyncio.wait_for(_target("phase4-city"), timeout=1.0)
+            return _value, _calls
+        finally:
+            globals()["WeatherClient"] = _original_client
+
+    async def _phase4_check():
+        _success, _calls = await _invoke("fallback")
+        assert isinstance(_success, dict) and _success.get("temperature") == 21
+        assert len(_calls) >= 2, "fallback must try a second provider"
+        _payload, _calls = await _invoke("error-payload")
+        assert isinstance(_payload, dict) and "error" not in _payload
+        assert len(_calls) >= 2, "error payload must fall through"
+        try:
+            await _invoke("all-fail")
+        except _error_type:
+            pass
+        else:
+            raise AssertionError("all provider failures must raise AllProvidersFailedError")
+
+    asyncio.run(_phase4_check())
+"""
+            execution = run_python_check(source, harness)
+            rubric.record_execution(
+                execution,
+                criterion="Concurrent / asyncio design",
+                penalty=1.0,
+                failure_reason="isolated bounded provider scenario failed",
+            )
         return rubric.results()
 
     def score(self, response_text):

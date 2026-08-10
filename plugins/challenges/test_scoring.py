@@ -20,10 +20,10 @@ class TestRateLimiterScoring(unittest.TestCase):
         self.assertIsInstance(rubric, list)
         self.assertTrue(all("name" in item and "max" in item and "earned" in item and "missed" in item for item in rubric))
 
-    def test_token_bucket_class_scores(self):
+    def test_token_bucket_stub_is_not_awarded_implementation_credit(self):
         text = "class TokenBucket:\n    pass"
         score = self.plugin.score(text)
-        self.assertGreater(score, 0.0)
+        self.assertEqual(score, 0.0)
 
     def test_full_response_scores_high(self):
         text = (
