@@ -35,6 +35,7 @@ python ai-benchmark.py [options]    # repository launcher
 | `--no-rerun-failed` | Keep failed models as failed on resume (default re-runs them) |
 | `--retry-on-429` / `--no-retry-on-429` | Toggle HTTP-429 retry/backoff globally. Default is **ON**; pass `--no-retry-on-429` to opt out (sources with explicit `max_429_retries` are preserved). See [Configuration Reference](configuration.md#http-429-retry--backoff) for the per-source keys and migration notes. |
 | `--runner {http,opencode,both}` | Select the existing HTTP runner (default), the OpenCode CLI runner, or both. In `both`, each target pipelines OpenCode into HTTP. |
+| `--judge-models MODEL` | Opt in to semantic judging with one configured model key; judge inputs are retained under `<output_dir>/judge-inputs/` and scores appear beside deterministic scores. |
 | `--no-install-opencode` | Do not auto-download OpenCode into `.tools/opencode/` when it is missing or too old; fail with an error instead |
 | `--no-preload` | Disable per-source model warm-up probes for this run, overriding `preload: true` |
 | `-h, --help` | Show help message |
@@ -115,6 +116,16 @@ python ai-benchmark.py --generate-shell-completion zsh > ~/.zsh/completions/_ai-
 # Fish
 python ai-benchmark.py --generate-shell-completion fish > ~/.config/fish/completions/ai-benchmark.py.fish
 ```
+
+### Semantic model judging
+
+Use a configured plain model as an optional semantic judge. The first implementation accepts exactly one model key (the option is intentionally named plural so the consensus extension can add additional values without changing the CLI):
+
+```sh
+python ai-benchmark.py --judge-models judge-model-id
+```
+
+The judge receives the original task prompt and response, returns a validated 0–100 score with confidence and rationale, and never changes the deterministic benchmark score or benchmark success status. Judge input sidecars are retained automatically so interrupted runs can resume judging. When the judge source allows more than one model thread, one slot is reserved for judging and benchmark capacity on that source is reduced by one; with a single-thread source, judging waits for that source's benchmark work to finish.
 
 ### Disable model preloading
 

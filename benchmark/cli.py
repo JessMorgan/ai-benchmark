@@ -12,6 +12,7 @@ import curses
 import glob
 import json
 import os
+import queue
 import random
 import shutil
 import subprocess
@@ -33,6 +34,7 @@ from benchmark.core import (
     dump_default_config,
     generate_config_from_api,
     get_target_plugins_blacklist,
+    judge_response,
     load_config,
     parse_plugin_temperatures,
     preload_model,
@@ -124,6 +126,26 @@ def _write_run_info(output_dir, run_info):
             json.dump(run_info, f, indent=2, default=str)
     except Exception as e:  # noqa: BLE001 - a report-write failure must not abort the run
         print(f"⚠️  Could not write run-info.json: {e}", file=sys.stderr)
+
+
+def _scan_judge_sidecars(judge_input_dir):
+    """Yield retained judge-input sidecars, ignoring incomplete files."""
+    if not judge_input_dir or not os.path.isdir(judge_input_dir):
+        return []
+    jobs = []
+    for root, _dirs, files in os.walk(judge_input_dir):
+        for filename in files:
+            if not filename.endswith(".json") or filename.endswith(".tmp"):
+                continue
+            path = os.path.join(root, filename)
+            try:
+                with open(path, encoding="utf-8") as handle:
+                    item = json.load(handle)
+                if all(key in item for key in ("target", "runner", "plugin", "prompt", "response")):
+                    jobs.append((path, item))
+            except (OSError, json.JSONDecodeError, TypeError):
+                continue
+    return jobs
 
 
 def _inject_429_stats(run_info):
@@ -1533,6 +1555,8 @@ def main():  # pragma: no cover - live benchmark orchestrator (no unit tests)
                         help='API key for model discovery (used with --dump-default-config --base-url)')
     parser.add_argument('--save-responses', action='store_true',
                         help='Save each model\'s plugin response text to <output_dir>/responses/')
+    parser.add_argument('--judge-models', nargs='+', default=None, metavar='MODEL',
+                        help='Judge benchmark responses with one configured model (repeatable in a future consensus mode)')
     parser.add_argument('--seed', type=int, default=None,
                         help='Fixed random seed for all API requests (default: random)')
     retry_group = parser.add_mutually_exclusive_group()
@@ -1610,6 +1634,19 @@ def main():  # pragma: no cover - live benchmark orchestrator (no unit tests)
         sys.exit(1)
     targets = resolve_targets(cfg)
     runner_mode = args.runner
+    judge_models = args.judge_models or []
+    if len(judge_models) > 1:
+        print("❌ The first judge implementation accepts exactly one --judge-models value.", file=sys.stderr)
+        sys.exit(1)
+    unknown_judges = [name for name in judge_models if name not in models]
+    if unknown_judges:
+        print(
+            f"❌ Unknown judge model(s): {', '.join(unknown_judges)}. "
+            f"Choose from configured models: {', '.join(models) or '(none)'}.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    judge_model = judge_models[0] if judge_models else None
     opencode_binary = None
     if runner_mode in ("opencode", "both"):
         try:
@@ -1773,6 +1810,10 @@ def main():  # pragma: no cover - live benchmark orchestrator (no unit tests)
         "opencode_projection": opencode_projection,
         "opencode_binary": opencode_binary,
         "targets": list(targets.keys()),
+        "judge_model": judge_model,
+        "judge_prompt_version": "judge-v1" if judge_model else None,
+        "judge_status": "disabled" if not judge_model else "pending",
+        "judge_counts": {"queued": 0, "completed": 0, "failed": 0},
         "preload": {
             "enabled_sources": [
                 name for name, src_cfg in source_config.items()
@@ -1874,7 +1915,7 @@ def main():  # pragma: no cover - live benchmark orchestrator (no unit tests)
                           f"   Remove {state_file} or use --restart to start fresh.",
                           file=sys.stderr)
 
-                    if completed == total and total > 0:
+                    if completed == total and total > 0 and not judge_model:
                         print(f"\n{'='*70}")
                         print(f"✅ PRIOR RUN COMPLETE — {completed}/{total} successful")
                         print(f"   Results: {output_dir}/")
@@ -2157,6 +2198,126 @@ def main():  # pragma: no cover - live benchmark orchestrator (no unit tests)
                     preload_inflight.pop(key, None)
                     inflight.set()
 
+        judge_input_dir = os.path.join(output_dir, "judge-inputs") if judge_model else None
+        judge_queue = queue.Queue() if judge_model else None
+        judge_stop = object()
+        judge_thread = None
+        judge_seen = set()
+        judge_source = targets[judge_model]["source"] if judge_model else None
+        judge_effective_timeout = (cfg.get("judge", {}).get("timeout", timeout)
+                                   if isinstance(cfg.get("judge"), dict) else timeout)
+        judge_token_levels = (cfg.get("judge", {}).get("token_levels", [1024])
+                              if isinstance(cfg.get("judge"), dict) else [1024])
+        judge_temperature = (cfg.get("judge", {}).get("temperature", 0.0)
+                             if isinstance(cfg.get("judge"), dict) else 0.0)
+        judge_drop_params = []
+        if judge_model and isinstance(raw_targets.get(judge_model), dict):
+            judge_drop_params = raw_targets[judge_model].get("drop_params", [])
+
+        def enqueue_judge(sidecar, target_name, runner, plugin_id):
+            if judge_queue is not None:
+                key = (os.path.abspath(sidecar), target_name, runner, plugin_id)
+                if key in judge_seen:
+                    return
+                judge_seen.add(key)
+                judge_queue.put((sidecar, target_name, runner, plugin_id))
+                run_info["judge_counts"]["queued"] += 1
+
+        def process_judge_job(job):
+            """Judge one sidecar and update only its benchmark result fields."""
+            sidecar, target_name, runner, plugin_id = job
+            item = {}
+            try:
+                with open(sidecar, encoding="utf-8") as handle:
+                    item = json.load(handle)
+                latest = {
+                    (result.get("state_key", result.get("model")), result.get("runner", "http")): result
+                    for result in state.latest_results()
+                }.get((item.get("state_key", target_name), runner), {})
+                if latest.get(f"{plugin_id}_judge_score") is not None:
+                    return
+                outcome = judge_response(
+                    source_config,
+                    judge_source,
+                    targets[judge_model]["api_model"],
+                    sidecar,
+                    timeout=judge_effective_timeout,
+                    token_levels=judge_token_levels,
+                    temperature=judge_temperature,
+                    drop_params=judge_drop_params,
+                    stop_event=stop_event,
+                    log_path=os.path.join(output_dir, "judge.log"),
+                )
+                state_key = item.get("state_key", target_name)
+                state.update_judge_result(
+                    state_key, runner, plugin_id,
+                    score=outcome.score,
+                    confidence=outcome.confidence,
+                    rationale=outcome.rationale,
+                    error=outcome.error,
+                    input_sha256=item.get("response_sha256"),
+                )
+                run_info["judge_counts"]["completed" if outcome.error is None else "failed"] += 1
+                with persistence_lock:
+                    state.save_state(state_file, plugin_versions=plugin_versions)
+                    _save_outputs(state, output_dir, active_plugins)
+            except Exception as exc:  # noqa: BLE001 - isolate one judge job failure
+                state_key = item.get("state_key", target_name)
+                state.update_judge_result(
+                    state_key, runner, plugin_id,
+                    error=f"judge input failed: {type(exc).__name__}: {exc}",
+                )
+                run_info["judge_counts"]["failed"] += 1
+                with persistence_lock:
+                    state.save_state(state_file, plugin_versions=plugin_versions)
+                    _save_outputs(state, output_dir, active_plugins)
+
+        def judge_worker():
+            """Consume retained response sidecars using the reserved source slot."""
+            run_info["judge_status"] = "running"
+            while True:
+                job = judge_queue.get()
+                if job is judge_stop:
+                    break
+                process_judge_job(job)
+            run_info["judge_status"] = "complete"
+
+        def start_judge_if_async(benchmark_limits):
+            """Start judging when its source has a spare reserved slot."""
+            nonlocal judge_thread
+            if not judge_model or judge_source not in benchmark_limits:
+                return
+            if model_thread_limits[judge_source] > 1:
+                benchmark_limits[judge_source] = model_thread_limits[judge_source] - 1
+                judge_thread = threading.Thread(
+                    target=judge_worker, name="judge-worker", daemon=True,
+                )
+                judge_thread.start()
+
+        def finish_judge():
+            """Drain current-run and resumed judge jobs, then join the worker."""
+            if not judge_model or judge_queue is None:
+                return
+            jobs = [
+                (sidecar, item["target"], item["runner"], item["plugin"])
+                for sidecar, item in _scan_judge_sidecars(judge_input_dir)
+            ]
+            for sidecar, item in jobs:
+                enqueue_judge(sidecar, item["target"], item["runner"], item["plugin"])
+            if judge_thread is None:
+                # A single-slot judge source is deliberately deferred until
+                # benchmark scheduling has joined, then processed serially.
+                run_info["judge_status"] = "running"
+                while True:
+                    try:
+                        process_judge_job(judge_queue.get_nowait())
+                    except queue.Empty:
+                        break
+                run_info["judge_status"] = "complete"
+            else:
+                judge_queue.put(judge_stop)
+                judge_thread.join()
+
         def run_target(model_name, phase_runner):
             """Run one target through one runner and persist its progress."""
             nonlocal worker_errors
@@ -2183,6 +2344,10 @@ def main():  # pragma: no cover - live benchmark orchestrator (no unit tests)
                       source_config, timeout, effective_token_levels, phase_output_dir,
                       session_seed=session_seed, global_cfg=cfg, stop_event=stop_event,
                       save_responses=args.save_responses,
+                      judge_input_dir=judge_input_dir,
+                      judge_enqueue=enqueue_judge if judge_model else None,
+                      judge_model=judge_model,
+                      judge_prompt_version="judge-v1" if judge_model else None,
                       api_model=target_info["api_model"],
                       system_prompt=target_info["system_prompt"],
                       is_agent=target_info["is_agent"], runner=phase_runner,
@@ -2222,11 +2387,13 @@ def main():  # pragma: no cover - live benchmark orchestrator (no unit tests)
             targets_by_source, opencode_pending, http_pending = _build_runner_queues(
                 targets, snapshot, runner_mode, source_config,
             )
+            benchmark_limits = dict(model_thread_limits)
+            start_judge_if_async(benchmark_limits)
 
             pipeline_threads = _start_runner_pipeline(
                 targets_by_source, opencode_pending, http_pending,
                 run_target, stop_event, on_worker_error,
-                model_thread_limits=model_thread_limits,
+                model_thread_limits=benchmark_limits,
                 peak_callback=record_peak,
             )
             if pipeline_threads:
@@ -2249,6 +2416,8 @@ def main():  # pragma: no cover - live benchmark orchestrator (no unit tests)
             source_queues = _build_runner_queues(
                 targets, snapshot, runner_mode, source_config,
             )
+            benchmark_limits = dict(model_thread_limits)
+            start_judge_if_async(benchmark_limits)
 
             source_threads = {}
             for source, model_names in source_queues.items():
@@ -2262,7 +2431,7 @@ def main():  # pragma: no cover - live benchmark orchestrator (no unit tests)
                         except Exception as exc:  # noqa: BLE001 - a worker crash is recorded per model
                             on_worker_error(model_name, phase_runner, exc)
                     scheduler = SourceModelScheduler(
-                        source, model_thread_limits.get(source, 1), model_names, run_one,
+                        source, benchmark_limits.get(source, 1), model_names, run_one,
                         stop_event, on_worker_error, peak_callback=record_peak,
                     )
                     scheduler.run_until_drained()
@@ -2282,6 +2451,8 @@ def main():  # pragma: no cover - live benchmark orchestrator (no unit tests)
                     close_active_requests()
                     _join_workers(timeout=1.0)
 
+        if not interrupted:
+            finish_judge()
         stop_event.set()
         # The TUI thread is a daemon, so we don't need to wait for it. A short
         # timeout keeps the terminal tidy if it happens to finish quickly.

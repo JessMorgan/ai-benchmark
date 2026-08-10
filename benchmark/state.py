@@ -381,6 +381,11 @@ class BenchmarkState:
             }
             for pid in plugin_ids:
                 self._model_info[name][f"{pid}_score"] = None
+                self._model_info[name][f"{pid}_judge_score"] = None
+                self._model_info[name][f"{pid}_judge_confidence"] = None
+                self._model_info[name][f"{pid}_judge_rationale"] = None
+                self._model_info[name][f"{pid}_judge_error"] = None
+                self._model_info[name][f"{pid}_judge_input_sha256"] = None
                 self._model_info[name][f"{pid}_tps"] = None
                 self._model_info[name][f"{pid}_response_time"] = None
                 self._model_info[name][f"{pid}_output_tokens"] = None
@@ -646,6 +651,31 @@ class BenchmarkState:
         with self._lock:
             self.results.append(result)
 
+    def update_judge_result(self, state_key, runner, plugin_id, *, score=None,
+                            confidence=None, rationale=None, error=None,
+                            input_sha256=None):
+        """Persist one judge outcome in live model info and latest result.
+
+        Judge updates are independent of benchmark completion and therefore
+        must not append a second benchmark result row or change its status.
+        """
+        fields = {
+            f"{plugin_id}_judge_score": score,
+            f"{plugin_id}_judge_confidence": confidence,
+            f"{plugin_id}_judge_rationale": rationale,
+            f"{plugin_id}_judge_error": error,
+        }
+        if input_sha256 is not None:
+            fields[f"{plugin_id}_judge_input_sha256"] = input_sha256
+        with self._lock:
+            if state_key in self._model_info:
+                self._model_info[state_key].update(fields)
+            for result in reversed(self.results):
+                result_key = result.get("state_key", result.get("model"))
+                if result_key == state_key and result.get("runner", "http") == runner:
+                    result.update(fields)
+                    break
+
     def snapshot(self):
         with self._lock:
             return {k: dict(v) for k, v in self._model_info.items()}
@@ -777,6 +807,11 @@ class BenchmarkState:
                 if new_plugins:
                     for pid in new_plugins:
                         state._model_info[name].setdefault(f"{pid}_score", None)
+                        state._model_info[name].setdefault(f"{pid}_judge_score", None)
+                        state._model_info[name].setdefault(f"{pid}_judge_confidence", None)
+                        state._model_info[name].setdefault(f"{pid}_judge_rationale", None)
+                        state._model_info[name].setdefault(f"{pid}_judge_error", None)
+                        state._model_info[name].setdefault(f"{pid}_judge_input_sha256", None)
                         state._model_info[name].setdefault(f"{pid}_tps", None)
                         state._model_info[name].setdefault(f"{pid}_response_time", None)
                         state._model_info[name].setdefault(f"{pid}_output_tokens", None)

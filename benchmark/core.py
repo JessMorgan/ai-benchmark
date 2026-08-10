@@ -1,4 +1,5 @@
 """Core benchmark logic shared by the CLI and tests."""
+import hashlib
 import json
 import os
 import re
@@ -8,7 +9,7 @@ import traceback
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Literal
 
 import yaml
 
@@ -51,6 +52,9 @@ PRELOAD_DEFAULT_TIMEOUT = 300
 # skipped the model for the whole benchmark. 256 tokens is comfortably past
 # typical reasoning preambles while keeping the probe cheap.
 PRELOAD_MAX_TOKENS = 256
+JUDGE_PROMPT_VERSION = "judge-v1"
+JUDGE_DEFAULT_MAX_TOKENS = 1024
+JUDGE_MAX_RATIONALE_CHARS = 2000
 
 
 @dataclass(frozen=True)
@@ -145,6 +149,143 @@ def preload_model(source_config, source, api_model, timeout,
         error=error,
         text=response.text,
     )
+
+
+@dataclass(frozen=True)
+class JudgeResult:
+    """Validated outcome from one semantic judge request."""
+
+    score: int | None = None
+    confidence: Literal["high", "medium", "low"] | None = None
+    rationale: str | None = None
+    error: str | None = None
+
+
+def build_judge_prompt(plugin, original_prompt, response_text):
+    """Build a blinded, JSON-only semantic judging prompt."""
+    return f"""You are a careful evaluator for the benchmark task below.
+
+TASK ({plugin.name}, native maximum {plugin.max_score} points):
+<task>
+{original_prompt}
+</task>
+
+MODEL RESPONSE:
+<response>
+{response_text}
+</response>
+
+Judge the response itself, not any deterministic or regex score. Check whether
+it fulfills the task, handles important edge cases, is technically correct,
+and provides a complete, usable deliverable. Valid equivalent approaches and
+synonymous wording deserve credit; headings and keywords without supporting
+content do not. Penalize missing requirements, contradictions, placeholders,
+fabricated claims, invalid syntax, and truncation. Return a semantic score on a
+0–100 scale and no prose outside this JSON object:
+{{"score": 0, "confidence": "high|medium|low", "rationale": "brief evidence-based explanation"}}
+"""
+
+
+def parse_judge_response(text):
+    """Parse and validate a judge JSON response, accepting one fenced object."""
+    candidate = text.strip()
+    if candidate.startswith("```"):
+        lines = candidate.splitlines()
+        if len(lines) < 3 or not lines[-1].strip().startswith("```"):
+            return JudgeResult(error="malformed fenced JSON")
+        candidate = "\n".join(lines[1:-1]).strip()
+    try:
+        value = json.loads(candidate)
+    except json.JSONDecodeError as exc:
+        return JudgeResult(error=f"invalid judge JSON: {exc.msg}")
+    if not isinstance(value, dict):
+        return JudgeResult(error="judge response must be a JSON object")
+    score = value.get("score")
+    if isinstance(score, bool) or not isinstance(score, (int, float)) or not 0 <= score <= 100:
+        return JudgeResult(error="judge score must be numeric and between 0 and 100")
+    confidence = value.get("confidence")
+    if confidence not in {"high", "medium", "low"}:
+        return JudgeResult(error="judge confidence must be high, medium, or low")
+    rationale = value.get("rationale")
+    if not isinstance(rationale, str) or not rationale.strip():
+        return JudgeResult(error="judge rationale must be a non-empty string")
+    return JudgeResult(
+        score=round(score),
+        confidence=confidence,
+        rationale=rationale.strip()[:JUDGE_MAX_RATIONALE_CHARS],
+    )
+
+
+def prepare_judge_sidecar(path, plugin, prompt, response_text, *, target, runner, state_key=None):
+    """Atomically retain the exact prompt/response input for resumable judging."""
+    payload = {
+        "target": target,
+        "state_key": state_key or target,
+        "runner": runner,
+        "plugin": plugin.id,
+        "plugin_version": plugin.version,
+        "plugin_name": plugin.name,
+        "prompt": prompt,
+        "response": response_text,
+        "response_sha256": hashlib.sha256(response_text.encode("utf-8")).hexdigest(),
+        "max_score": plugin.max_score,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = f"{path}.tmp"
+    with open(tmp, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle, indent=2, ensure_ascii=False)
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(tmp, path)
+
+
+def judge_sidecar_path(judge_input_dir, target, runner, plugin_id):
+    """Return the stable path for one retained judge input."""
+    return os.path.join(
+        judge_input_dir, runner, sanitize_filename(target), f"{plugin_id}.json"
+    )
+
+
+def publish_judge_sidecars(judge_input_dir, target, runner, plugins, callback):
+    """Publish durable judge inputs after their benchmark result is visible."""
+    if not judge_input_dir or callback is None:
+        return
+    for plugin in plugins:
+        sidecar = judge_sidecar_path(judge_input_dir, target, runner, plugin.id)
+        if os.path.isfile(sidecar):
+            callback(sidecar, target, runner, plugin.id)
+
+
+def judge_response(source_config, judge_source, judge_api_model, sidecar,
+                   *, timeout, token_levels=None, temperature=0.0,
+                   drop_params=None, stop_event=None, log_path=None):
+    """Run one HTTP judge request, retrying once when its JSON is invalid."""
+    with open(sidecar, encoding="utf-8") as handle:
+        item = json.load(handle)
+    plugin_stub = type("JudgePlugin", (), {
+        "name": item["plugin_name"], "max_score": item["max_score"],
+    })()
+    prompt = build_judge_prompt(plugin_stub, item["prompt"], item["response"])
+    budgets = list(token_levels or [JUDGE_DEFAULT_MAX_TOKENS])
+    budgets = [int(budget) for budget in budgets if budget > 0] or [JUDGE_DEFAULT_MAX_TOKENS]
+    for attempt in range(2):
+        request_prompt = prompt if attempt == 0 else (
+            prompt + "\n\nYour previous response was invalid. Return only the required JSON schema."
+        )
+        response = nonstream_request(
+            source_config, timeout, judge_api_model, judge_source, request_prompt,
+            budgets[0], log_path=log_path,
+            log_label=f"Judge {item['target']} / {item['plugin']} (attempt {attempt + 1})",
+            temperature=temperature, drop_params=drop_params or [],
+            stop_event=stop_event,
+        )
+        if response.error:
+            return JudgeResult(error=response.error)
+        parsed = parse_judge_response(response.text)
+        if parsed.error is None:
+            return parsed
+    return parsed
 
 
 def _overall_score(result, active_plugins):
@@ -571,6 +712,7 @@ def generate_config_from_api(base_url, api_key=None):
 def _run_plugin_task(target_name, api_model, source, plugin, source_config, timeout,
                      token_levels, session_seed, log_file, global_cfg, state,
                      stop_event=None, save_responses=False, output_dir=None,
+                     judge_input_dir=None, judge_enqueue=None,
                      system_prompt=None, is_agent=False, runner="http",
                      opencode_config_path=None, opencode_model=None,
                      opencode_agent=None, opencode_binary=None,
@@ -953,6 +1095,23 @@ def _run_plugin_task(target_name, api_model, source, plugin, source_config, time
     # ``reasoning`` events (only emitted when the CLI is invoked with
     # ``--thinking``), mirroring the ``reasoning_content`` the HTTP path
     # accumulates.
+    if judge_input_dir:
+        sidecar = judge_sidecar_path(
+            judge_input_dir, artifact_target_name or config_target_name, runner, plugin.id
+        )
+        try:
+            prepare_judge_sidecar(
+                sidecar, plugin, prompt, text,
+                target=artifact_target_name or config_target_name,
+                state_key=target_name,
+                runner=runner,
+            )
+        except OSError:
+            # A judge retention failure is surfaced when the judge queue scans
+            # for the sidecar; it must never turn a successful benchmark leg
+            # into a benchmark failure.
+            pass
+
     if save_responses and output_dir:
         responses_dir = os.path.join(output_dir, "responses", sanitize_filename(artifact_target_name or config_target_name))
         os.makedirs(responses_dir, exist_ok=True)
@@ -1084,6 +1243,8 @@ def _run_plugin_task(target_name, api_model, source, plugin, source_config, time
 def run_model(model_name, source, state, active_plugins, source_config, timeout,
               token_levels, output_dir, session_seed=0, global_cfg=None,
               stop_event=None, save_responses=False, api_model=None,
+              judge_input_dir=None, judge_enqueue=None,
+              judge_model=None, judge_prompt_version=None,
               system_prompt=None, is_agent=False, runner="http",
               opencode_config_path=None, opencode_model=None,
               opencode_agent=None, opencode_binary=None, display_name=None,
@@ -1104,7 +1265,10 @@ def run_model(model_name, source, state, active_plugins, source_config, timeout,
         "runner": runner,
         "opencode_model": opencode_model,
         "is_agent": is_agent,
-        "system_prompt": system_prompt,
+        "system_prompt": system_prompt,                "judge_model": judge_model,
+
+        "judge_prompt_version": judge_prompt_version,
+        "judge_status": "disabled" if not judge_model else "pending",
         "status": "ok",
         "stream_ok": True,
         "ttft": None,
@@ -1146,6 +1310,11 @@ def run_model(model_name, source, state, active_plugins, source_config, timeout,
             r[f"{pid}_tps"] = existing[f"{pid}_tps"]
             r[f"{pid}_stream_ok"] = existing.get(f"{pid}_stream_ok", True)
             r[f"{pid}_empty_reason"] = existing.get(f"{pid}_empty_reason")
+            r[f"{pid}_judge_score"] = existing.get(f"{pid}_judge_score")
+            r[f"{pid}_judge_confidence"] = existing.get(f"{pid}_judge_confidence")
+            r[f"{pid}_judge_rationale"] = existing.get(f"{pid}_judge_rationale")
+            r[f"{pid}_judge_error"] = existing.get(f"{pid}_judge_error")
+            r[f"{pid}_judge_input_sha256"] = existing.get(f"{pid}_judge_input_sha256")
         else:
             plugins_to_run.append(plugin)
 
@@ -1161,6 +1330,9 @@ def run_model(model_name, source, state, active_plugins, source_config, timeout,
         r["total_time"] = round(time.time() - start, 1)
         state.add_result(r)
         state.update(target_name, status="completed", elapsed=r["total_time"])
+        publish_judge_sidecars(
+            judge_input_dir, display_name, runner, active_plugins, judge_enqueue,
+        )
         return
 
     plugin_thread_limit = source_config.get(source, {}).get("plugin_thread_limit", 1)
@@ -1179,6 +1351,8 @@ def run_model(model_name, source, state, active_plugins, source_config, timeout,
                  max_workers=plugin_thread_limit,
                  stop_event=stop_event,
                  save_responses=save_responses,
+                 judge_input_dir=judge_input_dir,
+                 judge_enqueue=judge_enqueue,
                  system_prompt=system_prompt,
                  is_agent=is_agent,
                  runner=runner,
@@ -1193,8 +1367,9 @@ def run_model(model_name, source, state, active_plugins, source_config, timeout,
 def _run_plugins(target_name, api_model, source, state, active_plugins, plugins_to_run,
                  source_config, timeout, token_levels, output_dir,
                  session_seed, global_cfg, r, start, max_workers,
-                 stop_event=None, save_responses=False, system_prompt=None,
-                 is_agent=False, runner="http", opencode_config_path=None,
+                 stop_event=None, save_responses=False, judge_input_dir=None,
+                 judge_enqueue=None,
+                 system_prompt=None, is_agent=False, runner="http", opencode_config_path=None,
                  opencode_model=None, opencode_agent=None, opencode_binary=None,
                  display_name=None, config_target_name=None):
     """Run plugins for one model using a thread pool of bounded size.
@@ -1226,6 +1401,8 @@ def _run_plugins(target_name, api_model, source, state, active_plugins, plugins_
                                            stop_event=stop_event,
                                            save_responses=save_responses,
                                            output_dir=output_dir,
+                                           judge_input_dir=judge_input_dir,
+                                           judge_enqueue=judge_enqueue,
                                            system_prompt=system_prompt,
                                            is_agent=is_agent,
                                            runner=runner,
@@ -1335,3 +1512,6 @@ def _run_plugins(target_name, api_model, source, state, active_plugins, plugins_
     r["total_time"] = round(time.time() - start, 1)
     state.add_result(r)
     state.update(target_name, status="completed", elapsed=r["total_time"])
+    publish_judge_sidecars(
+        judge_input_dir, display_name, runner, active_plugins, judge_enqueue,
+    )

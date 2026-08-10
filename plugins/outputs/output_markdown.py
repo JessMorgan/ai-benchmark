@@ -26,6 +26,12 @@ class MarkdownOutputPlugin(BenchmarkOutputPlugin):
 
     def generate(self, results, active_plugins, output_dir=None, session_seed=None):
         ok = [r for r in results if r["status"] == "ok"]
+        judge_enabled = any(
+            r.get("judge_model") is not None
+            or r.get("judge_status") not in (None, "disabled")
+            or any(key.endswith(("_judge_score", "_judge_error")) for key in r)
+            for r in results
+        )
         plugin_names = " | ".join(f"**{p.name}**" for p in active_plugins)
         seed_line = f"**Seed:** {session_seed}" if session_seed is not None else ""
         lines = [
@@ -43,28 +49,39 @@ class MarkdownOutputPlugin(BenchmarkOutputPlugin):
         ])
 
         has_runner = any(r.get("runner") for r in results)
-        header = "| # | Model | Runner | Load (s) |" if has_runner else "| # | Model | Load (s) |"
+        header = "| # | Model | Runner |"
+        if judge_enabled:
+            header += " Judge Model | Judge Status |"
+        header += " Load (s) |" if has_runner else "| # | Model |"
+        if not has_runner:
+            if judge_enabled:
+                header = "| # | Model | Judge Model | Judge Status | Load (s) |"
+            else:
+                header = "| # | Model | Load (s) |"
         for p in active_plugins:
-            header += f" {p.name} Resp (s) | {p.name} TPS | {p.name} Think Tok | {p.name} Cont Tok | {p.name} Total Tok | {p.name} Score (0–100) | {p.name} Reason |"
+            header += f" {p.name} Resp (s) | {p.name} TPS | {p.name} Think Tok | {p.name} Cont Tok | {p.name} Total Tok | {p.name} Score (0–100) |"
+            if judge_enabled:
+                header += f" {p.name} Judge (0–100) | {p.name} Judge Confidence | {p.name} Judge Error |"
+            header += f" {p.name} Reason |"
             if output_dir:
                 header += f" {p.name} Response |"
         header += " Overall Score (0–100) | Scored Plugins | Time | Mode |"
         lines.append(header)
 
-        sep = "|---|---|---|---|" if has_runner else "|---|---|---|"
-        for _p in active_plugins:
-            sep += "---|---|---|---|---|---|---|"
-            if output_dir:
-                sep += "---|"
-        sep += "---|---|---|---|"
-        lines.append(sep)
+        separator_columns = header.count("|") - 1
+        lines.append("|" + "---|" * separator_columns)
 
         for idx, r in enumerate(results, 1):
             tot = _plugin_total_score(r, active_plugins)
             m = "stream" if r.get('stream_ok') else "nostream"
             runner = r.get("runner", "")
-            row = (f"| {idx} | {r['model']} | {runner} | {r.get('ttft') or '-'} |"
-                   if has_runner else f"| {idx} | {r['model']} | {r.get('ttft') or '-'} |")
+            if has_runner:
+                row = f"| {idx} | {r['model']} | {runner} |"
+            else:
+                row = f"| {idx} | {r['model']} |"
+            if judge_enabled:
+                row += f" {r.get('judge_model', '-')} | {r.get('judge_status', '-')} |"
+            row += f" {r.get('ttft') or '-'} |"
             for p in active_plugins:
                 empty_reason = r.get(f'{p.id}_empty_reason', '')
                 thinking, content, total = _plugin_token_counts(r, p.id)
@@ -73,8 +90,12 @@ class MarkdownOutputPlugin(BenchmarkOutputPlugin):
                         f"{thinking} | "
                         f"{content} | "
                         f"{total} | "
-                        f"{r.get(f'{p.id}_score','-')} | "
-                        f"{empty_reason} |")
+                        f"{r.get(f'{p.id}_score','-')} | ")
+                if judge_enabled:
+                    row += (f"{r.get(f'{p.id}_judge_score', '-')} | "
+                            f"{r.get(f'{p.id}_judge_confidence', '-')} | "
+                            f"{r.get(f'{p.id}_judge_error', '')} | ")
+                row += f"{empty_reason} |"
                 if output_dir:
                     runner_prefix = f"{runner}/" if runner in ("http", "opencode") else ""
                     rel_path = f"{runner_prefix}responses/{sanitize_filename(r['model'])}/{p.id}.txt"

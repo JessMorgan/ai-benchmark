@@ -74,6 +74,24 @@ def _numeric_score(result, plugin_id, default=0):
     return default
 
 
+def _numeric_judge_score(result, plugin_id, default=0):
+    """Return a numeric semantic judge score for sorting."""
+    score = result.get(f"{plugin_id}_judge_score", default)
+    if isinstance(score, (int, float)) and not isinstance(score, bool):
+        return score
+    return default
+
+
+def _judge_enabled(results):
+    """Return whether any result carries judge metadata."""
+    return any(
+        result.get("judge_model") is not None
+        or result.get("judge_status") not in (None, "disabled")
+        or any(key.endswith(("_judge_score", "_judge_error")) for key in result)
+        for result in results
+    )
+
+
 def _get_output_plugin(plugin_id):
     """Get an output plugin by ID."""
     from plugins import discover_output_plugins

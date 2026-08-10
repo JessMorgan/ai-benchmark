@@ -27,6 +27,11 @@ class HTMLOutputPlugin(BenchmarkOutputPlugin):
 
     def generate(self, results, active_plugins, output_dir=None, session_seed=None):
         ok = [r for r in results if r["status"] == "ok"]
+        judge_enabled = any(
+            r.get("judge_model")
+            or any(key.endswith(("_judge_score", "_judge_error")) for key in r)
+            for r in results
+        )
         rows = ""
         for r in results:
             cls = "ok" if r["status"] == "ok" else "fail"
@@ -47,13 +52,20 @@ class HTMLOutputPlugin(BenchmarkOutputPlugin):
                 empty_reason = r.get(f"{p.id}_empty_reason", "")
                 empty_cell = f'<td class="empty-reason" title="{html_lib.escape(str(empty_reason))}">{html_lib.escape(str(empty_reason))}</td>' if empty_reason else "<td></td>"
                 thinking, content, total = _plugin_token_counts(r, p.id)
+                judge_score = r.get(f"{p.id}_judge_score", "-")
+                judge_confidence = r.get(f"{p.id}_judge_confidence", "-")
+                judge_error = r.get(f"{p.id}_judge_error", "")
                 cells += (f'<td>{r.get(f"{p.id}_response_time","-")}</td>'
                           f'<td>{r.get(f"{p.id}_tps","-")}</td>'
                           f'<td>{thinking}</td>'
                           f'<td>{content}</td>'
                           f'<td><strong>{total}</strong></td>'
-                          f'<td><strong>{score_cell}</strong></td>'
-                          f'{empty_cell}')
+                          f'<td><strong>{score_cell}</strong></td>')
+                if judge_enabled:
+                    cells += (f'<td class="judge-score">{html_lib.escape(str(judge_score))}</td>'
+                              f'<td class="judge-confidence">{html_lib.escape(str(judge_confidence))}</td>'
+                              f'<td class="judge-error">{html_lib.escape(str(judge_error))}</td>')
+                cells += empty_cell
             overall = r.get("overall_score_100", tot)
             scored_plugins = r.get("overall_scored_plugins", _scored_plugin_count(r, active_plugins))
             cells += (f'<td><strong>{overall if overall is not None else "-"}</strong></td>'
@@ -105,7 +117,11 @@ class HTMLOutputPlugin(BenchmarkOutputPlugin):
         for p in active_plugins:
             header_cells += (f"<th>{p.name} Resp(s)</th><th>{p.name} TPS</th>"
                              f"<th>{p.name} Think Tok</th><th>{p.name} Cont Tok</th><th>{p.name} Total Tok</th>"
-                             f"<th>{p.name} Score (0–100)</th><th>{p.name} Reason</th>")
+                             f"<th>{p.name} Score (0–100)</th>")
+            if judge_enabled:
+                header_cells += (f"<th>{p.name} Judge (0–100)</th>"
+                                 f"<th>{p.name} Judge Confidence</th><th>{p.name} Judge Error</th>")
+            header_cells += f"<th>{p.name} Reason</th>"
         header_cells += "<th>Overall Score (0–100)</th><th>Scored Plugins</th><th>Time</th><th>Mode</th><th>Status</th>"
 
         seed_html = f"<br><strong>Seed:</strong> {session_seed}" if session_seed is not None else ""
@@ -141,9 +157,8 @@ tr.fail {{ color:#8b949e; }}
 <table><tr><th>#</th><th>Model</th><th>TTFT</th></tr>
 {lb_ttft()}
 </table></div>
-{leaderboard_html}
-
-<h2>📊 Complete Results</h2>
+{leaderboard_html}        <h2>📊 Complete Results</h2>
+<p class="subtitle">Judge: {html_lib.escape(str(next((r.get('judge_model') for r in results if r.get('judge_model')), '—')))} | Status: {html_lib.escape(str(next((r.get('judge_status') for r in results if r.get('judge_status')), '—')))}</p>
 <table>
 <tr>{header_cells}</tr>
 {rows}

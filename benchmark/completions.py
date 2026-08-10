@@ -27,6 +27,7 @@ def generate_shell_completion(shell, plugins):
         "--save-responses",
         "--no-preload",
         "--runner",
+        "--judge-models",
     ]
     flag_list = " ".join(flags)
 
@@ -87,8 +88,9 @@ _arguments \\
     '--base-url[Base URL for model discovery via /v1/models API]:url:' \\
     '--api-key[API key for model discovery]:key:' \\
     '--save-responses[Save each model\'s plugin response text to <output_dir>/responses/]' \\
-    '--no-preload[Disable per-source model pre-loading for this run]' \\
-    '--runner[Execution runner]:runner:(http opencode both)' \\
+    '--no-preload[Disable per-source model pre-loading for this run]' \\        '--runner[Execution runner]:runner:(http opencode both)' \\
+    '--judge-models[Configured semantic judge model]:model:' \\
+
     '*:file:_files'
 
 case \"$state\" in
@@ -117,6 +119,7 @@ esac
             "-l save-responses -d 'Save each model\\'s plugin response text to <output_dir>/responses/'",
             "-l no-preload -d 'Disable per-source model pre-loading for this run'",
             "-l runner -x -a 'http opencode both' -d 'Execution runner'",
+            "-l judge-models -r -d 'Configured semantic judge model'",
         ]
         lines = [
             f"complete -c {cmd} {spec}"
