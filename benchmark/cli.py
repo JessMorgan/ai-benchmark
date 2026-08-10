@@ -43,6 +43,7 @@ from benchmark.core import (
     resolve_preload_timeout,
     resolve_targets,
     run_model,
+    save_judge_response,
 )
 from benchmark.http import (
     close_active_requests,
@@ -734,7 +735,14 @@ def _plugin_cell_block(pid, s, p, sleeping_lookup=None):
     # content) count; the per-kind split is exposed in the CSV/MD/HTML/PDF
     # reports. Falls back to the legacy content-only count for state files
     # that predate the thinking/content split.
-    sc = _fmt_value(s.get(f"{pid}_score"), ".0f")
+    score = s.get(f"{pid}_score")
+    if s.get(f"{pid}_judge_complete") and isinstance(score, (int, float)):
+        # Keep the fixed score-cell width while marking that every configured
+        # judge has finished this response. The marker is adjacent to the
+        # deterministic score (for example, ``95J``).
+        sc = f"{score:.0f}J"
+    else:
+        sc = _fmt_value(score, ".0f")
     total_tokens = s.get(f"{pid}_total_tokens")
     tok = _fmt_value(
         total_tokens if total_tokens is not None else s.get(f"{pid}_output_tokens"),
@@ -1041,7 +1049,8 @@ def _render_recent_errors(stdscr, max_x, max_y, state, log_top, footer_line):
 
 
 def _render_footer(stdscr, max_x, max_y, live_models, queuing, footer_line,
-                   preloading_models=None, preloading_details=None):
+                   preloading_models=None, preloading_details=None,
+                   judge_progress=None):
     """Render the bottom status line, including active preload probes.
 
     ``preloading_details`` is an optional sequence of ``(name, seconds)``
@@ -1052,7 +1061,15 @@ def _render_footer(stdscr, max_x, max_y, live_models, queuing, footer_line,
     """
     preloading_models = preloading_models or []
     preloading_details = preloading_details or []
-    if not live_models and not queuing and not preloading_models:
+    judge_progress = judge_progress or {}
+    judge_parts = []
+    for model, values in judge_progress.items():
+            completed = values.get("completed", 0)
+            expected = values.get("expected", 0)
+            judge_parts.append(f"[{model}: {completed}/{expected}]")
+
+    judge_line = f"Judging {' '.join(judge_parts)}" if judge_parts else ""
+    if not live_models and not queuing and not preloading_models and not judge_line:
         msg = " All models complete — generating outputs..."
     else:
         parts = []
@@ -1067,7 +1084,11 @@ def _render_footer(stdscr, max_x, max_y, live_models, queuing, footer_line,
             parts.append(f"{len(preloading_models)} preloading")
         if queuing:
             parts.append(f"{len(queuing)} queued")
+        if judge_line:
+            parts.append(judge_line)
         msg = " " + "  |  ".join(parts)
+    if judge_line and (not live_models and not queuing and not preloading_models):
+        msg = " " + judge_line
     _wr(stdscr, max_x, max_y, footer_line, 0, msg)
 
 
@@ -1208,6 +1229,7 @@ def tui_main(state, stop_event, num_sources, active_plugins, session_seed=None,
                     stdscr, max_x, max_y, running, queuing, FOOTER_LINE,
                     preloading_models=preloading,
                     preloading_details=preload_details,
+                    judge_progress=state.judge_progress_snapshot(),
                 )
 
                 stdscr.refresh()
@@ -2207,6 +2229,20 @@ def main():  # pragma: no cover - live benchmark orchestrator (no unit tests)
         judge_seen_lock = threading.Lock()
         judge_votes = {}
         judge_votes_lock = threading.Lock()
+        existing_judge_counts = {model: 0 for model in judge_models}
+        for result in state.latest_results():
+            for plugin in active_plugins:
+                votes = result.get(f"{plugin.id}_judge_votes", [])
+                judged_models = {
+                    vote.get("model") for vote in votes if isinstance(vote, dict)
+                }
+                for model in existing_judge_counts:
+                    if model in judged_models:
+                        existing_judge_counts[model] += 1
+        state.set_judge_progress({
+            model: {"completed": existing_judge_counts[model], "expected": 0}
+            for model in judge_models
+        })
         judge_effective_timeout = (cfg.get("judge", {}).get("timeout", timeout)
                                    if isinstance(cfg.get("judge"), dict) else timeout)
         judge_token_levels = (cfg.get("judge", {}).get("token_levels", [1024])
@@ -2223,6 +2259,10 @@ def main():  # pragma: no cover - live benchmark orchestrator (no unit tests)
                         continue
                     judge_seen.add(key)
                 judge_queues[source].put((sidecar, target_name, runner, plugin_id, judge_name))
+                state.update_judge_progress(
+                    judge_name,
+                    expected=state.judge_progress_snapshot().get(judge_name, {}).get("expected", 0) + 1,
+                )
                 run_info["judge_counts"]["queued"] += 1
 
         def process_judge_job(job):
@@ -2240,6 +2280,10 @@ def main():  # pragma: no cover - live benchmark orchestrator (no unit tests)
                 vote_key = f"{plugin_id}_judge_votes"
                 existing_votes = latest.get(vote_key, [])
                 if any(vote.get("model") == judge_name for vote in existing_votes if isinstance(vote, dict)):
+                    state.update_judge_progress(
+                        judge_name,
+                        completed=state.judge_progress_snapshot().get(judge_name, {}).get("completed", 0) + 1,
+                    )
                     return
                 outcome = judge_response(
                     source_config,
@@ -2261,6 +2305,16 @@ def main():  # pragma: no cover - live benchmark orchestrator (no unit tests)
                     "rationale": outcome.rationale,
                     "error": outcome.error,
                 }
+                if outcome.response_text is not None:
+                    try:
+                        save_judge_response(
+                            output_dir, target_name, runner, plugin_id,
+                            judge_name, outcome.response_text,
+                        )
+                    except OSError:
+                        vote["error"] = (
+                            vote["error"] or "could not save judge response artifact"
+                        )
                 vote_identity = (state_key, runner, plugin_id)
                 with judge_votes_lock:
                     prior_votes = list(judge_votes.get(vote_identity, existing_votes))
@@ -2269,6 +2323,17 @@ def main():  # pragma: no cover - live benchmark orchestrator (no unit tests)
                     judge_votes[vote_identity] = prior_votes
                     votes = list(prior_votes)
                 consensus = confidence_weighted_consensus(votes)
+                expected_judges = set(judge_models)
+                received_judges = {
+                    vote.get("model") for vote in votes if isinstance(vote, dict)
+                }
+                all_judges_finished = expected_judges.issubset(received_judges)
+                judge_status = (
+                    "failed" if all_judges_finished and consensus["error"]
+                    and not any(vote.get("score") is not None for vote in votes)
+                    else "partial" if all_judges_finished and any(vote.get("error") for vote in votes)
+                    else "complete" if all_judges_finished else "running"
+                )
                 state.update_judge_result(
                     state_key, runner, plugin_id,
                     score=consensus["score"],
@@ -2277,24 +2342,56 @@ def main():  # pragma: no cover - live benchmark orchestrator (no unit tests)
                     error=consensus["error"],
                     input_sha256=item.get("response_sha256"),
                     votes=votes,
-                    status=("failed" if consensus["error"] and not any(v.get("score") is not None for v in votes)
-                            else "partial" if any(v.get("error") for v in votes) else "complete"),
+                    status=judge_status,
+                    complete=all_judges_finished,
+                )
+                state.update_judge_progress(
+                    judge_name,
+                    completed=state.judge_progress_snapshot().get(judge_name, {}).get("completed", 0) + 1,
                 )
                 if consensus["error"]:
                     run_info["judge_counts"]["failed"] += 1
                 else:
                     run_info["judge_counts"]["completed"] += 1
-                run_info["judge_counts"]["votes"] += len(votes)
+                run_info["judge_counts"]["votes"] += 1
+                state.update_judge_progress(
+                    judge_name,
+                    completed=state.judge_progress_snapshot().get(judge_name, {}).get("completed", 0) + 1,
+                )
                 with persistence_lock:
                     state.save_state(state_file, plugin_versions=plugin_versions)
                     _save_outputs(state, output_dir, active_plugins)
             except Exception as exc:  # noqa: BLE001 - isolate one judge job failure
                 state_key = item.get("state_key", target_name)
+                failure_vote = {
+                    "model": judge_name,
+                    "score": None,
+                    "confidence": None,
+                    "rationale": None,
+                    "error": f"judge input failed: {type(exc).__name__}: {exc}",
+                }
+                vote_identity = (state_key, runner, plugin_id)
+                with judge_votes_lock:
+                    prior_votes = list(judge_votes.get(vote_identity, []))
+                    prior_votes = [v for v in prior_votes if v.get("model") != judge_name]
+                    prior_votes.append(failure_vote)
+                    judge_votes[vote_identity] = prior_votes
+                received_judges = {
+                    vote.get("model") for vote in prior_votes if isinstance(vote, dict)
+                }
+                all_judges_finished = set(judge_models).issubset(received_judges)
                 state.update_judge_result(
                     state_key, runner, plugin_id,
-                    error=f"judge input failed: {type(exc).__name__}: {exc}",
+                    error=failure_vote["error"],
+                    votes=prior_votes,
+                    status="failed" if all_judges_finished else "running",
+                    complete=all_judges_finished,
                 )
                 run_info["judge_counts"]["failed"] += 1
+                state.update_judge_progress(
+                    judge_name,
+                    completed=state.judge_progress_snapshot().get(judge_name, {}).get("completed", 0) + 1,
+                )
                 with persistence_lock:
                     state.save_state(state_file, plugin_versions=plugin_versions)
                     _save_outputs(state, output_dir, active_plugins)

@@ -10,6 +10,7 @@ from benchmark.core import (
     judge_response,
     parse_judge_response,
     prepare_judge_sidecar,
+    save_judge_response,
 )
 from benchmark.state import BenchmarkState
 from plugins import discover_plugins
@@ -48,6 +49,15 @@ class TestJudgeCore(unittest.TestCase):
         self.assertIn("Do this", prompt)
         self.assertIn("Done well", prompt)
         self.assertIn("semantic score", prompt.lower())
+
+    def test_judge_response_artifact_uses_existing_response_naming_convention(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = save_judge_response(
+                tmp, "model", "http", "rate-limiter", "judge/model", '{"score": 90}'
+            )
+            self.assertTrue(path.endswith("rate-limiter.judge.judge_model.txt"))
+            with open(path, encoding="utf-8") as handle:
+                self.assertEqual(handle.read(), '{"score": 90}')
 
     def test_sidecar_is_atomic_and_reusable(self):
         with tempfile.TemporaryDirectory() as tmp:

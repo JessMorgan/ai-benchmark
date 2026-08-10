@@ -160,6 +160,7 @@ class JudgeResult:
     confidence: Literal["high", "medium", "low"] | None = None
     rationale: str | None = None
     error: str | None = None
+    response_text: str | None = None
 
 
 def build_judge_prompt(plugin, original_prompt, response_text):
@@ -248,6 +249,30 @@ def judge_sidecar_path(judge_input_dir, target, runner, plugin_id):
     )
 
 
+def judge_response_path(output_dir, target, runner, plugin_id, judge_model):
+    """Return the response artifact path for one judge model's raw output."""
+    return os.path.join(
+        output_dir,
+        runner,
+        "responses",
+        sanitize_filename(target),
+        f"{plugin_id}.judge.{sanitize_filename(judge_model)}.txt",
+    )
+
+
+def save_judge_response(output_dir, target, runner, plugin_id, judge_model, text):
+    """Persist a judge's raw response beside the benchmark response artifacts."""
+    path = judge_response_path(output_dir, target, runner, plugin_id, judge_model)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = f"{path}.tmp"
+    with open(tmp, "w", encoding="utf-8") as handle:
+        handle.write(text or "")
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(tmp, path)
+    return path
+
+
 def publish_judge_sidecars(judge_input_dir, target, runner, plugins, callback):
     """Publish durable judge inputs after their benchmark result is visible."""
     if not judge_input_dir or callback is None:
@@ -313,7 +338,18 @@ def judge_response(source_config, judge_source, judge_api_model, sidecar,
             return JudgeResult(error=response.error)
         parsed = parse_judge_response(response.text)
         if parsed.error is None:
-            return parsed
+            return JudgeResult(
+                score=parsed.score,
+                confidence=parsed.confidence,
+                rationale=parsed.rationale,
+                response_text=response.text,
+            )
+        parsed = JudgeResult(
+            confidence=parsed.confidence,
+            rationale=parsed.rationale,
+            error=parsed.error,
+            response_text=response.text,
+        )
     return parsed
 
 
@@ -1297,8 +1333,8 @@ def run_model(model_name, source, state, active_plugins, source_config, timeout,
         "system_prompt": system_prompt,        "judge_model": judge_model,
         "judge_models": list(judge_models or ([judge_model] if judge_model else [])),
         "judge_prompt_version": judge_prompt_version,
+        "judge_status": "disabled" if not (judge_models or judge_model) else "pending",
 
-        "judge_status": "disabled" if not judge_model else "pending",
         "status": "ok",
         "stream_ok": True,
         "ttft": None,
@@ -1346,6 +1382,7 @@ def run_model(model_name, source, state, active_plugins, source_config, timeout,
             r[f"{pid}_judge_error"] = existing.get(f"{pid}_judge_error")
             r[f"{pid}_judge_input_sha256"] = existing.get(f"{pid}_judge_input_sha256")
             r[f"{pid}_judge_votes"] = existing.get(f"{pid}_judge_votes", [])
+            r[f"{pid}_judge_complete"] = existing.get(f"{pid}_judge_complete", False)
         else:
             plugins_to_run.append(plugin)
 

@@ -434,6 +434,19 @@ class TestPluginCellBlock(unittest.TestCase):
         self.assertIn("[429 sleeping 5s]", rl_block)
         self.assertIn("[429 sleeping 55s]", md_block)
 
+    def test_completed_judge_adds_j_marker_to_score(self):
+        s = {
+            "running_pids": [],
+            "rate-limiter_score": 95,
+            "rate-limiter_judge_complete": True,
+            "rate-limiter_output_tokens": 100,
+            "rate-limiter_response_time": 2.0,
+            "rate-limiter_tps": 10.0,
+        }
+        block = ai_benchmark._plugin_cell_block(
+            "rate-limiter", s, self.p_streaming, None)
+        self.assertIn("95J", block)
+
     def test_completed_plugin_shows_numeric_results(self):
         """A plugin whose task has finished shows the standard 4-cell
         layout with the recorded score / tokens / time / tps. The

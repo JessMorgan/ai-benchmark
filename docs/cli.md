@@ -125,7 +125,7 @@ Use a configured plain model as an optional semantic judge. The first implementa
 python ai-benchmark.py --judge-models judge-model-id
 ```
 
-The judge receives the original task prompt and response, returns a validated 0–100 score with confidence and rationale, and never changes the deterministic benchmark score or benchmark success status. Judge input sidecars are retained automatically so interrupted runs can resume judging. When the judge source allows more than one model thread, one slot is reserved for judging and benchmark capacity on that source is reduced by one; with a single-thread source, judging waits for that source's benchmark work to finish.
+The judge receives the original task prompt and response, returns a validated 0–100 score with confidence and rationale, and never changes the deterministic benchmark score or benchmark success status. Judge input sidecars are retained automatically so interrupted runs can resume judging. Each judge's raw JSON response is saved beside the benchmark response artifacts as `<plugin>.judge.<model>.txt`; the live TUI footer shows per-judge progress such as `Judging [Big Pickle: 4/17]`, and a `J` is appended to a plugin score once all configured judges have finished that response. When the judge source allows more than one model thread, one slot is reserved for judging and benchmark capacity on that source is reduced by one; with a single-thread source, judging waits for that source's benchmark work to finish.
 
 ### Disable model preloading
 

@@ -333,6 +333,7 @@ class BenchmarkState:
         self.session_seed = session_seed
         self.runner = runner
         self.score_schema = SCORE_SCHEMA
+        self._judge_progress = {}
         for name, info in models.items():
             if isinstance(info, dict):
                 source = info.get("source", "Default")
@@ -387,6 +388,7 @@ class BenchmarkState:
                 self._model_info[name][f"{pid}_judge_error"] = None
                 self._model_info[name][f"{pid}_judge_input_sha256"] = None
                 self._model_info[name][f"{pid}_judge_votes"] = []
+                self._model_info[name][f"{pid}_judge_complete"] = False
                 self._model_info[name][f"{pid}_tps"] = None
                 self._model_info[name][f"{pid}_response_time"] = None
                 self._model_info[name][f"{pid}_output_tokens"] = None
@@ -652,9 +654,29 @@ class BenchmarkState:
         with self._lock:
             self.results.append(result)
 
+    def set_judge_progress(self, progress):
+        """Replace live per-judge progress shown by the TUI footer."""
+        with self._lock:
+            self._judge_progress = {
+                model: dict(values) for model, values in (progress or {}).items()
+            }
+
+    def update_judge_progress(self, model, **values):
+        """Update one judge model's live progress counters."""
+        with self._lock:
+            current = dict(self._judge_progress.get(model, {}))
+            current.update(values)
+            self._judge_progress[model] = current
+
+    def judge_progress_snapshot(self):
+        """Return a copy of live per-judge progress for the TUI."""
+        with self._lock:
+            return {model: dict(values) for model, values in self._judge_progress.items()}
+
     def update_judge_result(self, state_key, runner, plugin_id, *, score=None,
                             confidence=None, rationale=None, error=None,
-                            input_sha256=None, votes=None, status=None):
+                            input_sha256=None, votes=None, status=None,
+                            complete=None):
         """Persist one judge outcome in live model info and latest result.
 
         Judge updates are independent of benchmark completion and therefore
@@ -672,6 +694,8 @@ class BenchmarkState:
             fields[f"{plugin_id}_judge_votes"] = votes
         if status is not None:
             fields["judge_status"] = status
+        if complete is not None:
+            fields[f"{plugin_id}_judge_complete"] = complete
         with self._lock:
             if state_key in self._model_info:
                 self._model_info[state_key].update(fields)
@@ -728,6 +752,7 @@ class BenchmarkState:
                 "plugin_versions": plugin_versions or {},
                 "session_seed": self.session_seed,
                 "runner": self.runner,
+                "judge_progress": self._judge_progress,
                 "score_schema": SCORE_SCHEMA,
             }
         tmp = path + ".tmp"
@@ -818,6 +843,7 @@ class BenchmarkState:
                         state._model_info[name].setdefault(f"{pid}_judge_error", None)
                         state._model_info[name].setdefault(f"{pid}_judge_input_sha256", None)
                         state._model_info[name].setdefault(f"{pid}_judge_votes", [])
+                        state._model_info[name].setdefault(f"{pid}_judge_complete", False)
                         state._model_info[name].setdefault(f"{pid}_tps", None)
                         state._model_info[name].setdefault(f"{pid}_response_time", None)
                         state._model_info[name].setdefault(f"{pid}_output_tokens", None)
@@ -836,6 +862,14 @@ class BenchmarkState:
                                     state._model_info[name]["status"] = "pending"
                                     break
         state.results = data.get("results", [])
+        state._judge_progress = data.get("judge_progress", {})
+        for result in state.results:
+            for pid in plugin_ids:
+                if f"{pid}_judge_complete" not in result:
+                    result[f"{pid}_judge_complete"] = bool(
+                        result.get(f"{pid}_judge_votes")
+                        and result.get("judge_status") in {"complete", "partial", "failed"}
+                    )
         for name, info in state._model_info.items():
             if info.get("status") == "completed":
                 continue

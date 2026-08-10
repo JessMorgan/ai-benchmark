@@ -322,6 +322,20 @@ class TestRenderFooterVariants(unittest.TestCase):
         rendered = window.lines.get(39, "")
         self.assertIn("1 preloading", rendered)
 
+    def test_judge_progress_is_rendered_per_model(self):
+        window = _FakeWindow()
+        cli._render_footer(
+            window, 120, 40, [], [], 39,
+            judge_progress={
+                "Big Pickle": {"completed": 4, "expected": 17},
+                "gemini/gemini-2.5-flash-lite": {"completed": 5, "expected": 17},
+            },
+        )
+        rendered = window.lines.get(39, "")
+        self.assertIn("Judging", rendered)
+        self.assertIn("[Big Pickle: 4/17]", rendered)
+        self.assertIn("[gemini/gemini-2.5-flash-lite: 5/17]", rendered)
+
 
 class TestFmtValueEdges(unittest.TestCase):
     def test_none_renders_dash(self):
