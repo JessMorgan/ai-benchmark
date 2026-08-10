@@ -67,7 +67,7 @@ class WireframesPlugin(BenchmarkTaskPlugin):
 
     @property
     def version(self):
-        return "0.3.2"
+        return "0.4.0"
 
     @property
     def name(self):

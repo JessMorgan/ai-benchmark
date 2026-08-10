@@ -41,6 +41,8 @@ class TestPluginBaseDefaults(unittest.TestCase):
         self.assertIsInstance(result, EvaluationResult)
         self.assertEqual(result.score, 10.0)
         self.assertEqual(result.rubric, [])
+        self.assertEqual(result.diagnostics["source"], "plugin.score")
+        self.assertEqual(result.diagnostics["criterion_count"], 0)
 
     def test_output_plugin_is_abstract(self):
         with self.assertRaises(TypeError):

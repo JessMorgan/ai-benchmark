@@ -18,42 +18,61 @@ class Rubric:
         self.max_score = max_score
         self.criteria: list[dict[str, Any]] = []
         self.total = 0.0
+        self.errors: list[str] = []
 
-    def add_criterion(self, name: str, max_points: float, earned: float):
-        """Add a manually scored criterion.
+    def add_criterion(self, name: str, max_points: float, earned: float,
+                      *, evidence=None, matched=None, negative_findings=None,
+                      errors=None):
+        """Add a manually scored criterion and its diagnostic evidence.
 
-        Args:
-            name: Human-readable criterion name.
-            max_points: Maximum points for this criterion.
-            earned: Earned points (will be clamped to max_points).
+        Every criterion carries JSON-safe diagnostic containers. ``matched``
+        is a boolean summary of whether the criterion earned any credit unless
+        the caller supplies a more precise signal.
         """
-        earned = round(min(earned, max_points), 1)
+        earned = round(max(0.0, min(earned, max_points)), 1)
         missed = round(max_points - earned, 1)
         self.total += earned
-        self.criteria.append({
+        item = {
             "name": name,
             "max": max_points,
             "earned": earned,
             "missed": missed,
-        })
+        }
+        item["evidence"] = list(evidence or [])
+        item["matched"] = bool(earned) if matched is None else bool(matched)
+        item["negative_findings"] = list(negative_findings or [])
+        item["errors"] = [str(error) for error in (errors or [])]
+        self.errors.extend(item["errors"])
+        self.criteria.append(item)
 
     def eval_regex(self, name: str, max_points: float, text: str, patterns, flags=re.IGNORECASE):
-        """Score a criterion by summing points for each matched regex pattern.
-
-        Args:
-            name: Human-readable criterion name.
-            max_points: Maximum points for this criterion.
-            text: Response text to search.
-            patterns: Iterable of (regex_pattern, points) tuples.
-            flags: Regex flags to use.
-        """
+        """Score a criterion by summing points for each matched regex pattern."""
         earned = 0.0
+        evidence = []
         for pattern, points in patterns:
-            if re.search(pattern, text, flags):
+            match = re.search(pattern, text, flags)
+            if match:
                 earned += points
-        self.add_criterion(name, max_points, earned)
+                evidence.append({
+                    "kind": "regex",
+                    "pattern": pattern,
+                    "span": match.group(0),
+                    "points": points,
+                })
+        self.add_criterion(
+            name, max_points, earned,
+            evidence=evidence,
+            matched=bool(evidence),
+        )
 
     def results(self) -> EvaluationResult:
-        """Return the final score and the rubric list as named fields."""
+        """Return the final score, rubric list, and evaluation diagnostics."""
         final_score = round(min(self.total, self.max_score), 1)
-        return EvaluationResult(final_score, self.criteria)
+        diagnostics = {
+            "criterion_count": len(self.criteria),
+            "matched_criterion_count": sum(
+                1 for criterion in self.criteria if criterion.get("matched")
+            ),
+            "errors": list(self.errors),
+        }
+        return EvaluationResult(final_score, self.criteria, diagnostics)

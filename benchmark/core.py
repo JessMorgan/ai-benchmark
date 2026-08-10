@@ -964,12 +964,14 @@ def _run_plugin_task(target_name, api_model, source, plugin, source_config, time
     #    streaming failure path.
     score = "fail"
     rubric = []
+    diagnostics = {}
     score_error = None
     score_traceback_text = None
     try:
         evaluation = plugin.evaluate(text)
         score = evaluation.score
         rubric = evaluation.rubric
+        diagnostics = evaluation.diagnostics or {}
     except Exception as exc:  # noqa: BLE001 - a crashing evaluator is recorded, not fatal
         score_error = f"plugin.evaluate raised {type(exc).__name__}: {exc}"
         score_traceback_text = traceback.format_exc()
@@ -987,6 +989,7 @@ def _run_plugin_task(target_name, api_model, source, plugin, source_config, time
             "system_prompt": system_prompt,
             "score": score,
             "rubric": rubric,
+            "diagnostics": diagnostics,
             "response_time": response_time,
             "output_tokens": output_tokens,
             "thinking_tokens": thinking_tokens,
@@ -1022,6 +1025,7 @@ def _run_plugin_task(target_name, api_model, source, plugin, source_config, time
     result = {
         f"{pid}_score": score,
         f"{pid}_rubric": rubric,
+        f"{pid}_diagnostics": diagnostics,
         f"{pid}_response_time": response_time,
         f"{pid}_output_tokens": output_tokens,
         f"{pid}_thinking_tokens": thinking_tokens,
@@ -1090,6 +1094,8 @@ def run_model(model_name, source, state, active_plugins, source_config, timeout,
         # plugin that failed or was missing.
         if existing is not None and score_key in existing and existing[score_key] != "fail":
             r[f"{pid}_score"] = existing[score_key]
+            r[f"{pid}_rubric"] = existing.get(f"{pid}_rubric", [])
+            r[f"{pid}_diagnostics"] = existing.get(f"{pid}_diagnostics", {})
             r[f"{pid}_response_time"] = existing[f"{pid}_response_time"]
             r[f"{pid}_output_tokens"] = existing[f"{pid}_output_tokens"]
             r[f"{pid}_thinking_tokens"] = existing.get(f"{pid}_thinking_tokens")
@@ -1194,9 +1200,11 @@ def _run_plugins(target_name, api_model, source, state, active_plugins, plugins_
                 errors[pid] = err
         if err or result is None:
             return
-        state.update(target_name,
-                     **{f"{pid}_score": result[f"{pid}_score"],
-                        f"{pid}_tps": result[f"{pid}_tps"],
+        state.update(target_name,                        **{f"{pid}_score": result[f"{pid}_score"],
+                     f"{pid}_rubric": result.get(f"{pid}_rubric", []),
+                     f"{pid}_diagnostics": result.get(f"{pid}_diagnostics", {}),
+                     f"{pid}_tps": result[f"{pid}_tps"],
+
                         f"{pid}_response_time": result[f"{pid}_response_time"],
                         f"{pid}_output_tokens": result[f"{pid}_output_tokens"],
                         f"{pid}_thinking_tokens": result.get(f"{pid}_thinking_tokens"),

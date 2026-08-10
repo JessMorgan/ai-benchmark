@@ -6,10 +6,37 @@ from typing import Any
 
 @dataclass(frozen=True)
 class EvaluationResult:
-    """Score and rubric breakdown returned by a task plugin."""
+    """Score, rubric breakdown, and diagnostics returned by a task plugin.
+
+    ``diagnostics`` is intentionally additive: existing plugins and output
+    consumers can continue to use ``score`` and ``rubric`` unchanged while
+    evaluation tooling receives machine-readable evidence about how the score
+    was produced.
+    """
 
     score: float
     rubric: list[dict[str, Any]]
+    diagnostics: dict[str, Any] | None = None
+
+    def __post_init__(self):
+        """Give every evaluation, including direct early returns, diagnostics."""
+        if self.diagnostics is None:
+            object.__setattr__(self, "diagnostics", {
+                "source": "plugin.evaluate",
+                "criterion_count": len(self.rubric),
+                "matched_criterion_count": sum(
+                    1 for criterion in self.rubric if criterion.get("matched")
+                ),
+                "errors": [],
+            })
+
+    def diagnostic_data(self) -> dict[str, Any]:
+        """Return a JSON-safe diagnostic mapping, including the rubric."""
+        return {
+            "score": self.score,
+            "rubric": self.rubric,
+            "diagnostics": self.diagnostics or {},
+        }
 
 
 @dataclass(frozen=True)
@@ -132,6 +159,11 @@ class BenchmarkTaskPlugin(abc.ABC):
 
         Returns an :class:`EvaluationResult` containing the score and a list
         of dictionaries describing each graded criterion. Plugins may override
-        this method to provide a breakdown.
+        this method to provide a breakdown. The default implementation keeps
+        diagnostics explicit even for legacy plugins without a rubric.
         """
-        return EvaluationResult(self.score(response_text), [])
+        return EvaluationResult(self.score(response_text), [], {
+            "source": "plugin.score",
+            "criterion_count": 0,
+            "errors": [],
+        })
