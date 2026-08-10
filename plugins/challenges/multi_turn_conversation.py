@@ -20,7 +20,7 @@ class MultiTurnConversationPlugin(BenchmarkTaskPlugin):
 
     @property
     def version(self):
-        return "0.3.0"
+        return "0.4.0"
 
     @property
     def name(self):
@@ -167,6 +167,3 @@ class MultiTurnConversationPlugin(BenchmarkTaskPlugin):
             rubric.penalize_criterion("Evidence of iteration across versions", 1.0, "Version 3 duplicates Version 2")
 
         return rubric.results()
-
-    def score(self, response_text):
-        return self.evaluate(response_text).score

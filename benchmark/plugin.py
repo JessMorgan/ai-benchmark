@@ -1,17 +1,132 @@
 """Abstract base classes and typed contracts for AI benchmark plugins."""
 import abc
+import math
 from dataclasses import dataclass
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
+from numbers import Real
 from typing import Any
+
+SCORE_SCHEMA = "percentage-v1"
+
+
+def _decimal_value(value, name):
+    """Convert a numeric value to Decimal without accepting non-finite values."""
+    if isinstance(value, bool) or not isinstance(value, (Real, Decimal)):
+        raise ValueError(  # noqa: TRY004 - public numeric contract uses ValueError
+            f"{name} must be numeric, got {value!r}"
+        )
+    try:
+        decimal = Decimal(str(value))
+    except (InvalidOperation, ValueError, TypeError) as exc:
+        raise ValueError(f"{name} must be numeric, got {value!r}") from exc
+    if not decimal.is_finite():
+        raise ValueError(f"{name} must be finite, got {value!r}")
+    if isinstance(value, float) and not math.isfinite(value):
+        raise ValueError(f"{name} must be finite, got {value!r}")
+    return decimal
+
+
+def normalize_score(raw_score: float, max_score: float) -> int:
+    """Clamp a native plugin score and return an integer percentage.
+
+    Native rubric scores remain in each plugin's task-specific scale. This is
+    the single public-schema conversion point: Decimal half-up rounding makes
+    ties deterministic instead of using Python's ties-to-even ``round``.
+    """
+    raw = _decimal_value(raw_score, "raw_score")
+    maximum = _decimal_value(max_score, "max_score")
+    if maximum <= 0:
+        raise ValueError(f"max_score must be positive, got {max_score!r}")
+    raw = max(Decimal(0), min(raw, maximum))
+    percentage = (Decimal(100) * raw / maximum).quantize(
+        Decimal(1), rounding=ROUND_HALF_UP
+    )
+    return int(max(Decimal(0), min(percentage, Decimal(100))))
+
+
+def _normalize_rubric_value(value, criterion_max):
+    """Convert a criterion-relative numeric diagnostic to a percentage."""
+    return normalize_score(value, criterion_max)
+
+
+def normalize_rubric(rubric: list[dict[str, Any]], max_score: float) -> list[dict[str, Any]]:
+    """Convert native rubric diagnostics to the public percentage-only shape."""
+    normalized = []
+    for criterion in rubric:
+        criterion_max = criterion.get("max", 0)
+        if _decimal_value(criterion_max, "criterion max") <= 0:
+            raise ValueError(f"criterion max must be positive, got {criterion_max!r}")
+        item = {
+            "name": criterion.get("name", ""),
+            "score_percent": _normalize_rubric_value(
+                criterion.get("earned", 0), criterion_max
+            ),
+            "weight_percent": normalize_score(criterion_max, max_score),
+        }
+        for key in ("matched", "evidence", "errors"):
+            if key in criterion:
+                item[key] = criterion[key]
+        if "negative_findings" in criterion:
+            findings = []
+            for finding in criterion["negative_findings"]:
+                if isinstance(finding, dict):
+                    public_finding = {
+                        key: value for key, value in finding.items() if key != "points"
+                    }
+                    if "points" in finding:
+                        public_finding["points_percent"] = normalize_score(
+                            finding["points"], criterion_max
+                        )
+                    findings.append(public_finding)
+                else:
+                    findings.append(finding)
+            item["negative_findings"] = findings
+        evidence = item.get("evidence")
+        if isinstance(evidence, list):
+            public_evidence = []
+            for entry in evidence:
+                if isinstance(entry, dict) and "points" in entry:
+                    public_entry = {
+                        key: value for key, value in entry.items() if key != "points"
+                    }
+                    public_entry["points_percent"] = normalize_score(
+                        entry["points"], criterion_max
+                    )
+                    public_evidence.append(public_entry)
+                else:
+                    public_evidence.append(entry)
+            item["evidence"] = public_evidence
+        normalized.append(item)
+    return normalized
+
+
+def sanitize_diagnostics(value: Any) -> Any:
+    """Remove native point-scale fields from persisted diagnostics.
+
+    Diagnostics remain useful in benchmark results, but arbitrary plugin or
+    validator evidence must not reintroduce the native rubric scale through
+    nested ``max``, ``earned``, ``missed``, or ``points`` keys. Percentage
+    variants (for example ``points_percent``) are retained.
+    """
+    raw_keys = {"max", "max_score", "earned", "missed", "points", "raw_score"}
+    if isinstance(value, dict):
+        return {
+            key: sanitize_diagnostics(item)
+            for key, item in value.items()
+            if key not in raw_keys
+        }
+    if isinstance(value, list):
+        return [sanitize_diagnostics(item) for item in value]
+    return value
 
 
 @dataclass(frozen=True)
 class EvaluationResult:
-    """Score, rubric breakdown, and diagnostics returned by a task plugin.
+    """Native score, rubric breakdown, and diagnostics from a task plugin.
 
-    ``diagnostics`` is intentionally additive: existing plugins and output
-    consumers can continue to use ``score`` and ``rubric`` unchanged while
-    evaluation tooling receives machine-readable evidence about how the score
-    was produced.
+    ``score`` and ``rubric`` are intentionally native evaluator values. The
+    benchmark core and the public :meth:`BenchmarkTaskPlugin.score` method
+    normalize them exactly once before exposing or persisting public results.
     """
 
     score: float
@@ -31,7 +146,7 @@ class EvaluationResult:
             })
 
     def diagnostic_data(self) -> dict[str, Any]:
-        """Return a JSON-safe diagnostic mapping, including the rubric."""
+        """Return native evaluator diagnostics for developer-facing tooling."""
         return {
             "score": self.score,
             "rubric": self.rubric,
@@ -76,40 +191,17 @@ class BenchmarkOutputPlugin(abc.ABC):
 
     @abc.abstractmethod
     def generate(self, results, active_plugins, output_dir=None, session_seed=None):
-        """Write the report file into *output_dir* and return the file path.
-
-        Parameters
-        ----------
-        results : list[dict]
-            Deduplicated result dicts (one per model).
-        active_plugins : list[BenchmarkTaskPlugin]
-            The task plugins that produced the results.
-        output_dir : str or None
-            The directory to write into.
-        session_seed : int or None
-            The random seed used for the session.
-
-        Returns
-        -------
-        str or None
-            The path to the generated file, or None if nothing was written.
-        """
+        """Write the report file into *output_dir* and return the file path."""
         raise NotImplementedError
 
 
 class BenchmarkTaskPlugin(abc.ABC):
-    """A single benchmark task that can be run against a model.
-
-    Each plugin defines a prompt, a scoring function, and metadata such as
-    a stable ID, version, and maximum score. The main benchmark runner
-    discovers plugins from the ``plugins/`` directory and runs the active set
-    against every model.
-    """
+    """A benchmark task with a native rubric and a normalized public score."""
 
     @property
     @abc.abstractmethod
     def id(self) -> str:
-        """Stable machine-readable identifier, e.g. 'rate-limiter'."""
+        """Stable machine-readable identifier, e.g. 'code-review'."""
         raise NotImplementedError
 
     @property
@@ -127,16 +219,12 @@ class BenchmarkTaskPlugin(abc.ABC):
     @property
     @abc.abstractmethod
     def max_score(self) -> float:
-        """Maximum possible score for this task."""
+        """Internal native maximum for this task's rubric."""
         raise NotImplementedError
 
     @property
     def supports_streaming(self) -> bool:
-        """Whether the task should use the streaming API path.
-
-        Defaults to True. Set to False for tasks where only the final
-        response is needed.
-        """
+        """Whether the task should use the streaming API path."""
         return True
 
     @abc.abstractmethod
@@ -149,21 +237,30 @@ class BenchmarkTaskPlugin(abc.ABC):
         """Return the temperature to use for this task, or None to omit it."""
         raise NotImplementedError
 
-    @abc.abstractmethod
-    def score(self, response_text: str) -> float:
-        """Score the model's response and return a float."""
-        raise NotImplementedError
+    def __init_subclass__(cls, **kwargs):
+        """Adapt legacy native ``score`` implementations to the public API."""
+        super().__init_subclass__(**kwargs)
+        native_score = cls.__dict__.get("score")
+        if native_score is not None:
+            cls._native_score = native_score
+            cls.score = BenchmarkTaskPlugin.score
+
+    def score(self, response_text: str) -> int:
+        """Return the normalized public score as an integer percentage."""
+        evaluation = self.evaluate(response_text)
+        return normalize_score(evaluation.score, self.max_score)
 
     def evaluate(self, response_text: str) -> EvaluationResult:
-        """Score the model's response and return a detailed rubric.
+        """Return the native score and detailed rubric for internal evaluation.
 
-        Returns an :class:`EvaluationResult` containing the score and a list
-        of dictionaries describing each graded criterion. Plugins may override
-        this method to provide a breakdown. The default implementation keeps
-        diagnostics explicit even for legacy plugins without a rubric.
+        Legacy third-party plugins that still implement ``score`` are treated
+        as native evaluators here; built-in plugins override this method with
+        their detailed rubric implementation.
         """
-        return EvaluationResult(self.score(response_text), [], {
-            "source": "plugin.score",
-            "criterion_count": 0,
-            "errors": [],
-        })
+        legacy_score = getattr(type(self), "_native_score", None)
+        if legacy_score is None:
+            raise NotImplementedError
+        return EvaluationResult(
+            legacy_score(self, response_text), [],
+            {"source": "plugin.score", "criterion_count": 0, "errors": []},
+        )

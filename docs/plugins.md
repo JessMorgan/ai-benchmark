@@ -4,7 +4,7 @@ AI Benchmark uses a plugin architecture. Each plugin defines a benchmark task, a
 
 ## Built-In Plugins
 
-| ID | Name | Max Score | Streaming |
+| ID | Name | Internal Max Score | Streaming |
 |---|---|---|---|
 | `code-review` | Code Review | 15 | No |
 | `debug-traversal` | Debug Traversal | 20 | Yes |
@@ -31,7 +31,7 @@ You cannot use both whitelist and blacklist at the same time.
 
 ## Plugin Base Class
 
-All plugins inherit from `BenchmarkTaskPlugin` in `benchmark/plugin.py`:
+All plugins inherit from `BenchmarkTaskPlugin` in `benchmark/plugin.py`. `max_score` is the internal native rubric maximum; public `score()` results and persisted benchmark scores are integer percentages from 0 to 100. `evaluate()` returns native rubric diagnostics and is normalized once by the benchmark core.
 
 ```python
 class BenchmarkTaskPlugin(abc.ABC):
@@ -54,7 +54,9 @@ class BenchmarkTaskPlugin(abc.ABC):
 
     def get_temperature(self, global_config: dict) -> float | None: ...
 
-    def score(self, response_text: str) -> float: ...
+    def evaluate(self, response_text: str) -> EvaluationResult: ...
+
+    def score(self, response_text: str) -> int: ...  # normalized 0–100
 ```
 
 ## Plugin Lifecycle
@@ -62,7 +64,7 @@ class BenchmarkTaskPlugin(abc.ABC):
 1. **Discovery**: `discover_plugins()` scans `plugins/challenges/` for `BenchmarkTaskPlugin` subclasses and `discover_output_plugins()` scans `plugins/outputs/` for `BenchmarkOutputPlugin` subclasses.
 2. **Selection**: Whitelist/blacklist filters are applied.
 3. **Execution**: For each model, the benchmark calls `_run_plugin_task()` for each active plugin.
-4. **Scoring**: The plugin's `score()` method evaluates the model's response.
+4. **Scoring**: The plugin's `evaluate()` method produces native rubric diagnostics; `score()` exposes the normalized 0–100 integer convenience API.
 5. **Reporting**: Scores and metrics are aggregated into reports.
 
 ## Streaming vs Non-Streaming

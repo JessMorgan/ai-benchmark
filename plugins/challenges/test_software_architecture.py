@@ -45,7 +45,7 @@ class TestSoftwareArchitectureScoring(unittest.TestCase):
         )
         score = self.plugin.score(text)
         self.assertGreater(score, 0.0)
-        self.assertLess(score, self.plugin.max_score)
+        self.assertLess(score, 100)
 
     def test_mid_tier_response_scores_in_middle_range(self):
         text = (
@@ -63,8 +63,8 @@ class TestSoftwareArchitectureScoring(unittest.TestCase):
             "Prometheus and Grafana with 99.9% uptime target.\n"
         )
         score = self.plugin.score(text)
-        self.assertGreater(score, 5.0)
-        self.assertLess(score, 15.0)
+        self.assertGreater(score, 25)
+        self.assertLess(score, 75)
 
     def test_full_response_scores_high(self):
         text = (
@@ -127,7 +127,7 @@ class TestSoftwareArchitectureScoring(unittest.TestCase):
         )
         score = self.plugin.score(text)
         self.assertGreater(score, 0.0)
-        self.assertLess(score, self.plugin.max_score)
+        self.assertLess(score, 100)
 
     def test_excellent_response_scores_near_max(self):
         text = (
@@ -166,8 +166,8 @@ class TestSoftwareArchitectureScoring(unittest.TestCase):
             "p99 latency < 200 ms.\n"
         )
         score = self.plugin.score(text)
-        self.assertGreater(score, 15.0)
-        self.assertLessEqual(score, self.plugin.max_score)
+        self.assertGreater(score, 75)
+        self.assertLessEqual(score, 100)
 
 
 if __name__ == "__main__":

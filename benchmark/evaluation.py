@@ -1,4 +1,10 @@
-"""Offline evaluation helpers for inspecting saved benchmark responses."""
+"""Developer-only offline evaluation helpers for inspecting saved responses.
+
+This module intentionally exposes native evaluator scores and raw rubric
+breakdowns for debugging. It is not part of the benchmark's public result or
+persistence schema; normal runs use ``benchmark.core`` to produce normalized
+percentage-v1 data.
+"""
 from __future__ import annotations
 
 import json
@@ -9,7 +15,7 @@ from plugins import discover_plugins
 
 
 def evaluate_saved_response(plugin_id: str, response_path: str | Path) -> dict[str, Any]:
-    """Evaluate one saved response and return JSON-serializable diagnostics."""
+    """Return native developer diagnostics, not public benchmark scores."""
     plugins = {plugin.id: plugin for plugin in discover_plugins()}
     try:
         plugin = plugins[plugin_id]
@@ -22,6 +28,7 @@ def evaluate_saved_response(plugin_id: str, response_path: str | Path) -> dict[s
     evaluation = plugin.evaluate(response_text)
     result = evaluation.diagnostic_data()
     result.update({
+        "diagnostic_schema": "native-evaluator-v1",
         "plugin": plugin.id,
         "plugin_version": plugin.version,
         "response_path": str(path),

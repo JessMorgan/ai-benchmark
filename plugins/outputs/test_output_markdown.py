@@ -16,17 +16,17 @@ class TestMarkdownOutputPlugin(unittest.TestCase):
                 "status": "ok",
                 "stream_ok": True,
                 "ttft": 1.2,
-                "rate-limiter_score": 15.5,
+                "rate-limiter_score": 78,
                 "rate-limiter_rubric": [
-                    {"name": "Interface design", "max": 3.0, "earned": 3.0, "missed": 0.0},
-                    {"name": "Token Bucket", "max": 4.0, "earned": 4.0, "missed": 0.0},
+                    {"name": "Interface design", "score_percent": 100, "weight_percent": 15},
+                    {"name": "Token Bucket", "score_percent": 100, "weight_percent": 20},
                 ],
                 "rate-limiter_response_time": 5.0,
                 "rate-limiter_output_tokens": 100,
                 "rate-limiter_tps": 20.0,
-                "moe-dense_score": 10.0,
+                "moe-dense_score": 59,
                 "moe-dense_rubric": [
-                    {"name": "Covers both architectures", "max": 2.0, "earned": 2.0, "missed": 0.0},
+                    {"name": "Covers both architectures", "score_percent": 100, "weight_percent": 12},
                 ],
                 "moe-dense_response_time": 3.0,
                 "moe-dense_output_tokens": 50,
@@ -108,7 +108,7 @@ class TestMarkdownOutputPlugin(unittest.TestCase):
                 "rate-limiter_response_time": "fail",
                 "rate-limiter_output_tokens": "fail",
                 "rate-limiter_tps": "fail",
-                "moe-dense_score": 10.0,
+                "moe-dense_score": 59,
                 "moe-dense_response_time": 3.0,
                 "moe-dense_output_tokens": 50,
                 "moe-dense_tps": 16.7,
@@ -117,7 +117,7 @@ class TestMarkdownOutputPlugin(unittest.TestCase):
         md = self.plugin.generate(results, self.plugins)
         self.assertIn("partial-model", md)
         self.assertIn("fail", md)
-        self.assertIn("10.0", md)
+        self.assertIn("59", md)
 
     def test_output_generators_handle_ok_with_string_score(self):
         results = [
@@ -132,7 +132,7 @@ class TestMarkdownOutputPlugin(unittest.TestCase):
                 "rate-limiter_response_time": "fail",
                 "rate-limiter_output_tokens": "fail",
                 "rate-limiter_tps": "fail",
-                "moe-dense_score": 10.0,
+                "moe-dense_score": 59,
                 "moe-dense_response_time": 3.0,
                 "moe-dense_output_tokens": 50,
                 "moe-dense_tps": 16.7,

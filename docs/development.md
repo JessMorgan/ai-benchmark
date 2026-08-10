@@ -107,11 +107,13 @@ class MyTaskPlugin(BenchmarkTaskPlugin):
     def get_temperature(self, global_config):
         return global_config.get("my-task_temperature", 0.2)
 
-    def score(self, response_text):
+    def evaluate(self, response_text):
         s = 0.0
         if "def " in response_text:
             s += 5.0
-        return min(s, self.max_score)
+        return EvaluationResult(min(s, self.max_score), [])
+
+    # Public score() is inherited and returns an integer percentage.
 ```
 
 ## Plugin Temperature
@@ -134,7 +136,7 @@ Example:
 def test_my_task_scores_function():
     from plugins.my_task import MyTaskPlugin
     plugin = MyTaskPlugin()
-    assert plugin.score("def foo(): pass") == 5.0
+    assert plugin.score("def foo(): pass") == 50
 ```
 
 ## Adding Tests for Core Changes

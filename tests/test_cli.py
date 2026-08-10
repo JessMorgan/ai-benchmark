@@ -327,7 +327,13 @@ class TestSaveResponses(unittest.TestCase):
             self.assertIn("timestamp", meta)
             self.assertIn("rubric", meta)
             self.assertIsInstance(meta["rubric"], list)
-            self.assertTrue(all("name" in item and "max" in item and "earned" in item and "missed" in item for item in meta["rubric"]))
+            self.assertTrue(all(
+                "name" in item
+                and "score_percent" in item
+                and "weight_percent" in item
+                and not {"max", "earned", "missed"}.intersection(item)
+                for item in meta["rubric"]
+            ))
 
     def test_save_responses_with_thinking_writes_three_files(self):
         """When the model returns thinking content, all three response-file
@@ -609,7 +615,7 @@ class TestNonStreamingPluginRetry(unittest.TestCase):
         # Empty response correctly scores 0 -- we only assert no
         # exception was raised at the kwargs evaluation.
         self.assertIsNone(task_result.error)
-        self.assertEqual(task_result.result["structured-output_score"], 0.0)
+        self.assertEqual(task_result.result["structured-output_score"], 0)
 
     def test_run_plugin_task_nonstreaming_429_retry_fires_on_retry(self):
         """End-to-end: a 429 retry on a non-streaming plugin still

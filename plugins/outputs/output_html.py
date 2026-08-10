@@ -6,6 +6,7 @@ from benchmark.outputs import (
     _numeric_score,
     _plugin_token_counts,
     _plugin_total_score,
+    _scored_plugin_count,
     sanitize_filename,
 )
 from benchmark.plugin import BenchmarkOutputPlugin
@@ -53,8 +54,10 @@ class HTMLOutputPlugin(BenchmarkOutputPlugin):
                           f'<td><strong>{total}</strong></td>'
                           f'<td><strong>{score_cell}</strong></td>'
                           f'{empty_cell}')
-            cells += (f'<td><strong>{tot}</strong></td>'
-                      f'<td>{r["total_time"]}s</td><td>{m}</td>')
+            overall = r.get("overall_score_100", tot)
+            scored_plugins = r.get("overall_scored_plugins", _scored_plugin_count(r, active_plugins))
+            cells += (f'<td><strong>{overall if overall is not None else "-"}</strong></td>'
+                      f'<td>{scored_plugins}</td><td>{r["total_time"]}s</td><td>{m}</td>')
             if r["status"] == "ok":
                 cells += '<td class="ok-badge">✅</td>'
             else:
@@ -73,7 +76,7 @@ class HTMLOutputPlugin(BenchmarkOutputPlugin):
             def lb_for_plugin(plugin):
                 out = ""
                 for i, r in enumerate(sorted(ok, key=lambda x: _numeric_score(x, plugin.id), reverse=True)[:10], 1):
-                    out += f'<tr><td>{i}</td><td>{r["model"]}</td><td><strong>{r.get(f"{plugin.id}_score", "-")}/{int(plugin.max_score)}</strong></td></tr>\n'
+                    out += f'<tr><td>{i}</td><td>{r["model"]}</td><td><strong>{r.get(f"{plugin.id}_score", "-")}/100</strong></td></tr>\n'
                 return out
             leaderboard_html += f"""<div class="leaderboard">
 <h3>🧠 Best {p.name}</h3>
@@ -93,17 +96,17 @@ class HTMLOutputPlugin(BenchmarkOutputPlugin):
                     if not isinstance(rubric, list) or not rubric:
                         continue
                     rubric_html += f"<h3>{html_lib.escape(p.name)} — {html_lib.escape(r['model'])}</h3>\n"
-                    rubric_html += '<table><tr><th>Criterion</th><th>Earned</th><th>Max</th><th>Missed</th></tr>\n'
+                    rubric_html += '<table><tr><th>Criterion</th><th>Score %</th><th>Weight %</th></tr>\n'
                     for item in rubric:
-                        rubric_html += f"<tr><td>{html_lib.escape(str(item['name']))}</td><td>{item['earned']}</td><td>{item['max']}</td><td>{item['missed']}</td></tr>\n"
+                        rubric_html += f"<tr><td>{html_lib.escape(str(item['name']))}</td><td>{item.get('score_percent', '-')}</td><td>{item.get('weight_percent', '-')}</td></tr>\n"
                     rubric_html += "</table>\n"
 
         header_cells = "<th>Model</th><th>Runner</th><th>Load(s)</th>"
         for p in active_plugins:
             header_cells += (f"<th>{p.name} Resp(s)</th><th>{p.name} TPS</th>"
                              f"<th>{p.name} Think Tok</th><th>{p.name} Cont Tok</th><th>{p.name} Total Tok</th>"
-                             f"<th>{p.name} Score</th><th>{p.name} Reason</th>")
-        header_cells += "<th>Total</th><th>Time</th><th>Mode</th><th>Status</th>"
+                             f"<th>{p.name} Score (0–100)</th><th>{p.name} Reason</th>")
+        header_cells += "<th>Overall Score (0–100)</th><th>Scored Plugins</th><th>Time</th><th>Mode</th><th>Status</th>"
 
         seed_html = f"<br><strong>Seed:</strong> {session_seed}" if session_seed is not None else ""
         content = f"""<!DOCTYPE html>

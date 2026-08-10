@@ -43,14 +43,14 @@ class _FakePlugin:
 
 
 class TestOutputHelpers(unittest.TestCase):
-    def test_plugin_total_score_sums_numeric_only(self):
+    def test_plugin_total_score_returns_normalized_mean(self):
         plugins = [_FakePlugin("a"), _FakePlugin("b"), _FakePlugin("c")]
-        result = {"a_score": 10, "b_score": "fail", "c_score": 7.5}
-        self.assertEqual(_plugin_total_score(result, plugins), 17.5)
+        result = {"a_score": 10, "b_score": "fail", "c_score": 8}
+        self.assertEqual(_plugin_total_score(result, plugins), 9)
 
-    def test_plugin_total_score_missing_scores_count_zero(self):
+    def test_plugin_total_score_missing_scores_is_blank(self):
         result = {}
-        self.assertEqual(_plugin_total_score(result, [_FakePlugin("a")]), 0)
+        self.assertIsNone(_plugin_total_score(result, [_FakePlugin("a")]))
 
     def test_plugin_token_counts_modern_split(self):
         result = {
@@ -102,7 +102,7 @@ class TestGenWrappers(unittest.TestCase):
                 "stream_ok": True,
                 "ttft": 1.1,
                 "total_time": 8.0,
-                "rate-limiter_score": 12.0,
+                "rate-limiter_score": 60,
                 "rate-limiter_response_time": 3.2,
                 "rate-limiter_output_tokens": 120,
                 "rate-limiter_thinking_tokens": 10,

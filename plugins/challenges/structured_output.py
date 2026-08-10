@@ -19,7 +19,7 @@ class StructuredOutputPlugin(BenchmarkTaskPlugin):
 
     @property
     def version(self):
-        return "0.6.0"
+        return "0.7.0"
 
     @property
     def name(self):
@@ -300,8 +300,6 @@ class StructuredOutputPlugin(BenchmarkTaskPlugin):
             score = round(max(score - 0.5, 0.0), 1)
         return EvaluationResult(score, criteria)
 
-    def score(self, response_text):
-        return self.evaluate(response_text).score
 
     def _collect_leaf_values(self, obj, out):
         """Recursively collect leaf values for placeholder checking."""

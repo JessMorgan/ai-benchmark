@@ -112,7 +112,7 @@ class TestToolCallingScoring(unittest.TestCase):
         )
         score = self.plugin.score(text)
         self.assertGreater(score, 0.0)
-        self.assertLess(score, self.plugin.max_score)
+        self.assertLess(score, 100)
 
     def test_wrong_arguments_score_less_than_full(self):
         text = (
@@ -127,7 +127,7 @@ class TestToolCallingScoring(unittest.TestCase):
         )
         score = self.plugin.score(text)
         self.assertGreater(score, 0.0)
-        self.assertLess(score, self.plugin.max_score)
+        self.assertLess(score, 100)
 
 
 class TestOrchestrationScoring(unittest.TestCase):
@@ -227,7 +227,7 @@ class TestMultiStepScoring(unittest.TestCase):
         )
         score = self.plugin.score(text)
         self.assertGreater(score, 0.0)
-        self.assertLess(score, self.plugin.max_score)
+        self.assertLess(score, 100)
 
     def test_full_response_scores_high(self):
         text = (
@@ -271,7 +271,7 @@ class TestMultiStepScoring(unittest.TestCase):
         )
         score = self.plugin.score(text)
         self.assertGreater(score, 0.0)
-        self.assertLess(score, self.plugin.max_score)
+        self.assertLess(score, 100)
 
 
 class TestStructuredOutputScoring(unittest.TestCase):
@@ -382,13 +382,13 @@ class TestStructuredOutputScoring(unittest.TestCase):
         )
         score = self.plugin.score(text)
         self.assertGreater(score, 0.0)
-        self.assertLess(score, self.plugin.max_score)
+        self.assertLess(score, 100)
 
     def test_missing_required_keys_scores_less_than_full(self):
         text = '{"name": "Alice", "age": 30}'
         score = self.plugin.score(text)
         self.assertGreater(score, 0.0)
-        self.assertLess(score, self.plugin.max_score)
+        self.assertLess(score, 100)
 
     def test_wrong_types_scores_less_than_full(self):
         text = (
@@ -402,7 +402,7 @@ class TestStructuredOutputScoring(unittest.TestCase):
         )
         score = self.plugin.score(text)
         self.assertGreater(score, 0.0)
-        self.assertLess(score, self.plugin.max_score)
+        self.assertLess(score, 100)
 
 
 if __name__ == "__main__":

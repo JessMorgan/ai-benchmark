@@ -47,7 +47,7 @@ class TestPRDCreationScoring(unittest.TestCase):
         )
         score = self.plugin.score(text)
         self.assertGreater(score, 0.0)
-        self.assertLess(score, self.plugin.max_score)
+        self.assertLess(score, 100)
 
     def test_full_response_scores_high(self):
         text = (

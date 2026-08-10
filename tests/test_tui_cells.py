@@ -221,7 +221,7 @@ class TestPluginCellBlock(unittest.TestCase):
             ({"running_pids": ["rate-limiter"]}, 24),                  # 429 sleep
             ({
                 "running_pids": [],
-                "rate-limiter_score": 95.0,
+                "rate-limiter_score": 95,
                 "rate-limiter_output_tokens": 100,
                 "rate-limiter_thinking_tokens": 23,
                 "rate-limiter_total_tokens": 123,
@@ -344,7 +344,7 @@ class TestPluginCellBlock(unittest.TestCase):
             "source": "Local",
             "api_model": "model-a",
             "running_pids": ["wireframes"],
-            "rate-limiter_score": 95.0,
+            "rate-limiter_score": 95,
             "rate-limiter_output_tokens": 123,
             "rate-limiter_response_time": 45.6,
             "rate-limiter_tps": 2.5,
@@ -360,7 +360,7 @@ class TestPluginCellBlock(unittest.TestCase):
             "rate-limiter", s, self.p_streaming, sleeping_lookup=sleeping_lookup)
         self.assertNotIn("[429 sleeping", block,
                          "completed plugin cell must not inherit another plugin's 429 status")
-        self.assertIn("95.0", block)
+        self.assertIn("   95", block)
 
     def test_429_sleep_clamps_at_zero_seconds(self):
         """A wake_ts in the past clamps to ``0`` so the bracket stays
@@ -443,7 +443,7 @@ class TestPluginCellBlock(unittest.TestCase):
         anymore."""
         s = {
             "running_pids": [],
-            "rate-limiter_score": 95.0,
+            "rate-limiter_score": 95,
             "rate-limiter_output_tokens": 100,
             "rate-limiter_thinking_tokens": 23,
             "rate-limiter_total_tokens": 123,
@@ -457,7 +457,7 @@ class TestPluginCellBlock(unittest.TestCase):
         self.assertNotIn("]", block)
         # Numeric results present in their respective columns. The token
         # cell shows the TOTAL (123), not the content-only count (100).
-        self.assertIn("95.0", block)
+        self.assertIn("   95", block)
         self.assertIn("123", block)
         self.assertNotIn(" 100 ", block)
         self.assertIn("45.6", block)
@@ -474,7 +474,7 @@ class TestPluginCellBlock(unittest.TestCase):
         a numeric token count instead of ``-``."""
         s = {
             "running_pids": [],
-            "rate-limiter_score": 95.0,
+            "rate-limiter_score": 95,
             "rate-limiter_output_tokens": 123,
             "rate-limiter_response_time": 45.6,
             "rate-limiter_tps": 2.5,

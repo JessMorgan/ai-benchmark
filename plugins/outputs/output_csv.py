@@ -2,7 +2,7 @@ import csv
 import io
 import os
 
-from benchmark.outputs import _plugin_token_counts, _plugin_total_score
+from benchmark.outputs import _plugin_token_counts, _plugin_total_score, _scored_plugin_count
 from benchmark.plugin import BenchmarkOutputPlugin
 
 
@@ -28,9 +28,9 @@ class CSVOutputPlugin(BenchmarkOutputPlugin):
                 f"{p.id}_Response_s", f"{p.id}_Thinking_Tokens",
                 f"{p.id}_Content_Tokens", f"{p.id}_Total_Tokens",
                 f"{p.id}_TPS",
-                f"{p.id}_Score_{int(p.max_score)}", f"{p.id}_Empty_Reason",
+                f"{p.id}_Score_100", f"{p.id}_Empty_Reason",
             ])
-        headers.extend(["Total", "Time_s", "Mode", "Status", "Error"])
+        headers.extend(["Overall_Score_100", "Overall_Scored_Plugins", "Time_s", "Mode", "Status", "Error"])
         w.writerow(headers)
 
         for r in results:
@@ -48,10 +48,12 @@ class CSVOutputPlugin(BenchmarkOutputPlugin):
                     r.get(f"{p.id}_score", ''),
                     r.get(f"{p.id}_empty_reason", ''),
                 ])
+            overall = r.get("overall_score_100", tot)
+            scored_plugins = r.get("overall_scored_plugins", _scored_plugin_count(r, active_plugins))
             if r["status"] == "ok":
-                row.extend([tot, r['total_time'], m, "OK", ""])
+                row.extend([overall if overall is not None else "", scored_plugins, r['total_time'], m, "OK", ""])
             else:
-                row.extend([tot, r['total_time'], m, "FAIL", r.get('error', '')])
+                row.extend([overall if overall is not None else "", scored_plugins, r['total_time'], m, "FAIL", r.get('error', '')])
             w.writerow(row)
 
         content = out.getvalue()

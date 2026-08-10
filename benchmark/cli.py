@@ -672,7 +672,7 @@ def _plugin_cell_block(pid, s, p, sleeping_lookup=None):
     # content) count; the per-kind split is exposed in the CSV/MD/HTML/PDF
     # reports. Falls back to the legacy content-only count for state files
     # that predate the thinking/content split.
-    sc = _fmt_value(s.get(f"{pid}_score"))
+    sc = _fmt_value(s.get(f"{pid}_score"), ".0f")
     total_tokens = s.get(f"{pid}_total_tokens")
     tok = _fmt_value(
         total_tokens if total_tokens is not None else s.get(f"{pid}_output_tokens"),

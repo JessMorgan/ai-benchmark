@@ -13,7 +13,7 @@ class SoftwareArchitecturePlugin(BenchmarkTaskPlugin):
 
     @property
     def version(self):
-        return "0.5.0"
+        return "0.6.0"
 
     @property
     def name(self):
@@ -153,6 +153,3 @@ class SoftwareArchitecturePlugin(BenchmarkTaskPlugin):
             rubric.penalize_criterion("Resiliency & Failure Modes", 0.5, "absolute claim lacks a stated exception or failure mode")
 
         return rubric.results()
-
-    def score(self, response_text):
-        return self.evaluate(response_text).score

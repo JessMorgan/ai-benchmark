@@ -1,7 +1,12 @@
 import os
 from datetime import datetime, timezone
 
-from benchmark.outputs import _numeric_score, _plugin_token_counts, _plugin_total_score
+from benchmark.outputs import (
+    _numeric_score,
+    _plugin_token_counts,
+    _plugin_total_score,
+    _scored_plugin_count,
+)
 from benchmark.plugin import BenchmarkOutputPlugin
 
 
@@ -55,8 +60,8 @@ class PDFOutputPlugin(BenchmarkOutputPlugin):
                 f"{p.id[:3].upper()}Thk", f"{p.id[:3].upper()}Ctn",
                 f"{p.id[:3].upper()}Tot", f"{p.id[:3].upper()}Sc",
             ])
-        col_w.extend([9, 9])
-        headers.extend(["Tot", "Mode"])
+        col_w.extend([9, 9, 9])
+        headers.extend(["Overall", "Scored", "Mode"])
         pdf.set_font("Helvetica", "B", 6.5)
         for i, h in enumerate(headers):
             pdf.cell(col_w[i], 5, h, border=1, align="C")
@@ -79,10 +84,12 @@ class PDFOutputPlugin(BenchmarkOutputPlugin):
                     str(total),
                     str(r.get(f'{p.id}_score', '-')),
                 ])
+            overall = r.get("overall_score_100", tot)
+            scored_plugins = r.get("overall_scored_plugins", _scored_plugin_count(r, active_plugins))
             if r["status"] == "ok":
-                vals.extend([str(tot), m])
+                vals.extend([str(overall if overall is not None else "-"), str(scored_plugins), m])
             else:
-                vals.extend([str(tot), "FAIL"])
+                vals.extend([str(overall if overall is not None else "-"), str(scored_plugins), "FAIL"])
             for i, v in enumerate(vals):
                 pdf.cell(col_w[i], 4, v, border=1, align="C")
             pdf.ln()
@@ -102,7 +109,7 @@ class PDFOutputPlugin(BenchmarkOutputPlugin):
                 pdf.cell(0, 5, f"Best {p.name}:", new_x="LMARGIN", new_y="NEXT")
                 pdf.set_font("Helvetica", "", 7)
                 for i, r in enumerate(sorted(ok, key=lambda x: _numeric_score(x, p.id), reverse=True)[:5], 1):
-                    pdf.cell(0, 4, f"  {i}. {r['model'][:50]}  --  {r.get(f'{p.id}_score', '-')}/{int(p.max_score)}", new_x="LMARGIN", new_y="NEXT")
+                    pdf.cell(0, 4, f"  {i}. {r['model'][:50]}  --  {r.get(f'{p.id}_score', '-')}/100", new_x="LMARGIN", new_y="NEXT")
 
         has_rubric = any(isinstance(r.get(f"{p.id}_rubric"), list) and r.get(f"{p.id}_rubric") for p in active_plugins for r in results)
         if has_rubric:
@@ -121,7 +128,7 @@ class PDFOutputPlugin(BenchmarkOutputPlugin):
                     pdf.cell(0, 5, f"{p.name} -- {r['model']}", new_x="LMARGIN", new_y="NEXT")
                     pdf.set_font("Helvetica", "", 7)
                     for item in rubric:
-                        pdf.cell(0, 4, f"  {item['name']}: {item['earned']}/{item['max']} (missed {item['missed']})", new_x="LMARGIN", new_y="NEXT")
+                        pdf.cell(0, 4, f"  {item['name']}: {item.get('score_percent', '-')}% (weight {item.get('weight_percent', '-')}%)", new_x="LMARGIN", new_y="NEXT")
                     pdf.ln(1)
 
         os.makedirs(output_dir, exist_ok=True)

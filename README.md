@@ -214,9 +214,9 @@ Coverage configuration lives in `pyproject.toml` (`[tool.coverage]`). This produ
 
 Each model is scored on the active plugins across multiple dimensions:
 
-- **Score**: Quality rating (0–20) based on rubric keywords
+- **Score**: Normalized integer quality percentage (0–100) based on rubric keywords
 - **Speed**: Tokens per second (TPS)
 - **Latency**: Time to first token (TTFT) for streaming
 - **Cost**: Approximate per-model overhead
 
-Results are grouped by phase (code columns first, then general columns).
+Results are grouped by phase (code columns first, then general columns). Plugin `max_score` values are internal rubric maxima; public scores and overall scores use the 0–100 percentage schema.

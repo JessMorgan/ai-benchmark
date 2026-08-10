@@ -25,7 +25,7 @@ class TestWireframesScoring(unittest.TestCase):
         text = "Screen 1: Dashboard\n\n```\n[Header] Dashboard\n```"
         score = self.plugin.score(text)
         self.assertGreater(score, 0.0)
-        self.assertLess(score, self.plugin.max_score)
+        self.assertLess(score, 100)
 
     def test_two_screen_headers(self):
         text = (
@@ -35,7 +35,7 @@ class TestWireframesScoring(unittest.TestCase):
         )
         score = self.plugin.score(text)
         self.assertGreater(score, 0.0)
-        self.assertLess(score, self.plugin.max_score)
+        self.assertLess(score, 100)
 
     def test_partial_response_scores(self):
         text = (
@@ -74,7 +74,7 @@ class TestWireframesScoring(unittest.TestCase):
         )
         score = self.plugin.score(text)
         self.assertGreater(score, 0.0)
-        self.assertLess(score, self.plugin.max_score)
+        self.assertLess(score, 100)
 
     def test_full_response_scores_high(self):
         text = (

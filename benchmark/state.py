@@ -8,6 +8,8 @@ import os
 import threading
 import time
 
+from .plugin import SCORE_SCHEMA
+
 
 class BenchmarkState:
     """Thread-safe shared state for parallel benchmark execution."""
@@ -20,6 +22,7 @@ class BenchmarkState:
         self.plugin_ids = list(plugin_ids)
         self.session_seed = session_seed
         self.runner = runner
+        self.score_schema = SCORE_SCHEMA
         for name, info in models.items():
             if isinstance(info, dict):
                 source = info.get("source", "Default")
@@ -380,6 +383,7 @@ class BenchmarkState:
                 "plugin_versions": plugin_versions or {},
                 "session_seed": self.session_seed,
                 "runner": self.runner,
+                "score_schema": SCORE_SCHEMA,
             }
         tmp = path + ".tmp"
         try:
@@ -409,6 +413,11 @@ class BenchmarkState:
         session_seed = data.get("session_seed")
         runner = data.get("runner", "http")
         state = cls(models, plugin_ids, session_seed=session_seed, runner=runner)
+        if data.get("score_schema") != SCORE_SCHEMA:
+            raise ValueError(
+                f"Unsupported score schema {data.get('score_schema')!r}; "
+                f"start a new run with {SCORE_SCHEMA!r}"
+            )
         saved_plugins = data.get("active_plugins", [])
         new_plugins = [pid for pid in plugin_ids if pid not in saved_plugins]
         saved_info = data.get("model_info", {})

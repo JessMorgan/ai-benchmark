@@ -14,7 +14,7 @@ class RateLimiterPlugin(BenchmarkTaskPlugin):
 
     @property
     def version(self):
-        return "0.5.0"
+        return "0.6.0"
 
     @property
     def name(self):
@@ -205,6 +205,3 @@ else:
                 failure_reason="isolated deterministic/concurrency check failed",
             )
         return rubric.results()
-
-    def score(self, response_text):
-        return self.evaluate(response_text).score

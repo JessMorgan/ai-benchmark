@@ -20,8 +20,9 @@ The CSV output plugin generates a `results.csv` file containing the raw benchmar
 | `<plugin>_Response_s` | Response time per plugin |
 | `<plugin>_Output_Tokens` | Output tokens per plugin |
 | `<plugin>_TPS` | Tokens per second per plugin |
-| `<plugin>_Score_<max>` | Score per plugin |
-| Total | Sum of numeric plugin scores |
+| `<plugin>_Score_100` | Normalized integer score per plugin (0–100) |
+| Overall_Score_100 | Half-up mean of available plugin percentages |
+| Overall_Scored_Plugins | Number of active plugins contributing to the overall score |
 | Time_s | Total benchmark time |
 | Mode | `stream` or `non-streaming` |
 | Status | `OK` or `FAIL` |

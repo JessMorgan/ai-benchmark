@@ -32,7 +32,13 @@ from .outputs import (  # noqa: F401
     gen_pdf,
     sanitize_filename,
 )
-from .plugin import PluginTaskResult
+from .plugin import (
+    SCORE_SCHEMA,
+    PluginTaskResult,
+    normalize_rubric,
+    normalize_score,
+    sanitize_diagnostics,
+)
 from .state import BenchmarkState  # noqa: F401
 
 PRELOAD_PROMPT = "Reply with the single word OK."
@@ -140,6 +146,19 @@ def preload_model(source_config, source, api_model, timeout,
         error=error,
         text=response.text,
     )
+
+
+def _overall_score(result, active_plugins):
+    """Return the half-up mean of available normalized plugin percentages."""
+    scores = [
+        result.get(f"{plugin.id}_score")
+        for plugin in active_plugins
+        if isinstance(result.get(f"{plugin.id}_score"), (int, float))
+        and not isinstance(result.get(f"{plugin.id}_score"), bool)
+    ]
+    if not scores:
+        return None
+    return normalize_score(sum(scores) / len(scores), 100)
 
 
 def count_tokens(text):
@@ -650,6 +669,7 @@ def _run_plugin_task(target_name, api_model, source, plugin, source_config, time
                             "is_agent": is_agent,
                             "system_prompt": system_prompt,
                             "score": "fail",
+                            "score_schema": SCORE_SCHEMA,
                             "rubric": [],
                             "response_time": response_time,
                             "output_tokens": int(count_tokens(text)),
@@ -983,16 +1003,16 @@ def _run_plugin_task(target_name, api_model, source, plugin, source_config, time
     # now catch every exception, persist the ``error`` + ``traceback``
     # fields alongside the metrics that WERE successfully gathered, and    #    surface the same named ``PluginTaskResult`` failure contract as the
     #    streaming failure path.
-    score = "fail"
+    score: int | str = "fail"
     rubric = []
     diagnostics: dict[str, Any] = {}
     score_error = None
     score_traceback_text = None
     try:
         evaluation = plugin.evaluate(text)
-        score = evaluation.score
-        rubric = evaluation.rubric
-        diagnostics = evaluation.diagnostics or {}
+        score = normalize_score(evaluation.score, plugin.max_score)
+        rubric = normalize_rubric(evaluation.rubric, plugin.max_score)
+        diagnostics = sanitize_diagnostics(evaluation.diagnostics or {})
     except Exception as exc:  # noqa: BLE001 - a crashing evaluator is recorded, not fatal
         score_error = f"plugin.evaluate raised {type(exc).__name__}: {exc}"
         score_traceback_text = traceback.format_exc()
@@ -1009,7 +1029,9 @@ def _run_plugin_task(target_name, api_model, source, plugin, source_config, time
             "is_agent": is_agent,
             "system_prompt": system_prompt,
             "score": score,
+            "score_schema": SCORE_SCHEMA,
             "rubric": rubric,
+
             "diagnostics": diagnostics,
             "response_time": response_time,
             "output_tokens": output_tokens,
@@ -1075,6 +1097,7 @@ def run_model(model_name, source, state, active_plugins, source_config, timeout,
     api_model = api_model or target_name
 
     r = {
+        "score_schema": SCORE_SCHEMA,
         "model": display_name,
         "state_key": target_name,
         "api_model": api_model,
@@ -1130,6 +1153,12 @@ def run_model(model_name, source, state, active_plugins, source_config, timeout,
     if not plugins_to_run:
         r["stream_ok"] = any(r.get(f"{p.id}_stream_ok", True) for p in active_plugins)
         r["ttft"] = existing.get("ttft") if existing else None
+        r["overall_score_100"] = _overall_score(r, active_plugins)
+        r["overall_scored_plugins"] = sum(
+            isinstance(r.get(f"{p.id}_score"), (int, float))
+            and not isinstance(r.get(f"{p.id}_score"), bool)
+            for p in active_plugins
+        )
         r["total_time"] = round(time.time() - start, 1)
         state.add_result(r)
         state.update(target_name, status="completed", elapsed=r["total_time"])
@@ -1298,6 +1327,12 @@ def _run_plugins(target_name, api_model, source, state, active_plugins, plugins_
         state.update(target_name, status="failed", error=r["error"], elapsed=r["total_time"], last_error=r["error"])
         return
 
+    r["overall_score_100"] = _overall_score(r, active_plugins)
+    r["overall_scored_plugins"] = sum(
+        isinstance(r.get(f"{p.id}_score"), (int, float))
+        and not isinstance(r.get(f"{p.id}_score"), bool)
+        for p in active_plugins
+    )
     r["total_time"] = round(time.time() - start, 1)
     state.add_result(r)
     state.update(target_name, status="completed", elapsed=r["total_time"])

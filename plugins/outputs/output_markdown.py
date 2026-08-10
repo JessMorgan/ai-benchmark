@@ -5,6 +5,7 @@ from benchmark.outputs import (
     _numeric_score,
     _plugin_token_counts,
     _plugin_total_score,
+    _scored_plugin_count,
     sanitize_filename,
 )
 from benchmark.plugin import BenchmarkOutputPlugin
@@ -25,7 +26,7 @@ class MarkdownOutputPlugin(BenchmarkOutputPlugin):
 
     def generate(self, results, active_plugins, output_dir=None, session_seed=None):
         ok = [r for r in results if r["status"] == "ok"]
-        plugin_names = " | ".join(f"**{p.name}** ({int(p.max_score)} pts)" for p in active_plugins)
+        plugin_names = " | ".join(f"**{p.name}**" for p in active_plugins)
         seed_line = f"**Seed:** {session_seed}" if session_seed is not None else ""
         lines = [
             "# AI Benchmark — Plugin-Based",
@@ -44,10 +45,10 @@ class MarkdownOutputPlugin(BenchmarkOutputPlugin):
         has_runner = any(r.get("runner") for r in results)
         header = "| # | Model | Runner | Load (s) |" if has_runner else "| # | Model | Load (s) |"
         for p in active_plugins:
-            header += f" {p.name} Resp (s) | {p.name} TPS | {p.name} Think Tok | {p.name} Cont Tok | {p.name} Total Tok | {p.name} Score | {p.name} Reason |"
+            header += f" {p.name} Resp (s) | {p.name} TPS | {p.name} Think Tok | {p.name} Cont Tok | {p.name} Total Tok | {p.name} Score (0–100) | {p.name} Reason |"
             if output_dir:
                 header += f" {p.name} Response |"
-        header += " Total | Time | Mode |"
+        header += " Overall Score (0–100) | Scored Plugins | Time | Mode |"
         lines.append(header)
 
         sep = "|---|---|---|---|" if has_runner else "|---|---|---|"
@@ -55,7 +56,7 @@ class MarkdownOutputPlugin(BenchmarkOutputPlugin):
             sep += "---|---|---|---|---|---|---|"
             if output_dir:
                 sep += "---|"
-        sep += "---|---|---|"
+        sep += "---|---|---|---|"
         lines.append(sep)
 
         for idx, r in enumerate(results, 1):
@@ -78,7 +79,9 @@ class MarkdownOutputPlugin(BenchmarkOutputPlugin):
                     runner_prefix = f"{runner}/" if runner in ("http", "opencode") else ""
                     rel_path = f"{runner_prefix}responses/{sanitize_filename(r['model'])}/{p.id}.txt"
                     row += f" [view]({rel_path}) |"
-            row += f" {tot} | {r['total_time']}s | {m} |"
+            overall = r.get("overall_score_100", tot)
+            scored_plugins = r.get("overall_scored_plugins", _scored_plugin_count(r, active_plugins))
+            row += f" {overall if overall is not None else '-'} | {scored_plugins} | {r['total_time']}s | {m} |"
             lines.append(row)
 
         if ok:
@@ -91,46 +94,48 @@ class MarkdownOutputPlugin(BenchmarkOutputPlugin):
                 lines.append(f"| {i} | {r['model']} | {r['ttft']} |")
 
             for p in active_plugins:
-                lines.extend(["", f"### 🧠 Best {p.name} Score (/{int(p.max_score)})"])
+                lines.extend(["", f"### 🧠 Best {p.name} Score (/100)"])
                 lines.append("| # | Model | Score |")
                 lines.append("|---|---|---|")
                 for i, r in enumerate(sorted(ok, key=lambda x: _numeric_score(x, p.id), reverse=True)[:10], 1):
                     lines.append(f"| {i} | {r['model']} | {r.get(f'{p.id}_score', '-')} |")
 
-            lines.extend(["", "### ⭐ Best Combined"])
-            lines.append("| # | Model | Total |")
+            lines.extend(["", "### ⭐ Best Overall"])
+            lines.append("| # | Model | Overall Score (0–100) |")
             lines.append("|---|---|---|")
             for i, r in enumerate(sorted(ok, key=lambda x: _plugin_total_score(x, active_plugins), reverse=True)[:10], 1):
                 tot = _plugin_total_score(r, active_plugins)
-                lines.append(f"| {i} | {r['model']} | {tot} |")
+                overall = r.get("overall_score_100", tot)
+                lines.append(f"| {i} | {r['model']} | {overall if overall is not None else '-'} |")
 
         lines.extend(["", "---", "## 📐 Scoring Rubric", ""])
         for p in active_plugins:
             lines.extend([
-                f"### {p.name} (0-{int(p.max_score)})",
-                "| Criterion | Max | Description |",
+                f"### {p.name} (0–100)",
+                "| Criterion | Weight % | Description |",
                 "|---|---|---|",
             ])
             if p.id == "rate-limiter":
                 lines.extend([
-                    "| Interface design | 3 | ABC/Protocol, clean allow_request/get_usage_stats |",
-                    "| Token Bucket | 4 | Class, refill logic, consume logic |",
-                    "| Sliding Window | 3 | Class, timestamp tracking, pruning |",
-                    "| Thread safety | 3 | Locking, minimal contention |",
-                    "| Cleanup | 2 | Stale entry eviction |",
-                    "| Type hints | 2 | Parameter & return annotations |",
-                    "| Docstrings | 2 | Comprehensive documentation |",
-                    "| Error handling | 1 | Input validation, exceptions |",
+                    "| Interface design | 15 | ABC/Protocol, clean allow_request/get_usage_stats |",
+                    "| Token Bucket | 20 | Class, refill logic, consume logic |",
+                    "| Sliding Window | 15 | Class, timestamp tracking, pruning |",
+                    "| Thread safety | 15 | Locking, minimal contention |",
+                    "| Cleanup | 10 | Stale entry eviction |",
+                    "| Type hints | 10 | Parameter & return annotations |",
+                    "| Docstrings | 10 | Comprehensive documentation |",
+                    "| Error handling | 5 | Input validation, exceptions |",
                 ])
             elif p.id == "moe-dense":
                 lines.extend([
-                    "| Both architectures covered | 2 | Explicitly discusses MoE and dense |",
-                    "| Gating/routing mechanism | 2.5 | Top-k routing, softmax gating equations |",
-                    "| Load-balancing loss | 2.5 | Auxiliary loss formulation |",
-                    "| Training challenges | 2 | Token dropping, expert collapse, etc. |",
-                    "| Inference implications | 2 | Memory bandwidth, expert parallelism |",
-                    "| Specific benchmarks | 2 | MMLU, GSM8K, etc. with comparisons |",
-                    "| Paper references | 2 | Specific papers, technical reports |",
+                    "| Both architectures covered | 12 | Explicitly discusses MoE and dense |",
+                    "| Gating/routing mechanism | 15 | Top-k routing, softmax gating equations |",
+                    "| Load-balancing loss | 15 | Auxiliary loss formulation |",
+                    "| Training challenges | 12 | Token dropping, expert collapse, etc. |",
+                    "| Inference implications | 12 | Memory bandwidth, expert parallelism |",
+                    "| Specific benchmarks | 12 | MMLU, GSM8K, etc. with comparisons |",
+                    "| Paper references | 12 | Specific papers, technical reports |",
+                    "| Quantitative trade-offs | 10 | Concrete measurements comparing MoE and dense |",
                 ])
 
         has_rubric = any(isinstance(r.get(f"{p.id}_rubric"), list) and r.get(f"{p.id}_rubric") for p in active_plugins for r in results)
@@ -144,10 +149,10 @@ class MarkdownOutputPlugin(BenchmarkOutputPlugin):
                     if not isinstance(rubric, list) or not rubric:
                         continue
                     lines.append(f"### {p.name} — {r['model']}")
-                    lines.append("| Criterion | Earned | Max | Missed |")
-                    lines.append("|---|---|---|---|")
+                    lines.append("| Criterion | Score % | Weight % |")
+                    lines.append("|---|---|---|")
                     for item in rubric:
-                        lines.append(f"| {item['name']} | {item['earned']} | {item['max']} | {item['missed']} |")
+                        lines.append(f"| {item['name']} | {item.get('score_percent', '-')} | {item.get('weight_percent', '-')} |")
                     lines.append("")
 
         lines.extend(["", "## ❌ Failed Models", ""])

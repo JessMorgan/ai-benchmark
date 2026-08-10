@@ -6,6 +6,8 @@ helper used to persist them to disk.
 import contextlib
 import re
 
+from .plugin import normalize_score
+
 
 def sanitize_filename(name):
     """Sanitize a model name for use as a filename."""
@@ -14,14 +16,25 @@ def sanitize_filename(name):
     return s
 
 
+def _numeric_plugin_scores(result, active_plugins):
+    """Return normalized numeric plugin scores, excluding failures."""
+    return [
+        score
+        for plugin in active_plugins
+        for score in [result.get(f"{plugin.id}_score")]
+        if isinstance(score, (int, float)) and not isinstance(score, bool)
+    ]
+
+
 def _plugin_total_score(result, active_plugins):
-    """Sum numeric plugin scores, ignoring non-numeric/failed values."""
-    total = 0
-    for plugin in active_plugins:
-        score = result.get(f"{plugin.id}_score", 0)
-        if isinstance(score, (int, float)):
-            total += score
-    return total
+    """Return the normalized overall mean score, or ``None`` if unscored."""
+    scores = _numeric_plugin_scores(result, active_plugins)
+    return normalize_score(sum(scores) / len(scores), 100) if scores else None
+
+
+def _scored_plugin_count(result, active_plugins):
+    """Return the number of active plugins with numeric public scores."""
+    return len(_numeric_plugin_scores(result, active_plugins))
 
 
 def _plugin_token_counts(result, plugin_id):
@@ -54,7 +67,7 @@ def _plugin_token_counts(result, plugin_id):
 
 
 def _numeric_score(result, plugin_id, default=0):
-    """Return a numeric score for sorting, falling back to default for non-numeric values."""
+    """Return a normalized numeric score for sorting, or ``default``."""
     score = result.get(f"{plugin_id}_score", default)
     if isinstance(score, (int, float)):
         return score
