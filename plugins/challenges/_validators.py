@@ -63,6 +63,31 @@ def parse_python(text: str, *, require_block: bool = False) -> Validation:
     )
 
 
+def stub_definitions(tree: ast.AST, names: set[str]) -> list[str]:
+    """Return required definitions whose bodies contain only stubs."""
+    found = []
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        if node.name not in names:
+            continue
+        meaningful = [
+            item for item in node.body
+            if not (
+                isinstance(item, ast.Expr)
+                and isinstance(item.value, ast.Constant)
+                and isinstance(item.value.value, str)
+            )
+        ]
+        if meaningful and all(
+            isinstance(item, ast.Pass)
+            or (isinstance(item, ast.Expr) and isinstance(item.value, ast.Constant) and item.value.value is Ellipsis)
+            for item in meaningful
+        ):
+            found.append(node.name)
+    return found
+
+
 def find_definitions(tree: ast.AST) -> dict[str, list[ast.FunctionDef | ast.AsyncFunctionDef]]:
     """Index function definitions by name."""
     definitions: dict[str, list[ast.FunctionDef | ast.AsyncFunctionDef]] = {}
@@ -150,15 +175,20 @@ def parse_structured(text: str, *, fmt: str | None = None) -> Validation:
     )
 
 
-def section_map(text: str) -> dict[str, str]:
-    """Split Markdown into normalized heading-to-content sections."""
+def heading_occurrences(text: str) -> list[tuple[str, str]]:
+    """Return every normalized Markdown heading and its body."""
     matches = list(re.finditer(r"(?m)^\s{0,3}#{1,6}\s+(.+?)\s*$", text))
-    sections: dict[str, str] = {}
+    occurrences = []
     for index, match in enumerate(matches):
         heading = re.sub(r"[*_`]+", "", match.group(1)).strip().lower()
         end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
-        sections[heading] = text[match.end():end].strip()
-    return sections
+        occurrences.append((heading, text[match.end():end].strip()))
+    return occurrences
+
+
+def section_map(text: str) -> dict[str, str]:
+    """Split Markdown into normalized heading-to-content sections."""
+    return dict(heading_occurrences(text))
 
 
 def validate_sections(text: str, required: list[str], *, min_chars: int = 20) -> Validation:
@@ -218,6 +248,17 @@ def parse_workflow_graph(text: str) -> Validation:
 
     for task_id in adjacency:
         visit(task_id)
+    labels_by_task: dict[str, set[str]] = {}
+    for line in text.splitlines():
+        task_match = re.search(r"\b(?:task|step)[ _-]?(\d+)\b", line, re.IGNORECASE)
+        if task_match:
+            labels = labels_by_task.setdefault(task_match.group(1), set())
+            if re.search(r"\[PARALLEL\]", line, re.IGNORECASE):
+                labels.add("parallel")
+            if re.search(r"\[SEQUENTIAL\]", line, re.IGNORECASE):
+                labels.add("sequential")
+    if any(labels == {"parallel", "sequential"} for labels in labels_by_task.values()):
+        errors.append("a task is labeled both parallel and sequential")
     if not edges:
         errors.append("no dependency edges found")
     return Validation(

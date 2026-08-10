@@ -20,7 +20,7 @@ class DebugTraversalPlugin(BenchmarkTaskPlugin):
 
     @property
     def version(self):
-        return "0.2.1"
+        return "0.3.0"
 
     @property
     def name(self):
@@ -152,6 +152,21 @@ class DebugTraversalPlugin(BenchmarkTaskPlugin):
         hits = sum(1 for section in required_sections if re.search(section, t, re.IGNORECASE))
         earned = min(hits * 1.0, 5.0)
         rubric.add_criterion("Structured RCA sections", 5.0, earned)
+
+        # The supplied implementation is already correct for the example;
+        # invented identifiers are a direct contradiction, not a missing
+        # keyword. Penalize only the root-cause/analysis criteria.
+        root_cause = re.search(r"(?is)(?:root\s+cause|diagnosis).*?(?:\n\s*#{1,4}\s+|\Z)", t)
+        root_cause_text = root_cause.group(0) if root_cause else t[:1000]
+        if re.search(r"\buser_id[o0]|nonexistent|typo|wrong\s+key", root_cause_text, re.IGNORECASE):
+            rubric.penalize_criterion(
+                "Depth of analysis", 2.0,
+                "response claims an identifier/key defect absent from the supplied code",
+            )
+            rubric.penalize_criterion(
+                "Systematic trace / code walkthrough", 1.0,
+                "response's diagnosis contradicts the supplied implementation",
+            )
 
         return rubric.results()
 

@@ -14,7 +14,7 @@ class MoEDensePlugin(BenchmarkTaskPlugin):
 
     @property
     def version(self):
-        return "0.4.1"
+        return "0.5.0"
 
     @property
     def name(self):
@@ -191,6 +191,9 @@ class MoEDensePlugin(BenchmarkTaskPlugin):
             flags=re.IGNORECASE | re.DOTALL,
         )
 
+        if not re.search(r"(?:equation|formula|=|loss\s*=)", t):
+            rubric.penalize_criterion("Gating/routing mechanism", 0.5, "no mathematical formulation was provided")
+            rubric.penalize_criterion("Load-balancing loss", 0.5, "no load-balancing equation was provided")
         return rubric.results()
 
     def score(self, response_text):

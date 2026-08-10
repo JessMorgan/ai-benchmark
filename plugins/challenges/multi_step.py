@@ -3,7 +3,7 @@ import re
 
 from benchmark.plugin import BenchmarkTaskPlugin, EvaluationResult
 from plugins.challenges._rubric import Rubric
-from plugins.challenges._validators import find_definitions, parse_python
+from plugins.challenges._validators import find_definitions, parse_python, stub_definitions
 
 
 class MultiStepPlugin(BenchmarkTaskPlugin):
@@ -13,7 +13,7 @@ class MultiStepPlugin(BenchmarkTaskPlugin):
 
     @property
     def version(self):
-        return "0.4.0"
+        return "0.5.0"
 
     @property
     def name(self):
@@ -129,6 +129,13 @@ class MultiStepPlugin(BenchmarkTaskPlugin):
             earned -= 1.0
         earned = round(max(earned, 0.0), 1)
         rubric.add_criterion("No extra prose/main block", 2.0, earned)
+        if re.search(r"(?m)^\s*if\s+__name__\s*==", t):
+            rubric.penalize_criterion("No extra prose/main block", 1.0, "response includes a forbidden main block")
+        if python_validation.valid and stub_definitions(
+                python_validation.value,
+                {"greet_user", "validate_name", "format_greeting"},
+        ):
+            rubric.penalize_criterion("No extra prose/main block", 0.5, "response contains a required-function stub")
 
         return rubric.results()
 

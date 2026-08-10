@@ -13,7 +13,7 @@ class OrchestrationPlugin(BenchmarkTaskPlugin):
 
     @property
     def version(self):
-        return "0.4.0"
+        return "0.5.0"
 
     @property
     def name(self):
@@ -86,6 +86,22 @@ class OrchestrationPlugin(BenchmarkTaskPlugin):
         if has_start and has_end:
             earned += 3.0
         rubric.add_criterion("State / execution trace", 4.0, earned)
+
+        if graph_validation.errors:
+            for criterion in ("Explicit dependency tagging", "Parallel vs sequential logic"):
+                rubric.penalize_criterion(
+                    criterion, 1.0,
+                    "workflow graph contains an invalid dependency or contradiction",
+                )
+        contradictory_tasks = re.findall(
+            r"(?is)(?:task|step)\s*\d+[^\n]*(?:\[PARALLEL\])[^\n]*(?:\[SEQUENTIAL\])",
+            t,
+        )
+        if contradictory_tasks:
+            rubric.penalize_criterion(
+                "Parallel vs sequential logic", 1.0,
+                "the same workflow task is labeled both parallel and sequential",
+            )
 
         return rubric.results()
 

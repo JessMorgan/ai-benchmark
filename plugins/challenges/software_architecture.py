@@ -13,7 +13,7 @@ class SoftwareArchitecturePlugin(BenchmarkTaskPlugin):
 
     @property
     def version(self):
-        return "0.4.1"
+        return "0.5.0"
 
     @property
     def name(self):
@@ -147,6 +147,10 @@ class SoftwareArchitecturePlugin(BenchmarkTaskPlugin):
         if re.search(r'\b(?:slo|sli|sla|service level objective|error budget|99\.[0-9]%)', t, re.IGNORECASE):
             earned += 1.0
         rubric.add_criterion("Observability & SLOs", 2.0, earned)
+        if not re.search(r"\b(?:trade.?off|because|therefore|chosen|rationale)\b", t, re.IGNORECASE):
+            rubric.penalize_criterion("Architecture & Patterns", 0.5, "architecture choices have no explicit rationale")
+        if re.search(r"(?i)\b(?:never|always)\b", t) and not re.search(r"(?i)\b(?:exception|unless|trade.?off)\b", t):
+            rubric.penalize_criterion("Resiliency & Failure Modes", 0.5, "absolute claim lacks a stated exception or failure mode")
 
         return rubric.results()
 

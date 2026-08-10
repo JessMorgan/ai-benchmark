@@ -20,7 +20,7 @@ class MultiTurnConversationPlugin(BenchmarkTaskPlugin):
 
     @property
     def version(self):
-        return "0.2.1"
+        return "0.3.0"
 
     @property
     def name(self):
@@ -156,6 +156,15 @@ class MultiTurnConversationPlugin(BenchmarkTaskPlugin):
             earned -= 0.5
         earned = round(max(earned, 0.0), 1)
         rubric.add_criterion("Structure compliance", 2.0, earned)
+
+        sections = validate_sections(t, ["Version 1", "Version 2", "Version 3"], min_chars=10).value or {}
+        v1 = next((body for key, body in sections.items() if "version 1" in key), "")
+        v2 = next((body for key, body in sections.items() if "version 2" in key), "")
+        v3 = next((body for key, body in sections.items() if "version 3" in key), "")
+        if v1 and v2 and v1 == v2:
+            rubric.penalize_criterion("Evidence of iteration across versions", 1.0, "Version 2 duplicates Version 1")
+        if v2 and v3 and v2 == v3:
+            rubric.penalize_criterion("Evidence of iteration across versions", 1.0, "Version 3 duplicates Version 2")
 
         return rubric.results()
 

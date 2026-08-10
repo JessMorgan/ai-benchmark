@@ -68,7 +68,7 @@ class WireframesPlugin(BenchmarkTaskPlugin):
 
     @property
     def version(self):
-        return "0.4.1"
+        return "0.5.0"
 
     @property
     def name(self):
@@ -230,6 +230,10 @@ class WireframesPlugin(BenchmarkTaskPlugin):
         elif matched_features >= 3:
             earned = 0.5
         rubric.add_criterion("Coverage of PRD features", 1.0, earned)
+        if screen_count >= 4 and not re.search(r"(?m)^\s*#{1,4}\s+", t):
+            rubric.penalize_criterion("Visual/structural wireframe", 1.0, "screen count is asserted without structural sections")
+        if not re.search(r"(?:\b(?:navigate|transition|flow|arrow)\b|->|→|=>)", t, re.IGNORECASE):
+            rubric.penalize_criterion("Navigation flows", 1.0, "no explicit navigation relationship was found")
 
         return rubric.results()
 

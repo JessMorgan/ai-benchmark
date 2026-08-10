@@ -3,7 +3,7 @@ import re
 
 from benchmark.plugin import BenchmarkTaskPlugin, EvaluationResult
 from plugins.challenges._rubric import Rubric
-from plugins.challenges._validators import validate_sections
+from plugins.challenges._validators import heading_occurrences, validate_sections
 
 
 class PRDCreationPlugin(BenchmarkTaskPlugin):
@@ -13,7 +13,7 @@ class PRDCreationPlugin(BenchmarkTaskPlugin):
 
     @property
     def version(self):
-        return "0.3.1"
+        return "0.4.0"
 
     @property
     def name(self):
@@ -174,6 +174,15 @@ class PRDCreationPlugin(BenchmarkTaskPlugin):
             earned += 0.25
         rubric.add_criterion("Open Questions / Risks", 1.0, earned)
 
+        occurrences = heading_occurrences(t)
+        bodies = [body.strip().lower() for _heading, body in occurrences if body.strip()]
+        duplicate_headings = len(occurrences) - len({heading for heading, _body in occurrences})
+        duplicates = (len(bodies) - len(set(bodies))) + duplicate_headings
+        if duplicates:
+            rubric.penalize_criterion(
+                "Functional Requirements", min(1.0, duplicates * 0.5),
+                f"{duplicates} required section(s) duplicate another section",
+            )
         return rubric.results()
 
     def score(self, response_text):

@@ -14,7 +14,7 @@ class CodeReviewPlugin(BenchmarkTaskPlugin):
 
     @property
     def version(self):
-        return "0.4.1"
+        return "0.5.0"
 
     @property
     def name(self):
@@ -133,6 +133,11 @@ class CodeReviewPlugin(BenchmarkTaskPlugin):
             [(r"\b(use\s+(?:a\s+)?context\s+manager|with\s+open|remove\s+(?:the\s+)?import|is\s+none|try:|except|parameterize)\b", 3.0)],
         )
 
+        if not any(re.search(r"\b(?:close|context\s+manager|is\s+none|try|except)\b", description) for description in descriptions):
+            rubric.penalize_criterion(
+                "Actionable / concrete fix", 1.0,
+                "findings contain no actionable remediation language",
+            )
         return rubric.results()
 
     def score(self, response_text):

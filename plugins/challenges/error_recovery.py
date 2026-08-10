@@ -11,7 +11,7 @@ import re
 
 from benchmark.plugin import BenchmarkTaskPlugin
 from plugins.challenges._rubric import Rubric
-from plugins.challenges._validators import find_definitions, parse_python
+from plugins.challenges._validators import find_definitions, parse_python, stub_definitions
 
 
 class ErrorRecoveryPlugin(BenchmarkTaskPlugin):
@@ -21,7 +21,7 @@ class ErrorRecoveryPlugin(BenchmarkTaskPlugin):
 
     @property
     def version(self):
-        return "0.3.0"
+        return "0.4.0"
 
     @property
     def name(self):
@@ -161,6 +161,22 @@ class ErrorRecoveryPlugin(BenchmarkTaskPlugin):
         if re.search(r"async\s+def\s+demo", t):
             earned += 0.5
         rubric.add_criterion("Structure / completeness", 2.0, earned)
+
+        placeholders = re.findall(r"(?m)^\s*\.\.\.\s*$", t)
+        if python_validation.valid:
+            placeholders.extend(stub_definitions(
+                python_validation.value,
+                {"WeatherClient", "get_weather_resilient", "demo"},
+            ))
+        if placeholders:
+            rubric.penalize_criterion(
+                "Structure / completeness", 2.0,
+                f"response contains {len(placeholders)} placeholder or pass-only line(s)",
+            )
+            rubric.penalize_criterion(
+                "Demo scenarios", 1.0,
+                "placeholder implementation cannot demonstrate the requested scenarios",
+            )
 
         return rubric.results()
 

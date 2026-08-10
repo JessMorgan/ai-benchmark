@@ -66,6 +66,22 @@ class Rubric:
             matched=bool(evidence),
         )
 
+    def penalize_criterion(self, name: str, points: float, finding: str) -> None:
+        """Apply a bounded negative finding to an existing criterion."""
+        for criterion in reversed(self.criteria):
+            if criterion["name"] != name:
+                continue
+            deduction = min(max(0.0, points), criterion["earned"])
+            criterion["earned"] = round(criterion["earned"] - deduction, 1)
+            criterion["missed"] = round(criterion["max"] - criterion["earned"], 1)
+            criterion.setdefault("negative_findings", []).append({
+                "finding": finding,
+                "points": deduction,
+            })
+            self.total = max(0.0, self.total - deduction)
+            return
+        self.errors.append(f"cannot penalize unknown criterion {name!r}")
+
     def record_validation(self, validation) -> None:
         """Attach a typed-validator result without changing score totals."""
         self.validations.append({

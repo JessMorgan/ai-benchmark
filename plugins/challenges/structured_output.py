@@ -19,7 +19,7 @@ class StructuredOutputPlugin(BenchmarkTaskPlugin):
 
     @property
     def version(self):
-        return "0.5.0"
+        return "0.6.0"
 
     @property
     def name(self):
@@ -174,7 +174,11 @@ class StructuredOutputPlugin(BenchmarkTaskPlugin):
 
         data = structured_validation.value if structured_validation.valid else None
         if data is None:
-            rubric.add_criterion("Valid JSON/YAML syntax", 4.0, 0.0)
+            rubric.add_criterion(
+                "Valid JSON/YAML syntax", 4.0, 0.0,
+                errors=structured_validation.errors,
+                negative_findings=["candidate could not be parsed as the required object"],
+            )
             return rubric.results()
         rubric.add_criterion("Valid JSON/YAML syntax", 4.0, 4.0)
 
@@ -274,6 +278,11 @@ class StructuredOutputPlugin(BenchmarkTaskPlugin):
         else:
             earned = 0.0
         rubric.add_criterion("Strict format (no extra keys)", 2.0, earned)
+        if isinstance(data, dict) and set(data.keys()) != required:
+            rubric.penalize_criterion(
+                "Strict format (no extra keys)", 0.5,
+                "structured object does not exactly match the required key set",
+            )
 
         if complete:
             bad_values = {"unknown", "n/a", "none", "null", "", None}

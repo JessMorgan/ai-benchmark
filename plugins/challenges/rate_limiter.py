@@ -3,7 +3,7 @@ import re
 
 from benchmark.plugin import BenchmarkTaskPlugin
 from plugins.challenges._rubric import Rubric
-from plugins.challenges._validators import parse_python
+from plugins.challenges._validators import parse_python, stub_definitions
 
 
 class RateLimiterPlugin(BenchmarkTaskPlugin):
@@ -13,7 +13,7 @@ class RateLimiterPlugin(BenchmarkTaskPlugin):
 
     @property
     def version(self):
-        return "0.3.1"
+        return "0.4.0"
 
     @property
     def name(self):
@@ -123,6 +123,26 @@ class RateLimiterPlugin(BenchmarkTaskPlugin):
             [(r'(?:raise\s+|try\s*:|except\s+|ValueError|TypeError|Invalid)', 1.0)],
         )
 
+        placeholders = re.findall(r"(?m)^\s*(?:\.\.\.|#\s*TODO)\s*$", t)
+        if python_validation.valid:
+            placeholders.extend(stub_definitions(
+                python_validation.value,
+                {"TokenBucket", "SlidingWindowLog", "FixedWindow"},
+            ))
+        if placeholders:
+            rubric.penalize_criterion(
+                "Token Bucket", 0.5,
+                f"response contains {len(placeholders)} placeholder/TODO line(s)",
+            )
+            rubric.penalize_criterion(
+                "Sliding Window", 1.0,
+                "placeholder implementation does not establish working state transitions",
+            )
+        if not re.search(r"(?:with\s+\w+|\.acquire\s*\(|\.release\s*\()", t):
+            rubric.penalize_criterion(
+                "Thread safety", 1.5,
+                "lock object is mentioned without evidence of guarded critical sections",
+            )
         return rubric.results()
 
     def score(self, response_text):
