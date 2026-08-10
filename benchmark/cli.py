@@ -150,6 +150,57 @@ def _scan_judge_sidecars(judge_input_dir):
     return jobs
 
 
+def _eligible_judge_sidecars(judge_input_dir, targets, state, active_plugin_ids,
+                             judge_models):
+    """Return retained sidecars for completed, configured benchmark results.
+
+    Sidecars survive an interrupted run and are the durable input for judging.
+    On resume, completed targets are intentionally absent from the benchmark
+    scheduler, so they must be discovered independently of the pending model
+    queues. Do not enqueue orphaned sidecars from removed targets, inactive
+    plugins, or results that were not completed successfully.
+    """
+    latest = {
+        (result.get("state_key", result.get("model")), result.get("runner", "http")): result
+        for result in state.latest_results()
+    }
+    snapshot = state.snapshot()
+    eligible = []
+    for sidecar, item in _scan_judge_sidecars(judge_input_dir):
+        target = item.get("target")
+        runner = item.get("runner")
+        plugin_id = item.get("plugin")
+        state_key = item.get("state_key", target)
+        if runner not in {"http", "opencode"} or plugin_id not in active_plugin_ids:
+            continue
+        if runner == "http":
+            target_name = state_key
+            expected_state_key = target_name
+        else:
+            suffix = " [opencode]"
+            if not state_key.endswith(suffix):
+                continue
+            target_name = state_key[:-len(suffix)]
+            expected_state_key = state_key
+        if target_name not in targets or target != target_name:
+            continue
+        if snapshot.get(expected_state_key, {}).get("status") != "completed":
+            continue
+        result = latest.get((expected_state_key, runner))
+        if not result or result.get(f"{plugin_id}_score") in (None, "fail"):
+            continue
+        if result.get(f"{plugin_id}_judge_complete"):
+            continue
+        votes = result.get(f"{plugin_id}_judge_votes", [])
+        judged_models = {
+            vote.get("model") for vote in votes if isinstance(vote, dict)
+        }
+        if set(judge_models).issubset(judged_models):
+            continue
+        eligible.append((sidecar, item))
+    return eligible
+
+
 def _inject_429_stats(run_info):
     """Add the current 429 backoff statistics to a run-info dict."""
     backoff_429 = get_429_stats()
@@ -2486,6 +2537,15 @@ def main():  # pragma: no cover - live benchmark orchestrator (no unit tests)
             for source in set(judge_sources.values())
         }
 
+        # Queue retained results before benchmark workers start. On resume,
+        # completed targets are deliberately absent from the benchmark queues,
+        # but their durable sidecars still need judging immediately.
+        for sidecar, item in _eligible_judge_sidecars(
+            judge_input_dir, targets, state, {plugin.id for plugin in active_plugins},
+            judge_models,
+        ):
+            enqueue_judge(sidecar, item["target"], item["runner"], item["plugin"])
+
         def source_benchmark_complete(source):
             """Release the source's reserved benchmark slots to judging."""
             pool = judge_pools.get(source)
@@ -2522,10 +2582,10 @@ def main():  # pragma: no cover - live benchmark orchestrator (no unit tests)
             """Drain retained judge jobs and join source-local workers."""
             if not judge_models:
                 return
-            jobs = [
-                (sidecar, item["target"], item["runner"], item["plugin"])
-                for sidecar, item in _scan_judge_sidecars(judge_input_dir)
-            ]
+            jobs = _eligible_judge_sidecars(
+                judge_input_dir, targets, state, {plugin.id for plugin in active_plugins},
+                judge_models,
+            )
             for sidecar, item in jobs:
                 enqueue_judge(sidecar, item["target"], item["runner"], item["plugin"])
             for source, pool in judge_pools.items():

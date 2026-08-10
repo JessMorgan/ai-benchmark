@@ -3,6 +3,7 @@ import tempfile
 import unittest
 from unittest import mock
 
+from benchmark import cli
 from benchmark.core import (
     JudgeResult,
     build_judge_prompt,
@@ -78,6 +79,82 @@ class TestJudgeCore(unittest.TestCase):
                 result = judge_response({}, "Local", "judge", sidecar, timeout=3)
         self.assertEqual(result.score, 75)
         request.assert_called_once()
+
+
+class TestJudgeResumeDiscovery(unittest.TestCase):
+    def test_retained_completed_sidecar_is_eligible_on_resume(self):
+        """Resume discovery finds completed work absent from benchmark queues."""
+        with tempfile.TemporaryDirectory() as tmp:
+            sidecar = f"{tmp}/http/model/fake.json"
+            prepare_judge_sidecar(
+                sidecar, FakePlugin(), "Prompt", "Response",
+                target="model", runner="http", state_key="model",
+            )
+            state = BenchmarkState({"model": "Local"}, ["fake"])
+            state.add_result({
+                "model": "model", "state_key": "model", "runner": "http",
+                "status": "ok", "fake_score": 80,
+            })
+            state.update("model", status="completed")
+            eligible = cli._eligible_judge_sidecars(
+                tmp,
+                {"model": {"source": "Local"}},
+                state,
+                {"fake"},
+                ["judge"],
+            )
+            self.assertEqual(len(eligible), 1)
+            self.assertEqual(eligible[0][1]["target"], "model")
+
+    def test_retained_opencode_sidecar_matches_runner_specific_state(self):
+        """OpenCode sidecars use the suffixed state identity on resume."""
+        with tempfile.TemporaryDirectory() as tmp:
+            sidecar = f"{tmp}/opencode/model/fake.json"
+            prepare_judge_sidecar(
+                sidecar, FakePlugin(), "Prompt", "Response",
+                target="model", runner="opencode", state_key="model [opencode]",
+            )
+            state = BenchmarkState({"model [opencode]": "Local"}, ["fake"])
+            state.add_result({
+                "model": "model", "state_key": "model [opencode]", "runner": "opencode",
+                "status": "ok", "fake_score": 80,
+            })
+            state.update("model [opencode]", status="completed")
+            eligible = cli._eligible_judge_sidecars(
+                tmp,
+                {"model": {"source": "Local"}},
+                state,
+                {"fake"},
+                ["judge"],
+            )
+            self.assertEqual(len(eligible), 1)
+
+    def test_retained_sidecar_is_not_eligible_after_all_judges_complete(self):
+        """Startup discovery does not requeue a fully judged retained result."""
+        with tempfile.TemporaryDirectory() as tmp:
+            sidecar = f"{tmp}/http/model/fake.json"
+            prepare_judge_sidecar(
+                sidecar, FakePlugin(), "Prompt", "Response",
+                target="model", runner="http", state_key="model",
+            )
+            state = BenchmarkState({"model": "Local"}, ["fake"])
+            state.add_result({
+                "model": "model", "state_key": "model", "runner": "http",
+                "status": "ok", "fake_score": 80,
+                "fake_judge_votes": [{
+                    "model": "judge", "score": 90, "confidence": "high",
+                }],
+                "fake_judge_complete": True,
+            })
+            state.update("model", status="completed")
+            eligible = cli._eligible_judge_sidecars(
+                tmp,
+                {"model": {"source": "Local"}},
+                state,
+                {"fake"},
+                ["judge"],
+            )
+            self.assertEqual(eligible, [])
 
 
 class TestJudgeStateAndReports(unittest.TestCase):
