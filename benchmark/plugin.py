@@ -44,79 +44,41 @@ def normalize_score(raw_score: float, max_score: float) -> int:
     return int(max(Decimal(0), min(percentage, Decimal(100))))
 
 
-def _normalize_rubric_value(value, criterion_max):
-    """Convert a criterion-relative numeric diagnostic to a percentage."""
-    return normalize_score(value, criterion_max)
+def serialize_rubric(rubric: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Convert native rubric entries to the persisted ``points/total`` shape.
 
-
-def normalize_rubric(rubric: list[dict[str, Any]], max_score: float) -> list[dict[str, Any]]:
-    """Convert native rubric diagnostics to the public percentage-only shape."""
-    normalized = []
+    Plugins continue to return their original native rubric (``earned``,
+    ``max``, and ``missed``). The benchmark boundary is responsible for the
+    persisted representation: criterion credit is called ``points`` and the
+    criterion denominator is called ``total``. Nested evidence and negative
+    findings retain their native point values as well; no percentage rubric
+    values are fabricated or stored.
+    """
+    serialized = []
     for criterion in rubric:
-        criterion_max = criterion.get("max", 0)
-        if _decimal_value(criterion_max, "criterion max") <= 0:
-            raise ValueError(f"criterion max must be positive, got {criterion_max!r}")
+        if not isinstance(criterion, dict):
+            raise TypeError(f"rubric criterion must be an object, got {criterion!r}")
+        if "earned" not in criterion or "max" not in criterion:
+            raise ValueError("rubric criterion must contain earned and max")
         item = {
             "name": criterion.get("name", ""),
-            "score_percent": _normalize_rubric_value(
-                criterion.get("earned", 0), criterion_max
-            ),
-            "weight_percent": normalize_score(criterion_max, max_score),
+            "points": criterion["earned"],
+            "total": criterion["max"],
         }
-        for key in ("matched", "evidence", "errors"):
+        for key in ("matched", "evidence", "errors", "negative_findings"):
             if key in criterion:
                 item[key] = criterion[key]
-        if "negative_findings" in criterion:
-            findings = []
-            for finding in criterion["negative_findings"]:
-                if isinstance(finding, dict):
-                    public_finding = {
-                        key: value for key, value in finding.items() if key != "points"
-                    }
-                    if "points" in finding:
-                        public_finding["points_percent"] = normalize_score(
-                            finding["points"], criterion_max
-                        )
-                    findings.append(public_finding)
-                else:
-                    findings.append(finding)
-            item["negative_findings"] = findings
-        evidence = item.get("evidence")
-        if isinstance(evidence, list):
-            public_evidence = []
-            for entry in evidence:
-                if isinstance(entry, dict) and "points" in entry:
-                    public_entry = {
-                        key: value for key, value in entry.items() if key != "points"
-                    }
-                    public_entry["points_percent"] = normalize_score(
-                        entry["points"], criterion_max
-                    )
-                    public_evidence.append(public_entry)
-                else:
-                    public_evidence.append(entry)
-            item["evidence"] = public_evidence
-        normalized.append(item)
-    return normalized
+        serialized.append(item)
+    return serialized
 
 
 def sanitize_diagnostics(value: Any) -> Any:
-    """Remove native point-scale fields from persisted diagnostics.
+    """Return diagnostics unchanged for compatibility with developer tooling.
 
-    Diagnostics remain useful in benchmark results, but arbitrary plugin or
-    validator evidence must not reintroduce the native rubric scale through
-    nested ``max``, ``earned``, ``missed``, or ``points`` keys. Percentage
-    variants (for example ``points_percent``) are retained.
+    The persisted public rubric is converted separately by
+    :func:`serialize_rubric`; evaluator diagnostics may legitimately contain
+    native validator evidence and should not be silently stripped.
     """
-    raw_keys = {"max", "max_score", "earned", "missed", "points", "raw_score"}
-    if isinstance(value, dict):
-        return {
-            key: sanitize_diagnostics(item)
-            for key, item in value.items()
-            if key not in raw_keys
-        }
-    if isinstance(value, list):
-        return [sanitize_diagnostics(item) for item in value]
     return value
 
 
@@ -125,8 +87,8 @@ class EvaluationResult:
     """Native score, rubric breakdown, and diagnostics from a task plugin.
 
     ``score`` and ``rubric`` are intentionally native evaluator values. The
-    benchmark core and the public :meth:`BenchmarkTaskPlugin.score` method
-    normalize them exactly once before exposing or persisting public results.
+    benchmark core normalizes the evaluated score exactly once before exposing
+    or persisting public benchmark results.
     """
 
     score: float
@@ -196,7 +158,7 @@ class BenchmarkOutputPlugin(abc.ABC):
 
 
 class BenchmarkTaskPlugin(abc.ABC):
-    """A benchmark task with a native rubric and a normalized public score."""
+    """A benchmark task with a native rubric and task-specific score scale."""
 
     @property
     @abc.abstractmethod
@@ -237,30 +199,14 @@ class BenchmarkTaskPlugin(abc.ABC):
         """Return the temperature to use for this task, or None to omit it."""
         raise NotImplementedError
 
-    def __init_subclass__(cls, **kwargs):
-        """Adapt legacy native ``score`` implementations to the public API."""
-        super().__init_subclass__(**kwargs)
-        native_score = cls.__dict__.get("score")
-        if native_score is not None:
-            cls._native_score = native_score
-            cls.score = BenchmarkTaskPlugin.score
-
-    def score(self, response_text: str) -> int:
-        """Return the normalized public score as an integer percentage."""
-        evaluation = self.evaluate(response_text)
-        return normalize_score(evaluation.score, self.max_score)
+    @abc.abstractmethod
+    def score(self, response_text: str) -> float:
+        """Return the native score in this plugin's task-specific scale."""
+        raise NotImplementedError
 
     def evaluate(self, response_text: str) -> EvaluationResult:
-        """Return the native score and detailed rubric for internal evaluation.
-
-        Legacy third-party plugins that still implement ``score`` are treated
-        as native evaluators here; built-in plugins override this method with
-        their detailed rubric implementation.
-        """
-        legacy_score = getattr(type(self), "_native_score", None)
-        if legacy_score is None:
-            raise NotImplementedError
+        """Return the native score and detailed rubric for internal evaluation."""
         return EvaluationResult(
-            legacy_score(self, response_text), [],
+            self.score(response_text), [],
             {"source": "plugin.score", "criterion_count": 0, "errors": []},
         )

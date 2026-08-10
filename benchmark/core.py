@@ -35,9 +35,8 @@ from .outputs import (  # noqa: F401
 from .plugin import (
     SCORE_SCHEMA,
     PluginTaskResult,
-    normalize_rubric,
     normalize_score,
-    sanitize_diagnostics,
+    serialize_rubric,
 )
 from .state import BenchmarkState  # noqa: F401
 
@@ -1011,8 +1010,8 @@ def _run_plugin_task(target_name, api_model, source, plugin, source_config, time
     try:
         evaluation = plugin.evaluate(text)
         score = normalize_score(evaluation.score, plugin.max_score)
-        rubric = normalize_rubric(evaluation.rubric, plugin.max_score)
-        diagnostics = sanitize_diagnostics(evaluation.diagnostics or {})
+        rubric = serialize_rubric(evaluation.rubric)
+        diagnostics = evaluation.diagnostics or {}
     except Exception as exc:  # noqa: BLE001 - a crashing evaluator is recorded, not fatal
         score_error = f"plugin.evaluate raised {type(exc).__name__}: {exc}"
         score_traceback_text = traceback.format_exc()

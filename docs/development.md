@@ -113,7 +113,11 @@ class MyTaskPlugin(BenchmarkTaskPlugin):
             s += 5.0
         return EvaluationResult(min(s, self.max_score), [])
 
-    # Public score() is inherited and returns an integer percentage.
+    def score(self, response_text):
+        return self.evaluate(response_text).score
+
+    # The benchmark core converts this native score to an integer percentage
+    # for public results and reports. Persisted rubric entries use points/total.
 ```
 
 ## Plugin Temperature
@@ -136,7 +140,7 @@ Example:
 def test_my_task_scores_function():
     from plugins.my_task import MyTaskPlugin
     plugin = MyTaskPlugin()
-    assert plugin.score("def foo(): pass") == 50
+    assert plugin.score("def foo(): pass") == 5.0
 ```
 
 ## Adding Tests for Core Changes

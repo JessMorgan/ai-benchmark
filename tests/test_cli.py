@@ -13,6 +13,7 @@ from unittest import mock
 
 from benchmark.http import NonStreamResult, StreamResult
 from benchmark.plugin import PluginTaskResult
+from benchmark.state import BenchmarkState
 from plugins import discover_plugins
 from tests.utils import MockResponse, load_benchmark_module
 
@@ -329,9 +330,9 @@ class TestSaveResponses(unittest.TestCase):
             self.assertIsInstance(meta["rubric"], list)
             self.assertTrue(all(
                 "name" in item
-                and "score_percent" in item
-                and "weight_percent" in item
-                and not {"max", "earned", "missed"}.intersection(item)
+                and "points" in item
+                and "total" in item
+                and not {"score_percent", "weight_percent", "earned", "max", "missed"}.intersection(item)
                 for item in meta["rubric"]
             ))
 
@@ -1043,6 +1044,49 @@ class TestScriptedMode(unittest.TestCase):
             sys.stdin = old_stdin
         self.assertEqual(choice, "continue")
 
+    def test_corruption_prompt_reports_zero_loss_and_continues(self):
+        """The audited model-info corruption preserves every result row."""
+        import io
+        old_stderr = sys.stderr
+        sys.stderr = io.StringIO()
+        try:
+            choice = self.ai_benchmark._prompt_corrupt_state({
+                "kind": "known",
+                "data": {"model_info": {}, "results": [], "active_plugins": []},
+                "results_found": True,
+                "total_results": 7,
+                "recoverable_results": 7,
+                "lost_results": 0,
+                "counts_certain": True,
+            })
+            output = sys.stderr.getvalue()
+        finally:
+            sys.stderr = old_stderr
+        self.assertEqual(choice, "continue")
+        self.assertIn("Results in file: 7", output)
+        self.assertIn("Results that would be lost: 0", output)
+        self.assertIn("No completed results will be lost", output)
+
+    def test_corruption_prompt_allows_lossy_continue_restart_and_abort(self):
+        """Lossy recovery accepts each explicit operator decision."""
+        recovery = {
+            "kind": "partial",
+            "data": {"model_info": {}, "results": [], "active_plugins": []},
+            "results_found": True,
+            "total_results": 4,
+            "recoverable_results": 3,
+            "lost_results": 1,
+            "counts_certain": True,
+        }
+        import io
+        old_stdin = sys.stdin
+        try:
+            for answer, expected in (("c\n", "continue"), ("r\n", "restart"), ("a\n", "abort")):
+                sys.stdin = io.StringIO(answer)
+                self.assertEqual(self.ai_benchmark._prompt_corrupt_state(recovery), expected)
+        finally:
+            sys.stdin = old_stdin
+
 
 class TestConfigFallback(unittest.TestCase):
     @classmethod
@@ -1113,6 +1157,183 @@ class TestConfigFallback(unittest.TestCase):
                 run_info = json.load(f)
             self.assertEqual(os.path.basename(run_info["config_file"]), "benchmark-config.yaml")
             self.assertTrue(os.path.isfile(os.path.join(output_dir, "benchmark-config.yaml")))
+
+    def test_known_corrupt_state_file_is_repaired_and_resume_continues(self):
+        """Resume repairs the audited malformed state key and proceeds."""
+        # The repair itself is unit-tested in test_state.py; this CLI-level
+        # regression pins that resume invokes it and reports the backup.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_dir = os.path.join(tmpdir, "run")
+            os.makedirs(output_dir)
+            state_file = os.path.join(output_dir, "benchmark_state.json")
+            # Build a realistic completed state, then apply the exact
+            # malformed line found in the affected run. This ensures the
+            # subprocess reaches the "prior run complete" exit without any
+            # provider request after repair.
+            state = BenchmarkState({"m": "Local"}, ["moe-dense"])
+            state.update("m", status="completed")
+            state.save_state(state_file, plugin_versions={"moe-dense": "0.1.0"})
+            with open(state_file, "rb") as handle:
+                raw = handle.read()
+            broken = b'"moe-dense_first_chunk_seen": false,'
+            corrupted = raw.replace(
+                broken, b'"moe-dense_first_chunk_see: : false,', 1
+            )
+            self.assertNotEqual(raw, corrupted)
+            with open(state_file, "wb") as handle:
+                handle.write(corrupted)
+
+            # Exercise the actual CLI resume branch. The repaired state marks
+            # its only target complete, so the CLI exits before any provider
+            # request. A small config keeps the subprocess deterministic.
+            config_path = os.path.join(tmpdir, "config.yaml")
+            with open(config_path, "w", encoding="utf-8") as handle:
+                handle.write(
+                    f"output_dir: {output_dir}\n"
+                    "sources:\n"
+                    "  Local:\n"
+                    "    api_url: http://127.0.0.1:1/chat/completions\n"
+                    "    headers: {}\n"
+                    "models:\n"
+                    "  m: Local\n"
+                    "plugins_whitelist: [moe-dense]\n"
+                )
+            result = subprocess.run(
+                [sys.executable, "ai-benchmark.py", "--config", config_path],
+                capture_output=True, text=True, check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("Repaired corrupted state file", result.stderr)
+            self.assertIn("PRIOR RUN COMPLETE", result.stdout)
+            backups = [
+                name for name in os.listdir(output_dir)
+                if name.startswith("benchmark_state.json.pre-repair-")
+            ]
+            self.assertEqual(len(backups), 1)
+            with open(state_file, encoding="utf-8") as handle:
+                repaired = json.load(handle)
+            self.assertIn("model_info", repaired)
+            self.assertIn("results", repaired)
+            self.assertIn("active_plugins", repaired)
+            self.assertIn(
+                "moe-dense_first_chunk_seen",
+                repaired["model_info"]["m"],
+            )
+
+    def test_merge_saved_targets_does_not_restore_removed_models(self):
+        """Current config is authoritative for runnable resume targets."""
+        saved_state = {
+            "model_info": {
+                "removed-model": {
+                    "source": "Saved Source",
+                    "api_model": "saved-model",
+                    "runner": "http",
+                },
+                "removed-model [opencode]": {
+                    "source": "Saved Source",
+                    "api_model": "saved-model",
+                    "runner": "opencode",
+                },
+            },
+            "results": [{"model": "removed-model", "status": "ok"}],
+        }
+        targets = {"configured-model": {"source": "Current Source"}}
+        state_models = {"configured-model": {"runner": "http"}}
+        restored = self.ai_benchmark._merge_saved_targets(
+            targets, state_models, saved_state, "both"
+        )
+        self.assertEqual(restored, [])
+        self.assertEqual(set(targets), {"configured-model"})
+        self.assertEqual(set(state_models), {"configured-model"})
+
+    def test_removed_models_are_not_scheduled_in_both_mode(self):
+        """Pending queues contain only models present in current targets."""
+        targets = {
+            "configured-model": {"source": "Saved Source"},
+        }
+        snapshot = {
+            "configured-model": {"status": "pending"},
+            "removed-model": {"status": "pending"},
+            "removed-model [opencode]": {"status": "pending"},
+        }
+        queues = self.ai_benchmark._build_runner_queues(
+            targets, snapshot, "both", {"Saved Source": {}}
+        )
+        targets_by_source, opencode_pending, http_pending = queues
+        self.assertEqual(targets_by_source["Saved Source"], ["configured-model"])
+        self.assertEqual(opencode_pending["Saved Source"], [])
+        self.assertEqual(http_pending["Saved Source"], {"configured-model"})
+
+    def test_removed_models_are_not_scheduled_in_single_runner_mode(self):
+        """Single-runner queues also ignore saved-only model identities."""
+        targets = {"configured-model": {"source": "Saved Source"}}
+        snapshot = {
+            "configured-model": {"status": "pending"},
+            "removed-model": {"status": "pending"},
+        }
+        queue = self.ai_benchmark._build_runner_queues(
+            targets, snapshot, "http", {"Saved Source": {}}
+        )
+        self.assertEqual(queue, {"Saved Source": ["configured-model"]})
+
+    def test_saved_runner_presence_controls_resume_queues_and_opencode_projection(self):
+        """Both-mode resume schedules only the runner legs saved on disk."""
+        saved_state = {
+            "model_info": {
+                "http-only": {
+                    "source": "Saved Source",
+                    "api_model": "http-model",
+                    "runner": "http",
+                    "is_agent": False,
+                },
+                "opencode-only [opencode]": {
+                    "source": "Saved Source",
+                    "api_model": "opencode-model",
+                    "runner": "opencode",
+                    "is_agent": False,
+                },
+            }
+        }
+        targets = {
+            "http-only": {"source": "Saved Source", "api_model": "http-model"},
+            "opencode-only": {"source": "Saved Source", "api_model": "opencode-model"},
+        }
+        state_models = {
+            "http-only": {"runner": "http"},
+            "opencode-only [opencode]": {"runner": "opencode"},
+        }
+        restored = self.ai_benchmark._merge_saved_targets(
+            targets, state_models, saved_state, "both"
+        )
+        self.assertEqual(restored, [])
+
+        snapshot = {
+            "http-only": {"status": "pending"},
+            "opencode-only [opencode]": {"status": "pending"},
+        }
+        queues = self.ai_benchmark._build_runner_queues(
+            targets, snapshot, "both", {"Saved Source": {}}
+        )
+        targets_by_source, opencode_pending, http_pending = queues
+        self.assertEqual(targets_by_source["Saved Source"], ["http-only", "opencode-only"])
+        self.assertEqual(opencode_pending["Saved Source"], ["opencode-only"])
+        self.assertEqual(http_pending["Saved Source"], {"http-only"})
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            generated = self.ai_benchmark.generate_opencode_config(
+                {"Saved Source": {"api_url": "http://localhost/v1"}},
+                self.ai_benchmark._targets_for_runner(
+                    targets, state_models, "opencode"
+                ),
+                os.path.join(tmpdir, "opencode.generated.json"),
+                token_levels=[100],
+            )
+            projected_models = {
+                name
+                for provider in generated["config"]["provider"].values()
+                for name in provider["models"]
+            }
+            self.assertEqual(projected_models, {"opencode-model"})
 
     def test_corrupt_state_file_aborts_resume(self):
         """A corrupt benchmark_state.json aborts the run instead of silently

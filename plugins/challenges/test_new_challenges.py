@@ -43,7 +43,7 @@ class TestDebugTraversalPlugin(unittest.TestCase):
         calling code, upstream and downstream integration, including performance, memory,
         speed, efficiency, and overhead.
         """
-        self.assertGreaterEqual(self.plugin.score(response), 90)
+        self.assertGreaterEqual(self.plugin.score(response), 18.0)
 
 
 class TestErrorRecoveryPlugin(unittest.TestCase):
@@ -58,7 +58,7 @@ class TestErrorRecoveryPlugin(unittest.TestCase):
     def test_empty_response_scores_base_structure(self):
         # The evaluator awards one point for the structure criterion even
         # before any content-specific signals are present.
-        self.assertEqual(self.plugin.score(""), 5)
+        self.assertEqual(self.plugin.score(""), 1.0)
 
     def test_complete_resilient_design_scores_high(self):
         response = '''
@@ -90,12 +90,12 @@ class TestErrorRecoveryPlugin(unittest.TestCase):
         Return the result and output, with type hints, docstrings, a demo, example, usage,
         and an if __name__ entry point.
         '''
-        self.assertGreaterEqual(self.plugin.score(response), 90)
+        self.assertGreaterEqual(self.plugin.score(response), 18.0)
 
     def test_partial_design_exercises_false_branches(self):
         response = "async def get_weather_resilient(city: str) -> dict:\n    return {}"
         self.assertGreater(self.plugin.score(response), 0.0)
-        self.assertLess(self.plugin.score(response), 100)
+        self.assertLess(self.plugin.score(response), self.plugin.max_score)
 
 
 class TestMultiTurnConversationPlugin(unittest.TestCase):
@@ -130,13 +130,13 @@ class TestMultiTurnConversationPlugin(unittest.TestCase):
         V2 changed into V3. I decline the offer for this role while leaving an opportunity to
         stay in touch and preserve the connection. I sincerely wish you well.
         """
-        self.assertGreaterEqual(self.plugin.score(response), 90)
+        self.assertGreaterEqual(self.plugin.score(response), 18.0)
 
     def test_missing_summary_and_blocks_is_penalized(self):
         response = "## Version 1\nA polite email to decline the offer and future opportunity."
         score = self.plugin.score(response)
         self.assertGreaterEqual(score, 0.0)
-        self.assertLess(score, 100)
+        self.assertLess(score, self.plugin.max_score)
 
 
 if __name__ == "__main__":

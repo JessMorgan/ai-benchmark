@@ -5,10 +5,320 @@ persist results across runs.
 """
 import json
 import os
+import shutil
+import tempfile
 import threading
 import time
 
 from .plugin import SCORE_SCHEMA
+
+_CORRUPTED_STATE_REPAIRS = {
+    # One historical state artifact contains this malformed JSON key. Keep
+    # the repair deliberately byte-exact: broad control-character stripping
+    # could silently alter model responses and error messages stored in
+    # results. The larger affected run is recovered from its complete CSV
+    # report by an explicit one-time migration, not by guessing at arbitrary
+    # malformed JSON fragments.
+    b'"moe-dense_first_chunk_see: : false,':
+        b'"moe-dense_first_chunk_seen": false,',
+}
+
+
+def _valid_state_data(data):
+    """Return whether ``data`` has the containers required for a state file."""
+    return (
+        isinstance(data, dict)
+        and isinstance(data.get("model_info"), dict)
+        and isinstance(data.get("results"), list)
+        and isinstance(data.get("active_plugins"), list)
+    )
+
+
+def _known_repaired_bytes(raw):
+    """Return bytes for the one audited repair, or ``None`` if inapplicable."""
+    model_info_start = raw.find(b'"model_info"')
+    results_start = raw.find(b'\n  "results"', model_info_start + 1)
+    if model_info_start < 0 or results_start < 0:
+        return None
+    region = raw[model_info_start:results_start]
+    replacements = 0
+    for broken, fixed in _CORRUPTED_STATE_REPAIRS.items():
+        count = region.count(broken)
+        if count:
+            region = region.replace(broken, fixed)
+            replacements += count
+    if replacements != 1:
+        return None
+    repaired = raw[:model_info_start] + region + raw[results_start:]
+    try:
+        data = json.loads(repaired)
+    except json.JSONDecodeError:
+        return None
+    return repaired if _valid_state_data(data) else None
+
+
+def _top_level_value(raw, key, default=None):
+    """Decode one top-level JSON value from possibly-corrupt raw bytes."""
+    marker = b'"' + key.encode("utf-8") + b'"'
+    marker_start = raw.find(marker)
+    if marker_start < 0:
+        return default
+    colon = raw.find(b":", marker_start + len(marker))
+    if colon < 0:
+        return default
+    try:
+        text = raw[colon + 1 :].decode("utf-8")
+        value, _ = json.JSONDecoder().raw_decode(text.lstrip())
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return default
+    return value
+
+
+def _scan_result_objects(raw, array_start):
+    """Extract valid result objects and count every top-level array item.
+
+    This is not a JSON sanitizer. The scanner only uses commas and brackets at
+    the results-array level to identify *candidate* rows, then asks the
+    standard JSON decoder to validate each candidate. Invalid and truncated
+    candidates are counted as lost instead of silently disappearing from the
+    loss summary. Bytes are never rewritten here.
+    """
+    if array_start < 0 or array_start >= len(raw) or raw[array_start] != ord("["):
+        return [], 0, False, True
+    objects = []
+    item_start = None
+    object_depth = 0
+    nested_array_depth = 0
+    in_string = False
+    escaped = False
+    structurally_uncertain = False
+
+    def finish_item(end):
+        nonlocal item_start
+        if item_start is None:
+            return
+        span = raw[item_start:end].strip()
+        item_start = None
+        if not span:
+            return
+        try:
+            value = json.loads(span)
+        except json.JSONDecodeError:
+            value = None
+        objects.append(value if isinstance(value, dict) else None)
+
+    i = array_start + 1
+    while i < len(raw):
+        byte = raw[i]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif byte == ord("\\"):
+                escaped = True
+            elif byte == ord('"'):
+                in_string = False
+            i += 1
+            continue
+        if byte == ord('"'):
+            if item_start is None:
+                item_start = i
+            in_string = True
+        elif byte == ord("{"):
+            if item_start is None:
+                item_start = i
+            object_depth += 1
+        elif byte == ord("}") and object_depth:
+            object_depth -= 1
+        elif byte == ord("}") and object_depth == 0:
+            structurally_uncertain = True
+        elif byte == ord("["):
+            if item_start is None:
+                item_start = i
+            nested_array_depth += 1
+        elif byte == ord("]"):
+            if object_depth == 0 and nested_array_depth == 0:
+                finish_item(i)
+                break
+            nested_array_depth = max(0, nested_array_depth - 1)
+        elif byte == ord(",") and object_depth == 0 and nested_array_depth == 0:
+            finish_item(i)
+        elif item_start is None and not chr(byte).isspace():
+            # Capture malformed scalar tokens such as ``BAD`` so they count
+            # as a result item rather than vanishing between commas.
+            item_start = i
+        i += 1
+
+    # A missing closing bracket or a truncated final item is still a candidate
+    # row. Count it as lost if it did not decode above.
+    if item_start is not None:
+        finish_item(len(raw))
+        structurally_uncertain = True
+    if object_depth or nested_array_depth or in_string:
+        structurally_uncertain = True
+    total = len(objects)
+    return [obj for obj in objects if isinstance(obj, dict)], total, True, structurally_uncertain
+
+
+def _scan_model_info(raw, object_start):
+    """Extract valid model-info value objects from the outer mapping."""
+    if object_start < 0 or object_start >= len(raw) or raw[object_start] != ord("{"):
+        return {}
+    result = {}
+    value_start = None
+    object_depth = 0
+    in_string = False
+    escaped = False
+    i = object_start
+    while i < len(raw):
+        byte = raw[i]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif byte == ord("\\"):
+                escaped = True
+            elif byte == ord('"'):
+                in_string = False
+            i += 1
+            continue
+        if byte == ord('"'):
+            in_string = True
+        elif byte == ord("{"):
+            if object_depth == 1:
+                value_start = i
+            object_depth += 1
+        elif byte == ord("}") and object_depth:
+            object_depth -= 1
+            if object_depth == 0:
+                break
+            if object_depth == 1 and value_start is not None:
+                span = raw[value_start : i + 1]
+                try:
+                    value = json.loads(span)
+                    prefix = raw[max(object_start, value_start - 512) : value_start]
+                    key_match = list(__import__("re").finditer(
+                        rb'"((?:\\.|[^"\\])*)"\s*:\s*$', prefix
+                    ))
+                    if key_match:
+                        encoded_key = b'"' + key_match[-1].group(1) + b'"'
+                        name = json.loads(encoded_key)
+                        if isinstance(value, dict):
+                            result[name] = value
+                except (json.JSONDecodeError, UnicodeDecodeError):
+                    pass
+                value_start = None
+        i += 1
+    return result
+
+
+def prepare_state_recovery(path):
+    """Inspect a corrupt state without changing it.
+
+    The returned summary includes ``total_results``, ``recoverable_results`` and
+    ``lost_results``. ``lost_results`` is ``None`` when no results container can
+    be located, because the amount of data outside that container is unknown.
+    ``data`` is a valid candidate state suitable for an explicitly approved
+    recovery; it is never written by this function.
+    """
+    with open(path, "rb") as handle:
+        raw = handle.read()
+
+    repaired = _known_repaired_bytes(raw)
+    if repaired is not None:
+        data = json.loads(repaired)
+        count = len(data["results"])
+        return {
+            "kind": "known", "data": data, "candidate_bytes": repaired,
+            "total_results": count, "recoverable_results": count,
+            "lost_results": 0, "results_found": True,
+            "counts_certain": True,
+        }
+
+    results_marker = raw.find(b'"results"')
+    results_colon = raw.find(b":", results_marker + 1) if results_marker >= 0 else -1
+    results_start = raw.find(b"[", results_colon + 1) if results_colon >= 0 else -1
+    results, total, results_found, structurally_uncertain = _scan_result_objects(raw, results_start)
+    model_marker = raw.find(b'"model_info"')
+    model_colon = raw.find(b":", model_marker + 1) if model_marker >= 0 else -1
+    model_start = raw.find(b"{", model_colon + 1) if model_colon >= 0 else -1
+    data = {
+        "model_info": _scan_model_info(raw, model_start),
+        "results": results,
+        "active_plugins": _top_level_value(raw, "active_plugins", []),
+        "plugin_versions": _top_level_value(raw, "plugin_versions", {}),
+        "session_seed": _top_level_value(raw, "session_seed"),
+        "runner": _top_level_value(raw, "runner", "http"),
+    }
+    if not isinstance(data["active_plugins"], list):
+        data["active_plugins"] = []
+    if not isinstance(data["plugin_versions"], dict):
+        data["plugin_versions"] = {}
+    recoverable = len(results)
+    return {
+        "kind": "partial", "data": data, "candidate_bytes": None,
+        "total_results": total if results_found else None,
+        "recoverable_results": recoverable,
+        "lost_results": (
+            total - recoverable if results_found and not structurally_uncertain else None
+        ),
+        "results_found": results_found,
+        "counts_certain": results_found and not structurally_uncertain,
+    }
+
+
+def apply_state_recovery(path, recovery):
+    """Atomically install an approved recovery and return a byte backup path."""
+    data = recovery.get("data") if isinstance(recovery, dict) else None
+    candidate = recovery.get("candidate_bytes") if isinstance(recovery, dict) else None
+    if candidate is None:
+        candidate = json.dumps(data, indent=2, ensure_ascii=False).encode("utf-8")
+    parsed = json.loads(candidate)
+    if not _valid_state_data(parsed):
+        raise ValueError("recovery candidate is not a valid benchmark state")
+    directory = os.path.dirname(os.path.abspath(path))
+    basename = os.path.basename(path)
+    backup_prefix = (
+        f"{basename}.pre-repair-"
+        if recovery.get("kind") == "known"
+        else f"{basename}.pre-recovery-"
+    )
+    backup_fd, backup = tempfile.mkstemp(
+        prefix=backup_prefix, suffix=".bak", dir=directory
+    )
+    os.close(backup_fd)
+    try:
+        shutil.copy2(path, backup)
+        tmp_fd, tmp = tempfile.mkstemp(
+            prefix=f".{basename}.recovery-", suffix=".tmp", dir=directory
+        )
+        try:
+            with os.fdopen(tmp_fd, "wb") as handle:
+                handle.write(candidate)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(tmp, path)
+        except Exception:
+            try:
+                if os.path.exists(tmp):
+                    os.remove(tmp)
+            except OSError:
+                pass
+            raise
+    except Exception:
+        try:
+            if os.path.exists(backup):
+                os.remove(backup)
+        except OSError:
+            pass
+        raise
+    return backup
+
+
+def repair_state_file(path):
+    """Apply only the audited zero-loss repair, returning its backup path."""
+    recovery = prepare_state_recovery(path)
+    if recovery["kind"] != "known" or recovery["lost_results"] != 0:
+        return None
+    return apply_state_recovery(path, recovery)
 
 
 class BenchmarkState:

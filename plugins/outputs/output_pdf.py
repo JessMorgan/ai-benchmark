@@ -128,7 +128,7 @@ class PDFOutputPlugin(BenchmarkOutputPlugin):
                     pdf.cell(0, 5, f"{p.name} -- {r['model']}", new_x="LMARGIN", new_y="NEXT")
                     pdf.set_font("Helvetica", "", 7)
                     for item in rubric:
-                        pdf.cell(0, 4, f"  {item['name']}: {item.get('score_percent', '-')}% (weight {item.get('weight_percent', '-')}%)", new_x="LMARGIN", new_y="NEXT")
+                        pdf.cell(0, 4, f"  {item['name']}: {item.get('points', '-')} / {item.get('total', '-')}", new_x="LMARGIN", new_y="NEXT")
                     pdf.ln(1)
 
         os.makedirs(output_dir, exist_ok=True)

@@ -13,7 +13,7 @@ class OrchestrationPlugin(BenchmarkTaskPlugin):
 
     @property
     def version(self):
-        return "0.6.0"
+        return "0.7.0"
 
     @property
     def name(self):
@@ -104,3 +104,6 @@ class OrchestrationPlugin(BenchmarkTaskPlugin):
             )
 
         return rubric.results()
+
+    def score(self, response_text):
+        return self.evaluate(response_text).score

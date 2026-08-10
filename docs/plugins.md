@@ -31,7 +31,7 @@ You cannot use both whitelist and blacklist at the same time.
 
 ## Plugin Base Class
 
-All plugins inherit from `BenchmarkTaskPlugin` in `benchmark/plugin.py`. `max_score` is the internal native rubric maximum; public `score()` results and persisted benchmark scores are integer percentages from 0 to 100. `evaluate()` returns native rubric diagnostics and is normalized once by the benchmark core.
+All plugins inherit from `BenchmarkTaskPlugin` in `benchmark/plugin.py`. `max_score` is the internal native rubric maximum; plugin `score()` and `evaluate()` continue to return native task-specific values. The benchmark core normalizes only the public persisted benchmark score to an integer percentage from 0 to 100. Persisted rubric entries use `points` and `total`; offline evaluation remains native.
 
 ```python
 class BenchmarkTaskPlugin(abc.ABC):
@@ -56,7 +56,7 @@ class BenchmarkTaskPlugin(abc.ABC):
 
     def evaluate(self, response_text: str) -> EvaluationResult: ...
 
-    def score(self, response_text: str) -> int: ...  # normalized 0–100
+    def score(self, response_text: str) -> float: ...  # native task scale
 ```
 
 ## Plugin Lifecycle
@@ -64,7 +64,7 @@ class BenchmarkTaskPlugin(abc.ABC):
 1. **Discovery**: `discover_plugins()` scans `plugins/challenges/` for `BenchmarkTaskPlugin` subclasses and `discover_output_plugins()` scans `plugins/outputs/` for `BenchmarkOutputPlugin` subclasses.
 2. **Selection**: Whitelist/blacklist filters are applied.
 3. **Execution**: For each model, the benchmark calls `_run_plugin_task()` for each active plugin.
-4. **Scoring**: The plugin's `evaluate()` method produces native rubric diagnostics; `score()` exposes the normalized 0–100 integer convenience API.
+4. **Scoring**: The plugin's `evaluate()` and `score()` methods produce native task-scale values; the benchmark core normalizes the evaluated score to an integer 0–100 public result and serializes rubric entries as points/total.
 5. **Reporting**: Scores and metrics are aggregated into reports.
 
 ## Streaming vs Non-Streaming

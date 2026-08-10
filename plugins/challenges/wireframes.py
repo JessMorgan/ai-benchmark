@@ -68,7 +68,7 @@ class WireframesPlugin(BenchmarkTaskPlugin):
 
     @property
     def version(self):
-        return "0.6.0"
+        return "0.7.0"
 
     @property
     def name(self):
@@ -236,3 +236,6 @@ class WireframesPlugin(BenchmarkTaskPlugin):
             rubric.penalize_criterion("Navigation flows", 1.0, "no explicit navigation relationship was found")
 
         return rubric.results()
+
+    def score(self, response_text):
+        return self.evaluate(response_text).score

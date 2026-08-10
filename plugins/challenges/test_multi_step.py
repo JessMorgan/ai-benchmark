@@ -47,7 +47,7 @@ class TestMultiStepScoring(unittest.TestCase):
     def test_full_response_scores_high(self):
         score = self.plugin.score(self._full_response())
         self.assertGreater(score, 15.0)
-        self.assertLessEqual(score, 100)
+        self.assertLessEqual(score, self.plugin.max_score)
 
     def test_greet_user_untyped_signature(self):
         text = (
@@ -67,7 +67,7 @@ class TestMultiStepScoring(unittest.TestCase):
         )
         score = self.plugin.score(text)
         self.assertGreater(score, 0.0)
-        self.assertLess(score, 100)
+        self.assertLess(score, self.plugin.max_score)
 
     def test_greet_user_missing_return(self):
         text = (
@@ -87,7 +87,7 @@ class TestMultiStepScoring(unittest.TestCase):
         )
         score = self.plugin.score(text)
         self.assertGreaterEqual(score, 0.0)
-        self.assertLess(score, 100)
+        self.assertLess(score, self.plugin.max_score)
 
     def test_validate_name_missing_checks(self):
         text = (
@@ -107,7 +107,7 @@ class TestMultiStepScoring(unittest.TestCase):
         )
         score = self.plugin.score(text)
         self.assertGreater(score, 0.0)
-        self.assertLess(score, 100)
+        self.assertLess(score, self.plugin.max_score)
 
     def test_format_greeting_untyped_and_missing_checks(self):
         text = (
@@ -129,7 +129,7 @@ class TestMultiStepScoring(unittest.TestCase):
         )
         score = self.plugin.score(text)
         self.assertGreater(score, 0.0)
-        self.assertLess(score, 100)
+        self.assertLess(score, self.plugin.max_score)
 
     def test_summary_partial_match(self):
         text = (
@@ -149,7 +149,7 @@ class TestMultiStepScoring(unittest.TestCase):
         )
         score = self.plugin.score(text)
         self.assertGreater(score, 0.0)
-        self.assertLess(score, 100)
+        self.assertLess(score, self.plugin.max_score)
 
     def test_summary_missing(self):
         text = (
@@ -169,7 +169,7 @@ class TestMultiStepScoring(unittest.TestCase):
         )
         score = self.plugin.score(text)
         self.assertGreaterEqual(score, 0.0)
-        self.assertLess(score, 100)
+        self.assertLess(score, self.plugin.max_score)
 
     def test_main_block_penalty(self):
         text = (
@@ -191,7 +191,7 @@ class TestMultiStepScoring(unittest.TestCase):
         )
         score = self.plugin.score(text)
         self.assertGreaterEqual(score, 0.0)
-        self.assertLess(score, 100)
+        self.assertLess(score, self.plugin.max_score)
 
     def test_too_few_code_blocks_penalty(self):
         text = (
@@ -203,13 +203,13 @@ class TestMultiStepScoring(unittest.TestCase):
         )
         score = self.plugin.score(text)
         self.assertGreaterEqual(score, 0.0)
-        self.assertLess(score, 100)
+        self.assertLess(score, self.plugin.max_score)
 
     def test_zero_code_blocks_penalty(self):
         text = "No code blocks here. [SUMMARY: 0 lines, 0 functions, completed all steps]."
         score = self.plugin.score(text)
         self.assertGreaterEqual(score, 0.0)
-        self.assertLess(score, 100)
+        self.assertLess(score, self.plugin.max_score)
 
 
 if __name__ == "__main__":

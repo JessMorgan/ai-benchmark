@@ -55,9 +55,31 @@ from benchmark.opencode import (
     opencode_version,
     resolve_opencode_binary,
 )
+from benchmark.plugin import SCORE_SCHEMA
+from benchmark.state import apply_state_recovery, prepare_state_recovery
 from plugins import discover_plugins, format_plugin_list
 
+_CORRUPTED_STATE_ABORT = "abort"
+
 DEFAULT_CONFIG_PATH = "benchmark-config.json"
+
+
+def _clear_restart_artifacts(state_file, output_dir):
+    """Remove state/report/log artifacts for an explicit fresh restart."""
+    if os.path.exists(state_file):
+        os.remove(state_file)
+    for path in glob.glob(os.path.join(output_dir, "results.*")):
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+    logs_dir = os.path.join(output_dir, "logs")
+    if os.path.isdir(logs_dir):
+        for path in glob.glob(os.path.join(logs_dir, "*.log")):
+            try:
+                os.remove(path)
+            except OSError:
+                pass
 
 
 def _resolve_config_path(config_path):
@@ -76,6 +98,22 @@ def _resolve_config_path(config_path):
             if os.path.exists(fallback):
                 return fallback
     return None
+
+
+def _merge_saved_targets(targets, state_models, saved_state, runner_mode):
+    """Keep the current configuration authoritative for runnable targets.
+
+    Saved ``model_info`` entries for models removed from the current config are
+    deliberately not merged into ``targets`` or ``state_models``. This prevents
+    resume from scheduling obsolete models. ``BenchmarkState.load_state`` still
+    retains the saved ``results`` list, so historical rows remain available to
+    reports without becoming executable work.
+
+    The parameters are retained for a small amount of call-site/test
+    compatibility; the saved state and runner mode are intentionally ignored.
+    """
+    del targets, state_models, saved_state, runner_mode
+    return []
 
 
 def _write_run_info(output_dir, run_info):
@@ -432,7 +470,8 @@ def _render_header_and_summary(stdscr, max_x, max_y, snap, done, total, running,
                f"  |  429\u23f8 {sleeping_model_count}"
                f"{err_indicator}"
                f"  |  \u2191\u2193 rows {scroll_y + 1}-{min(total_models, scroll_y + visible_rows)}/{total_models}"
-               f"  |  \u2190\u2192 cols")
+               f"  |  \u2190\u2192 cols"
+               f"{slot_text}")
     if max_y > 1:
         # _wr performs display-column clipping and clears the remainder.
         _wr(stdscr, max_x, max_y, 1, 0, summary)
@@ -1375,6 +1414,65 @@ def _prompt_restart_or_continue(scripted=False):
         print("Please enter r, c, or q.")
 
 
+def _prompt_corrupt_state(recovery, scripted=False):
+    """Show recovery counts and obtain an explicit corruption decision.
+
+    ``continue`` is available only when a valid state candidate and results
+    container were recovered. Scripted mode continues automatically only for a
+    known, zero-loss repair; uncertain or lossy recovery aborts conservatively.
+    """
+    total = recovery.get("total_results")
+    recoverable = recovery.get("recoverable_results", 0)
+    lost = recovery.get("lost_results")
+    total_text = str(total) if total is not None else "unknown"
+    lost_text = str(lost) if lost is not None else "unknown"
+    print("\n⚠️  Corrupted benchmark state detected.", file=sys.stderr)
+    print(f"   Results in file: {total_text}", file=sys.stderr)
+    print(f"   Results recoverable: {recoverable}", file=sys.stderr)
+    print(f"   Results that would be lost: {lost_text}", file=sys.stderr)
+
+    can_continue = (
+        recovery.get("data") is not None
+        and recovery.get("results_found")
+        and recovery.get("counts_certain", False)
+    )
+    zero_loss = can_continue and lost == 0
+    if zero_loss:
+        print("   No completed results will be lost; applying the validated repair.",
+              file=sys.stderr)
+        return "continue"
+    if scripted:
+        if zero_loss:
+            print("   Scripted mode: continuing with the validated zero-loss repair.",
+                  file=sys.stderr)
+            return "continue"
+        print("   Scripted mode: aborting because recovery is uncertain or lossy.",
+              file=sys.stderr)
+        return _CORRUPTED_STATE_ABORT
+
+    if can_continue:
+        print("[c] Continue with recoverable results")
+    else:
+        print("[c] Continue is unavailable: no complete state candidate was recovered")
+    print("[r] Restart run (discard the corrupted state)")
+    print("[a] Abort and leave the corrupted file untouched")
+    while True:
+        try:
+            choice = input("Choice [c/r/a]: ").strip().lower()
+        except (EOFError, OSError):
+            choice = "a"
+        if choice in ("c", "continue") and can_continue:
+            if lost:
+                print(f"   Continuing will discard {lost} unrecoverable result(s).",
+                      file=sys.stderr)
+            return "continue"
+        if choice in ("r", "restart"):
+            return "restart"
+        if choice in ("a", "abort", "q", "quit"):
+            return _CORRUPTED_STATE_ABORT
+        print("Please enter c, r, or a.")
+
+
 def main():  # pragma: no cover - live benchmark orchestrator (no unit tests)
     try:
         subprocess.run(['stty', 'sane'], stderr=subprocess.DEVNULL,
@@ -1668,6 +1766,7 @@ def main():  # pragma: no cover - live benchmark orchestrator (no unit tests)
         "session_seed": None,
         "active_plugins": [p.id for p in active_plugins],
         "runner": runner_mode,
+        "score_schema": SCORE_SCHEMA,
         "model_thread_limit": model_thread_limits,
         "peak_active_models": {source: 0 for source in model_thread_limits},
         "opencode_config": opencode_config_path,
@@ -1689,53 +1788,83 @@ def main():  # pragma: no cover - live benchmark orchestrator (no unit tests)
 
     try:
         if args.restart:
-            if os.path.exists(state_file):
-                os.remove(state_file)
-            for f in glob.glob(os.path.join(output_dir, "results.*")):
-                try:
-                    os.remove(f)
-                except OSError:
-                    pass
-            logs_dir = os.path.join(output_dir, "logs")
-            if os.path.isdir(logs_dir):
-                for f in glob.glob(os.path.join(logs_dir, "*.log")):
-                    try:
-                        os.remove(f)
-                    except OSError:
-                        pass
+            _clear_restart_artifacts(state_file, output_dir)
 
         plugin_ids = [p.id for p in active_plugins]
         plugin_versions = {p.id: p.version for p in active_plugins}
 
         resumed = False
+        restored_targets = []
+        fresh_state = False
         if not args.restart and os.path.exists(state_file):
             try:
-                with open(state_file) as f:
-                    saved_state = json.load(f)
-                saved_plugins = saved_state.get("active_plugins", [])
-
-                if set(saved_plugins) != set(plugin_ids):
-                    print("\n⚠️  Plugin set has changed.", file=sys.stderr)
-                    print(f"   Saved:   {', '.join(saved_plugins) or '(none)'}", file=sys.stderr)
-                    print(f"   Current: {', '.join(plugin_ids)}", file=sys.stderr)
-                    choice = _prompt_restart_or_continue(scripted=args.scripted)
+                try:
+                    with open(state_file, encoding="utf-8") as f:
+                        saved_state = json.load(f)
+                except json.JSONDecodeError:
+                    recovery = prepare_state_recovery(state_file)
+                    choice = _prompt_corrupt_state(recovery, scripted=args.scripted)
                     if choice == "restart":
-                        os.remove(state_file)
+                        _clear_restart_artifacts(state_file, output_dir)
                         state = BenchmarkState(state_models, plugin_ids, runner=runner_mode)
+                        fresh_state = True
                     elif choice == "continue":
+                        backup = apply_state_recovery(state_file, recovery)
+                        saved_state = recovery["data"]
+                        if recovery.get("kind") == "known" and recovery.get("lost_results") == 0:
+                            print(
+                                f"⚠️  Repaired corrupted state file; backup saved as {backup}.",
+                                file=sys.stderr,
+                            )
+                        else:
+                            print(
+                                f"   Recovery applied; original state saved as {backup}.",
+                                file=sys.stderr,
+                            )
+                    else:
+                        print("❌ Could not resume run: corruption recovery was aborted.",
+                              file=sys.stderr)
+                        print("   Aborting instead of silently discarding prior results.",
+                              file=sys.stderr)
+                        print("   The corrupted state file was left untouched.",
+                              file=sys.stderr)
+                        print("   Use --restart only if you intentionally want to discard it and start fresh.",
+                              file=sys.stderr)
+                        sys.exit(1)
+
+                if not fresh_state:
+                    saved_plugins = saved_state.get("active_plugins", [])
+                    if set(saved_plugins) != set(plugin_ids):
+                        print("\n⚠️  Plugin set has changed.", file=sys.stderr)
+                        print(f"   Saved:   {', '.join(saved_plugins) or '(none)'}", file=sys.stderr)
+                        print(f"   Current: {', '.join(plugin_ids)}", file=sys.stderr)
+                        choice = _prompt_restart_or_continue(scripted=args.scripted)
+                        if choice == "restart":
+                            _clear_restart_artifacts(state_file, output_dir)
+                            state = BenchmarkState(state_models, plugin_ids, runner=runner_mode)
+                            fresh_state = True
+                        elif choice != "continue":
+                            sys.exit(0)
+
+                    if not fresh_state:
+                        restored_targets = _merge_saved_targets(
+                            targets, state_models, saved_state, runner_mode,
+                        )
+                        if restored_targets:
+                            run_info["targets"] = list(targets)
+                            run_info["total_targets"] = (
+                                len(state_models) if runner_mode == "both" else len(targets)
+                            )
+                            print(
+                                f"   Restored {len(restored_targets)} saved target(s) absent from current config.",
+                                file=sys.stderr,
+                            )
                         state = BenchmarkState.load_state(
                             state_file, state_models, plugin_ids,
                             rerun_failed=not args.no_rerun_failed)
                         # State may contain results from another runner; retain
-                    # them because identity is carried per model/result.
+                        # them because identity is carried per model/result.
                         resumed = True
-                    else:
-                        sys.exit(0)
-                else:
-                    state = BenchmarkState.load_state(
-                        state_file, state_models, plugin_ids,
-                        rerun_failed=not args.no_rerun_failed)
-                    resumed = True
 
                 if resumed:
                     completed = state.completed
@@ -1766,6 +1895,27 @@ def main():  # pragma: no cover - live benchmark orchestrator (no unit tests)
                 sys.exit(1)
         else:
             state = BenchmarkState(state_models, plugin_ids, runner=runner_mode)
+
+        if restored_targets and runner_mode in ("opencode", "both"):
+            # OpenCode's generated projection is created before the state file
+            # is loaded. Rebuild it after restoring removed targets so their
+            # pending legs have valid agent/config entries when workers start.
+            try:
+                generated = generate_opencode_config(
+                    source_config,
+                    _targets_for_runner(targets, state_models, "opencode"),
+                    os.path.join(opencode_output_dir, "opencode.generated.json"),
+                    timeout=timeout,
+                    token_levels=token_levels,
+                    benchmark_config=cfg,
+                    plugin_temperatures=cfg.get("plugin_temperatures"),
+                )
+                opencode_config_path = generated["path"]
+                opencode_agent_ids = generated["agent_ids"]
+                opencode_projection = generated["projection"]
+            except (OSError, ValueError) as exc:
+                print(f"❌ Could not refresh OpenCode configuration: {exc}", file=sys.stderr)
+                sys.exit(1)
 
         # Use the CLI --seed if provided; otherwise preserve the seed from a
         # resumed state so report exports remain consistent.

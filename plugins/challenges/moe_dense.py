@@ -14,7 +14,7 @@ class MoEDensePlugin(BenchmarkTaskPlugin):
 
     @property
     def version(self):
-        return "0.6.0"
+        return "0.7.0"
 
     @property
     def name(self):
@@ -195,3 +195,6 @@ class MoEDensePlugin(BenchmarkTaskPlugin):
             rubric.penalize_criterion("Gating/routing mechanism", 0.5, "no mathematical formulation was provided")
             rubric.penalize_criterion("Load-balancing loss", 0.5, "no load-balancing equation was provided")
         return rubric.results()
+
+    def score(self, response_text):
+        return self.evaluate(response_text).score

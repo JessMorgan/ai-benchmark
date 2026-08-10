@@ -14,7 +14,7 @@ class ToolCallingPlugin(BenchmarkTaskPlugin):
 
     @property
     def version(self):
-        return "0.7.0"
+        return "0.8.0"
 
     @property
     def name(self):
@@ -191,3 +191,6 @@ class ToolCallingPlugin(BenchmarkTaskPlugin):
         rubric.add_criterion("Synthesis / final response", 4.0, earned)
 
         return rubric.results()
+
+    def score(self, response_text):
+        return self.evaluate(response_text).score

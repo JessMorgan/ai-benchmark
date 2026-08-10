@@ -7,6 +7,7 @@ import time
 import unittest
 from unittest import mock
 
+from benchmark.state import prepare_state_recovery, repair_state_file
 from plugins import discover_plugins
 from tests.utils import load_benchmark_module
 
@@ -26,6 +27,77 @@ class TestBenchmarkState(unittest.TestCase):
             for pid in self.plugin_ids:
                 self.assertIn(f"{pid}_score", snap[name])
                 self.assertIn(f"{pid}_tps", snap[name])
+
+    def test_repair_known_corrupted_state_key(self):
+        """The audited historical malformed key is repaired atomically."""
+        models = {"model-a": "Source1"}
+        state = self.module.BenchmarkState(models, ["moe-dense"])
+        state.update("model-a", status="completed")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, "state.json")
+            state.save_state(path)
+            with open(path, "rb") as handle:
+                raw = handle.read()
+            broken = b'"moe-dense_first_chunk_seen": false,'
+            corrupted = raw.replace(broken, b'"moe-dense_first_chunk_see: : false,', 1)
+            with open(path, "wb") as handle:
+                handle.write(corrupted)
+            with self.assertRaises(json.JSONDecodeError), open(path, encoding="utf-8") as handle:
+                json.load(handle)
+
+            backup = repair_state_file(path)
+            self.assertIsNotNone(backup)
+            with open(path, encoding="utf-8") as handle:
+                repaired = json.load(handle)
+            self.assertEqual(
+                repaired["model_info"]["model-a"]["moe-dense_first_chunk_seen"],
+                False,
+            )
+            self.assertTrue(os.path.exists(backup))
+            with open(backup, "rb") as handle:
+                self.assertIn(b'"moe-dense_first_chunk_see: : false,', handle.read())
+
+    def test_repair_unknown_corruption_is_not_guessed(self):
+        """Unknown state corruption must remain untouched."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, "state.json")
+            with open(path, "wb") as handle:
+                handle.write(b'{"unknown": : 1}')
+            self.assertIsNone(repair_state_file(path))
+            with open(path, "rb") as handle:
+                self.assertEqual(handle.read(), b'{"unknown": : 1}')
+
+    def test_prepare_recovery_counts_invalid_result_row_as_loss(self):
+        """Partial inspection reports malformed rows instead of hiding them."""
+        raw = (
+            b'{"model_info": {}, "results": '
+            b'[{"model":"a"}, BAD, {"model":"b"}], '
+            b'"active_plugins": []}'
+        )
+        with tempfile.NamedTemporaryFile() as handle:
+            handle.write(raw)
+            handle.flush()
+            recovery = prepare_state_recovery(handle.name)
+        self.assertEqual(recovery["total_results"], 3)
+        self.assertEqual(recovery["recoverable_results"], 2)
+        self.assertEqual(recovery["lost_results"], 1)
+        self.assertEqual([r["model"] for r in recovery["data"]["results"]], ["a", "b"])
+
+    def test_prepare_recovery_counts_truncated_result_as_loss(self):
+        """A complete prefix plus a truncated final row is counted as loss."""
+        raw = (
+            b'{"model_info": {}, "results": '
+            b'[{"model":"a"}, {"model":"b"}'
+        )
+        with tempfile.NamedTemporaryFile() as handle:
+            handle.write(raw)
+            handle.flush()
+            recovery = prepare_state_recovery(handle.name)
+        self.assertEqual(recovery["total_results"], 2)
+        self.assertEqual(recovery["recoverable_results"], 2)
+        self.assertIsNone(recovery["lost_results"])
+        self.assertFalse(recovery["counts_certain"])
+        self.assertEqual(len(recovery["data"]["results"]), 2)
 
     def test_save_and_load_state(self):
         models = {"model-a": "Source1"}

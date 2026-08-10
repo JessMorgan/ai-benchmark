@@ -18,15 +18,15 @@ class TestMarkdownOutputPlugin(unittest.TestCase):
                 "ttft": 1.2,
                 "rate-limiter_score": 78,
                 "rate-limiter_rubric": [
-                    {"name": "Interface design", "score_percent": 100, "weight_percent": 15},
-                    {"name": "Token Bucket", "score_percent": 100, "weight_percent": 20},
+                    {"name": "Interface design", "points": 3, "total": 3},
+                    {"name": "Token Bucket", "points": 4, "total": 4},
                 ],
                 "rate-limiter_response_time": 5.0,
                 "rate-limiter_output_tokens": 100,
                 "rate-limiter_tps": 20.0,
                 "moe-dense_score": 59,
                 "moe-dense_rubric": [
-                    {"name": "Covers both architectures", "score_percent": 100, "weight_percent": 12},
+                    {"name": "Covers both architectures", "points": 2, "total": 2},
                 ],
                 "moe-dense_response_time": 3.0,
                 "moe-dense_output_tokens": 50,

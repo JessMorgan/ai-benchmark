@@ -96,9 +96,9 @@ class HTMLOutputPlugin(BenchmarkOutputPlugin):
                     if not isinstance(rubric, list) or not rubric:
                         continue
                     rubric_html += f"<h3>{html_lib.escape(p.name)} — {html_lib.escape(r['model'])}</h3>\n"
-                    rubric_html += '<table><tr><th>Criterion</th><th>Score %</th><th>Weight %</th></tr>\n'
+                    rubric_html += '<table><tr><th>Criterion</th><th>Points</th><th>Total</th></tr>\n'
                     for item in rubric:
-                        rubric_html += f"<tr><td>{html_lib.escape(str(item['name']))}</td><td>{item.get('score_percent', '-')}</td><td>{item.get('weight_percent', '-')}</td></tr>\n"
+                        rubric_html += f"<tr><td>{html_lib.escape(str(item['name']))}</td><td>{item.get('points', '-')}</td><td>{item.get('total', '-')}</td></tr>\n"
                     rubric_html += "</table>\n"
 
         header_cells = "<th>Model</th><th>Runner</th><th>Load(s)</th>"

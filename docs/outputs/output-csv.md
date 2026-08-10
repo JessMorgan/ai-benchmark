@@ -28,6 +28,10 @@ The CSV output plugin generates a `results.csv` file containing the raw benchmar
 | Status | `OK` or `FAIL` |
 | Error | Error message if failed |
 
+Detailed rubric data in saved metadata and in-memory results uses native
+`points` and `total` fields for each criterion; it is not converted to
+percentages.
+
 ## Generated File
 
 When `output_dir` is provided, the plugin writes:
