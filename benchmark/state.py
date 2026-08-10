@@ -668,6 +668,15 @@ class BenchmarkState:
             current.update(values)
             self._judge_progress[model] = current
 
+    def increment_judge_progress(self, model, *, expected=0, completed=0):
+        """Atomically increment one judge model's live progress counters."""
+        with self._lock:
+            current = dict(self._judge_progress.get(model, {}))
+            current["expected"] = current.get("expected", 0) + expected
+            current["completed"] = current.get("completed", 0) + completed
+            self._judge_progress[model] = current
+            return dict(current)
+
     def judge_progress_snapshot(self):
         """Return a copy of live per-judge progress for the TUI."""
         with self._lock:

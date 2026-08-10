@@ -1305,7 +1305,7 @@ class SourceModelScheduler:
 
     def __init__(self, source, max_models, target_names, run_target,
                  stop_event, on_error, *, runner_label="model",
-                 peak_callback=None):
+                 peak_callback=None, on_complete=None):
         self.source = source
         self.max_models = max(1, int(max_models))
         self.target_names = list(target_names)
@@ -1314,6 +1314,7 @@ class SourceModelScheduler:
         self.on_error = on_error
         self.runner_label = runner_label
         self.peak_callback = peak_callback
+        self.on_complete = on_complete
 
     def run_until_drained(self):
         """Submit at most ``max_models`` targets and refill as they finish."""
@@ -1367,11 +1368,101 @@ class SourceModelScheduler:
                 executor.shutdown(wait=True, cancel_futures=True)
             else:
                 executor.shutdown(wait=True)
+        if not self.stop_event.is_set() and self.on_complete:
+            self.on_complete(self.source)
+
+
+
+def _configure_judge_source(benchmark_limits, source, full_limit,
+                            benchmark_active, pool):
+    """Configure the judge reservation for one source.
+
+    During benchmark overlap, reserve one judge worker only when another
+    source slot remains available. Sources with no benchmark work start their
+    full judge pool immediately; completion callbacks later call
+    ``pool.expand_full()`` for active sources.
+    """
+    full_limit = max(1, int(full_limit))
+    if not benchmark_active:
+        pool.start(full_limit)
+    elif full_limit > 1:
+        benchmark_limits[source] = max(1, full_limit - 1)
+        pool.start(1)
+
+
+class SourceJudgeWorkerPool:
+    """Run judge jobs with a source-local, dynamically expandable pool.
+
+    The pool starts with the reserved judge capacity used while benchmark
+    targets are active. Once the source benchmark scheduler completes, callers
+    can expand it to ``limit`` so all source slots judge concurrently.
+    """
+
+    def __init__(self, source, limit, process_job, stop_event):
+        self.source = source
+        self.limit = max(1, int(limit))
+        self.process_job = process_job
+        self.stop_event = stop_event
+        self.queue = queue.Queue()
+        self._stop = object()
+        self._lock = threading.Lock()
+        self._threads = []
+
+    @property
+    def thread_count(self):
+        """Return the number of workers started for this source."""
+        with self._lock:
+            return len(self._threads)
+
+    def enqueue(self, job):
+        """Queue one judge job for this source."""
+        self.queue.put(job)
+
+    def _worker(self):
+        while not self.stop_event.is_set():
+            try:
+                job = self.queue.get(timeout=0.2)
+            except queue.Empty:
+                continue
+            if job is self._stop:
+                break
+            self.process_job(job)
+
+    def start(self, count=1):
+        """Start workers up to ``count`` without exceeding the source limit."""
+        with self._lock:
+            target = min(self.limit, max(0, int(count)))
+            new_threads = []
+            for index in range(len(self._threads), target):
+                thread = threading.Thread(
+                    target=self._worker,
+                    name=f"judge-worker-{self.source}-{index + 1}",
+                    daemon=True,
+                )
+                self._threads.append(thread)
+                new_threads.append(thread)
+        for thread in new_threads:
+            thread.start()
+
+    def expand_full(self):
+        """Release the benchmark reservation and use the full source pool."""
+        self.start(self.limit)
+
+    def stop(self, timeout=None):
+        """Stop and join all workers, preserving already-processed jobs."""
+        with self._lock:
+            threads = list(self._threads)
+        for _thread in threads:
+            self.queue.put(self._stop)
+        for thread in threads:
+            thread.join(timeout=timeout)
 
 
 def _start_runner_pipeline(targets_by_source, opencode_pending, http_pending,
                            run_target, stop_event, on_error,
-                           model_thread_limits=None, peak_callback=None):
+                           model_thread_limits=None, peak_callback=None,
+                           source_complete_callback=None):
+
     """Start one OpenCode-to-HTTP worker per source.
 
     ``run_target(name, runner)`` executes one configured target through the
@@ -1409,6 +1500,7 @@ def _start_runner_pipeline(targets_by_source, opencode_pending, http_pending,
         scheduler = SourceModelScheduler(
             source, limit, target_names, run_pipeline, stop_event, on_error,
             runner_label="pipeline", peak_callback=peak_callback,
+            on_complete=source_complete_callback,
         )
         try:
             scheduler.run_until_drained()
@@ -2221,12 +2313,14 @@ def main():  # pragma: no cover - live benchmark orchestrator (no unit tests)
 
         judge_input_dir = os.path.join(output_dir, "judge-inputs") if judge_models else None
         judge_sources = {name: targets[name]["source"] for name in judge_models}
-        judge_queues = ({source: queue.Queue() for source in set(judge_sources.values())}
-                        if judge_models else {})
-        judge_stop = object()
-        judge_threads = {}
+        judge_source_limits = {
+            source: max(1, int(model_thread_limits.get(source, 1)))
+            for source in set(judge_sources.values())
+        }
+        judge_pools = {}
         judge_seen = set()
         judge_seen_lock = threading.Lock()
+        judge_counts_lock = threading.Lock()
         judge_votes = {}
         judge_votes_lock = threading.Lock()
         existing_judge_counts = {model: 0 for model in judge_models}
@@ -2258,12 +2352,12 @@ def main():  # pragma: no cover - live benchmark orchestrator (no unit tests)
                     if key in judge_seen:
                         continue
                     judge_seen.add(key)
-                judge_queues[source].put((sidecar, target_name, runner, plugin_id, judge_name))
-                state.update_judge_progress(
-                    judge_name,
-                    expected=state.judge_progress_snapshot().get(judge_name, {}).get("expected", 0) + 1,
+                judge_pools[source].enqueue(
+                    (sidecar, target_name, runner, plugin_id, judge_name)
                 )
-                run_info["judge_counts"]["queued"] += 1
+                state.increment_judge_progress(judge_name, expected=1)
+                with judge_counts_lock:
+                    run_info["judge_counts"]["queued"] += 1
 
         def process_judge_job(job):
             """Judge one sidecar with every configured judge and persist consensus."""
@@ -2280,10 +2374,7 @@ def main():  # pragma: no cover - live benchmark orchestrator (no unit tests)
                 vote_key = f"{plugin_id}_judge_votes"
                 existing_votes = latest.get(vote_key, [])
                 if any(vote.get("model") == judge_name for vote in existing_votes if isinstance(vote, dict)):
-                    state.update_judge_progress(
-                        judge_name,
-                        completed=state.judge_progress_snapshot().get(judge_name, {}).get("completed", 0) + 1,
-                    )
+                    state.increment_judge_progress(judge_name, completed=1)
                     return
                 outcome = judge_response(
                     source_config,
@@ -2345,19 +2436,13 @@ def main():  # pragma: no cover - live benchmark orchestrator (no unit tests)
                     status=judge_status,
                     complete=all_judges_finished,
                 )
-                state.update_judge_progress(
-                    judge_name,
-                    completed=state.judge_progress_snapshot().get(judge_name, {}).get("completed", 0) + 1,
-                )
-                if consensus["error"]:
-                    run_info["judge_counts"]["failed"] += 1
-                else:
-                    run_info["judge_counts"]["completed"] += 1
-                run_info["judge_counts"]["votes"] += 1
-                state.update_judge_progress(
-                    judge_name,
-                    completed=state.judge_progress_snapshot().get(judge_name, {}).get("completed", 0) + 1,
-                )
+                state.increment_judge_progress(judge_name, completed=1)
+                with judge_counts_lock:
+                    if consensus["error"]:
+                        run_info["judge_counts"]["failed"] += 1
+                    else:
+                        run_info["judge_counts"]["completed"] += 1
+                    run_info["judge_counts"]["votes"] += 1
                 with persistence_lock:
                     state.save_state(state_file, plugin_versions=plugin_versions)
                     _save_outputs(state, output_dir, active_plugins)
@@ -2387,40 +2472,51 @@ def main():  # pragma: no cover - live benchmark orchestrator (no unit tests)
                     status="failed" if all_judges_finished else "running",
                     complete=all_judges_finished,
                 )
-                run_info["judge_counts"]["failed"] += 1
-                state.update_judge_progress(
-                    judge_name,
-                    completed=state.judge_progress_snapshot().get(judge_name, {}).get("completed", 0) + 1,
-                )
+                with judge_counts_lock:
+                    run_info["judge_counts"]["failed"] += 1
+                state.increment_judge_progress(judge_name, completed=1)
                 with persistence_lock:
                     state.save_state(state_file, plugin_versions=plugin_versions)
                     _save_outputs(state, output_dir, active_plugins)
 
-        def judge_worker(source):
-            """Consume one judge source's queue in its reserved slot."""
-            run_info["judge_status"] = "running"
-            source_queue = judge_queues[source]
-            while True:
-                job = source_queue.get()
-                if job is judge_stop:
-                    break
-                process_judge_job(job)
-            if all(not thread.is_alive() for thread in judge_threads.values()):
-                run_info["judge_status"] = "complete"
+        judge_pools = {
+            source: SourceJudgeWorkerPool(
+                source, judge_source_limits[source], process_judge_job, stop_event,
+            )
+            for source in set(judge_sources.values())
+        }
 
-        def start_judge_if_async(benchmark_limits):
-            """Start one source-local judge worker per judge source."""
+        def source_benchmark_complete(source):
+            """Release the source's reserved benchmark slots to judging."""
+            pool = judge_pools.get(source)
+            if pool is not None:
+                pool.expand_full()
+
+        def start_judge_if_async(benchmark_limits, benchmark_sources=None):
+            """Reserve one judge slot, then expand after source completion.
+
+            While a source is benchmarking, one judge worker is allowed only
+            when another slot remains available. Once that source drains, all
+            of its configured model slots become judge workers, including for a
+            single configured judge model.
+
+            """
             if not judge_models:
                 return
-            for source in judge_queues:
-                if source in benchmark_limits and model_thread_limits[source] > 1:
-                    benchmark_limits[source] = max(1, model_thread_limits[source] - 1)
-                    thread = threading.Thread(
-                        target=judge_worker, args=(source,),
-                        name=f"judge-worker-{source}", daemon=True,
-                    )
-                    judge_threads[source] = thread
-                    thread.start()
+            benchmark_sources = benchmark_sources or set()
+            for source, pool in judge_pools.items():
+                _configure_judge_source(
+                    benchmark_limits,
+                    source,
+                    judge_source_limits[source],
+                    source in benchmark_sources,
+                    pool,
+                )
+
+        def stop_judge_workers():
+            """Stop and join all source-local judge workers."""
+            for pool in judge_pools.values():
+                pool.stop(timeout=1.0)
 
         def finish_judge():
             """Drain retained judge jobs and join source-local workers."""
@@ -2432,18 +2528,11 @@ def main():  # pragma: no cover - live benchmark orchestrator (no unit tests)
             ]
             for sidecar, item in jobs:
                 enqueue_judge(sidecar, item["target"], item["runner"], item["plugin"])
-            for source, source_queue in judge_queues.items():
-                if source not in judge_threads:
-                    run_info["judge_status"] = "running"
-                    while True:
-                        try:
-                            process_judge_job(source_queue.get_nowait())
-                        except queue.Empty:
-                            break
-                else:
-                    source_queue.put(judge_stop)
-            for thread in judge_threads.values():
-                thread.join()
+            for source, pool in judge_pools.items():
+                # A source with no active benchmark scheduler should still
+                # receive its full judge pool before the final drain.
+                pool.start(judge_source_limits[source])
+            stop_judge_workers()
             if judge_models:
                 run_info["judge_status"] = "complete"
 
@@ -2518,13 +2607,17 @@ def main():  # pragma: no cover - live benchmark orchestrator (no unit tests)
                 targets, snapshot, runner_mode, source_config,
             )
             benchmark_limits = dict(model_thread_limits)
-            start_judge_if_async(benchmark_limits)
+            benchmark_sources = {
+                source for source, names in targets_by_source.items() if names
+            }
+            start_judge_if_async(benchmark_limits, benchmark_sources)
 
             pipeline_threads = _start_runner_pipeline(
                 targets_by_source, opencode_pending, http_pending,
                 run_target, stop_event, on_worker_error,
                 model_thread_limits=benchmark_limits,
                 peak_callback=record_peak,
+                source_complete_callback=source_benchmark_complete,
             )
             if pipeline_threads:
                 try:
@@ -2536,6 +2629,7 @@ def main():  # pragma: no cover - live benchmark orchestrator (no unit tests)
                     stop_event.set()
                     print("\\n\\n⚠️  Ctrl+C — saving state and shutting down...", file=sys.stderr)
                     close_active_requests()
+                    stop_judge_workers()
                     for thread in pipeline_threads:
                         thread.join(timeout=1.0)
         else:
@@ -2547,7 +2641,10 @@ def main():  # pragma: no cover - live benchmark orchestrator (no unit tests)
                 targets, snapshot, runner_mode, source_config,
             )
             benchmark_limits = dict(model_thread_limits)
-            start_judge_if_async(benchmark_limits)
+            benchmark_sources = {
+                source for source, names in source_queues.items() if names
+            }
+            start_judge_if_async(benchmark_limits, benchmark_sources)
 
             source_threads = {}
             for source, model_names in source_queues.items():
@@ -2563,6 +2660,7 @@ def main():  # pragma: no cover - live benchmark orchestrator (no unit tests)
                     scheduler = SourceModelScheduler(
                         source, benchmark_limits.get(source, 1), model_names, run_one,
                         stop_event, on_worker_error, peak_callback=record_peak,
+                        on_complete=source_benchmark_complete,
                     )
                     scheduler.run_until_drained()
 
@@ -2579,6 +2677,7 @@ def main():  # pragma: no cover - live benchmark orchestrator (no unit tests)
                     stop_event.set()
                     print("\\n\\n⚠️  Ctrl+C — saving state and shutting down...", file=sys.stderr)
                     close_active_requests()
+                    stop_judge_workers()
                     _join_workers(timeout=1.0)
 
         if not interrupted:

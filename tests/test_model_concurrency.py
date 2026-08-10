@@ -7,8 +7,10 @@ from collections import defaultdict
 from unittest import mock
 
 from benchmark.cli import (
+    SourceJudgeWorkerPool,
     SourceModelScheduler,
     _build_runner_queues,
+    _configure_judge_source,
     _start_runner_pipeline,
 )
 from benchmark.core import resolve_model_thread_limit
@@ -29,6 +31,28 @@ def test_model_thread_limit_resolution_and_strict_validation():
                 assert "positive integer" in str(exc)
             else:  # pragma: no cover - assertion gives a clearer failure
                 raise AssertionError(f"expected ValueError for {invalid!r}")
+
+
+def test_source_scheduler_calls_completion_after_all_targets():
+    events = []
+    lock = threading.Lock()
+
+    def run_target(name):
+        with lock:
+            events.append(("start", name))
+        time.sleep(0.01)
+        with lock:
+            events.append(("end", name))
+
+    scheduler = SourceModelScheduler(
+        "Cloud", 2, ["a", "b", "c"], run_target,
+        threading.Event(), lambda *_args: None,
+        on_complete=lambda source: events.append(("complete", source)),
+    )
+    scheduler.run_until_drained()
+
+    assert events[-1] == ("complete", "Cloud")
+    assert {name for event, name in events if event == "end"} == {"a", "b", "c"}
 
 
 def test_source_scheduler_is_fifo_and_bounded():
@@ -120,6 +144,125 @@ def test_source_scheduler_cancellation_stops_new_submissions():
     scheduler.run_until_drained()
 
     assert calls == ["a"]
+
+
+def test_judge_source_reservation_configures_one_then_full_pool():
+    stop = threading.Event()
+    pool = SourceJudgeWorkerPool("Cloud", 3, lambda _job: None, stop)
+    limits = {"Cloud": 3}
+
+    _configure_judge_source(limits, "Cloud", 3, True, pool)
+    assert limits["Cloud"] == 2
+    assert pool.thread_count == 1
+    pool.expand_full()
+    assert pool.thread_count == 3
+    pool.stop(timeout=1)
+
+
+def test_judge_pool_expands_after_source_benchmark_completion():
+    stop = threading.Event()
+    benchmark_release = threading.Event()
+    benchmark_started = threading.Event()
+    benchmark_both_active = threading.Event()
+    judge_started = threading.Event()
+    judge_release = threading.Event()
+    full_pool_active = threading.Event()
+    lock = threading.Lock()
+    active_benchmarks = 0
+    peak_benchmarks = 0
+    active_judges = 0
+    peak_judges = 0
+    judge_calls = []
+
+    def process_judge(job):
+        nonlocal active_judges, peak_judges
+        with lock:
+            active_judges += 1
+            peak_judges = max(peak_judges, active_judges)
+            judge_calls.append(job)
+            judge_started.set()
+            if active_judges == 3:
+                full_pool_active.set()
+        judge_release.wait(timeout=2)
+        with lock:
+            active_judges -= 1
+
+    def run_benchmark(_name):
+        nonlocal active_benchmarks, peak_benchmarks
+        with lock:
+            active_benchmarks += 1
+            peak_benchmarks = max(peak_benchmarks, active_benchmarks)
+            benchmark_started.set()
+            if active_benchmarks == 2:
+                benchmark_both_active.set()
+        benchmark_release.wait(timeout=2)
+        with lock:
+            active_benchmarks -= 1
+
+    full_limit = 3
+    benchmark_limit = full_limit - 1
+    pool = SourceJudgeWorkerPool("Cloud", full_limit, process_judge, stop)
+    pool.start(1)
+    assert pool.thread_count == 1
+    for job in range(3):
+        pool.enqueue(job)
+
+    benchmark = SourceModelScheduler(
+        "Cloud", benchmark_limit, ["model-a", "model-b"], run_benchmark,
+        stop, lambda *_args: None,
+        on_complete=lambda _source: pool.expand_full(),
+    )
+    benchmark_thread = threading.Thread(target=benchmark.run_until_drained)
+    benchmark_thread.start()
+
+    assert benchmark_started.wait(timeout=1)
+    assert benchmark_both_active.wait(timeout=1)
+    assert judge_started.wait(timeout=1)
+    # The overlap phase uses two benchmark slots plus the one reserved judge
+    # slot, never exceeding the source's full limit of three.
+    with lock:
+        assert active_benchmarks == benchmark_limit
+        assert peak_benchmarks == benchmark_limit
+        assert active_judges == 1
+        assert peak_judges == 1
+        assert active_benchmarks + active_judges == full_limit
+    assert pool.thread_count == 1
+
+    benchmark_release.set()
+    benchmark_thread.join(timeout=2)
+    assert not benchmark_thread.is_alive()
+
+    assert full_pool_active.wait(timeout=1)
+    with lock:
+        assert peak_judges == full_limit
+        assert active_benchmarks == 0
+        assert active_judges == full_limit
+    assert pool.thread_count == full_limit
+    assert len(judge_calls) == 3
+
+    judge_release.set()
+    pool.stop(timeout=2)
+    assert active_judges == 0
+
+
+def test_runner_pipeline_notifies_source_completion_for_judge_expansion():
+    completed = []
+    stop = threading.Event()
+
+    threads = _start_runner_pipeline(
+        {"Cloud": ["a", "b"]},
+        {"Cloud": ["a", "b"]},
+        {"Cloud": {"a", "b"}},
+        lambda _name, _runner: time.sleep(0.01),
+        stop,
+        lambda *_args: None,
+        model_thread_limits={"Cloud": 2},
+        source_complete_callback=completed.append,
+    )
+    for thread in threads:
+        thread.join(timeout=2)
+
+    assert completed == ["Cloud"]
 
 
 def test_runner_pipeline_applies_source_limit_and_preserves_both_order():
