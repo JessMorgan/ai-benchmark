@@ -8,6 +8,7 @@ import traceback
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from typing import Any
 
 import yaml
 
@@ -66,6 +67,22 @@ def resolve_preload_timeout(source_config, source, default=PRELOAD_DEFAULT_TIMEO
     except (TypeError, ValueError):
         return default
     return value if value > 0 else default
+
+
+def resolve_model_thread_limit(source_config, source, top_level=1):
+    """Return the validated positive model concurrency for ``source``.
+
+    Unlike ``plugin_thread_limit``, zero is never an unlimited value here:
+    source-level model concurrency is an explicit resource-control boundary.
+    """
+    cfg = source_config.get(source)
+    value = cfg.get("model_thread_limit", top_level) if isinstance(cfg, dict) else top_level
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ValueError(
+            f"Invalid model_thread_limit for source '{source}': "
+            f"expected a positive integer, got {value!r}"
+        )
+    return value
 
 
 def preload_model(source_config, source, api_model, timeout,
@@ -441,6 +458,7 @@ def dump_default_config():
         # Per-target max-token overrides for thinking models; keys are target
         # names or "{source}/{api_model}", values beat the global token_levels.
         "model_token_levels": {},
+        "model_thread_limit": 1,
         "rate-limiter_temperature": 0.2,
         "moe-dense_temperature": 0.7,
         "plugins_whitelist": [],
@@ -453,6 +471,7 @@ def dump_default_config():
                     "Content-Type": "application/json"
                 },
                 "plugin_thread_limit": 1,
+                "model_thread_limit": 1,
                 "preload": False,
                 "preload_timeout": PRELOAD_DEFAULT_TIMEOUT,
                 "opencode_timeout": int(OPENCODE_NO_OUTPUT_GRACE)
@@ -464,6 +483,7 @@ def dump_default_config():
                     "Content-Type": "application/json"
                 },
                 "plugin_thread_limit": 1,
+                "model_thread_limit": 1,
                 "preload": False,
                 "preload_timeout": PRELOAD_DEFAULT_TIMEOUT,
                 "opencode_timeout": int(OPENCODE_NO_OUTPUT_GRACE)
@@ -475,6 +495,7 @@ def dump_default_config():
                     "Content-Type": "application/json"
                 },
                 "plugin_thread_limit": 1,
+                "model_thread_limit": 1,
                 "preload": False,
                 "preload_timeout": PRELOAD_DEFAULT_TIMEOUT,
                 "opencode_timeout": int(OPENCODE_NO_OUTPUT_GRACE)
@@ -964,7 +985,7 @@ def _run_plugin_task(target_name, api_model, source, plugin, source_config, time
     #    streaming failure path.
     score = "fail"
     rubric = []
-    diagnostics = {}
+    diagnostics: dict[str, Any] = {}
     score_error = None
     score_traceback_text = None
     try:

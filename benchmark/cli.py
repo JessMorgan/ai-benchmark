@@ -20,6 +20,7 @@ import threading
 import time
 import traceback
 import unicodedata
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from datetime import datetime, timezone
 
 from benchmark.completions import generate_shell_completion
@@ -35,6 +36,7 @@ from benchmark.core import (
     load_config,
     parse_plugin_temperatures,
     preload_model,
+    resolve_model_thread_limit,
     resolve_preload_timeout,
     resolve_targets,
     run_model,
@@ -296,7 +298,24 @@ def _wr(stdscr, max_x, max_y, y, x, text, attr=0):
         pass
 
 
-def _fallback_tui_loop(state, stop_event, session_seed=None):
+def _active_source_target_counts(snap):
+    """Count active target pipelines once per source, across runner states."""
+    active = {}
+    seen = set()
+    for name, info in snap.items():
+        if not (info.get("preloading") or info.get("running_pids")):
+            continue
+        target_name = name.removesuffix(" [opencode]")
+        key = (info.get("source", "?"), target_name)
+        if key in seen:
+            continue
+        seen.add(key)
+        source = key[0]
+        active[source] = active.get(source, 0) + 1
+    return active
+
+
+def _fallback_tui_loop(state, stop_event, session_seed=None, model_thread_limits=None):
     """Fallback terminal UI when curses is unavailable."""
     while not stop_event.is_set():
         snap = state.snapshot()
@@ -313,9 +332,17 @@ def _fallback_tui_loop(state, stop_event, session_seed=None):
             tuple(key.rsplit("|", 1)[0].split("|", 1))
             for key in (backoff_429.get("sleeping") or {})
         })
+        source_active = _active_source_target_counts(snap)
+        slots = ""
+        if model_thread_limits:
+            slots = "  |  " + ", ".join(
+                f"{source}: models {source_active.get(source, 0)}/{limit}"
+                for source, limit in model_thread_limits.items()
+            )
         parts = [
             (f"{seed_info}🔄 {active} active  |  ✅ {done}/{total} completed"
-            f"  |  HTTP: {http_threads}  |  429⏸ {sleeping_model_count}")
+            f"  |  HTTP: {http_threads}  |  429⏸ {sleeping_model_count}"
+            f"{slots}")
         ]
         for name, s in snap.items():
             if s.get("preloading"):
@@ -369,7 +396,8 @@ def _handle_tui_input(stdscr, scroll_y, scroll_x, max_row_offset, visible_rows, 
 
 def _render_header_and_summary(stdscr, max_x, max_y, snap, done, total, running, queued, pending,
                                 scroll_y, visible_rows, total_models, session_seed,
-                                http_threads, sleeping_model_count):
+                                http_threads, sleeping_model_count,
+                                model_thread_limits=None):
     """Render the top header and summary statistics.
 
     ``http_threads`` is the count of in-flight HTTP responses (the wall-clock
@@ -389,6 +417,13 @@ def _render_header_and_summary(stdscr, max_x, max_y, snap, done, total, running,
 
     failed_count = sum(1 for s in snap.values() if s["status"] == "failed")
     err_indicator = f"  |  \u26a0 {failed_count} failed" if failed_count else ""
+    source_active = _active_source_target_counts(snap)
+    slot_text = ""
+    if model_thread_limits:
+        slot_text = "  |  " + ", ".join(
+            f"{source}: models {source_active.get(source, 0)}/{limit}"
+            for source, limit in model_thread_limits.items()
+        )
     summary = (f"Total: {total}  |  "
                f"Done: {done}  |  "
                f"Active: {len(running)}  |  "
@@ -974,7 +1009,8 @@ def _render_footer(stdscr, max_x, max_y, live_models, queuing, footer_line,
     _wr(stdscr, max_x, max_y, footer_line, 0, msg)
 
 
-def tui_main(state, stop_event, num_sources, active_plugins, session_seed=None):
+def tui_main(state, stop_event, num_sources, active_plugins, session_seed=None,
+             model_thread_limits=None):
     """Run ncurses TUI in a daemon thread. Updates every 200ms."""
     try:
         stdscr = curses.initscr()
@@ -990,7 +1026,7 @@ def tui_main(state, stop_event, num_sources, active_plugins, session_seed=None):
             curses.init_pair(2, curses.COLOR_YELLOW, -1)
             curses.init_pair(3, curses.COLOR_RED, -1)
     except Exception:  # noqa: BLE001 - any curses init failure falls back to a plain loop
-        _fallback_tui_loop(state, stop_event, session_seed)
+        _fallback_tui_loop(state, stop_event, session_seed, model_thread_limits)
         return
 
     try:
@@ -1067,7 +1103,7 @@ def tui_main(state, stop_event, num_sources, active_plugins, session_seed=None):
                 _render_header_and_summary(
                     stdscr, max_x, max_y, snap, done, total, running, queued, pending,
                     scroll_y, VISIBLE_ROWS, len(snap), session_seed,
-                    http_threads, sleeping_model_count
+                    http_threads, sleeping_model_count, model_thread_limits
                 )
 
                 plugin_hdr = _render_table_headings(
@@ -1135,8 +1171,123 @@ def tui_main(state, stop_event, num_sources, active_plugins, session_seed=None):
             pass
 
 
+def _targets_for_runner(targets, state_models, runner):
+    """Return targets with a saved/configured identity for ``runner``."""
+    suffix = " [opencode]" if runner == "opencode" else ""
+    return {
+        name: info
+        for name, info in targets.items()
+        if f"{name}{suffix}" in state_models
+    }
+
+
+def _build_runner_queues(targets, snapshot, runner_mode, source_config):
+    """Build pending runner queues from the loaded state snapshot."""
+    if runner_mode == "both":
+        targets_by_source = {src: [] for src in source_config}
+        opencode_pending = {src: [] for src in targets_by_source}
+        http_pending = {src: set() for src in targets_by_source}
+        for name, info in targets.items():
+            opencode_state = snapshot.get(f"{name} [opencode]")
+            opencode_needed = (
+                opencode_state is not None
+                and opencode_state.get("status") != "completed"
+            )
+            http_state = snapshot.get(name)
+            http_needed = (
+                http_state is not None
+                and http_state.get("status") != "completed"
+            )
+            if opencode_needed:
+                opencode_pending[info["source"]].append(name)
+            if http_needed:
+                http_pending[info["source"]].add(name)
+            if opencode_needed or http_needed:
+                targets_by_source[info["source"]].append(name)
+        return targets_by_source, opencode_pending, http_pending
+
+    phase_runner = runner_mode
+    source_queues = {src: [] for src in {info["source"] for info in targets.values()}}
+    for name, info in targets.items():
+        state_key = name if phase_runner == "http" else f"{name} [opencode]"
+        if state_key not in snapshot or snapshot[state_key].get("status") == "completed":
+            continue
+        source_queues[info["source"]].append(name)
+    return source_queues
+
+
+class SourceModelScheduler:
+    """Run a FIFO queue of target pipelines with a source-local bound."""
+
+    def __init__(self, source, max_models, target_names, run_target,
+                 stop_event, on_error, *, runner_label="model",
+                 peak_callback=None):
+        self.source = source
+        self.max_models = max(1, int(max_models))
+        self.target_names = list(target_names)
+        self.run_target = run_target
+        self.stop_event = stop_event
+        self.on_error = on_error
+        self.runner_label = runner_label
+        self.peak_callback = peak_callback
+
+    def run_until_drained(self):
+        """Submit at most ``max_models`` targets and refill as they finish."""
+        next_index = 0
+        futures = {}
+        active = 0
+        executor = ThreadPoolExecutor(max_workers=self.max_models)
+        try:
+            def submit_next():
+                nonlocal next_index, active
+                if self.stop_event.is_set() or next_index >= len(self.target_names):
+                    return False
+                target_name = self.target_names[next_index]
+                next_index += 1
+                # The scheduler's FIFO queue and this one-shot submission
+                # path are the claim guard: a target is inserted into exactly
+                # one future before any refill can advance the queue.
+                futures[executor.submit(self.run_target, target_name)] = target_name
+                active += 1
+                if self.peak_callback:
+                    self.peak_callback(self.source, active)
+                return True
+
+            for _ in range(self.max_models):
+                if not submit_next():
+                    break
+            while futures:
+                done, _ = wait(futures, return_when=FIRST_COMPLETED)
+                for future in done:
+                    target_name = futures.pop(future)
+                    active -= 1
+                    if self.peak_callback:
+                        self.peak_callback(self.source, active)
+                    try:
+                        future.result()
+                    except Exception as exc:  # noqa: BLE001 - isolate one target failure
+                        self.on_error(target_name, self.runner_label, exc)
+                    submit_next()
+                if self.stop_event.is_set():
+                    for future in futures:
+                        future.cancel()
+                    break
+        finally:
+            # Do not let the executor context manager wait indefinitely after
+            # cancellation: active HTTP/subprocess work is interrupted by the
+            # caller before workers are joined. Normal completion still shuts
+            # down synchronously so no executor thread leaks into output work.
+            if self.stop_event.is_set():
+                for future in futures:
+                    future.cancel()
+                executor.shutdown(wait=True, cancel_futures=True)
+            else:
+                executor.shutdown(wait=True)
+
+
 def _start_runner_pipeline(targets_by_source, opencode_pending, http_pending,
-                           run_target, stop_event, on_error):
+                           run_target, stop_event, on_error,
+                           model_thread_limits=None, peak_callback=None):
     """Start one OpenCode-to-HTTP worker per source.
 
     ``run_target(name, runner)`` executes one configured target through the
@@ -1154,28 +1305,36 @@ def _start_runner_pipeline(targets_by_source, opencode_pending, http_pending,
     threads = []
 
     def source_worker(source, target_names):
-        for target_name in target_names:
-            if stop_event.is_set():
-                break
+        limit = (model_thread_limits or {}).get(source, 1)
+
+        def run_pipeline(target_name):
             skip_target = False
             if target_name in opencode_pending.get(source, []):
                 try:
                     skip_target = run_target(target_name, "opencode") is False
                 except Exception as exc:  # noqa: BLE001 - a runner crash is reported, not fatal
-                    # An OpenCode failure must not prevent the independent HTTP
-                    # comparison for this target from being attempted.
                     on_error(target_name, "opencode", exc)
             if stop_event.is_set() or skip_target:
-                continue
+                return
             if target_name in http_pending.get(source, set()):
                 try:
                     run_target(target_name, "http")
                 except Exception as exc:  # noqa: BLE001 - a runner crash is reported, not fatal
                     on_error(target_name, "http", exc)
 
+        scheduler = SourceModelScheduler(
+            source, limit, target_names, run_pipeline, stop_event, on_error,
+            runner_label="pipeline", peak_callback=peak_callback,
+        )
+        try:
+            scheduler.run_until_drained()
+        except Exception as exc:  # noqa: BLE001 - isolate unexpected source scheduler failures
+            on_error(source, "scheduler", exc)
+
     for source, target_names in targets_by_source.items():
         if not target_names:
             continue
+
         thread = threading.Thread(
             target=source_worker,
             args=(source, target_names),
@@ -1422,19 +1581,40 @@ def main():  # pragma: no cover - live benchmark orchestrator (no unit tests)
                 sys.exit(1)
     cfg["plugin_temperatures"] = plugin_temperatures
 
-    # Apply per-source plugin_thread_limit defaults and CLI override.
-    # Top-level plugin_thread_limit is used as a fallback for sources that
-    # do not define their own value.
-    for src_cfg in source_config.values():
+    # Apply per-source plugin_thread_limit defaults and validate the separate
+    # model-level source slots. The latter has no unlimited/zero meaning.
+    for source, src_cfg in source_config.items():
+        if not isinstance(src_cfg, dict):
+            print(f"❌ Source '{source}' must be an object.", file=sys.stderr)
+            sys.exit(1)
         src_cfg["plugin_thread_limit"] = src_cfg.get(
             "plugin_thread_limit", cfg.get("plugin_thread_limit", 1)
         )
     if args.plugin_thread_limit is not None:
         for src_cfg in source_config.values():
             src_cfg["plugin_thread_limit"] = args.plugin_thread_limit
+    try:
+        model_thread_limits = {
+            source: resolve_model_thread_limit(
+                source_config, source, cfg.get("model_thread_limit", 1)
+            )
+            for source in source_config
+        }
+    except ValueError as exc:
+        print(f"❌ {exc}", file=sys.stderr)
+        sys.exit(1)
+    for source, limit in model_thread_limits.items():
+        if limit > 1 and source.lower() in {"ai server", "gaming pc"}:
+            print(
+                f"⚠️  {source}: model_thread_limit={limit} may exhaust local hardware; honoring explicit configuration.",
+                file=sys.stderr,
+            )
 
     print(f"📋 Loaded {len(targets)} targets ({len(models)} models, {len(agents)} agents) "
           f"across {len(source_config)} sources from {config_path}", file=sys.stderr)
+    print("🧵 Model slots: " + "; ".join(
+        f"{source}: {limit}" for source, limit in model_thread_limits.items()
+    ), file=sys.stderr)
     print(f"🔌 Active plugins: {', '.join(p.name for p in active_plugins)} "
           f"(v{', v'.join(p.version for p in active_plugins)})", file=sys.stderr)
     print(f"📂 Output directory: {output_dir}", file=sys.stderr)
@@ -1488,6 +1668,8 @@ def main():  # pragma: no cover - live benchmark orchestrator (no unit tests)
         "session_seed": None,
         "active_plugins": [p.id for p in active_plugins],
         "runner": runner_mode,
+        "model_thread_limit": model_thread_limits,
+        "peak_active_models": {source: 0 for source in model_thread_limits},
         "opencode_config": opencode_config_path,
         "opencode_projection": opencode_projection,
         "opencode_binary": opencode_binary,
@@ -1603,7 +1785,8 @@ def main():  # pragma: no cover - live benchmark orchestrator (no unit tests)
         # shutdown, forcing the user to press Ctrl+C a second time.
         tui_thread = threading.Thread(
             target=tui_main,
-            args=(state, stop_event, len(source_config), active_plugins, session_seed),
+            args=(state, stop_event, len(source_config), active_plugins, session_seed,
+                  model_thread_limits),
             daemon=True,
         )
         tui_thread.start()
@@ -1630,6 +1813,7 @@ def main():  # pragma: no cover - live benchmark orchestrator (no unit tests)
         preload_lock = threading.Lock()
         preloaded_ok = set()
         preload_failed = set()
+        preload_inflight = {}
         raw_targets = {}
         raw_targets.update(cfg.get("models", {}))
         raw_targets.update(cfg.get("agents", {}))
@@ -1717,22 +1901,34 @@ def main():  # pragma: no cover - live benchmark orchestrator (no unit tests)
                     return True
                 if key in preload_failed:
                     return False
-                _set_preloading(model_name, target_info, True)
-                run_info["preload"]["attempted"] += 1
-                run_info["preload"]["per_model"][f"{key[0]}/{key[1]}"] = {
-                    "status": "running",
-                    "timeout": resolve_preload_timeout(source_config, target_info["source"]),
-                }
+                inflight = preload_inflight.get(key)
+                if inflight is None:
+                    inflight = threading.Event()
+                    preload_inflight[key] = inflight
+                    preload_owner = True
+                    _set_preloading(model_name, target_info, True)
+                    run_info["preload"]["attempted"] += 1
+                    run_info["preload"]["per_model"][f"{key[0]}/{key[1]}"] = {
+                        "status": "running",
+                        "timeout": resolve_preload_timeout(source_config, target_info["source"]),
+                    }
+                else:
+                    preload_owner = False
+            if not preload_owner:
+                inflight.wait()
+                with preload_lock:
+                    return key in preloaded_ok
             started = time.time()
             timeout_limit = resolve_preload_timeout(source_config, target_info["source"])
             raw_cfg = raw_targets.get(model_name)
             drop_params = raw_cfg.get("drop_params", []) if isinstance(raw_cfg, dict) else []
             log_path = None
-            if args.save_responses:
-                preload_logs = os.path.join(output_dir, "logs")
-                os.makedirs(preload_logs, exist_ok=True)
-                log_path = os.path.join(preload_logs, "preload.log")
+            result = None
             try:
+                if args.save_responses:
+                    preload_logs = os.path.join(output_dir, "logs")
+                    os.makedirs(preload_logs, exist_ok=True)
+                    log_path = os.path.join(preload_logs, "preload.log")
                 result = preload_model(
                     source_config,
                     target_info["source"],
@@ -1744,41 +1940,72 @@ def main():  # pragma: no cover - live benchmark orchestrator (no unit tests)
                     log_path=log_path,
                 )
             except Exception as exc:  # noqa: BLE001 - any preload failure is recorded as such
-                # A malformed response or unexpected transport exception is
-                # still a preload failure: record it on the model rows and
-                # advance the source worker instead of treating it as an
-                # unstructured worker crash.
                 result = PreloadResult(
                     success=False,
                     elapsed=round(time.time() - started, 1),
                     error=f"{type(exc).__name__}: {exc}",
                 )
-            # The result's elapsed value is authoritative, but include the
-            # local measurement as a fallback for mocked/custom probes.
-            elapsed = result.elapsed if result.elapsed is not None else round(time.time() - started, 1)
-            model_key = f"{key[0]}/{key[1]}"
-            with preload_lock:
-                run_info["preload"]["total_preload_time"] += elapsed
-                run_info["preload"]["per_model"][model_key] = {
-                    "status": "ok" if result.success else "failed",
-                    "timeout": timeout_limit,
-                    "time": elapsed,
-                }
-                if result.success:
-                    preloaded_ok.add(key)
-                    run_info["preload"]["succeeded"] += 1
-                    for state_key in (model_name, f"{model_name} [opencode]") if runner_mode == "both" else (model_name,):
-                        if state_key in state.snapshot():
-                            state.update(
-                                state_key, preloading=False, preload_start_ts=0,
-                                preload_status="ok", preload_time=elapsed,
-                                preload_error=None,
-                            )
-                    return True
-                preload_failed.add(key)
-                run_info["preload"]["failed"] += 1
-                _record_preload_failure(model_name, target_info, result, phase_runner)
+            try:
+                elapsed = result.elapsed if result.elapsed is not None else round(time.time() - started, 1)
+                model_key = f"{key[0]}/{key[1]}"
+                with preload_lock:
+                    run_info["preload"]["total_preload_time"] += elapsed
+                    run_info["preload"]["per_model"][model_key] = {
+                        "status": "ok" if result.success else "failed",
+                        "timeout": timeout_limit,
+                        "time": elapsed,
+                    }
+                    if result.success:
+                        preloaded_ok.add(key)
+                        run_info["preload"]["succeeded"] += 1
+                        for state_key in (model_name, f"{model_name} [opencode]") if runner_mode == "both" else (model_name,):
+                            if state_key in state.snapshot():
+                                state.update(
+                                    state_key, preloading=False, preload_start_ts=0,
+                                    preload_status="ok", preload_time=elapsed,
+                                    preload_error=None,
+                                )
+                    else:
+                        preload_failed.add(key)
+                        run_info["preload"]["failed"] += 1
+                        _record_preload_failure(model_name, target_info, result, phase_runner)
+                    return result.success
+            except Exception as exc:  # noqa: BLE001 - release waiters with a deterministic failed preload
+                # Probe execution already returned, but bookkeeping can still
+                # fail (for example, a state update or diagnostic write). Do
+                # not leave a successful cache entry or an unclassified
+                # in-flight key behind: all later targets must see a stable
+                # failed result for this source/model pair.
+                failure = PreloadResult(
+                    success=False,
+                    elapsed=round(time.time() - started, 1),
+                    error=f"preload bookkeeping failed: {type(exc).__name__}: {exc}",
+                )
+                with preload_lock:
+                    preloaded_ok.discard(key)
+                    preload_failed.add(key)
+                    try:
+                        run_info["preload"]["failed"] += 1
+                        run_info["preload"]["per_model"][f"{key[0]}/{key[1]}"] = {
+                            "status": "failed",
+                            "timeout": timeout_limit,
+                            "time": failure.elapsed,
+                            "error": failure.error,
+                        }
+                    except (KeyError, TypeError):
+                        pass
+                try:
+                    _record_preload_failure(model_name, target_info, failure, phase_runner)
+                except Exception as record_exc:  # noqa: BLE001 - preserve the original preload failure
+                    print(
+                        f"⚠️  Could not record preload failure for {model_name}: {record_exc}",
+                        file=sys.stderr,
+                    )
                 return False
+            finally:
+                with preload_lock:
+                    preload_inflight.pop(key, None)
+                    inflight.set()
 
         def run_target(model_name, phase_runner):
             """Run one target through one runner and persist its progress."""
@@ -1821,6 +2048,14 @@ def main():  # pragma: no cover - live benchmark orchestrator (no unit tests)
                 state.save_state(state_file, plugin_versions=plugin_versions)
                 _save_outputs(state, output_dir, active_plugins)
 
+        peak_lock = threading.Lock()
+
+        def record_peak(source, active):
+            with peak_lock:
+                run_info["peak_active_models"][source] = max(
+                    run_info["peak_active_models"].get(source, 0), active
+                )
+
         def on_worker_error(model_name, phase_runner, exc):
             nonlocal worker_errors
             with errors_lock:
@@ -1833,21 +2068,16 @@ def main():  # pragma: no cover - live benchmark orchestrator (no unit tests)
             # each target runs OpenCode then HTTP before the source advances
             # to its next target. Sources still run concurrently, but there
             # is never an OpenCode/HTTP overlap within one source.
-            targets_by_source = {src: [] for src in source_config}
-            for name, info in targets.items():
-                targets_by_source.setdefault(info["source"], []).append(name)
             snapshot = state.snapshot()
-            opencode_pending = {src: [] for src in targets_by_source}
-            http_pending = {src: set() for src in targets_by_source}
-            for name, info in targets.items():
-                if snapshot.get(f"{name} [opencode]", {}).get("status") != "completed":
-                    opencode_pending[info["source"]].append(name)
-                if snapshot.get(name, {}).get("status") != "completed":
-                    http_pending[info["source"]].add(name)
+            targets_by_source, opencode_pending, http_pending = _build_runner_queues(
+                targets, snapshot, runner_mode, source_config,
+            )
 
             pipeline_threads = _start_runner_pipeline(
                 targets_by_source, opencode_pending, http_pending,
                 run_target, stop_event, on_worker_error,
+                model_thread_limits=model_thread_limits,
+                peak_callback=record_peak,
             )
             if pipeline_threads:
                 try:
@@ -1865,13 +2095,10 @@ def main():  # pragma: no cover - live benchmark orchestrator (no unit tests)
             # Preserve the original single-runner source workers. Only
             # --runner both needs cross-runner coordination.
             phase_runner = runner_mode
-            source_queues = {src: [] for src in {t["source"] for t in targets.values()}}
             snapshot = state.snapshot()
-            for name, info in targets.items():
-                state_key = name if phase_runner == "http" else f"{name} [opencode]"
-                if snapshot.get(state_key, {}).get("status") == "completed":
-                    continue
-                source_queues[info["source"]].append(name)
+            source_queues = _build_runner_queues(
+                targets, snapshot, runner_mode, source_config,
+            )
 
             source_threads = {}
             for source, model_names in source_queues.items():
@@ -1879,13 +2106,16 @@ def main():  # pragma: no cover - live benchmark orchestrator (no unit tests)
                     continue
 
                 def worker(source=source, model_names=model_names):
-                    for model_name in model_names:
-                        if stop_event.is_set():
-                            break
+                    def run_one(model_name):
                         try:
                             run_target(model_name, phase_runner)
                         except Exception as exc:  # noqa: BLE001 - a worker crash is recorded per model
                             on_worker_error(model_name, phase_runner, exc)
+                    scheduler = SourceModelScheduler(
+                        source, model_thread_limits.get(source, 1), model_names, run_one,
+                        stop_event, on_worker_error, peak_callback=record_peak,
+                    )
+                    scheduler.run_until_drained()
 
                 thread = threading.Thread(target=worker, args=(), daemon=True)
                 thread.start()
@@ -1936,6 +2166,7 @@ def main():  # pragma: no cover - live benchmark orchestrator (no unit tests)
         run_info["end_time"] = datetime.now(timezone.utc).isoformat()
         run_info["completed_targets"] = state.completed if state is not None else 0
         run_info["worker_errors"] = worker_errors
+        run_info["model_thread_limit"] = dict(model_thread_limits)
         if run_info["status"] == "running":
             run_info["status"] = "completed"
         _inject_429_stats(run_info)

@@ -154,6 +154,18 @@ OpenCode's agent loop has no internal liveness detection, so stalled/looping tas
 
 The OpenCode model mapping is deterministic: the source name is lowercased and strictly slugified, then joined with the resolved API model as `{slugified-source}/{api_model}`. Existing slashes in `api_model` are preserved.
 
+### Per-source model concurrency
+
+`model_thread_limit` is a configuration key, not a CLI flag. Set
+`sources.<name>.model_thread_limit` to allow multiple target/model
+pipelines for that source; omit it to use the top-level `model_thread_limit`,
+then the default of `1`. This is separate from `plugin_thread_limit`, so the
+approximate request ceiling can be their product. Use `1` for local AI Server
+and Gaming PC sources unless you intentionally accept the hardware risk; cloud
+sources can be set to `2`, `4`, or another positive integer. The CLI prints the
+effective limits and warns when a local source is explicitly raised above one.
+No CLI override is provided in this implementation.
+
 ### Discover models from an API
 
 ```sh

@@ -11,6 +11,7 @@ All benchmark configuration lives in a single file (default: `benchmark-config.j
 | `token_levels` | list[int] | `[16384]` | Max-token limits tried in ascending order |
 | `model_token_levels` | object | `{}` | Per-target max-token overrides; keys are target names or `"{source}/{api_model}"` |
 | `plugin_thread_limit` | integer | `1` | Top-level fallback for `sources.*.plugin_thread_limit` |
+| `model_thread_limit` | positive integer | `1` | Top-level fallback for per-source target/model concurrency; zero is invalid |
 | `preload` | boolean | `false` | Per-source model warm-up is opt-in; use `--no-preload` to disable all preload probes for a run |
 | `preload_timeout` | integer | `300` | Maximum seconds for a source's warm-up probe; independent of the benchmark request `timeout` |
 | `plugins_whitelist` | list[string] | `[]` | Run only these plugin IDs (empty = all) |
@@ -32,11 +33,41 @@ Each entry under `sources` defines an API endpoint. The key is the source name u
         "Authorization": "Bearer ${LOCAL_API_KEY:sk-fallback}",
         "Content-Type": "application/json"
       },
-      "plugin_thread_limit": 1
+      "plugin_thread_limit": 1,
+      "model_thread_limit": 1
     }
   }
 }
 ```
+
+### Per-Source Model Concurrency
+
+`model_thread_limit` controls how many complete target pipelines may run at
+once against one source. It is separate from `plugin_thread_limit`, which
+controls plugin workers inside one target. The effective request burst can be
+approximately their product:
+
+```yaml
+model_thread_limit: 1        # top-level fallback
+sources:
+  AI Server:
+    model_thread_limit: 1    # keep local hardware serialized
+    plugin_thread_limit: 2
+  OpenRouter:
+    model_thread_limit: 3    # three target pipelines may overlap
+    plugin_thread_limit: 1
+```
+
+Resolution is per-source value, then top-level `model_thread_limit`, then `1`.
+Only positive integers are accepted; `0`, negative values, booleans, floats,
+and numeric strings are configuration errors. FIFO target submission is
+preserved, and in `--runner both` OpenCode plus HTTP for one target occupy one
+slot as an indivisible pipeline. Increasing both limits can create a much
+larger request burst, and parallel cold preloads can exhaust local VRAM, so
+keep AI Server/Gaming PC at `1` unless deliberately testing higher values.
+The effective limits and observed `peak_active_models` are written to
+`run-info.json`. Response times from overlapping targets are not directly
+comparable with a serial run.
 
 ### OpenCode Timeout
 
