@@ -19,6 +19,7 @@ class Rubric:
         self.criteria: list[dict[str, Any]] = []
         self.total = 0.0
         self.errors: list[str] = []
+        self.validations: list[dict[str, Any]] = []
 
     def add_criterion(self, name: str, max_points: float, earned: float,
                       *, evidence=None, matched=None, negative_findings=None,
@@ -65,6 +66,15 @@ class Rubric:
             matched=bool(evidence),
         )
 
+    def record_validation(self, validation) -> None:
+        """Attach a typed-validator result without changing score totals."""
+        self.validations.append({
+            "valid": bool(validation.valid),
+            "evidence": list(validation.evidence or []),
+            "errors": [str(error) for error in (validation.errors or [])],
+        })
+        self.errors.extend(str(error) for error in (validation.errors or []))
+
     def results(self) -> EvaluationResult:
         """Return the final score, rubric list, and evaluation diagnostics."""
         final_score = round(min(self.total, self.max_score), 1)
@@ -74,5 +84,6 @@ class Rubric:
                 1 for criterion in self.criteria if criterion.get("matched")
             ),
             "errors": list(self.errors),
+            "validations": list(self.validations),
         }
         return EvaluationResult(final_score, self.criteria, diagnostics)

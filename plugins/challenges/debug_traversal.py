@@ -10,6 +10,7 @@ import re
 
 from benchmark.plugin import BenchmarkTaskPlugin
 from plugins.challenges._rubric import Rubric
+from plugins.challenges._validators import parse_python
 
 
 class DebugTraversalPlugin(BenchmarkTaskPlugin):
@@ -19,7 +20,7 @@ class DebugTraversalPlugin(BenchmarkTaskPlugin):
 
     @property
     def version(self):
-        return "0.2.0"
+        return "0.2.1"
 
     @property
     def name(self):
@@ -85,6 +86,7 @@ class DebugTraversalPlugin(BenchmarkTaskPlugin):
     def evaluate(self, response_text):
         t = response_text
         rubric = Rubric(self.max_score)
+        rubric.record_validation(parse_python(t))
 
         # Check for root cause identification — the model should trace through
         # the logic line by line and identify which line(s) cause the bug.

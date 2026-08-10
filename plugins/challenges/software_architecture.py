@@ -3,6 +3,7 @@ import re
 
 from benchmark.plugin import BenchmarkTaskPlugin, EvaluationResult
 from plugins.challenges._rubric import Rubric
+from plugins.challenges._validators import validate_sections
 
 
 class SoftwareArchitecturePlugin(BenchmarkTaskPlugin):
@@ -12,7 +13,7 @@ class SoftwareArchitecturePlugin(BenchmarkTaskPlugin):
 
     @property
     def version(self):
-        return "0.4.0"
+        return "0.4.1"
 
     @property
     def name(self):
@@ -71,6 +72,11 @@ class SoftwareArchitecturePlugin(BenchmarkTaskPlugin):
             return EvaluationResult(0.0, [])
 
         rubric = Rubric(self.max_score)
+        rubric.record_validation(validate_sections(t, [
+            "Executive Summary", "Requirements Summary", "Architecture Style",
+            "Component", "Data Model", "API Design", "Technology Stack",
+            "Deployment", "Security", "Scalability", "Trade-offs",
+        ]))
 
         # Architecture & Patterns (3.0)
         earned = 0.0

@@ -3,6 +3,7 @@ import re
 
 from benchmark.plugin import BenchmarkTaskPlugin, EvaluationResult
 from plugins.challenges._rubric import Rubric
+from plugins.challenges._validators import validate_sections
 
 
 class PRDCreationPlugin(BenchmarkTaskPlugin):
@@ -12,7 +13,7 @@ class PRDCreationPlugin(BenchmarkTaskPlugin):
 
     @property
     def version(self):
-        return "0.3.0"
+        return "0.3.1"
 
     @property
     def name(self):
@@ -62,6 +63,11 @@ class PRDCreationPlugin(BenchmarkTaskPlugin):
             return EvaluationResult(0.0, [])
 
         rubric = Rubric(self.max_score)
+        rubric.record_validation(validate_sections(t, [
+            "Executive Summary", "Problem Statement", "Goals", "Target Users",
+            "User Stories", "Functional Requirements", "Non-Functional Requirements",
+            "Success Metrics", "Competitive Analysis", "Timeline", "Open Questions",
+        ]))
 
         rubric.eval_regex(
             "Executive Summary",

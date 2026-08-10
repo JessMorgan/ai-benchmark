@@ -3,6 +3,7 @@ import re
 
 from benchmark.plugin import BenchmarkTaskPlugin
 from plugins.challenges._rubric import Rubric
+from plugins.challenges._validators import parse_workflow_graph
 
 
 class OrchestrationPlugin(BenchmarkTaskPlugin):
@@ -12,7 +13,7 @@ class OrchestrationPlugin(BenchmarkTaskPlugin):
 
     @property
     def version(self):
-        return "0.3.0"
+        return "0.4.0"
 
     @property
     def name(self):
@@ -48,6 +49,8 @@ class OrchestrationPlugin(BenchmarkTaskPlugin):
     def evaluate(self, response_text):
         t = response_text
         rubric = Rubric(self.max_score)
+        graph_validation = parse_workflow_graph(t)
+        rubric.record_validation(graph_validation)
 
         earned = 0.0
         steps = sum(1 for _ in re.finditer(r'(?:task|step)\s*\d+', t, re.IGNORECASE))
@@ -60,8 +63,8 @@ class OrchestrationPlugin(BenchmarkTaskPlugin):
         rubric.add_criterion("Task breakdown presence", 4.0, earned)
 
         earned = 0.0
-        if re.search(r'\[DEPENDS_ON[^\]]*\]', t):
-            earned = 4.0
+        if graph_validation.valid or re.search(r'\[DEPENDS_ON[^\]]*\]', t):
+            earned = 4.0 if graph_validation.valid else 2.0
         elif re.search(r'depends on', t, re.IGNORECASE):
             earned = 2.0
         rubric.add_criterion("Explicit dependency tagging", 4.0, earned)

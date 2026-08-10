@@ -3,6 +3,7 @@ import re
 
 from benchmark.plugin import BenchmarkTaskPlugin, EvaluationResult
 from plugins.challenges._rubric import Rubric
+from plugins.challenges._validators import find_definitions, parse_python
 
 
 class MultiStepPlugin(BenchmarkTaskPlugin):
@@ -12,7 +13,7 @@ class MultiStepPlugin(BenchmarkTaskPlugin):
 
     @property
     def version(self):
-        return "0.3.0"
+        return "0.4.0"
 
     @property
     def name(self):
@@ -59,8 +60,13 @@ class MultiStepPlugin(BenchmarkTaskPlugin):
             return EvaluationResult(0.0, [])
 
         rubric = Rubric(self.max_score)
+        python_validation = parse_python(t, require_block=True)
+        rubric.record_validation(python_validation)
+        definitions = find_definitions(python_validation.value) if python_validation.valid else {}
 
         earned = 0.0
+        if "greet_user" in definitions and not re.search(r"def\s+greet_user", t):
+            earned += 1.0
         if re.search(r"def\s+greet_user\s*\(\s*name\s*:\s*str\s*\)", t):
             earned += 1.0
         elif re.search(r"def\s+greet_user\s*\(\s*name\s*\)", t):
@@ -76,6 +82,8 @@ class MultiStepPlugin(BenchmarkTaskPlugin):
         rubric.add_criterion("greet_user function", 5.0, earned)
 
         earned = 0.0
+        if "validate_name" in definitions and not re.search(r"def\s+validate_name", t):
+            earned += 1.0
         if re.search(r"def\s+validate_name\s*\(\s*name\s*:\s*str\s*\)", t):
             earned += 1.0
         elif re.search(r"def\s+validate_name\s*\(\s*name\s*\)", t):
@@ -89,6 +97,8 @@ class MultiStepPlugin(BenchmarkTaskPlugin):
         rubric.add_criterion("validate_name function", 5.0, earned)
 
         earned = 0.0
+        if "format_greeting" in definitions and not re.search(r"def\s+format_greeting", t):
+            earned += 1.0
         if re.search(r"def\s+format_greeting\s*\(\s*greeting\s*:\s*str\s*,\s*times\s*:\s*int\s*\)", t):
             earned += 1.0
         elif re.search(r"def\s+format_greeting\s*\(\s*greeting\s*,\s*times\s*\)", t):

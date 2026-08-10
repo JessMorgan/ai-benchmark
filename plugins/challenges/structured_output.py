@@ -4,6 +4,7 @@ import re
 
 from benchmark.plugin import BenchmarkTaskPlugin, EvaluationResult
 from plugins.challenges._rubric import Rubric
+from plugins.challenges._validators import parse_structured
 
 try:
     import yaml
@@ -18,7 +19,7 @@ class StructuredOutputPlugin(BenchmarkTaskPlugin):
 
     @property
     def version(self):
-        return "0.4.0"
+        return "0.5.0"
 
     @property
     def name(self):
@@ -163,14 +164,15 @@ class StructuredOutputPlugin(BenchmarkTaskPlugin):
         t = response_text.strip()
         rubric = Rubric(self.max_score)
 
-        candidate = self._extract_candidate(t)
+        structured_validation = parse_structured(t)
+        rubric.record_validation(structured_validation)
 
         has_explanatory_text = bool(
             re.search(r'```', t)
             and re.sub(r'```[\s\S]*?```', '', t).strip()
         )
 
-        data = self._parse_data(candidate)
+        data = structured_validation.value if structured_validation.valid else None
         if data is None:
             rubric.add_criterion("Valid JSON/YAML syntax", 4.0, 0.0)
             return rubric.results()

@@ -3,6 +3,7 @@ import re
 
 from benchmark.plugin import BenchmarkTaskPlugin, EvaluationResult
 from plugins.challenges._rubric import Rubric
+from plugins.challenges._validators import validate_sections
 
 # Canonical set of header texts that count as a real screen for the
 # "Multiple screens present" criterion.  A header matches if, after
@@ -67,7 +68,7 @@ class WireframesPlugin(BenchmarkTaskPlugin):
 
     @property
     def version(self):
-        return "0.4.0"
+        return "0.4.1"
 
     @property
     def name(self):
@@ -119,6 +120,9 @@ class WireframesPlugin(BenchmarkTaskPlugin):
             return EvaluationResult(0.0, [])
 
         rubric = Rubric(self.max_score)
+        rubric.record_validation(validate_sections(t, [
+            "Dashboard", "Focus", "Calendar", "Planning", "Settings",
+        ], min_chars=10))
 
         # Multiple screens present (0-3)
         # Two signals are combined: explicit "Screen:" labels AND

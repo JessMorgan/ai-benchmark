@@ -3,6 +3,7 @@ import re
 
 from benchmark.plugin import BenchmarkTaskPlugin
 from plugins.challenges._rubric import Rubric
+from plugins.challenges._validators import parse_python
 
 
 class RateLimiterPlugin(BenchmarkTaskPlugin):
@@ -12,7 +13,7 @@ class RateLimiterPlugin(BenchmarkTaskPlugin):
 
     @property
     def version(self):
-        return "0.3.0"
+        return "0.3.1"
 
     @property
     def name(self):
@@ -55,7 +56,9 @@ class RateLimiterPlugin(BenchmarkTaskPlugin):
     def evaluate(self, response_text):
         t = response_text
         rubric = Rubric(self.max_score)
-
+        python_validation = parse_python(t, require_block=True)
+        rubric.record_validation(python_validation)
+        tree = python_validation.value
         earned = 0.0
         if re.search(r'(?:ABC|abstractmethod|Protocol|ABCMeta)', t):
             earned += 2.0
@@ -66,7 +69,9 @@ class RateLimiterPlugin(BenchmarkTaskPlugin):
         rubric.add_criterion("Interface design", 3.0, earned)
 
         earned = 0.0
-        if re.search(r'(?:class\s+TokenBucket|TokenBucket)', t):
+        if ("TokenBucket" in {
+                node.name for node in getattr(tree, "body", []) if hasattr(node, "name")
+        } or re.search(r'(?:class\s+TokenBucket|TokenBucket)', t)):
             earned += 1.0
         if re.search(r'(?:refill|last_refill|_refill|tokens\s*[+=-])', t):
             earned += 1.5

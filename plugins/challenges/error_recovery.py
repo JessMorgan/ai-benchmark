@@ -11,6 +11,7 @@ import re
 
 from benchmark.plugin import BenchmarkTaskPlugin
 from plugins.challenges._rubric import Rubric
+from plugins.challenges._validators import find_definitions, parse_python
 
 
 class ErrorRecoveryPlugin(BenchmarkTaskPlugin):
@@ -20,7 +21,7 @@ class ErrorRecoveryPlugin(BenchmarkTaskPlugin):
 
     @property
     def version(self):
-        return "0.2.0"
+        return "0.3.0"
 
     @property
     def name(self):
@@ -83,9 +84,14 @@ class ErrorRecoveryPlugin(BenchmarkTaskPlugin):
     def evaluate(self, response_text):
         t = response_text
         rubric = Rubric(self.max_score)
+        python_validation = parse_python(t, require_block=True)
+        rubric.record_validation(python_validation)
+        definitions = find_definitions(python_validation.value) if python_validation.valid else {}
 
         # Asyncio / concurrent design
         earned = 0.0
+        if any(name in definitions for name in ("get_weather_resilient", "demo")):
+            earned += 1.0
         if re.search(r"(?:async def|asyncio|await|gather|create_task)", t):
             earned += 2.0
         if re.search(r"(?:asyncio\.gather|as_completed|wait|TaskGroup)", t):

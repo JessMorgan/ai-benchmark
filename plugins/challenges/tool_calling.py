@@ -4,6 +4,7 @@ import re
 
 from benchmark.plugin import BenchmarkTaskPlugin
 from plugins.challenges._rubric import Rubric
+from plugins.challenges._validators import parse_tool_calls
 
 
 class ToolCallingPlugin(BenchmarkTaskPlugin):
@@ -13,7 +14,7 @@ class ToolCallingPlugin(BenchmarkTaskPlugin):
 
     @property
     def version(self):
-        return "0.4.0"
+        return "0.5.0"
 
     @property
     def name(self):
@@ -70,6 +71,8 @@ class ToolCallingPlugin(BenchmarkTaskPlugin):
     def evaluate(self, response_text):
         t = response_text
         rubric = Rubric(self.max_score)
+        tool_validation = parse_tool_calls(t)
+        rubric.record_validation(tool_validation)
 
         earned = 0.0
         tool_call_blocks = re.findall(r'<tool_call>.*?</tool_call>', t, re.DOTALL)
@@ -90,7 +93,7 @@ class ToolCallingPlugin(BenchmarkTaskPlugin):
             earned += 0.5
         rubric.add_criterion("Planning / reasoning", 2.0, earned)
 
-        calls = self._extract_tool_calls(t)
+        calls = tool_validation.value if tool_validation.valid else []
         call_names = [c.get("name") for c in calls if isinstance(c, dict)]
         args_list = [c.get("args", {}) for c in calls if isinstance(c, dict)]
 

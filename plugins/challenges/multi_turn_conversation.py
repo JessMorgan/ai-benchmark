@@ -10,6 +10,7 @@ import re
 
 from benchmark.plugin import BenchmarkTaskPlugin
 from plugins.challenges._rubric import Rubric
+from plugins.challenges._validators import validate_sections
 
 
 class MultiTurnConversationPlugin(BenchmarkTaskPlugin):
@@ -19,7 +20,7 @@ class MultiTurnConversationPlugin(BenchmarkTaskPlugin):
 
     @property
     def version(self):
-        return "0.2.0"
+        return "0.2.1"
 
     @property
     def name(self):
@@ -69,6 +70,9 @@ class MultiTurnConversationPlugin(BenchmarkTaskPlugin):
     def evaluate(self, response_text):
         t = response_text
         rubric = Rubric(self.max_score)
+        rubric.record_validation(validate_sections(t, [
+            "Version 1", "Version 2", "Version 3", "Summary of Changes",
+        ], min_chars=10))
 
         # Check for all three versions present
         v1 = re.search(r"##?\s*Version\s*1|##?\s*Initial|Version\s*1\s*\(Initial\)", t)

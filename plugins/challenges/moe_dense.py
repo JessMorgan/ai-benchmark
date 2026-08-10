@@ -4,6 +4,7 @@ import re
 
 from benchmark.plugin import BenchmarkTaskPlugin
 from plugins.challenges._rubric import Rubric
+from plugins.challenges._validators import validate_sections
 
 
 class MoEDensePlugin(BenchmarkTaskPlugin):
@@ -13,7 +14,7 @@ class MoEDensePlugin(BenchmarkTaskPlugin):
 
     @property
     def version(self):
-        return "0.4.0"
+        return "0.4.1"
 
     @property
     def name(self):
@@ -56,6 +57,9 @@ class MoEDensePlugin(BenchmarkTaskPlugin):
     def evaluate(self, response_text):
         t = response_text.lower()
         rubric = Rubric(self.max_score)
+        rubric.record_validation(validate_sections(t, [
+            "gating", "load-balancing", "training", "inference", "benchmark",
+        ], min_chars=20))
 
         rubric.eval_regex(
             "Covers both architectures",

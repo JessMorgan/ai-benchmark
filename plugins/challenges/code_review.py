@@ -4,6 +4,7 @@ import re
 
 from benchmark.plugin import BenchmarkTaskPlugin, EvaluationResult
 from plugins.challenges._rubric import Rubric
+from plugins.challenges._validators import parse_structured
 
 
 class CodeReviewPlugin(BenchmarkTaskPlugin):
@@ -13,7 +14,7 @@ class CodeReviewPlugin(BenchmarkTaskPlugin):
 
     @property
     def version(self):
-        return "0.4.0"
+        return "0.4.1"
 
     @property
     def name(self):
@@ -81,12 +82,14 @@ class CodeReviewPlugin(BenchmarkTaskPlugin):
         return descriptions
 
     def evaluate(self, response_text):
+        structured_validation = parse_structured(response_text, fmt="json")
         descriptions = self._extract_descriptions(response_text)
         if not descriptions:
             return EvaluationResult(0.0, [])
 
         combined = " ".join(descriptions)
         rubric = Rubric(self.max_score)
+        rubric.record_validation(structured_validation)
 
         rubric.eval_regex(
             "File handle not closed / resource leak",
