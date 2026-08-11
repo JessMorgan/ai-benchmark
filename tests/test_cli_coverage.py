@@ -184,6 +184,48 @@ class TestFormatModelRow(unittest.TestCase):
             "model-a", state, 7, [plugin], {"Local": "LC"})
         self.assertIn("7✅", frozen)
 
+    def test_model_number_column_keeps_following_columns_aligned(self):
+        plugin = mock.MagicMock()
+        plugin.id = "rate-limiter"
+        plugin.supports_streaming = True
+        base = self._snap(status="completed")
+        base.update({"rate-limiter_score": 80})
+
+        rows = []
+        for extra in (
+            {},
+            {
+                "judge_models": ["judge-a", "judge-b"],
+                "rate-limiter_judge_queued": True,
+                "rate-limiter_judge_votes": [{"model": "judge-a", "score": 80}],
+            },
+            {
+                "judge_models": ["judge-a"],
+                "rate-limiter_judge_votes": [{"model": "judge-a", "score": 80}],
+            },
+        ):
+            state = {**base, **extra}
+            frozen, _ = cli._format_model_row(
+                "model-a", state, 7, [plugin], {"Local": "LC"})
+            rows.append(frozen)
+
+        self.assertEqual(cli.FROZEN_VIEW_WIDTH, 35)
+        frozen_header = " ".join(
+            f"{header:>{width}}"
+            for header, width in [
+                ("#", cli.MODEL_NUMBER_COLUMN_WIDTH),
+                ("S", 4),
+                ("Model", 18),
+                ("St", 4),
+            ]
+        )
+        self.assertEqual(cli._display_width(frozen_header) + 1, cli.FROZEN_VIEW_WIDTH)
+        for row in rows:
+            self.assertEqual(cli._display_width(row), cli.FROZEN_VIEW_WIDTH - 1)
+            self.assertEqual(cli._display_width(row[:row.index("LC")]), 6)
+            self.assertEqual(cli._display_width(row[:row.index("model-a")]), 10)
+            self.assertEqual(cli._display_width(row[:row.rindex("✅")]), 30)
+
     def test_judge_markers_require_all_current_judges(self):
         plugin = mock.MagicMock()
         plugin.id = "rate-limiter"
@@ -199,7 +241,7 @@ class TestFormatModelRow(unittest.TestCase):
         frozen, plugin_str = cli._format_model_row(
             "model-a", state, 7, [plugin], {"Local": "LC"})
         self.assertIn("7⚖️", frozen)
-        self.assertIn("80⚖️ 1", plugin_str)
+        self.assertIn("80 ⚖️ 1", plugin_str)
         self.assertEqual(cli._display_width(plugin_str), cli.PLUGIN_BLOCK_WIDTH)
 
     def test_historical_votes_without_active_judging_have_no_row_marker(self):
@@ -377,8 +419,8 @@ class TestRenderLiveActivity(unittest.TestCase):
             }],
         )
         rendered = " ".join(window.lines.get(y, "") for y in range(10, 20))
-        self.assertIn("[Judge judge-model] target-model", rendered)
-        self.assertIn("[rate-limiter 42 tok 5s]", rendered)
+        self.assertIn("⚖️ Judge judge-model target-model", rendered)
+        self.assertIn("⚖️ Judge judge-model target-model rate-limiter 42 tok (5s)", rendered)
 
 
 class TestRenderRecentErrors(unittest.TestCase):

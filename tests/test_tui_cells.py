@@ -199,7 +199,7 @@ class TestTuiWriteHelper(unittest.TestCase):
 
 
 class TestPluginCellBlock(unittest.TestCase):
-    """The ``_plugin_cell_block`` helper produces a single 27-column cell per
+    """The ``_plugin_cell_block`` helper produces a single 30-column cell per
     plugin, collapsing the existing 4-cell results layout to a bracket-
     delimited status message when the plugin is in flight or 429-sleeping.
     """
@@ -449,9 +449,9 @@ class TestPluginCellBlock(unittest.TestCase):
         }
         block = ai_benchmark._plugin_cell_block(
             "rate-limiter", s, self.p_streaming, None)
-        self.assertIn("95⚖️ 1", block)
+        self.assertIn("95 ⚖️ 1", block)
         self.assertEqual(ai_benchmark._display_width(block), ai_benchmark.PLUGIN_BLOCK_WIDTH)
-        marker_end = block.index("95⚖️ 1") + len("95⚖️ 1")
+        marker_end = block.index("95 ⚖️ 1") + len("95 ⚖️ 1")
         self.assertEqual(block[marker_end], " ")
 
     def test_no_judge_marker_before_any_vote(self):
@@ -479,7 +479,32 @@ class TestPluginCellBlock(unittest.TestCase):
         }
         block = ai_benchmark._plugin_cell_block(
             "rate-limiter", s, self.p_streaming, None)
-        self.assertIn("95⚖️ 2", block)
+        self.assertIn("95 ⚖️ 2", block)
+        self.assertEqual(ai_benchmark._display_width(block), ai_benchmark.PLUGIN_BLOCK_WIDTH)
+
+    def test_judge_marker_cannot_be_confused_with_token_value(self):
+        """The judge count is visibly delimited from the token column.
+
+        In particular, a zero-token result must not look like a scales-zero
+        marker followed by a second value such as response time.
+        """
+        s = {
+            "running_pids": [],
+            "rate-limiter_score": 87,
+            "judge_models": ["judge-a", "judge-b", "judge-c"],
+            "rate-limiter_judge_votes": [
+                {"model": "judge-a", "score": 90},
+                {"model": "judge-b", "score": 92},
+            ],
+            "rate-limiter_total_tokens": 0,
+            "rate-limiter_response_time": 2.0,
+            "rate-limiter_tps": 0.0,
+        }
+        block = ai_benchmark._plugin_cell_block(
+            "rate-limiter", s, self.p_streaming, None)
+        self.assertEqual(block.split(), ["87", "⚖️", "2", "0", "2.0", "0.0"])
+        self.assertEqual(block, "  87 ⚖️ 2      0    2.0    0.0")
+        self.assertNotIn("⚖️0", block)
         self.assertEqual(ai_benchmark._display_width(block), ai_benchmark.PLUGIN_BLOCK_WIDTH)
 
     def test_completed_three_judges_show_checkmark(self):
@@ -495,7 +520,7 @@ class TestPluginCellBlock(unittest.TestCase):
         }
         block = ai_benchmark._plugin_cell_block(
             "rate-limiter", s, self.p_streaming, None)
-        self.assertIn("95✅", block)
+        self.assertIn("95 ✅", block)
         self.assertNotIn("⚖️", block)
         self.assertEqual(ai_benchmark._display_width(block), ai_benchmark.PLUGIN_BLOCK_WIDTH)
 
@@ -512,7 +537,7 @@ class TestPluginCellBlock(unittest.TestCase):
         }
         block = ai_benchmark._plugin_cell_block(
             "rate-limiter", s, self.p_streaming, None)
-        self.assertIn("95✅", block)
+        self.assertIn("95 ✅", block)
         self.assertEqual(ai_benchmark._display_width(block), ai_benchmark.PLUGIN_BLOCK_WIDTH)
 
     def test_completed_plugin_shows_numeric_results(self):

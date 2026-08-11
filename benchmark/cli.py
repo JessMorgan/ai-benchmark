@@ -578,24 +578,27 @@ def _render_table_headings(stdscr, max_x, max_y, scroll_x, frozen_cols, plugin_c
 # Display width of the frozen table prefix, including the separator before
 # the horizontally scrollable plugin columns. Keep this shared by the row
 # formatter and the curses layout calculations.
-FROZEN_VIEW_WIDTH = 34
+# The model-number column reserves the judge marker's display width so a
+# scales/checkmark marker cannot shift source, model, or status columns.
+MODEL_NUMBER_COLUMN_WIDTH = 5
+FROZEN_VIEW_WIDTH = 35
 
 # Width of the per-plugin cell block rendered by ``_plugin_cell_block``.
-# The standard 4-cell results layout uses a 6-column score field plus
-# 6+6+6 token/time/TPS fields and 3 separators = 27 display columns.
-# The extra score column leaves a visible separator after a wide scales
-# emoji marker before the token column.
+# The standard 4-cell results layout uses a 9-column score field plus
+# 6+6+6 token/time/TPS fields and three separators = 30 display columns.
+# The score field contains a bracketed judge marker when present, so the
+# score, judge status, and token value remain visually distinct even when the
+# emoji glyph occupies two terminal columns.
 # (``RateSc RateTok RateTm RateTPS``) without reshaping the
 # ``plugin_cols`` table. The previous per-plugin streaming-glyph column
 # (``<id>St`` width 5) was deleted as redundant: the merged status block
 # already conveys in-flight state, and post-flight the plugin isn't
 # streaming anymore, so the glyph was always ``-``.
-# The score column is six display columns wide. Five was enough for a
-# numeric score, but a partial judge marker such as ``95⚖️ 1`` needs six
-# display columns by itself; the extra column preserves a visible separator
-# before the token column on terminals that render ⚖️ as a two-column glyph.
-SCORE_COLUMN_WIDTH = 6
-PLUGIN_BLOCK_WIDTH = 27
+# The score column is nine display columns wide. Judge markers include
+# explicit spaces around the emoji/count (for example ``63 ⚖️ 2``), so the
+# marker cannot visually merge with either the score or the token column.
+SCORE_COLUMN_WIDTH = 9
+PLUGIN_BLOCK_WIDTH = 30
 
 # Wall-clock threshold (seconds) past which an in-flight plugin shows a
 # secondary indicator so the operator can spot slow / hung requests vs
@@ -651,6 +654,9 @@ def _elapsed_suffix(start_ts, threshold=_ELAPSED_THRESHOLD_S):
     return ""
 
 
+_JUDGE_SCALES = "⚖️"
+
+
 def _judge_models(state):
     """Return the configured judge identities represented by a state row."""
     configured = state.get("judge_models")
@@ -675,18 +681,22 @@ def _judge_score_marker(pid, state):
     """Return the compact judge status marker for one plugin score.
 
     A numeric benchmark score is judgeable even before its first judge has
-    returned, so configured judging is shown as ``⚖️0`` rather than being
-    mistaken for an unconfigured run. Completion is derived from the current
-    configured judge set and recorded votes, not a stale aggregate flag.
+    returned, but no marker is shown until a judge has completed. Partial
+    judging is rendered as `` ⚖️ 1`` or `` ⚖️ 2`` and full completion as
+    `` ✅``. Explicit spaces make the marker boundary readable even on
+    terminals that render the scales emoji at a different width than the
+    TUI's conservative calculation. Completion is derived from the
+    current configured judge set and recorded votes, not a stale aggregate
+    flag.
     """
     configured = _judge_models(state)
     if not configured:
         return ""
     judged_models = _judge_votes(state, pid)
     if configured.issubset(judged_models):
-        return "✅"
+        return " ✅"
     if judged_models:
-        return f"⚖️ {len(judged_models)}"
+        return f" {_JUDGE_SCALES} {len(judged_models)}"
     return ""
 
 
@@ -709,7 +719,7 @@ def _model_judge_marker(state, active_plugins=None):
         state.get(f"{pid}_judge_queued") and _judge_votes(state, pid)
         for pid in scored
     ):
-        return "⚖️"
+        return _JUDGE_SCALES
     return ""
 
 
@@ -717,17 +727,16 @@ def _plugin_cell_block(pid, s, p, sleeping_lookup=None):
     """Render a single per-model cell block for one plugin.
 
     The block is always ``PLUGIN_BLOCK_WIDTH`` display columns wide so it can
-    be dropped into ``plugin_str`` in place of the existing results
-    layout. The standard table keeps the existing 5 sub-headers per
-    plugin (``RateSc RateTok RateTm RateTPS RateSt``), so a long plugin
-    id like ``json-formatter`` truncates its sub-header prefix to the
-    first 3 chars; the 32-char cell block deliberately matches the
-    span of those 5 sub-headers so a centred bracket status reads as
-    belonging to the plugin under whatever prefix the header shows.
+    be dropped into ``plugin_str`` in place of the existing results layout.
+    The standard table has four sub-headers per plugin (``RateSc RateTok
+    RateTm RateTPS``), and the 30-column cell block matches that geometry.
+    Explicit spaces around partial/full judge markers keep the judge count
+    visibly separate from the token field even when a terminal renders
+    Unicode symbols with a different width than the TUI calculates.
 
     When the plugin is in flight (``pid in running_pids``) OR
     the model is currently in a 429 backoff sleep, the block collapses
-    to a single bracket-delimited status centred in 26 chars:
+    to a single bracket-delimited status centred in the fixed-width cell:
         ``[streaming - N tok]``     -- streaming-capable in flight, real
                                         counter (first chunk seen; bytes > 0).
                                         ``N`` is chars // 4 so the live
@@ -857,8 +866,8 @@ def _plugin_cell_block(pid, s, p, sleeping_lookup=None):
             text = f"[requested{_elapsed_suffix(start_ts)}]"
         remaining = max(0, PLUGIN_BLOCK_WIDTH - _display_width(text))
         return " " * (remaining // 2) + text + " " * (remaining - remaining // 2)
-    # Standard 4-cell results layout -- widths sum to 6+6+6+6=24 with 3
-    # single-space separators between cells = 27 display columns, matching
+    # Standard 4-cell results layout -- widths sum to 9+6+6+6=27 with 3
+    # single-space separators between cells = 30 display columns, matching
     # merged status width. The token cell shows the TOTAL (thinking +
     # content) count; the per-kind split is exposed in the CSV/MD/HTML/PDF
     # reports. Falls back to the legacy content-only count for state files
@@ -902,7 +911,10 @@ def _format_model_row(name, s, display_idx, active_plugins, source_abbrevs,
     src_ab = _source_abbr(source_abbrevs, s.get("source"))
     model_disp = name[:16]
     judge_marker = _model_judge_marker(s, active_plugins)
-    frozen = f"{display_idx:>3}{judge_marker}  {src_ab:<3} {model_disp:<18}  {status_ch:<3}"
+    model_number = _pad_display_width(
+        f"{display_idx:>3}{judge_marker}", MODEL_NUMBER_COLUMN_WIDTH
+    )
+    frozen = f"{model_number} {src_ab:<3} {model_disp:<18}  {status_ch:<3}"
     # Keep the plugin viewport anchored at the same terminal column as the
     # heading. Emoji status glyphs can occupy two columns, so Python's string
     # length is not sufficient to align this frozen prefix.
@@ -911,7 +923,7 @@ def _format_model_row(name, s, display_idx, active_plugins, source_abbrevs,
         FROZEN_VIEW_WIDTH - 1,
     )
 
-    # Each plugin contributes exactly one 32-char block (merged status
+    # Each plugin contributes exactly one fixed-width block (merged status
     # OR standard 5-cell results) so ``plugin_str`` has the same total
     # length and column geometry as before. Joins the per-plugin blocks
     # with single spaces, matching the existing column-join pattern.
@@ -1137,8 +1149,8 @@ def _render_live_activity(stdscr, max_x, max_y, snap, source_abbrevs, live_model
             break
         _wr(
             stdscr, max_x, max_y, live_row, 0,
-            f" ⚖️ [Judge {activity['judge']}] {activity['target']} "
-            f"[{activity['plugin']} {activity['tokens']} tok {activity['elapsed']}s]",
+            f" {_JUDGE_SCALES} Judge {activity['judge']} {activity['target']} "
+            f"{activity['plugin']} {activity['tokens']} tok ({activity['elapsed']}s)",
         )
         live_row += 1
 
@@ -1259,7 +1271,7 @@ def tui_main(state, stop_event, num_sources, active_plugins, session_seed=None,
         src_snap = {s["source"] for s in state.snapshot().values()}
         source_abbrevs = _unique_source_abbrevs(src_snap)
 
-        frozen_cols = [("#", 4), ("S", 4), ("Model", 18), ("St", 4)]
+        frozen_cols = [("#", MODEL_NUMBER_COLUMN_WIDTH), ("S", 4), ("Model", 18), ("St", 4)]
         frozen_width = FROZEN_VIEW_WIDTH
 
         plugin_cols = []
