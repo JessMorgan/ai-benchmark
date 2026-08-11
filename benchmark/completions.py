@@ -28,6 +28,12 @@ def generate_shell_completion(shell, plugins):
         "--no-preload",
         "--runner",
         "--judge-models",
+        "--build-judge-queue",
+        "--judge-queue-output",
+        "--judge-spread-threshold",
+        "--no-judge-spread",
+        "--judge-deviation-threshold",
+        "--no-judge-deviation",
     ]
     flag_list = " ".join(flags)
 
@@ -89,7 +95,13 @@ _arguments \\
     '--api-key[API key for model discovery]:key:' \\
     '--save-responses[Save each model\'s plugin response text to <output_dir>/responses/]' \\
     '--no-preload[Disable per-source model pre-loading for this run]' \\        '--runner[Execution runner]:runner:(http opencode both)' \\
-    '--judge-models[Configured semantic judge model]:model:' \\
+    '--judge-models[One or more configured judge models; scores form a confidence-weighted consensus]:model:' \\
+    '--build-judge-queue[Build judge-disagreement queue]:state file:_files' \\
+    '--judge-queue-output[Output path for judge queue]:file:_files' \\
+    '--judge-spread-threshold[Judge spread threshold]:points:' \\
+    '--no-judge-spread[Disable judge-spread criterion]' \\
+    '--judge-deviation-threshold[Consensus deviation threshold]:points:' \\
+    '--no-judge-deviation[Disable consensus-deviation criterion]' \\
 
     '*:file:_files'
 
@@ -119,7 +131,13 @@ esac
             "-l save-responses -d 'Save each model\\'s plugin response text to <output_dir>/responses/'",
             "-l no-preload -d 'Disable per-source model pre-loading for this run'",
             "-l runner -x -a 'http opencode both' -d 'Execution runner'",
-            "-l judge-models -r -d 'Configured semantic judge model'",
+            "-l judge-models -r -d 'One or more configured judge models; scores form a confidence-weighted consensus'",
+            "-l build-judge-queue -r -F -d 'Build judge-disagreement queue'",
+            "-l judge-queue-output -r -F -d 'Output path for judge queue'",
+            "-l judge-spread-threshold -r -d 'Judge spread threshold'",
+            "-l no-judge-spread -d 'Disable judge-spread criterion'",
+            "-l judge-deviation-threshold -r -d 'Consensus deviation threshold'",
+            "-l no-judge-deviation -d 'Disable consensus-deviation criterion'",
         ]
         lines = [
             f"complete -c {cmd} {spec}"

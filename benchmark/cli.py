@@ -52,6 +52,7 @@ from benchmark.http import (
     get_active_request_count,
     reset_429_stats,
 )
+from benchmark.judge_analysis import write_disagreement_queue
 from benchmark.opencode import (
     generate_config as generate_opencode_config,
 )
@@ -407,14 +408,43 @@ def _wr(stdscr, max_x, max_y, y, x, text, attr=0):
     frame. Do not retry a failed write at the current cursor position: a
     failed boundary write may already have advanced that cursor.
     """
+    _wr_segments(stdscr, max_x, max_y, y, x, [(text, attr)])
+
+
+def _wr_segments(stdscr, max_x, max_y, y, x, segments):
+    """Clear and safely write one row made of attributed text segments.
+
+    Segments are clipped as one display-width-bounded row, allowing the
+    footer to color a stopped judge name without disturbing its layout.
+    """
     if not (0 <= y < max_y and 0 <= x < max_x):
         return
-    safe_text = _truncate_display_width(text, max_x - x - 1)
+    available = max_x - x - 1
+    clipped = []
+    used = 0
+    for text, attr in segments:
+        safe_text = _truncate_display_width(text, available - used)
+        if safe_text:
+            clipped.append((safe_text, attr))
+            used += _display_width(safe_text)
+        if used >= available:
+            break
+    # Coalesce adjacent segments with the same attribute. Besides reducing
+    # terminal writes, this keeps ordinary (all-default-color) footer rows as
+    # one write while stopped rows still split only around the red name.
+    merged = []
+    for text, attr in clipped:
+        if merged and merged[-1][1] == attr:
+            merged[-1] = (merged[-1][0] + text, attr)
+        else:
+            merged.append((text, attr))
     try:
         stdscr.move(y, x)
         stdscr.clrtoeol()
-        if safe_text:
-            stdscr.addstr(y, x, safe_text, attr)
+        cursor_x = x
+        for text, attr in merged:
+            stdscr.addstr(y, cursor_x, text, attr)
+            cursor_x += _display_width(text)
     except curses.error:
         # Window too small or resized since getmaxyx(); skip this frame.
         pass
@@ -1265,28 +1295,55 @@ def _render_footer(stdscr, max_x, max_y, live_models, queuing, footer_line,
         expected = values.get("expected", 0)
         judge_parts.append(f"[{model}: {completed}✅{failed}❌{expected}Σ]")
 
+    judge_segments = []
+    try:
+        red_attr = curses.color_pair(3)
+    except curses.error:
+        red_attr = 0
+    for index, (model, values) in enumerate(judge_progress.items()):
+        completed = values.get("completed", 0)
+        failed = values.get("failed", 0)
+        expected = values.get("expected", 0)
+        if index:
+            judge_segments.append((" ", 0))
+        judge_segments.append(("[", 0))
+        judge_segments.append((model, red_attr if values.get("stopped") else 0))
+        judge_segments.append((f": {completed}✅{failed}❌{expected}Σ]", 0))
+
     judge_line = f"Judging {' '.join(judge_parts)}" if judge_parts else ""
     if not live_models and not queuing and not preloading_models and not judge_line:
-        msg = " All models complete — generating outputs..."
+        _wr_segments(
+            stdscr, max_x, max_y, footer_line, 0,
+            [(" All models complete — generating outputs...", 0)],
+        )
+        return
+
+    parts = []
+    if live_models:
+        parts.append(f"{len(live_models)} active")
+    if preloading_details:
+        parts.extend(
+            f"Preloading {name[:30]} {seconds:.0f}s"
+            for name, seconds in preloading_details
+        )
+    elif preloading_models:
+        parts.append(f"{len(preloading_models)} preloading")
+    if queuing:
+        parts.append(f"{len(queuing)} queued")
+
+    if judge_line:
+        prefix = "  |  ".join(parts)
+        segments = [(" ", 0)]
+        if prefix:
+            segments.append((prefix + "  |  ", 0))
+        segments.append(("Judging ", 0))
+        segments.extend(judge_segments)
+        _wr_segments(stdscr, max_x, max_y, footer_line, 0, segments)
     else:
-        parts = []
-        if live_models:
-            parts.append(f"{len(live_models)} active")
-        if preloading_details:
-            parts.extend(
-                f"Preloading {name[:30]} {seconds:.0f}s"
-                for name, seconds in preloading_details
-            )
-        elif preloading_models:
-            parts.append(f"{len(preloading_models)} preloading")
-        if queuing:
-            parts.append(f"{len(queuing)} queued")
-        if judge_line:
-            parts.append(judge_line)
-        msg = " " + "  |  ".join(parts)
-    if judge_line and (not live_models and not queuing and not preloading_models):
-        msg = " " + judge_line
-    _wr(stdscr, max_x, max_y, footer_line, 0, msg)
+        _wr_segments(
+            stdscr, max_x, max_y, footer_line, 0,
+            [(" " + "  |  ".join(parts), 0)],
+        )
 
 
 def tui_main(state, stop_event, num_sources, active_plugins, session_seed=None,
@@ -1908,47 +1965,49 @@ def main():  # pragma: no cover - live benchmark orchestrator (no unit tests)
                "  python ai-benchmark.py --generate-shell-completion zsh > ~/.zsh/completions/_ai-benchmark.py\n"
                "  python ai-benchmark.py --generate-shell-completion fish > ~/.config/fish/completions/ai-benchmark.py.fish",
         formatter_class=argparse.RawDescriptionHelpFormatter,
+        add_help=False,
     )
-    parser.add_argument('--restart', action='store_true',
-                        help='Restart the run from scratch, discarding prior results')
-    parser.add_argument('--config', default=DEFAULT_CONFIG_PATH,
-                        help=f'Config file path (default: {DEFAULT_CONFIG_PATH})')
-    parser.add_argument('--out', default=None,
-                        help='Override output directory from config')
-    parser.add_argument('--timeout', type=int, default=None,
-                        help='Override request timeout in seconds from config')
-    parser.add_argument('--token-levels', type=int, nargs='+', default=None,
-                        help='Override token levels (e.g. --token-levels 4096 8192 16384)')
-    parser.add_argument('--temperature', type=float, default=None,
-                        help='Default temperature for all plugins (overrides config; individual --plugin-temperature takes priority)')
-    parser.add_argument('--plugin-temperature', type=str, nargs='+', default=None,
-                        help='Per-plugin temperatures as id=value (e.g. --plugin-temperature rate-limiter=0.2 moe-dense=0.7)')
-    parser.add_argument('--plugin-thread-limit', type=int, default=None,
-                        help='Max threads per model for plugin execution. 0 means one thread per plugin (default: 1)')
-    parser.add_argument('--plugins-whitelist', type=str, nargs='+', default=None,
-                        help='Run only these plugins (e.g. --plugins-whitelist rate-limiter moe-dense)')
-    parser.add_argument('--plugins-blacklist', type=str, nargs='+', default=None,
-                        help='Run all plugins except these (e.g. --plugins-blacklist moe-dense)')
-    parser.add_argument('--list-plugins', action='store_true',
-                        help='List discovered challenge plugins (from plugins/challenges/) with their IDs, names, and versions, then exit')
-    parser.add_argument('--generate-shell-completion', type=str, default=None,
-                        choices=['bash', 'zsh', 'fish'],
-                        help='Generate shell completion script for the specified shell and exit')
-    parser.add_argument('--dump-default-config', action='store_true',
-                        help='Print a default config file to stdout and exit')
-    parser.add_argument('--convert-config', type=str, default=None,
-                        help='Convert a YAML config to JSON or a JSON config to YAML and print to stdout')
-    parser.add_argument('--base-url', default=None,
-                        help='Base URL for model discovery via /v1/models API (used with --dump-default-config)')
-    parser.add_argument('--api-key', default=None,
-                        help='API key for model discovery (used with --dump-default-config --base-url)')
-    parser.add_argument('--save-responses', action='store_true',
-                        help='Save each model\'s plugin response text to <output_dir>/responses/')
-    parser.add_argument('--judge-models', nargs='+', default=None, metavar='MODEL',
-                        help='Judge benchmark responses with one configured model (repeatable in a future consensus mode)')
-    parser.add_argument('--seed', type=int, default=None,
-                        help='Fixed random seed for all API requests (default: random)')
-    retry_group = parser.add_mutually_exclusive_group()
+
+    general = parser.add_argument_group('General')
+    general.add_argument('-h', '--help', action='help',
+                         help='Show this help message and exit')
+    general.add_argument('--restart', action='store_true',
+                         help='Restart the run from scratch, discarding prior results')
+    general.add_argument('--scripted', action='store_true',
+                         help='Non-interactive mode: never prompt for input; default to continuing runs')
+    general.add_argument('--seed', type=int, default=None,
+                         help='Fixed random seed for all API requests (default: random)')
+
+    config_group = parser.add_argument_group('Benchmark configuration')
+    config_group.add_argument('--config', default=DEFAULT_CONFIG_PATH,
+                              help=f'Config file path (default: {DEFAULT_CONFIG_PATH})')
+    config_group.add_argument('--out', default=None,
+                              help='Override output directory from config')
+    config_group.add_argument('--timeout', type=int, default=None,
+                              help='Override request timeout in seconds from config')
+    config_group.add_argument('--token-levels', type=int, nargs='+', default=None,
+                              help='Override token levels (e.g. --token-levels 4096 8192 16384)')
+    config_group.add_argument('--temperature', type=float, default=None,
+                              help='Default temperature for all plugins (overrides config; individual --plugin-temperature takes priority)')
+    config_group.add_argument('--plugin-temperature', type=str, nargs='+', default=None,
+                              help='Per-plugin temperatures as id=value (e.g. --plugin-temperature rate-limiter=0.2 moe-dense=0.7)')
+    config_group.add_argument('--plugin-thread-limit', type=int, default=None,
+                              help='Max threads per model for plugin execution. 0 means one thread per plugin (default: 1)')
+    config_group.add_argument('--plugins-whitelist', type=str, nargs='+', default=None,
+                              help='Run only these plugins (e.g. --plugins-whitelist rate-limiter moe-dense)')
+    config_group.add_argument('--plugins-blacklist', type=str, nargs='+', default=None,
+                              help='Run all plugins except these (e.g. --plugins-blacklist moe-dense)')
+    config_group.add_argument('--no-rerun-failed', action='store_true',
+                              help='Do not re-run models that failed in a previous session')
+
+    execution_group = parser.add_argument_group('Execution')
+    execution_group.add_argument('--runner', choices=['http', 'opencode', 'both'], default='http',
+                                 help='Execution runner: http (default), opencode, or both (per-target OpenCode-to-HTTP pipeline)')
+    execution_group.add_argument('--no-install-opencode', action='store_true',
+                                 help='Do not auto-download OpenCode into .tools/opencode/ when it is missing or too old; fail with an error instead')
+    execution_group.add_argument('--no-preload', action='store_true',
+                                 help='Disable per-source model pre-loading for this run')
+    retry_group = execution_group.add_mutually_exclusive_group()
     retry_group.add_argument('--retry-on-429', action='store_true', default=True,
                              help='Retry HTTP 429 responses with exponential backoff for any source '
                                   'that did not set its own max_429_retries (default: enabled). Each '
@@ -1959,17 +2018,60 @@ def main():  # pragma: no cover - live benchmark orchestrator (no unit tests)
                              help='Disable HTTP 429 retries globally. Overrides per-source max_429_retries '
                                   'only when the source did not set its own; explicit per-source values '
                                   'are preserved.')
-    parser.add_argument('--no-rerun-failed', action='store_true',
-                        help='Do not re-run models that failed in a previous session')
-    parser.add_argument('--scripted', action='store_true',
-                        help='Non-interactive mode: never prompt for input; default to continuing runs')
-    parser.add_argument('--runner', choices=['http', 'opencode', 'both'], default='http',
-                        help='Execution runner: http (default), opencode, or both (per-target OpenCode-to-HTTP pipeline)')
-    parser.add_argument('--no-install-opencode', action='store_true',
-                        help='Do not auto-download OpenCode into .tools/opencode/ when it is missing or too old; fail with an error instead')
-    parser.add_argument('--no-preload', action='store_true',
-                        help='Disable per-source model pre-loading for this run')
+
+    tools_group = parser.add_argument_group('Tools')
+    tools_group.add_argument('--list-plugins', action='store_true',
+                             help='List discovered challenge plugins (from plugins/challenges/) with their IDs, names, and versions, then exit')
+    tools_group.add_argument('--generate-shell-completion', type=str, default=None,
+                             choices=['bash', 'zsh', 'fish'],
+                             help='Generate shell completion script for the specified shell and exit')
+    tools_group.add_argument('--dump-default-config', action='store_true',
+                             help='Print a default config file to stdout and exit')
+    tools_group.add_argument('--convert-config', type=str, default=None,
+                             help='Convert a YAML config to JSON or a JSON config to YAML and print to stdout')
+    tools_group.add_argument('--base-url', default=None,
+                             help='Base URL for model discovery via /v1/models API (used with --dump-default-config)')
+    tools_group.add_argument('--api-key', default=None,
+                             help='API key for model discovery (used with --dump-default-config --base-url)')
+
+    output_group = parser.add_argument_group('Output')
+    output_group.add_argument('--save-responses', action='store_true',
+                              help='Save each model\'s plugin response text to <output_dir>/responses/')
+
+    judge_group = parser.add_argument_group('Judge analysis')
+    judge_group.add_argument('--judge-models', nargs='+', default=None, metavar='MODEL',
+                             help='Judge benchmark responses with one or more configured models and combine their results into a confidence-weighted consensus')
+    judge_group.add_argument('--build-judge-queue', type=str, default=None, metavar='STATE_FILE',
+                             help='Build a ranked judge-disagreement queue JSON from a benchmark_state.json and exit')
+    judge_group.add_argument('--judge-queue-output', type=str, default=None, metavar='PATH',
+                             help='Output path for --build-judge-queue (default: beside STATE_FILE)')
+    judge_group.add_argument('--judge-spread-threshold', type=float, default=30.0, metavar='POINTS',
+                             help='Include queue cells when judge spread reaches POINTS (default: 30; use --no-judge-spread to disable)')
+    judge_group.add_argument('--no-judge-spread', action='store_true',
+                             help='Disable the judge-spread queue criterion')
+    judge_group.add_argument('--judge-deviation-threshold', type=float, default=40.0, metavar='POINTS',
+                             help='Include queue cells when consensus differs from deterministic score by POINTS (default: 40; use --no-judge-deviation to disable)')
+    judge_group.add_argument('--no-judge-deviation', action='store_true',
+                             help='Disable the consensus-deviation queue criterion')
     args = parser.parse_args()
+
+    if args.build_judge_queue:
+        try:
+            path = write_disagreement_queue(
+                args.build_judge_queue,
+                args.judge_queue_output,
+                spread_threshold=(
+                    None if args.no_judge_spread else args.judge_spread_threshold
+                ),
+                deviation_threshold=(
+                    None if args.no_judge_deviation else args.judge_deviation_threshold
+                ),
+            )
+        except (OSError, json.JSONDecodeError, ValueError) as exc:
+            print(f"❌ Could not build judge disagreement queue: {exc}", file=sys.stderr)
+            sys.exit(1)
+        print(path)
+        sys.exit(0)
 
     if args.list_plugins:
         print(format_plugin_list(discover_plugins()))
@@ -2760,6 +2862,7 @@ def main():  # pragma: no cover - live benchmark orchestrator (no unit tests)
                 if outcome.terminal_429:
                     with halted_judges_lock:
                         halted_judges.add(judge_name)
+                    state.update_judge_progress(judge_name, stopped=True)
                     judge_stop_events[judge_name].set()
                 vote = {
                     "model": judge_name,
