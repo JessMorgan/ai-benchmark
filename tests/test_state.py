@@ -573,6 +573,19 @@ class TestBenchmarkState(unittest.TestCase):
         self.assertEqual(snap["rate-limiter_bytes_received"], 0)
         self.assertEqual(snap["wireframes_bytes_received"], 0)
 
+    def test_set_judge_models_refreshes_rows_and_results(self):
+        state = self.module.BenchmarkState(
+            {"m1": "Local"}, ["rate-limiter"]
+        )
+        state.add_result({"model": "m1", "rate-limiter_score": 80})
+        state.set_judge_models(["judge-a", "judge-b", "judge-a"])
+        self.assertEqual(
+            state.snapshot()["m1"]["judge_models"], ["judge-a", "judge-b"]
+        )
+        self.assertEqual(
+            state.latest_results()[0]["judge_models"], ["judge-a", "judge-b"]
+        )
+
     def test_first_chunk_seen_default_is_false(self):
         """Every plugin gets a ``first_chunk_seen`` field of ``False``
         in the default model_info dict so the renderer can read it

@@ -243,7 +243,10 @@ class TestPluginCellBlock(unittest.TestCase):
                     }
                 block = ai_benchmark._plugin_cell_block(
                     "rate-limiter", s, self.p_streaming, **kwargs)
-                self.assertEqual(len(block), ai_benchmark.PLUGIN_BLOCK_WIDTH)
+                self.assertEqual(
+                    ai_benchmark._display_width(block),
+                    ai_benchmark.PLUGIN_BLOCK_WIDTH,
+                )
 
     def test_queued_no_results_shows_dash_placeholders(self):
         """A model not yet running shows the standard 4-cell layout
@@ -360,7 +363,7 @@ class TestPluginCellBlock(unittest.TestCase):
             "rate-limiter", s, self.p_streaming, sleeping_lookup=sleeping_lookup)
         self.assertNotIn("[429 sleeping", block,
                          "completed plugin cell must not inherit another plugin's 429 status")
-        self.assertIn("   95", block)
+        self.assertIn("95", block)
 
     def test_429_sleep_clamps_at_zero_seconds(self):
         """A wake_ts in the past clamps to ``0`` so the bracket stays
@@ -434,10 +437,27 @@ class TestPluginCellBlock(unittest.TestCase):
         self.assertIn("[429 sleeping 5s]", rl_block)
         self.assertIn("[429 sleeping 55s]", md_block)
 
-    def test_completed_judge_adds_j_marker_to_score(self):
+    def test_judge_count_marker_is_used_until_all_judges_finish(self):
         s = {
             "running_pids": [],
             "rate-limiter_score": 95,
+            "judge_models": ["judge-a", "judge-b"],
+            "rate-limiter_judge_votes": [
+                {"model": "judge-a", "score": 90},
+            ],
+            "rate-limiter_judge_complete": False,
+        }
+        block = ai_benchmark._plugin_cell_block(
+            "rate-limiter", s, self.p_streaming, None)
+        self.assertIn("95👩‍⚖️1", block)
+        self.assertEqual(ai_benchmark._display_width(block), ai_benchmark.PLUGIN_BLOCK_WIDTH)
+
+    def test_completed_judge_uses_checkmark_score_marker(self):
+        s = {
+            "running_pids": [],
+            "rate-limiter_score": 95,
+            "judge_models": ["judge-a"],
+            "rate-limiter_judge_votes": [{"model": "judge-a", "score": 90}],
             "rate-limiter_judge_complete": True,
             "rate-limiter_output_tokens": 100,
             "rate-limiter_response_time": 2.0,
@@ -445,7 +465,8 @@ class TestPluginCellBlock(unittest.TestCase):
         }
         block = ai_benchmark._plugin_cell_block(
             "rate-limiter", s, self.p_streaming, None)
-        self.assertIn("95J", block)
+        self.assertIn("95✅", block)
+        self.assertEqual(ai_benchmark._display_width(block), ai_benchmark.PLUGIN_BLOCK_WIDTH)
 
     def test_completed_plugin_shows_numeric_results(self):
         """A plugin whose task has finished shows the standard 4-cell
@@ -470,13 +491,16 @@ class TestPluginCellBlock(unittest.TestCase):
         self.assertNotIn("]", block)
         # Numeric results present in their respective columns. The token
         # cell shows the TOTAL (123), not the content-only count (100).
-        self.assertIn("   95", block)
+        self.assertIn("95", block)
         self.assertIn("123", block)
         self.assertNotIn(" 100 ", block)
         self.assertIn("45.6", block)
         self.assertIn("2.5", block)
         # Block width matches PLUGIN_BLOCK_WIDTH (no separate st column).
-        self.assertEqual(len(block), ai_benchmark.PLUGIN_BLOCK_WIDTH)
+        self.assertEqual(
+            ai_benchmark._display_width(block),
+            ai_benchmark.PLUGIN_BLOCK_WIDTH,
+        )
         # Last token is the tps value (no trailing '-' st glyph).
         self.assertEqual(block.strip().split()[-1], "2.5",
                          "block ends with the tps value (st column deleted)")
@@ -496,7 +520,10 @@ class TestPluginCellBlock(unittest.TestCase):
             "rate-limiter", s, self.p_streaming, None)
         # The legacy content-only count must surface as the token cell.
         self.assertIn("123", block)
-        self.assertEqual(len(block), ai_benchmark.PLUGIN_BLOCK_WIDTH)
+        self.assertEqual(
+            ai_benchmark._display_width(block),
+            ai_benchmark.PLUGIN_BLOCK_WIDTH,
+        )
 
     def test_streaming_plugin_shows_tok_count_after_bytes_accumulate(self):
         """Once the streaming callback has accumulated chars (mocked

@@ -153,6 +153,53 @@ class TestFormatModelRow(unittest.TestCase):
             "model-a", self._snap(running_pids=["rate-limiter"]), 1, [plugin], abbrevs)
         self.assertIn("🔷", frozen2)
 
+    def test_judge_marker_is_added_after_model_number(self):
+        plugin = mock.MagicMock()
+        plugin.id = "rate-limiter"
+        plugin.supports_streaming = True
+        state = self._snap(status="running")
+        state.update({
+            "rate-limiter_score": 80,
+            "judge_models": ["judge-a"],
+            "rate-limiter_judge_queued": True,
+            "rate-limiter_judge_votes": [],
+            "rate-limiter_judge_complete": False,
+        })
+        frozen, _ = cli._format_model_row(
+            "model-a", state, 7, [plugin], {"Local": "LC"})
+        self.assertIn("7👩‍⚖️", frozen)
+
+    def test_completed_judge_uses_row_checkmark(self):
+        plugin = mock.MagicMock()
+        plugin.id = "rate-limiter"
+        plugin.supports_streaming = True
+        state = self._snap(status="completed")
+        state.update({
+            "rate-limiter_score": 80,
+            "judge_models": ["judge-a"],
+            "rate-limiter_judge_votes": [{"model": "judge-a", "score": 80}],
+            "rate-limiter_judge_complete": True,
+        })
+        frozen, _ = cli._format_model_row(
+            "model-a", state, 7, [plugin], {"Local": "LC"})
+        self.assertIn("7✅", frozen)
+
+    def test_judge_markers_require_all_current_judges(self):
+        plugin = mock.MagicMock()
+        plugin.id = "rate-limiter"
+        plugin.supports_streaming = True
+        state = self._snap(status="completed")
+        state.update({
+            "rate-limiter_score": 80,
+            "judge_models": ["judge-a", "judge-b"],
+            "rate-limiter_judge_votes": [{"model": "judge-a", "score": 80}],
+            "rate-limiter_judge_complete": True,
+        })
+        frozen, plugin_str = cli._format_model_row(
+            "model-a", state, 7, [plugin], {"Local": "LC"})
+        self.assertIn("7👩‍⚖️", frozen)
+        self.assertIn("80👩‍⚖️1", plugin_str)
+
     def test_unknown_source_abbr_fallback(self):
         plugin = mock.MagicMock()
         plugin.id = "rate-limiter"
@@ -280,6 +327,24 @@ class TestRenderLiveActivity(unittest.TestCase):
         self.assertIn("Live:", window.lines.get(10, ""))
         self.assertIn("Preloading model model-b", window.lines.get(12, ""))
         self.assertIn("429 Sleeping:", window.lines.get(13, ""))
+
+    def test_renders_active_judge_activity(self):
+        window = _FakeWindow(40, 120)
+        cli._render_live_activity(
+            window, 120, 40, {}, {"Local": "LC"}, [],
+            live_top=10, live_height=3, log_top=20,
+            active_plugins=[], sleeping_lookup={},
+            judge_activities=[{
+                "judge": "judge-model",
+                "target": "target-model",
+                "plugin": "rate-limiter",
+                "tokens": 42,
+                "elapsed": 5,
+            }],
+        )
+        rendered = " ".join(window.lines.get(y, "") for y in range(10, 20))
+        self.assertIn("[Judge judge-model] target-model", rendered)
+        self.assertIn("[rate-limiter 42 tok 5s]", rendered)
 
 
 class TestRenderRecentErrors(unittest.TestCase):

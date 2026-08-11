@@ -1343,7 +1343,11 @@ def run_model(model_name, source, state, active_plugins, source_config, timeout,
         "plugin_versions": {p.id: p.version for p in active_plugins},
     }
 
-    state.update(target_name, status="queued")
+    state.update(
+        target_name,
+        status="queued",
+        judge_models=list(judge_models or ([judge_model] if judge_model else [])),
+    )
 
     cfg = source_config.get(source)
     if runner == "http" and cfg is None:

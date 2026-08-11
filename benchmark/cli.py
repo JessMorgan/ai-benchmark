@@ -645,6 +645,68 @@ def _elapsed_suffix(start_ts, threshold=_ELAPSED_THRESHOLD_S):
     return ""
 
 
+def _judge_models(state):
+    """Return the configured judge identities represented by a state row."""
+    configured = state.get("judge_models")
+    if isinstance(configured, (list, tuple, set)):
+        return {model for model in configured if model}
+    return set()
+
+
+def _judge_votes(state, pid):
+    """Return configured judge identities that have completed one plugin."""
+    configured = _judge_models(state)
+    if not configured:
+        return set()
+    return {
+        vote.get("model")
+        for vote in (state.get(f"{pid}_judge_votes") or [])
+        if isinstance(vote, dict) and vote.get("model") in configured
+    }
+
+
+def _judge_score_marker(pid, state):
+    """Return the compact judge status marker for one plugin score.
+
+    A numeric benchmark score is judgeable even before its first judge has
+    returned, so configured judging is shown as ``👩‍⚖️0`` rather than being
+    mistaken for an unconfigured run. Completion is derived from the current
+    configured judge set and recorded votes, not a stale aggregate flag.
+    """
+    configured = _judge_models(state)
+    if not configured:
+        return ""
+    judged_models = _judge_votes(state, pid)
+    if configured.issubset(judged_models):
+        return "✅"
+    if state.get(f"{pid}_judge_queued") or judged_models:
+        return f"👩‍⚖️{len(judged_models)}"
+    return ""
+
+
+def _model_judge_marker(state, active_plugins=None):
+    """Return the row-header marker for a model's aggregate judge state."""
+    active_plugins = active_plugins or []
+    configured = _judge_models(state)
+    if not configured:
+        return ""
+    scored = [
+        plugin.id for plugin in active_plugins
+        if isinstance(state.get(f"{plugin.id}_score"), (int, float))
+        and not isinstance(state.get(f"{plugin.id}_score"), bool)
+    ]
+    if not scored:
+        return ""
+    if all(configured.issubset(_judge_votes(state, pid)) for pid in scored):
+        return "✅"
+    if any(
+        state.get(f"{pid}_judge_queued") or _judge_votes(state, pid)
+        for pid in scored
+    ):
+        return "👩‍⚖️"
+    return ""
+
+
 def _plugin_cell_block(pid, s, p, sleeping_lookup=None):
     """Render a single per-model cell block for one plugin.
 
@@ -725,7 +787,8 @@ def _plugin_cell_block(pid, s, p, sleeping_lookup=None):
         if sleep_info is not None:
             remaining = max(0, round(sleep_info["wake_ts"] - time.time()))
             text = f"[429 sleeping {remaining}s]"
-            return f"{text:^{PLUGIN_BLOCK_WIDTH}}"
+            remaining = max(0, PLUGIN_BLOCK_WIDTH - _display_width(text))
+            return " " * (remaining // 2) + text + " " * (remaining - remaining // 2)
     if in_flight:
         if p.supports_streaming:
             first_chunk_seen = bool(s.get(f"{pid}_first_chunk_seen", False))
@@ -786,7 +849,8 @@ def _plugin_cell_block(pid, s, p, sleeping_lookup=None):
             # branch above). No token display for non-streaming --
             # the transport doesn't yield data until completion.
             text = f"[requested{_elapsed_suffix(start_ts)}]"
-        return f"{text:^{PLUGIN_BLOCK_WIDTH}}"
+        remaining = max(0, PLUGIN_BLOCK_WIDTH - _display_width(text))
+        return " " * (remaining // 2) + text + " " * (remaining - remaining // 2)
     # Standard 4-cell results layout -- widths sum to 5+6+6+6=23 with 3
     # single-space separators between cells = 26 chars, matching the
     # merged status width. The token cell shows the TOTAL (thinking +
@@ -794,11 +858,9 @@ def _plugin_cell_block(pid, s, p, sleeping_lookup=None):
     # reports. Falls back to the legacy content-only count for state files
     # that predate the thinking/content split.
     score = s.get(f"{pid}_score")
-    if s.get(f"{pid}_judge_complete") and isinstance(score, (int, float)):
-        # Keep the fixed score-cell width while marking that every configured
-        # judge has finished this response. The marker is adjacent to the
-        # deterministic score (for example, ``95J``).
-        sc = f"{score:.0f}J"
+    if isinstance(score, (int, float)) and not isinstance(score, bool):
+        marker = _judge_score_marker(pid, s)
+        sc = f"{score:.0f}{marker}"
     else:
         sc = _fmt_value(score, ".0f")
     total_tokens = s.get(f"{pid}_total_tokens")
@@ -808,7 +870,9 @@ def _plugin_cell_block(pid, s, p, sleeping_lookup=None):
     )
     tm = _fmt_value(s.get(f"{pid}_response_time"))
     tps = _fmt_value(s.get(f"{pid}_tps"))
-    return f"{sc:>5} {tok:>6} {tm:>6} {tps:>6}"
+    score_field = " " * max(0, 5 - _display_width(sc)) + sc
+    block = f"{score_field} {tok:>6} {tm:>6} {tps:>6}"
+    return _pad_display_width(block, PLUGIN_BLOCK_WIDTH)
 
 
 def _format_model_row(name, s, display_idx, active_plugins, source_abbrevs,
@@ -831,7 +895,8 @@ def _format_model_row(name, s, display_idx, active_plugins, source_abbrevs,
 
     src_ab = _source_abbr(source_abbrevs, s.get("source"))
     model_disp = name[:16]
-    frozen = f"{display_idx:>3}  {src_ab:<3} {model_disp:<18}  {status_ch:<3}"
+    judge_marker = _model_judge_marker(s, active_plugins)
+    frozen = f"{display_idx:>3}{judge_marker}  {src_ab:<3} {model_disp:<18}  {status_ch:<3}"
     # Keep the plugin viewport anchored at the same terminal column as the
     # heading. Emoji status glyphs can occupy two columns, so Python's string
     # length is not sufficient to align this frozen prefix.
@@ -1007,7 +1072,7 @@ def _build_live_indicators(s, active_plugins, *, now=None):
 
 def _render_live_activity(stdscr, max_x, max_y, snap, source_abbrevs, live_models,
                           live_top, live_height, log_top, active_plugins, sleeping_lookup,
-                          preloading_models=None):
+                          preloading_models=None, judge_activities=None):
     """Render running models + 429-sleeping plugins in the live area.
 
     ``sleeping_lookup`` maps ``(source, api_model, pid)`` to sleep info so
@@ -1059,6 +1124,16 @@ def _render_live_activity(stdscr, max_x, max_y, snap, source_abbrevs, live_model
         elapsed = int(max(0, time.monotonic() - (s.get("preload_start_ts") or time.monotonic())))
         _wr(stdscr, max_x, max_y, live_row, 0,
             f" 🔄 [{src_ab}] Preloading model {nm[:36]} {elapsed}s")
+        live_row += 1
+
+    for activity in (judge_activities or []):
+        if live_row >= log_top:
+            break
+        _wr(
+            stdscr, max_x, max_y, live_row, 0,
+            f" 👩‍⚖️ [Judge {activity['judge']}] {activity['target']} "
+            f"[{activity['plugin']} {activity['tokens']} tok {activity['elapsed']}s]",
+        )
         live_row += 1
 
     if sleeping_lookup and live_row + 1 < log_top:
@@ -1270,6 +1345,7 @@ def tui_main(state, stop_event, num_sources, active_plugins, session_seed=None,
                     stdscr, max_x, max_y, snap, source_abbrevs, running,
                     LIVE_TOP, LIVE_HEIGHT, LOG_TOP, active_plugins, sleeping_lookup,
                     preloading_models=preloading,
+                    judge_activities=state.judge_activity_snapshot(),
                 )
 
                 _render_recent_errors(stdscr, max_x, max_y, state, LOG_TOP, FOOTER_LINE)
@@ -2115,6 +2191,10 @@ def main():  # pragma: no cover - live benchmark orchestrator (no unit tests)
         else:
             state = BenchmarkState(state_models, plugin_ids, runner=runner_mode)
 
+        # The active CLI judge configuration is authoritative on resume; do
+        # not let a prior run's judge set drive stale row markers.
+        state.set_judge_models(judge_models)
+
         if restored_targets and runner_mode in ("opencode", "both"):
             # OpenCode's generated projection is created before the state file
             # is loaded. Rebuild it after restoring removed targets so their
@@ -2451,6 +2531,7 @@ def main():  # pragma: no cover - live benchmark orchestrator (no unit tests)
                 judge_pools[source].enqueue(
                     (sidecar, target_name, runner, plugin_id, judge_name)
                 )
+                state.update(state_key, **{f"{plugin_id}_judge_queued": True})
                 state.increment_judge_progress(judge_name, expected=1)
                 with judge_counts_lock:
                     run_info["judge_counts"]["queued"] += 1
@@ -2478,22 +2559,38 @@ def main():  # pragma: no cover - live benchmark orchestrator (no unit tests)
                     if isinstance(vote, dict) and vote.get("model")
                 }
                 existing_votes = list(existing_by_model.values())
-                if any(vote.get("model") == judge_name for vote in existing_votes if isinstance(vote, dict)):
+                if any(
+                    vote.get("model") == judge_name
+                    for vote in existing_votes
+                    if isinstance(vote, dict)
+                ):
                     state.increment_judge_progress(judge_name, completed=1)
                     return
-                outcome = judge_response(
-                    source_config,
-                    judge_sources[judge_name],
-                    targets[judge_name]["api_model"],
-                    sidecar,
-                    timeout=judge_effective_timeout,
-                    token_levels=judge_token_levels,
-                    temperature=judge_temperature,
-                    drop_params=(raw_targets.get(judge_name, {}).get("drop_params", [])
-                                 if isinstance(raw_targets.get(judge_name), dict) else []),
-                    stop_event=stop_event,
-                    log_path=os.path.join(output_dir, f"judge-{judge_name}.log"),
+                activity_id = state.start_judge_activity(
+                    judge_name, target_name, plugin_id,
                 )
+                outcome = None
+                try:
+                    outcome = judge_response(
+                        source_config,
+                        judge_sources[judge_name],
+                        targets[judge_name]["api_model"],
+                        sidecar,
+                        timeout=judge_effective_timeout,
+                        token_levels=judge_token_levels,
+                        temperature=judge_temperature,
+                        drop_params=(raw_targets.get(judge_name, {}).get("drop_params", [])
+                                     if isinstance(raw_targets.get(judge_name), dict) else []),
+                        stop_event=stop_event,
+                        log_path=os.path.join(output_dir, f"judge-{judge_name}.log"),
+                    )
+                finally:
+                    if outcome is not None and outcome.response_text is not None:
+                        state.update_judge_activity(
+                            activity_id,
+                            tokens=len(outcome.response_text) // 4,
+                        )
+                    state.finish_judge_activity(activity_id)
                 vote = {
                     "model": judge_name,
                     "score": outcome.score,

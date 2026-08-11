@@ -334,6 +334,8 @@ class BenchmarkState:
         self.runner = runner
         self.score_schema = SCORE_SCHEMA
         self._judge_progress = {}
+        self._judge_activity = {}
+        self._next_judge_activity_id = 0
         for name, info in models.items():
             if isinstance(info, dict):
                 source = info.get("source", "Default")
@@ -389,6 +391,7 @@ class BenchmarkState:
                 self._model_info[name][f"{pid}_judge_input_sha256"] = None
                 self._model_info[name][f"{pid}_judge_votes"] = []
                 self._model_info[name][f"{pid}_judge_complete"] = False
+                self._model_info[name][f"{pid}_judge_queued"] = False
                 self._model_info[name][f"{pid}_tps"] = None
                 self._model_info[name][f"{pid}_response_time"] = None
                 self._model_info[name][f"{pid}_output_tokens"] = None
@@ -698,6 +701,53 @@ class BenchmarkState:
         with self._lock:
             return {model: dict(values) for model, values in self._judge_progress.items()}
 
+    def start_judge_activity(self, judge_model, target, plugin):
+        """Register one currently executing judge request for the live TUI."""
+        with self._lock:
+            activity_id = self._next_judge_activity_id
+            self._next_judge_activity_id += 1
+            self._judge_activity[activity_id] = {
+                "judge": judge_model,
+                "target": target,
+                "plugin": plugin,
+                "tokens": 0,
+                "started": time.monotonic(),
+            }
+            return activity_id
+
+    def update_judge_activity(self, activity_id, *, tokens=None):
+        """Update the live token count for one judge request."""
+        with self._lock:
+            activity = self._judge_activity.get(activity_id)
+            if activity is not None and tokens is not None:
+                activity["tokens"] = max(0, int(tokens))
+
+    def clear_judge_queued(self, target, plugin):
+        """Clear the transient queued marker for a judgeable plugin."""
+        with self._lock:
+            if target in self._model_info:
+                self._model_info[target][f"{plugin}_judge_queued"] = False
+
+    def finish_judge_activity(self, activity_id):
+        """Remove one completed judge request from the live TUI."""
+        with self._lock:
+            self._judge_activity.pop(activity_id, None)
+
+    def judge_activity_snapshot(self):
+        """Return active judge requests with current elapsed seconds."""
+        now = time.monotonic()
+        with self._lock:
+            return [
+                {
+                    "judge": activity["judge"],
+                    "target": activity["target"],
+                    "plugin": activity["plugin"],
+                    "tokens": activity["tokens"],
+                    "elapsed": max(0, int(now - activity["started"])),
+                }
+                for activity in self._judge_activity.values()
+            ]
+
     def update_judge_result(self, state_key, runner, plugin_id, *, score=None,
                             confidence=None, rationale=None, error=None,
                             input_sha256=None, votes=None, status=None,
@@ -721,6 +771,8 @@ class BenchmarkState:
             fields["judge_status"] = status
         if complete is not None:
             fields[f"{plugin_id}_judge_complete"] = complete
+            if complete:
+                fields[f"{plugin_id}_judge_queued"] = False
         with self._lock:
             if state_key in self._model_info:
                 self._model_info[state_key].update(fields)
@@ -729,6 +781,15 @@ class BenchmarkState:
                 if result_key == state_key and result.get("runner", "http") == runner:
                     result.update(fields)
                     break
+
+    def set_judge_models(self, judge_models):
+        """Refresh the active judge identities on live and persisted rows."""
+        models = list(dict.fromkeys(judge_models or []))
+        with self._lock:
+            for info in self._model_info.values():
+                info["judge_models"] = list(models)
+            for result in self.results:
+                result["judge_models"] = list(models)
 
     def snapshot(self):
         with self._lock:
@@ -831,6 +892,8 @@ class BenchmarkState:
                 # but that assumption broke once the visual-layer read
                 # ``running_pids`` as the source-of-truth.
                 info.pop("running_pids", None)
+                for pid in plugin_ids:
+                    info[f"{pid}_judge_queued"] = False
                 saved_status = info.get("status")
                 # Normalise both legacy "running_<pid>" pid-suffix strings
                 # AND the canonical "running" status to "pending" so the
@@ -869,6 +932,7 @@ class BenchmarkState:
                         state._model_info[name].setdefault(f"{pid}_judge_input_sha256", None)
                         state._model_info[name].setdefault(f"{pid}_judge_votes", [])
                         state._model_info[name].setdefault(f"{pid}_judge_complete", False)
+                        state._model_info[name].setdefault(f"{pid}_judge_queued", False)
                         state._model_info[name].setdefault(f"{pid}_tps", None)
                         state._model_info[name].setdefault(f"{pid}_response_time", None)
                         state._model_info[name].setdefault(f"{pid}_output_tokens", None)
