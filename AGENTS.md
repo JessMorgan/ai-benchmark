@@ -94,6 +94,12 @@ Three (`code-review`, `moe-dense`, `structured-output`) set
 `supports_streaming=False` — they go through the **non-streaming**
 `_post_request_context` path.
 
+## Git management
+1. After any complete change, commit to git.
+
+## Plugin updates
+1. **Update plugin version when edited** Very minor changes such as fixing spelling add to the revision (0.0.1).  Any time the prompt or scoring are changed, up the minor (0.1.0, resetting the revision [0.0.x] to zero).  Complete rewrites or very very major changes, update the major (1.0.0, resetting minor and revision to zero)
+
 ## Known gotchas (each is a recent fix; the regression test lives in `tests/`)
 
 1. **`on_retry` closure-scope block.** `def on_retry():` was once nested inside
