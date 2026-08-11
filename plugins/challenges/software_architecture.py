@@ -12,8 +12,7 @@ class SoftwareArchitecturePlugin(BenchmarkTaskPlugin):
         return "software-architecture"
 
     @property
-    def version(self):
-        return "0.7.0"
+    def version(self):        return "0.8.0"
 
     @property
     def name(self):
@@ -72,19 +71,30 @@ class SoftwareArchitecturePlugin(BenchmarkTaskPlugin):
             return EvaluationResult(0.0, [])
 
         rubric = Rubric(self.max_score)
-        rubric.record_validation(validate_sections(t, [
-            "Executive Summary", "Requirements Summary", "Architecture Style",
-            "Component", "Data Model", "API Design", "Technology Stack",
-            "Deployment", "Security", "Scalability", "Trade-offs",
-        ]))
+        rubric.record_validation(validate_sections(
+            t,
+            [
+                "Executive Summary", "Requirements Summary", "Architecture Style",
+                "Component", "Data Model", "API Design", "Technology Stack",
+                "Deployment", "Security", "Scalability", "Trade-offs",
+            ],
+            aliases={
+                "Component": ("System Components", "Component Diagram", "Services"),
+                "Data Model": ("Data Design", "Database Design", "Persistence"),
+                "Deployment": ("Infrastructure", "Operations", "Release Architecture"),
+                "Security": ("Security Model", "Threat Model", "Privacy"),
+                "Scalability": ("Capacity Planning", "Performance", "Scale Plan"),
+                "Trade-offs": ("Tradeoffs", "Decisions", "Architectural Decisions"),
+            },
+        ))
 
         # Architecture & Patterns (3.0)
         earned = 0.0
-        if re.search(r'\b(?:microservices|event.driven|serverless|modular monolith|hexagonal|layered|SOA)\b', t, re.IGNORECASE):
+        if re.search(r'\b(?:microservices|event.driven|serverless|modular monolith|hexagonal|ports.and.adapters|layered|service.oriented|client.server|SOA)\b', t, re.IGNORECASE):
             earned += 1.0
-        if re.search(r'\b(?:api gateway|backend.for.frontend|bff|service mesh)\b', t, re.IGNORECASE):
+        if re.search(r'\b(?:api gateway|api facade|edge proxy|backend.for.frontend|bff|service mesh)\b', t, re.IGNORECASE):
             earned += 1.0
-        if re.search(r'```(?:mermaid|plantuml)|graph\s+(?:TD|LR)|sequenceDiagram|classDiagram|flowchart', t, re.IGNORECASE):
+        if re.search(r'```(?:mermaid|plantuml)|graph\s+(?:TD|LR)|sequenceDiagram|classDiagram|flowchart|[-\w\]]+\s*[-=]+>\s*[-\w\[]+', t, re.IGNORECASE):
             earned += 1.0
         rubric.add_criterion("Architecture & Patterns", 3.0, earned)
 
@@ -102,11 +112,11 @@ class SoftwareArchitecturePlugin(BenchmarkTaskPlugin):
 
         # Real-Time Sync & Communication (3.0)
         earned = 0.0
-        if re.search(r'\b(?:websocket|wss|server.sent events|sse|grpc|mqtt|long.polling)\b', t, re.IGNORECASE):
+        if re.search(r'\b(?:websocket|wss|server.sent events|sse|grpc|mqtt|webhook|sync engine|long.polling|polling)\b', t, re.IGNORECASE):
             earned += 1.0
-        if re.search(r'\b(?:crdt|conflict.free|conflict resolution|operational transformation|event sourcing|offline.first|vector clock)\b', t, re.IGNORECASE):
+        if re.search(r'\b(?:crdt|conflict.free|conflict resolution|operational transformation|event sourcing|offline.first|vector clock|eventual consistency|last.write.wins)\b', t, re.IGNORECASE):
             earned += 1.0
-        if re.search(r'\b(?:kafka|rabbitmq|event bus|pub.sub|kinesis|sqs|sns|nats|pulsar)\b', t, re.IGNORECASE):
+        if re.search(r'\b(?:kafka|rabbitmq|event bus|pub.sub|message queue|message broker|kinesis|sqs|sns|nats|pulsar)\b', t, re.IGNORECASE):
             earned += 1.0
         rubric.add_criterion("Real-Time Sync & Communication", 3.0, earned)
 
@@ -122,7 +132,7 @@ class SoftwareArchitecturePlugin(BenchmarkTaskPlugin):
 
         # Resiliency & Failure Modes (3.0)
         earned = 0.0
-        if re.search(r'\b(?:circuit breaker|bulkhead pattern|bulkheads|failover|fault isolation)\b', t, re.IGNORECASE):
+        if re.search(r'\b(?:circuit breaker|bulkhead pattern|bulkheads|failover|fault isolation|timeout isolation|idempotency|disaster recovery)\b', t, re.IGNORECASE):
             earned += 1.0
         if re.search(r'\b(?:dead.letter|dlq|poison pill|message retry|retry queue)\b', t, re.IGNORECASE):
             earned += 1.0

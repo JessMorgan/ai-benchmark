@@ -1,6 +1,7 @@
 """Tool calling and agent routing benchmark task."""
 import json
 import re
+from datetime import date, datetime
 
 from benchmark.plugin import BenchmarkTaskPlugin
 from plugins.challenges._rubric import Rubric
@@ -13,8 +14,7 @@ class ToolCallingPlugin(BenchmarkTaskPlugin):
         return "tool-calling"
 
     @property
-    def version(self):
-        return "0.8.0"
+    def version(self):        return "0.9.0"
 
     @property
     def name(self):
@@ -67,6 +67,27 @@ class ToolCallingPlugin(BenchmarkTaskPlugin):
             except json.JSONDecodeError:
                 continue
         return calls
+
+    @staticmethod
+    def _date_argument_is_valid(value, expected):
+        """Accept the requested date as an ISO date or ISO datetime."""
+        if not isinstance(value, str):
+            return False
+        candidate = value.strip().replace("Z", "+00:00")
+        try:
+            parsed = datetime.fromisoformat(candidate).date()
+        except ValueError:
+            try:
+                parsed = date.fromisoformat(candidate)
+            except ValueError:
+                match = re.match(r"^(\d{4})[-/](\d{2})[-/](\d{2})$", value.strip())
+                if not match:
+                    return False
+                try:
+                    parsed = date(int(match.group(1)), int(match.group(2)), int(match.group(3)))
+                except ValueError:
+                    return False
+        return parsed.isoformat() == expected
 
     def evaluate(self, response_text):
         t = response_text
@@ -132,7 +153,7 @@ class ToolCallingPlugin(BenchmarkTaskPlugin):
                     arg_score += 0.5
                 if isinstance(dest, str) and "tokyo" in dest.lower():
                     arg_score += 0.5
-                if re.match(r"^\d{4}-\d{2}-\d{2}$", str(date)):
+                if self._date_argument_is_valid(date, "2024-08-15"):
                     arg_score += 0.5
             elif name == "book_hotel":
                 city = args.get("city", "")
@@ -141,7 +162,10 @@ class ToolCallingPlugin(BenchmarkTaskPlugin):
                 guests = args.get("guests")
                 if isinstance(city, str) and "tokyo" in city.lower():
                     arg_score += 0.5
-                if re.match(r"^\d{4}-\d{2}-\d{2}$", str(check_in)) and re.match(r"^\d{4}-\d{2}-\d{2}$", str(check_out)):
+                if (
+                    self._date_argument_is_valid(check_in, "2024-08-16")
+                    and self._date_argument_is_valid(check_out, "2024-08-20")
+                ):
                     arg_score += 0.5
                 if isinstance(guests, int) and guests == 2:
                     arg_score += 0.5
@@ -175,17 +199,23 @@ class ToolCallingPlugin(BenchmarkTaskPlugin):
             "send_email",
         ]
         order_matches = sum(1 for a, b in zip(call_names, expected_order) if a == b)
+        present_order = [name for name in call_names if name in required_tools]
+        expected_present = [name for name in expected_order if name in present_order]
+        in_order = present_order == expected_present
         earned = 0.0
-        if len(call_names) >= 3 and order_matches > 0:
-            earned = (order_matches / len(expected_order)) * 3.0
+        if len(present_order) >= 3 and in_order:
+            earned = (len(present_order) / len(expected_order)) * 3.0
+        elif len(present_order) >= 3:
+            earned = (max(order_matches, 1) / len(expected_order)) * 3.0
         rubric.add_criterion("Correct ordering / dependencies", 3.0, earned)
 
-        has_weather = re.search(r'(?:weather|degrees|celsius|fahrenheit|sunny|rain|cloud)', t.lower())
-        has_flight = re.search(r'(?:flight|jfk|tokyo|depart)', t.lower())
-        has_hotel = re.search(r'(?:hotel|check.in|guests)', t.lower())
-        has_stock = re.search(r'(?:price|shares|stock|sony)', t.lower())
-        has_currency = re.search(r'(?:yen|jpy|usd|currency|exchange)', t.lower())
-        has_email = re.search(r'(?:email|itinerary|alice)', t.lower())
+        synthesis = t[t.rfind("</tool_call>") + len("</tool_call>"):] if "</tool_call>" in t else t
+        has_weather = re.search(r'(?:weather|degrees|celsius|fahrenheit|sunny|rain|cloud)', synthesis.lower())
+        has_flight = re.search(r'(?:flight|jfk|tokyo|depart)', synthesis.lower())
+        has_hotel = re.search(r'(?:hotel|check.in|guests|reservation)', synthesis.lower())
+        has_stock = re.search(r'(?:price|shares|stock|sony|quote)', synthesis.lower())
+        has_currency = re.search(r'(?:yen|jpy|usd|currency|exchange|converted)', synthesis.lower())
+        has_email = re.search(r'(?:email|itinerary|alice|sent)', synthesis.lower())
         synthesis_hits = sum([bool(has_weather), bool(has_flight), bool(has_hotel), bool(has_stock), bool(has_currency), bool(has_email)])
         earned = round((synthesis_hits / 6.0) * 4.0, 1)
         rubric.add_criterion("Synthesis / final response", 4.0, earned)

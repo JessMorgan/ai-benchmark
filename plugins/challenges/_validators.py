@@ -191,42 +191,106 @@ def section_map(text: str) -> dict[str, str]:
     return dict(heading_occurrences(text))
 
 
-def validate_sections(text: str, required: list[str], *, min_chars: int = 20) -> Validation:
-    """Require each named section to contain substantive content."""
+def validate_sections(
+    text: str,
+    required: list[str],
+    *,
+    min_chars: int = 20,
+    aliases: dict[str, tuple[str, ...]] | None = None,
+) -> Validation:
+    """Require each named section to contain substantive content.
+
+    ``aliases`` lets a document use an equivalent heading without turning the
+    evaluator into a fixed-vocabulary test. The canonical heading remains in
+    diagnostics so reports retain a stable rubric name.
+    """
     sections = section_map(text)
+    aliases = aliases or {}
     missing = []
     evidence = []
     for heading in required:
-        normalized = heading.lower()
-        content = next((body for key, body in sections.items() if normalized in key), "")
+        candidates = (heading, *aliases.get(heading, ()))
+        matched_key = next(
+            (
+                key
+                for key in sections
+                if any(candidate.lower() in key for candidate in candidates)
+            ),
+            None,
+        )
+        content = sections.get(matched_key, "") if matched_key is not None else ""
         if len(content.strip()) < min_chars:
             missing.append(f"section {heading!r} is missing or too short")
         else:
-            evidence.append({"kind": "section", "heading": heading, "chars": len(content)})
+            matched_heading = next(
+                candidate for candidate in candidates if candidate.lower() in matched_key
+            )
+            evidence.append({
+                "kind": "section",
+                "heading": heading,
+                "matched_heading": matched_heading,
+                "chars": len(content),
+            })
     return Validation(not missing, evidence=evidence, errors=missing, value=sections)
 
 
 def parse_workflow_graph(text: str) -> Validation:
-    """Parse task IDs and dependency tags, rejecting cycles/references."""
-    all_matches = list(re.finditer(r"\b(?:task|step)[ _-]?(\d+)\b", text, re.IGNORECASE))
-    referenced_positions = set()
-    for reference in re.finditer(r"\[DEPENDS_ON\s*:\s*(?:task|step)?[_ -]?(\d+)\]", text, re.IGNORECASE):
-        referenced_positions.update(
-            match.start() for match in all_matches
-            if reference.start() <= match.start() < reference.end()
-        )
-    task_ids = {
-        match.group(1) for match in all_matches if match.start() not in referenced_positions
-    }
-    edges = []
-    for match in re.finditer(r"\[DEPENDS_ON\s*:\s*(?:task|step)?[_ -]?(\d+)\]", text, re.IGNORECASE):
-        before = text[:match.start()]
-        current = re.findall(r"\b(?:task|step)[ _-]?(\d+)\b", before, re.IGNORECASE)
+    """Parse explicit, Mermaid, and plain-language workflow dependencies."""
+    task_pattern = r"\b(?:task|step)[ _-]?(\d+)\b"
+    bracket_pattern = r"\[DEPENDS_ON\s*:\s*(?:task|step)?[_ -]?(\d+)\]"
+    all_matches = list(re.finditer(task_pattern, text, re.IGNORECASE))
+    edges: list[tuple[str, str]] = []
+    referenced_positions: set[int] = set()
+
+    # The benchmark's original notation means "this task depends on X".
+    # Bind each tag to the nearest declared task, never to a task ID inside a
+    # preceding dependency reference. This matters when compact plans put
+    # several dependency tags on one line.
+    bracket_matches = list(re.finditer(bracket_pattern, text, re.IGNORECASE))
+    for dependency in bracket_matches:
+        current = [
+            item.group(1)
+            for item in all_matches
+            if item.start() < dependency.start()
+            and not any(
+                reference.start() <= item.start() < reference.end()
+                for reference in bracket_matches
+            )
+        ]
         if current:
-            edges.append((current[-1], match.group(1)))
+            edges.append((current[-1], dependency.group(1)))
+        referenced_positions.update(
+            item.start()
+            for item in all_matches
+            if dependency.start() <= item.start() < dependency.end()
+        )
+
+    # Accept common graph renderings without making bracket tags mandatory.
+    for match in re.finditer(
+        r"(?:task|step)[ _-]?(\d+)\s*-->?\s*(?:task|step)[ _-]?(\d+)",
+        text,
+        re.IGNORECASE,
+    ):
+        edges.append((match.group(1), match.group(2)))
+
+    # Plain prose such as "Task 3 depends on Step 1" is equally explicit.
+    for match in re.finditer(
+        r"(?:task|step)[ _-]?(\d+)\s+(?:depends on|requires|after)\s+"
+        r"(?:task|step)[ _-]?(\d+)",
+        text,
+        re.IGNORECASE,
+    ):
+        edges.append((match.group(1), match.group(2)))
+
+    task_ids = {
+        match.group(1)
+        for match in all_matches
+        if match.start() not in referenced_positions
+    }
+    edges = list(dict.fromkeys(edges))
     errors = []
     for source, target in edges:
-        if target not in task_ids:
+        if source not in task_ids or target not in task_ids:
             errors.append(f"dependency references unknown task {target}")
     adjacency: dict[str, set[str]] = {task_id: set() for task_id in task_ids}
     for source, target in edges:
@@ -250,20 +314,22 @@ def parse_workflow_graph(text: str) -> Validation:
         visit(task_id)
     labels_by_task: dict[str, set[str]] = {}
     for line in text.splitlines():
-        task_match = re.search(r"\b(?:task|step)[ _-]?(\d+)\b", line, re.IGNORECASE)
+        task_match = re.search(task_pattern, line, re.IGNORECASE)
         if task_match:
             labels = labels_by_task.setdefault(task_match.group(1), set())
-            if re.search(r"\[PARALLEL\]", line, re.IGNORECASE):
+            if re.search(r"(?:\[\s*)?parallel\b", line, re.IGNORECASE):
                 labels.add("parallel")
-            if re.search(r"\[SEQUENTIAL\]", line, re.IGNORECASE):
+            if re.search(r"(?:\[\s*)?sequential\b", line, re.IGNORECASE):
                 labels.add("sequential")
     if any(labels == {"parallel", "sequential"} for labels in labels_by_task.values()):
         errors.append("a task is labeled both parallel and sequential")
     if not edges:
         errors.append("no dependency edges found")
+    if len(task_ids) < 2:
+        errors.append("fewer than two task IDs found")
     return Validation(
-        not errors and len(task_ids) >= 2,
+        not errors,
         evidence=[{"kind": "workflow-graph", "tasks": sorted(task_ids), "edges": edges}],
-        errors=errors or ([] if len(task_ids) >= 2 else ["fewer than two task IDs found"]),
+        errors=errors,
         value={"tasks": task_ids, "edges": edges},
     )

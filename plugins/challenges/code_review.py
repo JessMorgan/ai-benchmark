@@ -13,8 +13,7 @@ class CodeReviewPlugin(BenchmarkTaskPlugin):
         return "code-review"
 
     @property
-    def version(self):
-        return "0.7.0"
+    def version(self):        return "0.8.0"
 
     @property
     def name(self):
@@ -69,7 +68,15 @@ class CodeReviewPlugin(BenchmarkTaskPlugin):
                 data = json.loads(response_text[start : end + 1])
                 issues = data.get("issues", [])
                 if isinstance(issues, list):
-                    return [str(issue.get("description", "")).lower() for issue in issues]
+                    descriptions = []
+                    for issue in issues:
+                        if isinstance(issue, dict):
+                            description = issue.get("description") or issue.get("finding") or issue.get("issue")
+                        else:
+                            description = issue
+                        if description:
+                            descriptions.append(str(description).lower())
+                    return descriptions
             except json.JSONDecodeError:
                 pass
 
@@ -88,41 +95,77 @@ class CodeReviewPlugin(BenchmarkTaskPlugin):
             return EvaluationResult(0.0, [])
 
         combined = " ".join(descriptions)
+        source_text = self.get_prompt().lower()
         rubric = Rubric(self.max_score)
         rubric.record_validation(structured_validation)
 
-        rubric.eval_regex(
+        resource_evidence = re.search(
+            r"\b(?:open\(|\.close\(|context\s+manager|with\s+open|file\s+handle|finally)\b",
+            combined,
+        ) or (
+            re.search(r"\b(?:resource\s+leak|descriptor)\b", combined)
+            if re.search(r"\b(?:file|f\.write|db_path|handle)\b", combined)
+            else None
+        )
+        rubric.add_criterion(
             "File handle not closed / resource leak",
             3.0,
-            combined,
-            [(r"\b(open\(|\.close\(\)|context\s+manager|with\s+open|file\s+handle)\b", 3.0)],
+            3.0 if resource_evidence else 0.0,
+            evidence=[{"kind": "review-evidence", "span": resource_evidence.group(0)}]
+            if resource_evidence else [],
         )
 
-        rubric.eval_regex(
-            "== None instead of is None",
-            2.0,
+        none_evidence = re.search(
+            r"\b(==\s*none|\bis\s+none|identity\s+comparison|none\s+comparison|null\s+comparison)\b",
             combined,
-            [(r"\b(==\s*none|\bis\s+none)\b", 2.0)],
         )
+        if none_evidence:
+            rubric.add_criterion(
+                "== None instead of is None",
+                2.0,
+                2.0,
+                evidence=[{"kind": "regex", "span": none_evidence.group(0)}],
+            )
+        elif re.search(r"\b(?:none|null)\b", source_text) and (
+            re.search(r"\b(?:identity|equality|comparison|is\s+none|none\s+check)\b", combined)
+        ):
+            rubric.add_criterion(
+                "== None instead of is None",
+                2.0,
+                2.0,
+                evidence=[{"kind": "semantic-alias", "span": combined[:240]}],
+            )
+        else:
+            rubric.add_criterion("== None instead of is None", 2.0, 0.0)
 
-        rubric.eval_regex(
+        path_evidence = re.search(r"\b(?:/tmp/data\.txt|tmp/data|db_path)\b", combined) or (
+            re.search(r"\b(?:hardcoded\s+path|absolute\s+path|configur(?:e|able)\s+path)\b", combined)
+            if re.search(r"\b(?:path|filename|file)\b", combined)
+            else None
+        )
+        rubric.add_criterion(
             "Hardcoded /tmp path",
             2.0,
-            combined,
-            [(r"\b(/tmp/data\.txt|tmp/data|db_path)\b", 2.0)],
+            2.0 if path_evidence else 0.0,
+            evidence=[{"kind": "review-evidence", "span": path_evidence.group(0)}]
+            if path_evidence else [],
         )
 
         earned = 0.0
         has_fetch_data = re.search(r"\bfetch_data\b", combined)
-        has_error_handling = re.search(r"\b(try|except|error\s+handling|may\s+raise|could\s+fail|exception)\b", combined)
-        if has_fetch_data and has_error_handling:
+        has_error_handling = re.search(r"\b(try|except|error\s+handling|may\s+raise|could\s+fail|exception|external\s+call|network\s+failure|failure\s+handling|defensive)\b", combined)
+        if (has_fetch_data and has_error_handling) or (
+            has_error_handling
+            and re.search(r"\b(?:external\s+call|network\s+failure|defensive|failure\s+handling)\b", combined)
+            and re.search(r"\b(?:data|provider|request|fetch|user_id)\b", combined)
+        ):
             earned = 3.0
         rubric.add_criterion("Missing error handling / fetch_data may fail", 3.0, earned)
 
         earned = 0.0
-        has_unused = re.search(r"\b(unused\s+import|not\s+used|remove\s+(?:the\s+)?import)\b", combined)
-        has_modules = re.search(r"\b(import\s+os|import\s+time|\bos\b|\btime\b)\b", combined)
-        if has_unused and has_modules:
+        has_unused = re.search(r"\b(unused\s+import|unused\s+module|not\s+used|remove\s+(?:the\s+)?import|dead\s+import|unnecessary\s+import)\b", combined)
+        mentions_relevant_import = re.search(r"\b(?:os|time)\b", combined)
+        if has_unused and mentions_relevant_import:
             earned = 2.0
         rubric.add_criterion("Unused imports", 2.0, earned)
 
@@ -130,10 +173,10 @@ class CodeReviewPlugin(BenchmarkTaskPlugin):
             "Actionable / concrete fix",
             3.0,
             combined,
-            [(r"\b(use\s+(?:a\s+)?context\s+manager|with\s+open|remove\s+(?:the\s+)?import|is\s+none|try:|except|parameterize)\b", 3.0)],
+            [(r"\b(use\s+(?:a\s+)?context\s+manager|with\s+open|close\s+the\s+file|remove\s+(?:the\s+)?import|is\s+none|compare\s+to\s+none|try:|except|parameterize|validate|sanitize|inject)\b", 3.0)],
         )
 
-        if not any(re.search(r"\b(?:close|context\s+manager|is\s+none|try|except)\b", description) for description in descriptions):
+        if not re.search(r"\b(?:close|context\s+manager|is\s+none|try|except|finally|validate|sanitize|defensive|parameterize|inject)\b", combined):
             rubric.penalize_criterion(
                 "Actionable / concrete fix", 1.0,
                 "findings contain no actionable remediation language",

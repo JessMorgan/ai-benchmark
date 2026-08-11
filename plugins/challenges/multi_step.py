@@ -13,8 +13,7 @@ class MultiStepPlugin(BenchmarkTaskPlugin):
         return "multi-step"
 
     @property
-    def version(self):
-        return "0.8.0"
+    def version(self):        return "0.9.0"
 
     @property
     def name(self):
@@ -89,9 +88,11 @@ class MultiStepPlugin(BenchmarkTaskPlugin):
             earned += 1.0
         elif re.search(r"def\s+validate_name\s*\(\s*name\s*\)", t):
             earned += 0.5
-        if re.search(r"len\(\s*name\s*\)\s*<=?\s*50", t):
+        if re.search(r"len\(\s*(?:name|name\.strip\(\))\s*\)\s*(?:<=?\s*50|<\s*51)", t):
             earned += 1.5
-        if re.search(r"name\s*\.\s*(isalpha|isalnum)\s*\(\)", t):
+        if re.search(r"name\s*\.\s*(isalpha|isalnum)\s*\(\)", t) or re.search(
+            r"name\s*\.\s*replace\s*\([^\n]{0,40}\)\s*\.\s*isalpha\s*\(\)", t,
+        ) or re.search(r"all\s*\([^\n]*(?:isalpha|is\s+alpha)[^\n]*for\s+\w+\s+in\s+name", t, re.IGNORECASE):
             earned += 1.5
         if re.search(r"return\s+(True|False)", t):
             earned += 1.0
@@ -126,20 +127,8 @@ class MultiStepPlugin(BenchmarkTaskPlugin):
         if re.search(r"if\s+__name__\s*==\s*['\"]__main__['\"]", t):
             earned -= 1.0
         code_blocks = re.findall(r"```[\s\S]*?```", t)
-        if len(code_blocks) < 3:
-            earned -= 1.0
-        earned = round(max(earned, 0.0), 1)
-        rubric.add_criterion("No extra prose/main block", 2.0, earned)
-        if re.search(r"(?m)^\s*if\s+__name__\s*==", t):
-            rubric.penalize_criterion("No extra prose/main block", 1.0, "response includes a forbidden main block")
-        if python_validation.valid and stub_definitions(
-                python_validation.value,
-                {"greet_user", "validate_name", "format_greeting"},
-        ):
-            rubric.penalize_criterion("No extra prose/main block", 0.5, "response contains a required-function stub")
-
-        source = extract_python_source(t)
-        if source:
+        execution_results = []
+        if source := extract_python_source(t):
             checks = (
                 (
                     "greet_user function",
@@ -162,14 +151,38 @@ class MultiStepPlugin(BenchmarkTaskPlugin):
                     ),
                 ),
             )
-            for criterion, harness in checks:
-                execution = run_python_check(source, harness)
+            execution_results = [run_python_check(source, harness) for _, harness in checks]
+        if (
+            len(code_blocks) < 3 and not execution_results
+        ) or any(
+            result.status in {"failed", "timeout"}
+            for result in execution_results
+        ):
+            earned -= 1.0
+        earned = round(max(earned, 0.0), 1)
+        rubric.add_criterion("No extra prose/main block", 2.0, earned)
+        if re.search(r"(?m)^\s*if\s+__name__\s*==", t):
+            rubric.penalize_criterion("No extra prose/main block", 1.0, "response includes a forbidden main block")
+        if python_validation.valid and stub_definitions(
+                python_validation.value,
+                {"greet_user", "validate_name", "format_greeting"},
+        ):
+            rubric.penalize_criterion("No extra prose/main block", 0.5, "response contains a required-function stub")
+
+        if source:
+            for (criterion, _harness), execution in zip(checks, execution_results):
                 rubric.record_execution(
                     execution,
                     criterion=criterion,
                     penalty=1.0,
                     failure_reason=f"isolated {criterion} harness failed",
                 )
+                if execution.status == "passed":
+                    rubric.credit_criterion(
+                        criterion,
+                        1.0,
+                        "isolated harness passed",
+                    )
 
         return rubric.results()
 

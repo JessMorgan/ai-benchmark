@@ -66,6 +66,34 @@ class Rubric:
             matched=bool(evidence),
         )
 
+    def credit_criterion(self, name: str, points: float, evidence=None) -> None:
+        """Add bounded credit when a stronger validator proves a criterion.
+
+        This is useful when execution or typed validation establishes
+        correctness that a lexical sub-check could not recognize. The total
+        remains clamped to the criterion maximum, and the diagnostic record
+        explains why the credit was added.
+        """
+        for criterion in reversed(self.criteria):
+            if criterion["name"] != name:
+                continue
+            credit = min(
+                max(0.0, points),
+                max(0.0, criterion["max"] - criterion["earned"]),
+            )
+            if credit:
+                criterion["earned"] = round(criterion["earned"] + credit, 1)
+                criterion["missed"] = round(criterion["max"] - criterion["earned"], 1)
+                criterion.setdefault("evidence", []).append({
+                    "kind": "validator-credit",
+                    "points": credit,
+                    "evidence": evidence,
+                })
+                criterion["matched"] = True
+                self.total += credit
+            return
+        self.errors.append(f"cannot credit unknown criterion {name!r}")
+
     def penalize_criterion(self, name: str, points: float, finding: str) -> None:
         """Apply a bounded negative finding to an existing criterion."""
         for criterion in reversed(self.criteria):

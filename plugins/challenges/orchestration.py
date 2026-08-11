@@ -12,8 +12,7 @@ class OrchestrationPlugin(BenchmarkTaskPlugin):
         return "orchestration"
 
     @property
-    def version(self):
-        return "0.7.0"
+    def version(self):        return "0.8.0"
 
     @property
     def name(self):
@@ -63,7 +62,7 @@ class OrchestrationPlugin(BenchmarkTaskPlugin):
         rubric.add_criterion("Task breakdown presence", 4.0, earned)
 
         earned = 0.0
-        if graph_validation.valid or re.search(r'\[DEPENDS_ON[^\]]*\]', t):
+        if graph_validation.valid or re.search(r'(?:\[DEPENDS_ON[^\]]*\]|\bdepends\s+on\b|\b(?:task|step)[ _-]?\d+\s*-->?\s*(?:task|step)[ _-]?\d+)', t, re.IGNORECASE):
             earned = 4.0 if graph_validation.valid else 2.0
         elif re.search(r'depends on', t, re.IGNORECASE):
             earned = 2.0
@@ -94,7 +93,7 @@ class OrchestrationPlugin(BenchmarkTaskPlugin):
                     "workflow graph contains an invalid dependency or contradiction",
                 )
         contradictory_tasks = re.findall(
-            r"(?is)(?:task|step)\s*\d+[^\n]*(?:\[PARALLEL\])[^\n]*(?:\[SEQUENTIAL\])",
+            r"(?is)(?:task|step)\s*\d+[^\n]*(?:\[?PARALLEL\]?|\bparallel\b)[^\n]*(?:\[?SEQUENTIAL\]?|\bsequential\b)",
             t,
         )
         if contradictory_tasks:
