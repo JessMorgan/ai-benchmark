@@ -161,6 +161,12 @@ class JudgeResult:
     rationale: str | None = None
     error: str | None = None
     response_text: str | None = None
+    terminal_429: bool = False
+
+
+def _is_exhausted_429(error):
+    """Return whether an HTTP error is an exhausted rate-limit response."""
+    return isinstance(error, str) and error.lstrip().startswith("HTTP 429:")
 
 
 def build_judge_prompt(plugin, original_prompt, response_text):
@@ -308,6 +314,25 @@ def publish_judge_sidecars(judge_input_dir, target, runner, plugins, callback):
             callback(sidecar, target, runner, plugin.id)
 
 
+def is_successful_judge_vote(vote):
+    """Return whether a persisted judge vote contains usable judgment data.
+
+    Failed/empty attempts may be retained for diagnostics and resume, but they
+    must never count toward judge completion or consensus. The parser normally
+    guarantees these fields; keeping the predicate here also protects resume
+    state assembled by older runs.
+    """
+    return (
+        isinstance(vote, dict)
+        and isinstance(vote.get("score"), (int, float))
+        and not isinstance(vote.get("score"), bool)
+        and vote.get("confidence") in JUDGE_CONFIDENCE_WEIGHTS
+        and isinstance(vote.get("rationale"), str)
+        and bool(vote["rationale"].strip())
+        and not vote.get("error")
+    )
+
+
 def confidence_weighted_consensus(votes):
     """Combine valid judge votes using confidence weights.
 
@@ -317,10 +342,7 @@ def confidence_weighted_consensus(votes):
     """
     valid = [
         vote for vote in votes
-        if isinstance(vote, dict)
-        and isinstance(vote.get("score"), (int, float))
-        and not isinstance(vote.get("score"), bool)
-        and vote.get("confidence") in JUDGE_CONFIDENCE_WEIGHTS
+        if is_successful_judge_vote(vote)
     ]
     if not valid:
         return {"score": None, "confidence": None, "rationale": None, "error": "no valid judge votes"}
@@ -360,7 +382,14 @@ def judge_response(source_config, judge_source, judge_api_model, sidecar,
             stop_event=stop_event,
         )
         if response.error:
-            return JudgeResult(error=response.error)
+            # Transport failures, including exhausted HTTP 429 retries, are
+            # terminal for this cell attempt. Do not spend the parser retry on
+            # a response body that cannot contain a usable judgment; the
+            # scheduler records the failed attempt and resume can retry it.
+            return JudgeResult(
+                error=response.error,
+                terminal_429=_is_exhausted_429(response.error),
+            )
         parsed = parse_judge_response(response.text)
         if parsed.error is None:
             return JudgeResult(

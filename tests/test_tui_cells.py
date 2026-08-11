@@ -443,7 +443,7 @@ class TestPluginCellBlock(unittest.TestCase):
             "rate-limiter_score": 95,
             "judge_models": ["judge-a", "judge-b"],
             "rate-limiter_judge_votes": [
-                {"model": "judge-a", "score": 90},
+                {"model": "judge-a", "score": 90, "confidence": "high", "rationale": "valid"},
             ],
             "rate-limiter_judge_complete": False,
         }
@@ -467,14 +467,70 @@ class TestPluginCellBlock(unittest.TestCase):
         self.assertNotIn("⚖️", block)
         self.assertNotIn("✅", block)
 
+    def test_failed_judge_shows_red_x_and_failure_count(self):
+        s = {
+            "running_pids": [],
+            "rate-limiter_score": 95,
+            "judge_models": ["judge-a", "judge-b", "judge-c"],
+            "rate-limiter_judge_votes": [
+                {
+                    "model": "judge-a", "score": 90, "confidence": "high",
+                    "rationale": "valid",
+                },
+                {
+                    "model": "judge-b", "score": None, "confidence": None,
+                    "rationale": None, "error": "HTTP 429: rate limited",
+                },
+            ],
+        }
+        block = ai_benchmark._plugin_cell_block(
+            "rate-limiter", s, self.p_streaming, None)
+        self.assertIn("95 ⚖️ 1 ❌ 1", block)
+
+    def test_duplicate_failed_votes_count_once(self):
+        s = {
+            "running_pids": [],
+            "rate-limiter_score": 95,
+            "judge_models": ["judge-a", "judge-b"],
+            "rate-limiter_judge_votes": [
+                {"model": "judge-a", "score": None, "error": "timeout"},
+                {"model": "judge-a", "score": None, "error": "HTTP 429: rate limited"},
+            ],
+        }
+        block = ai_benchmark._plugin_cell_block(
+            "rate-limiter", s, self.p_streaming, None)
+        self.assertIn("95 ❌ 1", block)
+        self.assertNotIn("❌ 2", block)
+
+    def test_failed_judges_do_not_count_as_completed(self):
+        s = {
+            "running_pids": [],
+            "rate-limiter_score": 95,
+            "judge_models": ["judge-a", "judge-b"],
+            "rate-limiter_judge_votes": [
+                {
+                    "model": "judge-a", "score": None, "confidence": None,
+                    "rationale": None, "error": "timeout",
+                },
+                {
+                    "model": "judge-b", "score": None, "confidence": None,
+                    "rationale": None, "error": "HTTP 429: rate limited",
+                },
+            ],
+        }
+        block = ai_benchmark._plugin_cell_block(
+            "rate-limiter", s, self.p_streaming, None)
+        self.assertIn("95 ❌ 2", block)
+        self.assertNotIn("✅", block)
+
     def test_two_judges_show_two_marker(self):
         s = {
             "running_pids": [],
             "rate-limiter_score": 95,
             "judge_models": ["judge-a", "judge-b", "judge-c"],
             "rate-limiter_judge_votes": [
-                {"model": "judge-a", "score": 90},
-                {"model": "judge-b", "score": 92},
+                {"model": "judge-a", "score": 90, "confidence": "high", "rationale": "valid"},
+                {"model": "judge-b", "score": 92, "confidence": "high", "rationale": "valid"},
             ],
         }
         block = ai_benchmark._plugin_cell_block(
@@ -493,8 +549,8 @@ class TestPluginCellBlock(unittest.TestCase):
             "rate-limiter_score": 87,
             "judge_models": ["judge-a", "judge-b", "judge-c"],
             "rate-limiter_judge_votes": [
-                {"model": "judge-a", "score": 90},
-                {"model": "judge-b", "score": 92},
+                {"model": "judge-a", "score": 90, "confidence": "high", "rationale": "valid"},
+                {"model": "judge-b", "score": 92, "confidence": "high", "rationale": "valid"},
             ],
             "rate-limiter_total_tokens": 0,
             "rate-limiter_response_time": 2.0,
@@ -513,9 +569,9 @@ class TestPluginCellBlock(unittest.TestCase):
             "rate-limiter_score": 95,
             "judge_models": ["judge-a", "judge-b", "judge-c"],
             "rate-limiter_judge_votes": [
-                {"model": "judge-a", "score": 90},
-                {"model": "judge-b", "score": 92},
-                {"model": "judge-c", "score": 94},
+                {"model": "judge-a", "score": 90, "confidence": "high", "rationale": "valid"},
+                {"model": "judge-b", "score": 92, "confidence": "high", "rationale": "valid"},
+                {"model": "judge-c", "score": 94, "confidence": "high", "rationale": "valid"},
             ],
         }
         block = ai_benchmark._plugin_cell_block(
@@ -529,7 +585,10 @@ class TestPluginCellBlock(unittest.TestCase):
             "running_pids": [],
             "rate-limiter_score": 95,
             "judge_models": ["judge-a"],
-            "rate-limiter_judge_votes": [{"model": "judge-a", "score": 90}],
+            "rate-limiter_judge_votes": [{
+                "model": "judge-a", "score": 90, "confidence": "high",
+                "rationale": "valid",
+            }],
             "rate-limiter_judge_complete": True,
             "rate-limiter_output_tokens": 100,
             "rate-limiter_response_time": 2.0,

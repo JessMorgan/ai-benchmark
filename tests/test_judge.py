@@ -31,6 +31,21 @@ class FakePlugin:
 
 
 class TestJudgeCore(unittest.TestCase):
+    def test_failed_votes_are_excluded_from_consensus(self):
+        result = confidence_weighted_consensus([
+            {"score": 90, "confidence": "high", "rationale": "usable"},
+            {"score": None, "confidence": None, "rationale": None, "error": "429"},
+        ])
+        self.assertEqual(result["score"], 90)
+        self.assertIsNone(result["error"])
+
+    def test_malformed_vote_is_not_a_successful_judgment(self):
+        result = confidence_weighted_consensus([
+            {"model": "judge", "score": 90, "confidence": "high"},
+        ])
+        self.assertIsNone(result["score"])
+        self.assertEqual(result["error"], "no valid judge votes")
+
     def test_confidence_weighted_consensus(self):
         result = confidence_weighted_consensus([
             {"score": 90, "confidence": "high", "rationale": "strong"},
@@ -86,6 +101,20 @@ class TestJudgeCore(unittest.TestCase):
                 metadata = json.load(handle)
             self.assertEqual(metadata["status"], "error")
             self.assertFalse(metadata["response_present"])
+
+    def test_judge_response_429_transport_error_is_terminal(self):
+        response = mock.Mock(error="HTTP 429: rate limited", text="")
+        with tempfile.TemporaryDirectory() as tmp:
+            sidecar = f"{tmp}/input.json"
+            prepare_judge_sidecar(
+                sidecar, FakePlugin(), "Prompt", "Response",
+                target="model", runner="http",
+            )
+            with mock.patch("benchmark.core.nonstream_request", return_value=response) as request:
+                result = judge_response({}, "Local", "judge", sidecar, timeout=3)
+        self.assertEqual(result.error, "HTTP 429: rate limited")
+        self.assertTrue(result.terminal_429)
+        request.assert_called_once()
 
     def test_judge_response_transport_error_has_no_response_text(self):
         response = mock.Mock(error="timeout", text="")
@@ -209,6 +238,7 @@ class TestJudgeResumeDiscovery(unittest.TestCase):
                 "status": "error", "fake_score": 80,
                 "fake_judge_votes": [{
                     "model": "judge-a", "score": 90, "confidence": "high",
+                    "rationale": "valid",
                 }],
             })
             state.update("model", status="failed")
@@ -217,6 +247,30 @@ class TestJudgeResumeDiscovery(unittest.TestCase):
                 {"fake"}, ["judge-a", "judge-b"],
             )
             self.assertEqual(len(only_b), 1)
+
+    def test_failed_judge_vote_remains_eligible_for_retry(self):
+        """A failed attempt does not satisfy that judge's cell."""
+        with tempfile.TemporaryDirectory() as tmp:
+            sidecar = f"{tmp}/http/model/fake.json"
+            prepare_judge_sidecar(
+                sidecar, FakePlugin(), "Prompt", "Response",
+                target="model", runner="http", state_key="model",
+            )
+            state = BenchmarkState({"model": "Local"}, ["fake"])
+            state.add_result({
+                "model": "model", "state_key": "model", "runner": "http",
+                "status": "ok", "fake_score": 80,
+                "fake_judge_votes": [{
+                    "model": "judge", "score": None, "confidence": None,
+                    "rationale": None, "error": "timeout",
+                }],
+            })
+            state.update("model", status="completed")
+            eligible = cli._eligible_judge_sidecars(
+                tmp, {"model": {"source": "Local"}}, state,
+                {"fake"}, ["judge"],
+            )
+            self.assertEqual(len(eligible), 1)
 
     def test_retained_sidecar_is_not_eligible_after_all_judges_complete(self):
         """Startup discovery does not requeue a fully judged retained result."""
@@ -232,6 +286,7 @@ class TestJudgeResumeDiscovery(unittest.TestCase):
                 "status": "ok", "fake_score": 80,
                 "fake_judge_votes": [{
                     "model": "judge", "score": 90, "confidence": "high",
+                    "rationale": "valid",
                 }],
                 "fake_judge_complete": True,
             })

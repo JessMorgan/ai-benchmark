@@ -34,6 +34,7 @@ from benchmark.core import (
     dump_default_config,
     generate_config_from_api,
     get_target_plugins_blacklist,
+    is_successful_judge_vote,
     judge_response,
     load_config,
     parse_plugin_temperatures,
@@ -197,7 +198,8 @@ def _eligible_judge_sidecars(judge_input_dir, targets, state, active_plugin_ids,
         info_votes = info.get(f"{plugin_id}_judge_votes", []) or []
         votes = [*result_votes, *info_votes]
         judged_models = {
-            vote.get("model") for vote in votes if isinstance(vote, dict)
+            vote.get("model") for vote in votes
+            if is_successful_judge_vote(vote)
         }
         # Do not trust a stale aggregate completion flag by itself: the
         # configured judge set is authoritative, and a missing judge remains
@@ -666,15 +668,27 @@ def _judge_models(state):
 
 
 def _judge_votes(state, pid):
-    """Return configured judge identities that have completed one plugin."""
+    """Return configured judge identities with successful usable votes."""
     configured = _judge_models(state)
     if not configured:
         return set()
     return {
         vote.get("model")
         for vote in (state.get(f"{pid}_judge_votes") or [])
-        if isinstance(vote, dict) and vote.get("model") in configured
+        if is_successful_judge_vote(vote) and vote.get("model") in configured
     }
+
+
+def _judge_failed_count(pid, state):
+    """Return distinct configured judges with failed attempts."""
+    configured = _judge_models(state)
+    return len({
+        vote.get("model")
+        for vote in (state.get(f"{pid}_judge_votes") or [])
+        if isinstance(vote, dict)
+        and vote.get("model") in configured
+        and not is_successful_judge_vote(vote)
+    })
 
 
 def _judge_score_marker(pid, state):
@@ -693,10 +707,16 @@ def _judge_score_marker(pid, state):
     if not configured:
         return ""
     judged_models = _judge_votes(state, pid)
+    failed_count = _judge_failed_count(pid, state)
     if configured.issubset(judged_models):
         return " ✅"
     if judged_models:
-        return f" {_JUDGE_SCALES} {len(judged_models)}"
+        marker = f" {_JUDGE_SCALES} {len(judged_models)}"
+        if failed_count:
+            marker += f" ❌ {failed_count}"
+        return marker
+    if failed_count:
+        return f" ❌ {failed_count}"
     return ""
 
 
@@ -1576,6 +1596,29 @@ def _configure_judge_source(benchmark_limits, source, full_limit,
     elif full_limit > 1:
         benchmark_limits[source] = max(1, full_limit - 1)
         pool.start(1)
+
+
+class _CombinedStopEvent:
+    """Expose several cancellation events through the Event interface."""
+
+    def __init__(self, *events):
+        self._events = tuple(events)
+
+    def is_set(self):
+        return any(event.is_set() for event in self._events)
+
+    def wait(self, timeout=None):
+        if timeout is None:
+            while not self.is_set():
+                time.sleep(0.1)
+            return True
+        deadline = time.monotonic() + timeout
+        while not self.is_set():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return self.is_set()
+            time.sleep(min(0.1, remaining))
+        return True
 
 
 class SourceJudgeWorkerPool:
@@ -2557,12 +2600,20 @@ def main():  # pragma: no cover - live benchmark orchestrator (no unit tests)
         judge_counts_lock = threading.Lock()
         judge_votes = {}
         judge_votes_lock = threading.Lock()
+        halted_judges = set()
+        halted_judges_lock = threading.Lock()
+        judge_stop_events = {model: threading.Event() for model in judge_models}
+        judge_request_stop_events = {
+            model: _CombinedStopEvent(stop_event, judge_stop_events[model])
+            for model in judge_models
+        }
         existing_judge_counts = {model: 0 for model in judge_models}
         for result in state.latest_results():
             for plugin in active_plugins:
                 votes = result.get(f"{plugin.id}_judge_votes", [])
                 judged_models = {
-                    vote.get("model") for vote in votes if isinstance(vote, dict)
+                    vote.get("model") for vote in votes
+                    if is_successful_judge_vote(vote)
                 }
                 for model in existing_judge_counts:
                     if model in judged_models:
@@ -2607,10 +2658,16 @@ def main():  # pragma: no cover - live benchmark orchestrator (no unit tests)
                 for vote in [*result_votes, *info_votes]
                 if isinstance(vote, dict) and vote.get("model")
             }
-            judged_models = set(votes_by_model)
+            judged_models = {
+                judge_name for judge_name, vote in votes_by_model.items()
+                if is_successful_judge_vote(vote)
+            }
             for judge_name in judge_models:
                 if judge_name in judged_models:
                     continue
+                with halted_judges_lock:
+                    if judge_name in halted_judges:
+                        continue
                 source = judge_sources[judge_name]
                 key = (os.path.abspath(sidecar), target_name, runner, plugin_id, judge_name)
                 with judge_seen_lock:
@@ -2628,6 +2685,10 @@ def main():  # pragma: no cover - live benchmark orchestrator (no unit tests)
         def process_judge_job(job):
             """Judge one sidecar with every configured judge and persist consensus."""
             sidecar, target_name, runner, plugin_id, judge_name = job
+            with halted_judges_lock:
+                if judge_name in halted_judges:
+                    state.increment_judge_progress(judge_name, expected=-1)
+                    return
             item = {}
             try:
                 with open(sidecar, encoding="utf-8") as handle:
@@ -2650,6 +2711,7 @@ def main():  # pragma: no cover - live benchmark orchestrator (no unit tests)
                 existing_votes = list(existing_by_model.values())
                 if any(
                     vote.get("model") == judge_name
+                    and is_successful_judge_vote(vote)
                     for vote in existing_votes
                     if isinstance(vote, dict)
                 ):
@@ -2670,7 +2732,7 @@ def main():  # pragma: no cover - live benchmark orchestrator (no unit tests)
                         temperature=judge_temperature,
                         drop_params=(raw_targets.get(judge_name, {}).get("drop_params", [])
                                      if isinstance(raw_targets.get(judge_name), dict) else []),
-                        stop_event=stop_event,
+                        stop_event=judge_request_stop_events[judge_name],
                         log_path=os.path.join(output_dir, f"judge-{judge_name}.log"),
                     )
                 finally:
@@ -2680,6 +2742,10 @@ def main():  # pragma: no cover - live benchmark orchestrator (no unit tests)
                             tokens=len(outcome.response_text) // 4,
                         )
                     state.finish_judge_activity(activity_id)
+                if outcome.terminal_429:
+                    with halted_judges_lock:
+                        halted_judges.add(judge_name)
+                    judge_stop_events[judge_name].set()
                 vote = {
                     "model": judge_name,
                     "score": outcome.score,
@@ -2711,6 +2777,7 @@ def main():  # pragma: no cover - live benchmark orchestrator (no unit tests)
                             "score": outcome.score,
                             "confidence": outcome.confidence,
                             "error": outcome.error,
+                            "terminal_429": outcome.terminal_429,
                             "rationale": outcome.rationale,
                             "saved_at": datetime.now(timezone.utc).isoformat(),
                         },
@@ -2729,9 +2796,18 @@ def main():  # pragma: no cover - live benchmark orchestrator (no unit tests)
                 consensus = confidence_weighted_consensus(votes)
                 expected_judges = set(judge_models)
                 received_judges = {
-                    vote.get("model") for vote in votes if isinstance(vote, dict)
+                    vote.get("model") for vote in votes
+                    if is_successful_judge_vote(vote)
                 }
-                all_judges_finished = expected_judges.issubset(received_judges)
+                failed_judges = {
+                    vote.get("model") for vote in votes
+                    if isinstance(vote, dict)
+                    and vote.get("model") in expected_judges
+                    and not is_successful_judge_vote(vote)
+                }
+                all_judges_finished = expected_judges.issubset(
+                    received_judges | failed_judges
+                )
                 judge_status = (
                     "failed" if all_judges_finished and consensus["error"]
                     and not any(vote.get("score") is not None for vote in votes)
@@ -2747,14 +2823,21 @@ def main():  # pragma: no cover - live benchmark orchestrator (no unit tests)
                     input_sha256=item.get("response_sha256"),
                     votes=votes,
                     status=judge_status,
-                    complete=all_judges_finished,
+                    complete=(
+                        all_judges_finished
+                        and expected_judges.issubset(received_judges)
+                    ),
                 )
-                state.increment_judge_progress(judge_name, completed=1)
+                # Progress counts completed usable judgments only. A failed
+                # attempt remains visible in votes/artifacts, but its judge is
+                # still eligible for a future resume retry.
+                if is_successful_judge_vote(vote):
+                    state.increment_judge_progress(judge_name, completed=1)
                 with judge_counts_lock:
-                    if consensus["error"]:
-                        run_info["judge_counts"]["failed"] += 1
-                    else:
+                    if is_successful_judge_vote(vote):
                         run_info["judge_counts"]["completed"] += 1
+                    else:
+                        run_info["judge_counts"]["failed"] += 1
                     run_info["judge_counts"]["votes"] += 1
                 with persistence_lock:
                     state.save_state(state_file, plugin_versions=plugin_versions)
@@ -2803,20 +2886,34 @@ def main():  # pragma: no cover - live benchmark orchestrator (no unit tests)
                     prior_votes = [v for v in prior_votes if v.get("model") != judge_name]
                     prior_votes.append(failure_vote)
                     judge_votes[vote_identity] = prior_votes
+                expected_judges = set(judge_models)
                 received_judges = {
-                    vote.get("model") for vote in prior_votes if isinstance(vote, dict)
+                    vote.get("model") for vote in prior_votes
+                    if is_successful_judge_vote(vote)
                 }
-                all_judges_finished = set(judge_models).issubset(received_judges)
+                failed_judges = {
+                    vote.get("model") for vote in prior_votes
+                    if isinstance(vote, dict)
+                    and vote.get("model") in expected_judges
+                    and not is_successful_judge_vote(vote)
+                }
+                all_judges_finished = expected_judges.issubset(
+                    received_judges | failed_judges
+                )
                 state.update_judge_result(
                     state_key, runner, plugin_id,
                     error=failure_vote["error"],
                     votes=prior_votes,
                     status="failed" if all_judges_finished else "running",
-                    complete=all_judges_finished,
+                    complete=(
+                        all_judges_finished
+                        and expected_judges.issubset(received_judges)
+                    ),
                 )
                 with judge_counts_lock:
                     run_info["judge_counts"]["failed"] += 1
-                state.increment_judge_progress(judge_name, completed=1)
+                # Failed attempts do not advance completed progress and remain
+                # eligible for retry on resume.
                 with persistence_lock:
                     state.save_state(state_file, plugin_versions=plugin_versions)
                     _save_outputs(state, output_dir, active_plugins)
