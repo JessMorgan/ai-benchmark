@@ -19,6 +19,13 @@ class TestBenchmarkState(unittest.TestCase):
         cls.plugins = discover_plugins()
         cls.plugin_ids = [p.id for p in cls.plugins]
 
+    def test_judge_progress_tracks_failed_attempts(self):
+        state = self.module.BenchmarkState({"model-a": "Source1"}, ["fake"])
+        state.set_judge_progress({"judge": {"completed": 2, "failed": 1, "expected": 3}})
+        progress = state.increment_judge_progress("judge", failed=1)
+        self.assertEqual(progress, {"completed": 2, "failed": 2, "expected": 3})
+        self.assertEqual(state.judge_progress_snapshot()["judge"]["failed"], 2)
+
     def test_state_tracks_plugin_fields(self):
         models = {"model-a": "Source1", "model-b": "Source2"}
         state = self.module.BenchmarkState(models, self.plugin_ids)

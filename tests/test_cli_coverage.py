@@ -177,12 +177,16 @@ class TestFormatModelRow(unittest.TestCase):
         state.update({
             "rate-limiter_score": 80,
             "judge_models": ["judge-a"],
-            "rate-limiter_judge_votes": [{"model": "judge-a", "score": 80}],
+            "rate-limiter_judge_votes": [{
+                "model": "judge-a", "score": 80, "confidence": "high",
+                "rationale": "valid",
+            }],
             "rate-limiter_judge_complete": True,
         })
         frozen, _ = cli._format_model_row(
-            "model-a", state, 7, [plugin], {"Local": "LC"})
-        self.assertIn("7✅", frozen)
+            "model-a", state, 7, [plugin], {"Local": "LC"},
+            active_judge_targets=set())
+        self.assertIn("✅", frozen)
 
     def test_model_number_column_keeps_following_columns_aligned(self):
         plugin = mock.MagicMock()
@@ -197,11 +201,17 @@ class TestFormatModelRow(unittest.TestCase):
             {
                 "judge_models": ["judge-a", "judge-b"],
                 "rate-limiter_judge_queued": True,
-                "rate-limiter_judge_votes": [{"model": "judge-a", "score": 80}],
+                "rate-limiter_judge_votes": [{
+                    "model": "judge-a", "score": 80, "confidence": "high",
+                    "rationale": "valid",
+                }],
             },
             {
                 "judge_models": ["judge-a"],
-                "rate-limiter_judge_votes": [{"model": "judge-a", "score": 80}],
+                "rate-limiter_judge_votes": [{
+                    "model": "judge-a", "score": 80, "confidence": "high",
+                    "rationale": "valid",
+                }],
             },
         ):
             state = {**base, **extra}
@@ -235,7 +245,10 @@ class TestFormatModelRow(unittest.TestCase):
             "rate-limiter_score": 80,
             "judge_models": ["judge-a", "judge-b"],
             "rate-limiter_judge_queued": True,
-            "rate-limiter_judge_votes": [{"model": "judge-a", "score": 80}],
+            "rate-limiter_judge_votes": [{
+                "model": "judge-a", "score": 80, "confidence": "high",
+                "rationale": "valid",
+            }],
             "rate-limiter_judge_complete": True,
         })
         frozen, plugin_str = cli._format_model_row(
@@ -516,8 +529,28 @@ class TestRenderFooterVariants(unittest.TestCase):
         )
         rendered = window.lines.get(39, "")
         self.assertIn("Judging", rendered)
-        self.assertIn("[Big Pickle: 4/17]", rendered)
-        self.assertIn("[gemini/gemini-2.5-flash-lite: 5/17]", rendered)
+        self.assertIn("[Big Pickle: 4✅0❌17Σ]", rendered)
+        self.assertIn("[gemini/gemini-2.5-flash-lite: 5✅0❌17Σ]", rendered)
+
+    def test_judge_progress_includes_failed_attempts(self):
+        window = _FakeWindow()
+        cli._render_footer(
+            window, 120, 40, [], [], 39,
+            judge_progress={"judge-model": {"completed": 4, "failed": 2, "expected": 17}},
+        )
+        rendered = window.lines.get(39, "")
+        self.assertIn("[judge-model: 4✅2❌17Σ]", rendered)
+
+    def test_resumed_judge_progress_keeps_failures_in_total(self):
+        """A resumed judge shows persisted successes/failures over the
+        persisted judgeable-cell total, rather than only new work."""
+        window = _FakeWindow()
+        cli._render_footer(
+            window, 120, 40, [], [], 39,
+            judge_progress={"judge-model": {"completed": 12, "failed": 3, "expected": 15}},
+        )
+        rendered = window.lines.get(39, "")
+        self.assertIn("[judge-model: 12✅3❌15Σ]", rendered)
 
 
 class TestFmtValueEdges(unittest.TestCase):
