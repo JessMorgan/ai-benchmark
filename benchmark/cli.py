@@ -700,9 +700,18 @@ def _judge_score_marker(pid, state):
     return ""
 
 
-def _model_judge_marker(state, active_plugins=None):
-    """Return the row-header marker for a model's aggregate judge state."""
+def _model_judge_marker(state, active_plugins=None, active_judge_targets=None,
+                        target_name=None):
+    """Return the row-header marker for a model's aggregate judge state.
+
+    The scales marker is transient: it is shown only while a judge request
+    currently targets this model. Queued work and historical/partial votes
+    belong in the per-score-cell markers, not in the row header. A completed
+    model retains the checkmark when all of its scored plugins have votes from
+    every configured judge.
+    """
     active_plugins = active_plugins or []
+    active_judge_targets = active_judge_targets or set()
     configured = _judge_models(state)
     if not configured:
         return ""
@@ -713,13 +722,10 @@ def _model_judge_marker(state, active_plugins=None):
     ]
     if not scored:
         return ""
+    if target_name in active_judge_targets:
+        return _JUDGE_SCALES
     if all(configured.issubset(_judge_votes(state, pid)) for pid in scored):
         return "✅"
-    if any(
-        state.get(f"{pid}_judge_queued") and _judge_votes(state, pid)
-        for pid in scored
-    ):
-        return _JUDGE_SCALES
     return ""
 
 
@@ -891,7 +897,7 @@ def _plugin_cell_block(pid, s, p, sleeping_lookup=None):
 
 
 def _format_model_row(name, s, display_idx, active_plugins, source_abbrevs,
-                      sleeping_lookup=None):
+                      sleeping_lookup=None, active_judge_targets=None):
     """Format a single model row into frozen and plugin strings.
 
     ``sleeping_lookup`` maps ``(source, api_model, pid)`` to sleep info
@@ -910,7 +916,14 @@ def _format_model_row(name, s, display_idx, active_plugins, source_abbrevs,
 
     src_ab = _source_abbr(source_abbrevs, s.get("source"))
     model_disp = name[:16]
-    judge_marker = _model_judge_marker(s, active_plugins)
+    # Activity uses the plain target name for both runners; OpenCode state
+    # rows carry a `` [opencode]`` suffix.
+    judge_marker = _model_judge_marker(
+        s,
+        active_plugins,
+        active_judge_targets,
+        name.removesuffix(" [opencode]"),
+    )
     model_number = _pad_display_width(
         f"{display_idx:>3}{judge_marker}", MODEL_NUMBER_COLUMN_WIDTH
     )
@@ -937,7 +950,7 @@ def _format_model_row(name, s, display_idx, active_plugins, source_abbrevs,
 
 def _render_model_rows(stdscr, max_x, max_y, snap_items, active_plugins, source_abbrevs,
                        scroll_y, scroll_x, visible_rows, frozen_width, model_top,
-                       sleeping_lookup):
+                       sleeping_lookup, active_judge_targets=None):
     """Render the scrollable model status table.
 
     ``sleeping_lookup`` maps ``(source_name, api_model, pid) -> sleep info``
@@ -956,6 +969,7 @@ def _render_model_rows(stdscr, max_x, max_y, snap_items, active_plugins, source_
         frozen, plugin_str = _format_model_row(
             name, s, display_idx, active_plugins, source_abbrevs,
             sleeping_lookup=sleeping_lookup,
+            active_judge_targets=active_judge_targets,
         )
         visible_plugin = _slice_display_width(
             plugin_str, scroll_x, max(0, max_x - frozen_width - 1)
@@ -1156,7 +1170,7 @@ def _render_live_activity(stdscr, max_x, max_y, snap, source_abbrevs, live_model
         if live_row >= log_top:
             break
         cells = " ".join(
-            f"[{activity['target']} {activity['plugin']} ({activity['elapsed']}s)]"
+            f"[{activity['target']} {activity['plugin']} {activity['elapsed']}s]"
             for activity in activities
         )
         _wr(
@@ -1361,10 +1375,14 @@ def tui_main(state, stop_event, num_sources, active_plugins, session_seed=None,
                     frozen_width, _display_width(plugin_hdr)
                 )
 
+                judge_activities = state.judge_activity_snapshot()
+                active_judge_targets = {
+                    activity["target"] for activity in judge_activities
+                }
                 _render_model_rows(
                     stdscr, max_x, max_y, snap_items, active_plugins, source_abbrevs,
                     scroll_y, scroll_x, VISIBLE_ROWS, frozen_width, MODEL_TOP,
-                    sleeping_lookup,
+                    sleeping_lookup, active_judge_targets,
                 )
 
                 if MODEL_BOTTOM >= 0:
@@ -1374,7 +1392,7 @@ def tui_main(state, stop_event, num_sources, active_plugins, session_seed=None,
                     stdscr, max_x, max_y, snap, source_abbrevs, running,
                     LIVE_TOP, LIVE_HEIGHT, LOG_TOP, active_plugins, sleeping_lookup,
                     preloading_models=preloading,
-                    judge_activities=state.judge_activity_snapshot(),
+                    judge_activities=judge_activities,
                 )
 
                 _render_recent_errors(stdscr, max_x, max_y, state, LOG_TOP, FOOTER_LINE)

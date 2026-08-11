@@ -239,7 +239,8 @@ class TestFormatModelRow(unittest.TestCase):
             "rate-limiter_judge_complete": True,
         })
         frozen, plugin_str = cli._format_model_row(
-            "model-a", state, 7, [plugin], {"Local": "LC"})
+            "model-a", state, 7, [plugin], {"Local": "LC"},
+            active_judge_targets={"model-a"})
         self.assertIn("7⚖️", frozen)
         self.assertIn("80 ⚖️ 1", plugin_str)
         self.assertEqual(cli._display_width(plugin_str), cli.PLUGIN_BLOCK_WIDTH)
@@ -419,7 +420,7 @@ class TestRenderLiveActivity(unittest.TestCase):
             }],
         )
         rendered = " ".join(window.lines.get(y, "") for y in range(10, 20))
-        self.assertIn("⚖️ Judge judge-model [target-model rate-limiter (5s)]", rendered)
+        self.assertIn("⚖️ Judge judge-model [target-model rate-limiter 5s]", rendered)
         self.assertNotIn("42", rendered)
         self.assertNotIn("tok", rendered)
 
@@ -452,12 +453,12 @@ class TestRenderLiveActivity(unittest.TestCase):
         )
         rendered = " ".join(window.lines.get(y, "") for y in range(10, 20))
         self.assertIn(
-            "⚖️ Judge judge-model [target-a rate-limiter (2s)] "
-            "[target-b wireframes (7s)]",
+            "⚖️ Judge judge-model [target-a rate-limiter 2s] "
+            "[target-b wireframes 7s]",
             rendered,
         )
         self.assertIn(
-            "⚖️ Judge other-judge [target-c tool-calling (3s)]",
+            "⚖️ Judge other-judge [target-c tool-calling 3s]",
             rendered,
         )
         self.assertEqual(rendered.count("⚖️ Judge judge-model"), 1)
