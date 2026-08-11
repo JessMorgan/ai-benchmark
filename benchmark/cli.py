@@ -1323,23 +1323,31 @@ def _targets_for_runner(targets, state_models, runner):
     }
 
 
-def _build_runner_queues(targets, snapshot, runner_mode, source_config):
-    """Build pending runner queues from the loaded state snapshot."""
+def _build_runner_queues(targets, snapshot, runner_mode, source_config,
+                         *, rerun_failed=True):
+    """Build pending runner queues from the loaded state snapshot.
+
+    ``rerun_failed`` mirrors the resume option. Keeping this decision in the
+    queue builder is important: ``BenchmarkState.load_state`` can preserve a
+    failed status, but a status-only ``!= completed`` check would immediately
+    put that target back on the scheduler queue anyway.
+    """
+    def needs_run(state):
+        return (
+            state is not None
+            and state.get("status") != "completed"
+            and (rerun_failed or state.get("status") != "failed")
+        )
+
     if runner_mode == "both":
         targets_by_source = {src: [] for src in source_config}
         opencode_pending = {src: [] for src in targets_by_source}
         http_pending = {src: set() for src in targets_by_source}
         for name, info in targets.items():
             opencode_state = snapshot.get(f"{name} [opencode]")
-            opencode_needed = (
-                opencode_state is not None
-                and opencode_state.get("status") != "completed"
-            )
+            opencode_needed = needs_run(opencode_state)
             http_state = snapshot.get(name)
-            http_needed = (
-                http_state is not None
-                and http_state.get("status") != "completed"
-            )
+            http_needed = needs_run(http_state)
             if opencode_needed:
                 opencode_pending[info["source"]].append(name)
             if http_needed:
@@ -1352,9 +1360,8 @@ def _build_runner_queues(targets, snapshot, runner_mode, source_config):
     source_queues = {src: [] for src in {info["source"] for info in targets.values()}}
     for name, info in targets.items():
         state_key = name if phase_runner == "http" else f"{name} [opencode]"
-        if state_key not in snapshot or snapshot[state_key].get("status") == "completed":
-            continue
-        source_queues[info["source"]].append(name)
+        if needs_run(snapshot.get(state_key)):
+            source_queues[info["source"]].append(name)
     return source_queues
 
 
@@ -2712,6 +2719,7 @@ def main():  # pragma: no cover - live benchmark orchestrator (no unit tests)
             snapshot = state.snapshot()
             targets_by_source, opencode_pending, http_pending = _build_runner_queues(
                 targets, snapshot, runner_mode, source_config,
+                rerun_failed=not args.no_rerun_failed,
             )
             benchmark_limits = dict(model_thread_limits)
             benchmark_sources = {
@@ -2746,6 +2754,7 @@ def main():  # pragma: no cover - live benchmark orchestrator (no unit tests)
             snapshot = state.snapshot()
             source_queues = _build_runner_queues(
                 targets, snapshot, runner_mode, source_config,
+                rerun_failed=not args.no_rerun_failed,
             )
             benchmark_limits = dict(model_thread_limits)
             benchmark_sources = {

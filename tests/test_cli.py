@@ -1276,6 +1276,69 @@ class TestConfigFallback(unittest.TestCase):
         )
         self.assertEqual(queue, {"Saved Source": ["configured-model"]})
 
+    def test_no_rerun_failed_excludes_failed_single_runner_targets(self):
+        """The no-rerun flag must reach queue construction, not just state load."""
+        targets = {
+            "failed-model": {"source": "Saved Source"},
+            "pending-model": {"source": "Saved Source"},
+            "done-model": {"source": "Saved Source"},
+        }
+        snapshot = {
+            "failed-model": {"status": "failed"},
+            "pending-model": {"status": "pending"},
+            "done-model": {"status": "completed"},
+        }
+        queue = self.ai_benchmark._build_runner_queues(
+            targets, snapshot, "http", {"Saved Source": {}}, rerun_failed=False,
+        )
+        self.assertEqual(queue, {"Saved Source": ["pending-model"]})
+
+        queue_with_default = self.ai_benchmark._build_runner_queues(
+            targets, snapshot, "http", {"Saved Source": {}},
+        )
+        self.assertEqual(
+            queue_with_default,
+            {"Saved Source": ["failed-model", "pending-model"]},
+        )
+
+    def test_no_rerun_failed_excludes_failed_opencode_targets(self):
+        """The OpenCode state-key path honors the no-rerun flag too."""
+        targets = {
+            "failed-model": {"source": "Saved Source"},
+            "pending-model": {"source": "Saved Source"},
+        }
+        snapshot = {
+            "failed-model [opencode]": {"status": "failed"},
+            "pending-model [opencode]": {"status": "pending"},
+        }
+        queue = self.ai_benchmark._build_runner_queues(
+            targets, snapshot, "opencode", {"Saved Source": {}}, rerun_failed=False,
+        )
+        self.assertEqual(queue, {"Saved Source": ["pending-model"]})
+
+    def test_no_rerun_failed_excludes_only_failed_runner_leg_in_both_mode(self):
+        """Both mode skips failed legs while retaining an independent pending leg."""
+        targets = {
+            "failed-both": {"source": "Saved Source"},
+            "failed-http": {"source": "Saved Source"},
+            "pending": {"source": "Saved Source"},
+        }
+        snapshot = {
+            "failed-both": {"status": "failed"},
+            "failed-both [opencode]": {"status": "failed"},
+            "failed-http": {"status": "failed"},
+            "failed-http [opencode]": {"status": "pending"},
+            "pending": {"status": "pending"},
+            "pending [opencode]": {"status": "completed"},
+        }
+        queues = self.ai_benchmark._build_runner_queues(
+            targets, snapshot, "both", {"Saved Source": {}}, rerun_failed=False,
+        )
+        targets_by_source, opencode_pending, http_pending = queues
+        self.assertEqual(targets_by_source["Saved Source"], ["failed-http", "pending"])
+        self.assertEqual(opencode_pending["Saved Source"], ["failed-http"])
+        self.assertEqual(http_pending["Saved Source"], {"pending"})
+
     def test_saved_runner_presence_controls_resume_queues_and_opencode_projection(self):
         """Both-mode resume schedules only the runner legs saved on disk."""
         saved_state = {
