@@ -404,7 +404,7 @@ class TestRenderLiveActivity(unittest.TestCase):
         self.assertIn("Preloading model model-b", window.lines.get(12, ""))
         self.assertIn("429 Sleeping:", window.lines.get(13, ""))
 
-    def test_renders_active_judge_activity(self):
+    def test_renders_active_judge_activity_without_tokens(self):
         window = _FakeWindow(40, 120)
         cli._render_live_activity(
             window, 120, 40, {}, {"Local": "LC"}, [],
@@ -419,8 +419,49 @@ class TestRenderLiveActivity(unittest.TestCase):
             }],
         )
         rendered = " ".join(window.lines.get(y, "") for y in range(10, 20))
-        self.assertIn("⚖️ Judge judge-model target-model", rendered)
-        self.assertIn("⚖️ Judge judge-model target-model rate-limiter 42 tok (5s)", rendered)
+        self.assertIn("⚖️ Judge judge-model [target-model rate-limiter (5s)]", rendered)
+        self.assertNotIn("42", rendered)
+        self.assertNotIn("tok", rendered)
+
+    def test_groups_multiple_active_cells_for_one_judge(self):
+        window = _FakeWindow(40, 120)
+        cli._render_live_activity(
+            window, 120, 40, {}, {"Local": "LC"}, [],
+            live_top=10, live_height=3, log_top=20,
+            active_plugins=[], sleeping_lookup={},
+            judge_activities=[
+                {
+                    "judge": "judge-model",
+                    "target": "target-a",
+                    "plugin": "rate-limiter",
+                    "elapsed": 2,
+                },
+                {
+                    "judge": "judge-model",
+                    "target": "target-b",
+                    "plugin": "wireframes",
+                    "elapsed": 7,
+                },
+                {
+                    "judge": "other-judge",
+                    "target": "target-c",
+                    "plugin": "tool-calling",
+                    "elapsed": 3,
+                },
+            ],
+        )
+        rendered = " ".join(window.lines.get(y, "") for y in range(10, 20))
+        self.assertIn(
+            "⚖️ Judge judge-model [target-a rate-limiter (2s)] "
+            "[target-b wireframes (7s)]",
+            rendered,
+        )
+        self.assertIn(
+            "⚖️ Judge other-judge [target-c tool-calling (3s)]",
+            rendered,
+        )
+        self.assertEqual(rendered.count("⚖️ Judge judge-model"), 1)
+        self.assertNotIn("tok", rendered)
 
 
 class TestRenderRecentErrors(unittest.TestCase):

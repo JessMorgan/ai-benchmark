@@ -1144,13 +1144,24 @@ def _render_live_activity(stdscr, max_x, max_y, snap, source_abbrevs, live_model
             f" 🔄 [{src_ab}] Preloading model {nm[:36]} {elapsed}s")
         live_row += 1
 
+    # Group concurrent judge cells by judge model so one judge occupying
+    # several source-local workers remains one readable live row, just like
+    # a model row lists all of its concurrent plugin indicators. Judge
+    # responses are buffered/non-streaming, so token counts are not a live
+    # measurement and are intentionally omitted here.
+    judge_groups = {}
     for activity in (judge_activities or []):
+        judge_groups.setdefault(activity["judge"], []).append(activity)
+    for judge, activities in judge_groups.items():
         if live_row >= log_top:
             break
+        cells = " ".join(
+            f"[{activity['target']} {activity['plugin']} ({activity['elapsed']}s)]"
+            for activity in activities
+        )
         _wr(
             stdscr, max_x, max_y, live_row, 0,
-            f" {_JUDGE_SCALES} Judge {activity['judge']} {activity['target']} "
-            f"{activity['plugin']} {activity['tokens']} tok ({activity['elapsed']}s)",
+            f" {_JUDGE_SCALES} Judge {judge} {cells}",
         )
         live_row += 1
 

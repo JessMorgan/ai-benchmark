@@ -748,7 +748,6 @@ class BenchmarkState:
                     "judge": activity["judge"],
                     "target": activity["target"],
                     "plugin": activity["plugin"],
-                    "tokens": activity["tokens"],
                     "elapsed": max(0, int(now - activity["started"])),
                 }
                 for activity in self._judge_activity.values()
