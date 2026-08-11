@@ -1260,9 +1260,10 @@ def _render_footer(stdscr, max_x, max_y, live_models, queuing, footer_line,
     judge_progress = judge_progress or {}
     judge_parts = []
     for model, values in judge_progress.items():
-            completed = values.get("completed", 0)
-            expected = values.get("expected", 0)
-            judge_parts.append(f"[{model}: {completed}/{expected}]")
+        completed = values.get("completed", 0)
+        failed = values.get("failed", 0)
+        expected = values.get("expected", 0)
+        judge_parts.append(f"[{model}: {completed}✅{failed}❌{expected}Σ]")
 
     judge_line = f"Judging {' '.join(judge_parts)}" if judge_parts else ""
     if not live_models and not queuing and not preloading_models and not judge_line:
@@ -2608,18 +2609,29 @@ def main():  # pragma: no cover - live benchmark orchestrator (no unit tests)
             for model in judge_models
         }
         existing_judge_counts = {model: 0 for model in judge_models}
+        existing_judge_failures = {model: 0 for model in judge_models}
+        existing_judge_expected = {model: 0 for model in judge_models}
         for result in state.latest_results():
             for plugin in active_plugins:
-                votes = result.get(f"{plugin.id}_judge_votes", [])
-                judged_models = {
-                    vote.get("model") for vote in votes
-                    if is_successful_judge_vote(vote)
+                votes_by_model = {
+                    vote.get("model"): vote
+                    for vote in (result.get(f"{plugin.id}_judge_votes", []) or [])
+                    if isinstance(vote, dict) and vote.get("model")
                 }
-                for model in existing_judge_counts:
-                    if model in judged_models:
+                for model, vote in votes_by_model.items():
+                    if model not in existing_judge_counts:
+                        continue
+                    existing_judge_expected[model] += 1
+                    if is_successful_judge_vote(vote):
                         existing_judge_counts[model] += 1
+                    else:
+                        existing_judge_failures[model] += 1
         state.set_judge_progress({
-            model: {"completed": existing_judge_counts[model], "expected": 0}
+            model: {
+                "completed": existing_judge_counts[model],
+                "failed": existing_judge_failures[model],
+                "expected": existing_judge_expected[model],
+            }
             for model in judge_models
         })
         judge_effective_timeout = (cfg.get("judge", {}).get("timeout", timeout)
@@ -2669,25 +2681,28 @@ def main():  # pragma: no cover - live benchmark orchestrator (no unit tests)
                     if judge_name in halted_judges:
                         continue
                 source = judge_sources[judge_name]
+                expected_added = judge_name not in votes_by_model
                 key = (os.path.abspath(sidecar), target_name, runner, plugin_id, judge_name)
                 with judge_seen_lock:
                     if key in judge_seen:
                         continue
                     judge_seen.add(key)
                 judge_pools[source].enqueue(
-                    (sidecar, target_name, runner, plugin_id, judge_name)
+                    (sidecar, target_name, runner, plugin_id, judge_name, expected_added)
                 )
                 state.update(state_key, **{f"{plugin_id}_judge_queued": True})
-                state.increment_judge_progress(judge_name, expected=1)
+                if expected_added:
+                    state.increment_judge_progress(judge_name, expected=1)
                 with judge_counts_lock:
                     run_info["judge_counts"]["queued"] += 1
 
         def process_judge_job(job):
             """Judge one sidecar with every configured judge and persist consensus."""
-            sidecar, target_name, runner, plugin_id, judge_name = job
+            sidecar, target_name, runner, plugin_id, judge_name, expected_added = job
             with halted_judges_lock:
                 if judge_name in halted_judges:
-                    state.increment_judge_progress(judge_name, expected=-1)
+                    if expected_added:
+                        state.increment_judge_progress(judge_name, expected=-1)
                     return
             item = {}
             try:
@@ -2831,12 +2846,12 @@ def main():  # pragma: no cover - live benchmark orchestrator (no unit tests)
                 # Progress counts completed usable judgments only. A failed
                 # attempt remains visible in votes/artifacts, but its judge is
                 # still eligible for a future resume retry.
-                if is_successful_judge_vote(vote):
-                    state.increment_judge_progress(judge_name, completed=1)
                 with judge_counts_lock:
                     if is_successful_judge_vote(vote):
+                        state.increment_judge_progress(judge_name, completed=1)
                         run_info["judge_counts"]["completed"] += 1
                     else:
+                        state.increment_judge_progress(judge_name, failed=1)
                         run_info["judge_counts"]["failed"] += 1
                     run_info["judge_counts"]["votes"] += 1
                 with persistence_lock:
@@ -2910,6 +2925,7 @@ def main():  # pragma: no cover - live benchmark orchestrator (no unit tests)
                         and expected_judges.issubset(received_judges)
                     ),
                 )
+                state.increment_judge_progress(judge_name, failed=1)
                 with judge_counts_lock:
                     run_info["judge_counts"]["failed"] += 1
                 # Failed attempts do not advance completed progress and remain
