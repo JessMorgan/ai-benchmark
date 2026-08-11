@@ -273,6 +273,31 @@ def save_judge_response(output_dir, target, runner, plugin_id, judge_model, text
     return path
 
 
+def judge_response_metadata_path(output_dir, target, runner, plugin_id, judge_model):
+    """Return the metadata path paired with one raw judge response."""
+    response_path = judge_response_path(output_dir, target, runner, plugin_id, judge_model)
+    return response_path.removesuffix(".txt") + ".meta.json"
+
+
+def save_judge_response_metadata(output_dir, target, runner, plugin_id,
+                                 judge_model, metadata):
+    """Persist status/error metadata for every judge attempt.
+
+    The metadata sidecar exists even when the judge transport produced no raw
+    response, making a missing semantic answer distinguishable from a missing
+    scheduler artifact.
+    """
+    path = judge_response_metadata_path(output_dir, target, runner, plugin_id, judge_model)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = f"{path}.tmp"
+    with open(tmp, "w", encoding="utf-8") as handle:
+        json.dump(metadata, handle, indent=2, ensure_ascii=False, default=str)
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(tmp, path)
+    return path
+
+
 def publish_judge_sidecars(judge_input_dir, target, runner, plugins, callback):
     """Publish durable judge inputs after their benchmark result is visible."""
     if not judge_input_dir or callback is None:

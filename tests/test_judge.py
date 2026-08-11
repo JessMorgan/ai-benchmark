@@ -12,6 +12,7 @@ from benchmark.core import (
     parse_judge_response,
     prepare_judge_sidecar,
     save_judge_response,
+    save_judge_response_metadata,
 )
 from benchmark.state import BenchmarkState
 from plugins import discover_plugins
@@ -69,6 +70,35 @@ class TestJudgeCore(unittest.TestCase):
             self.assertEqual(item["target"], "model")
             self.assertEqual(item["response"], "Response")
             self.assertEqual(len(item["response_sha256"]), 64)
+
+    def test_judge_response_metadata_is_persisted_next_to_raw_artifact(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            raw_path = save_judge_response(
+                tmp, "model", "http", "fake", "judge", "",
+            )
+            metadata_path = save_judge_response_metadata(
+                tmp, "model", "http", "fake", "judge",
+                {"status": "error", "response_present": False, "error": "timeout"},
+            )
+            self.assertTrue(raw_path.endswith("fake.judge.judge.txt"))
+            self.assertTrue(metadata_path.endswith("fake.judge.judge.meta.json"))
+            with open(metadata_path, encoding="utf-8") as handle:
+                metadata = json.load(handle)
+            self.assertEqual(metadata["status"], "error")
+            self.assertFalse(metadata["response_present"])
+
+    def test_judge_response_transport_error_has_no_response_text(self):
+        response = mock.Mock(error="timeout", text="")
+        with tempfile.TemporaryDirectory() as tmp:
+            sidecar = f"{tmp}/input.json"
+            prepare_judge_sidecar(
+                sidecar, FakePlugin(), "Prompt", "Response",
+                target="model", runner="http",
+            )
+            with mock.patch("benchmark.core.nonstream_request", return_value=response):
+                result = judge_response({}, "Local", "judge", sidecar, timeout=3)
+        self.assertIsNone(result.response_text)
+        self.assertEqual(result.error, "timeout")
 
     def test_judge_response_retries_invalid_json(self):
         response = mock.Mock(error=None, text='{"score": 75, "confidence": "medium", "rationale": "usable"}')

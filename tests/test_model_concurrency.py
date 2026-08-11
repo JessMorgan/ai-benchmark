@@ -159,6 +159,67 @@ def test_judge_source_reservation_configures_one_then_full_pool():
     pool.stop(timeout=1)
 
 
+def test_judge_pool_drains_all_jobs_before_stop():
+    stop = threading.Event()
+    processed = []
+    lock = threading.Lock()
+
+    def process(job):
+        time.sleep(0.03)
+        with lock:
+            processed.append(job)
+
+    pool = SourceJudgeWorkerPool("Cloud", 2, process, stop)
+    pool.start(2)
+    for job in range(8):
+        pool.enqueue(job)
+    pool.stop(drain=True)
+    assert sorted(processed) == list(range(8))
+    assert pool.queue.unfinished_tasks == 0
+    assert all(not thread.is_alive() for thread in pool._threads)
+
+
+def test_judge_pool_continues_after_unexpected_callback_exception():
+    stop = threading.Event()
+    processed = []
+
+    def process(job):
+        if job == "bad":
+            raise RuntimeError("unexpected callback failure")
+        processed.append(job)
+
+    pool = SourceJudgeWorkerPool("Cloud", 1, process, stop)
+    pool.start(1)
+    for job in ("bad", "good-a", "good-b"):
+        pool.enqueue(job)
+    pool.stop(drain=True)
+
+    assert processed == ["good-a", "good-b"]
+    assert pool.queue.unfinished_tasks == 0
+    assert all(not thread.is_alive() for thread in pool._threads)
+
+
+def test_judge_pool_cancellation_discards_queued_work_and_joins():
+    stop = threading.Event()
+    started = threading.Event()
+    processed = []
+
+    def process(job):
+        processed.append(job)
+        started.set()
+        stop.wait(timeout=1)
+
+    pool = SourceJudgeWorkerPool("Cloud", 1, process, stop)
+    pool.start(1)
+    for job in range(5):
+        pool.enqueue(job)
+    assert started.wait(timeout=1)
+    stop.set()
+    pool.stop(timeout=2, drain=False)
+    assert all(not thread.is_alive() for thread in pool._threads)
+    assert pool.queue.unfinished_tasks == 0
+
+
 def test_judge_pool_expands_after_source_benchmark_completion():
     stop = threading.Event()
     benchmark_release = threading.Event()

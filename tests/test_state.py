@@ -863,6 +863,44 @@ class TestStateCoverage(unittest.TestCase):
         self.assertEqual(state.total, 2)
         self.assertEqual(state.completed, 0)
 
+    def test_concurrent_state_saves_leave_valid_json_and_no_tmp_file(self):
+        """Concurrent writers serialize through the fixed state temp path."""
+        state = self.module.BenchmarkState({"m1": "S"}, ["p"])
+        state.update("m1", status="completed")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, "benchmark_state.json")
+            errors = []
+
+            def save():
+                try:
+                    state.save_state(path)
+                except Exception as exc:  # noqa: BLE001 - collect any unexpected save failure
+                    errors.append(exc)
+
+            threads = [threading.Thread(target=save) for _ in range(12)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(timeout=2)
+
+            self.assertFalse(errors)
+            self.assertTrue(all(not thread.is_alive() for thread in threads))
+            with open(path, encoding="utf-8") as handle:
+                saved = json.load(handle)
+            self.assertEqual(saved["model_info"]["m1"]["status"], "completed")
+            self.assertFalse(os.path.exists(path + ".tmp"))
+
+    def test_save_state_raise_on_error_propagates_and_cleans_tmp(self):
+        state = self.module.BenchmarkState({"m1": "S"}, ["p"])
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, "state.json")
+            with (
+                mock.patch("json.dump", side_effect=OSError("disk full")),
+                self.assertRaises(OSError),
+            ):
+                state.save_state(path, raise_on_error=True)
+            self.assertFalse(os.path.exists(path + ".tmp"))
+
     def test_save_state_removes_tmp_on_write_failure(self):
         state = self.module.BenchmarkState({"m1": "S"}, ["p"])
         with tempfile.TemporaryDirectory() as tmpdir:

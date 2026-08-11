@@ -3,6 +3,7 @@
 This module holds the ``BenchmarkState`` class used to track model progress and
 persist results across runs.
 """
+import copy
 import json
 import os
 import shutil
@@ -11,6 +12,11 @@ import threading
 import time
 
 from .plugin import SCORE_SCHEMA
+
+# State saves intentionally retain the historical ``<state>.tmp`` path for
+# operational compatibility. Serialize all writers so two threads cannot
+# truncate or splice the shared temporary file before ``os.replace``.
+_STATE_SAVE_LOCK = threading.Lock()
 
 _CORRUPTED_STATE_REPAIRS = {
     # One historical state artifact contains this malformed JSON key. Keep
@@ -814,7 +820,7 @@ class BenchmarkState:
         with self._lock:
             return self._log[-n:]
 
-    def save_state(self, path, plugin_versions=None):
+    def save_state(self, path, plugin_versions=None, *, raise_on_error=False):
         with self._lock:
             # Preload indicators are session-only. Copy model info while
             # holding the lock, then omit the transient probe fields so a
@@ -831,7 +837,10 @@ class BenchmarkState:
                 }
                 for name, info in self._model_info.items()
             }
-            data = {
+            # Deep-copy all mutable containers while holding the state lock.
+            # The JSON dump happens after releasing it, so live judge updates
+            # cannot mutate nested votes/results halfway through serialization.
+            data = copy.deepcopy({
                 "model_info": persisted_model_info,
                 "results": self.results,
                 "active_plugins": self.plugin_ids,
@@ -840,18 +849,41 @@ class BenchmarkState:
                 "runner": self.runner,
                 "judge_progress": self._judge_progress,
                 "score_schema": SCORE_SCHEMA,
-            }
+            })
         tmp = path + ".tmp"
         try:
-            with open(tmp, "w") as f:
-                json.dump(data, f, indent=2, default=str)
-            os.replace(tmp, path)
-        except Exception:  # noqa: BLE001 - clean up the temp file on any save failure
+            # Keep the fixed temporary filename, but serialize the complete
+            # write/flush/replace sequence. This prevents concurrent judge and
+            # benchmark snapshots from interleaving through the same .tmp file.
+            with _STATE_SAVE_LOCK:
+                with open(tmp, "w", encoding="utf-8") as f:
+                    json.dump(data, f, indent=2, default=str)
+                    f.flush()
+                    os.fsync(f.fileno())
+                os.replace(tmp, path)
+                # Persist the directory entry when the platform supports it;
+                # the state file itself remains the stable atomic-replace path.
+                try:
+                    directory_fd = os.open(
+                        os.path.dirname(os.path.abspath(path)) or ".", os.O_DIRECTORY
+                    )
+                except (AttributeError, OSError):
+                    directory_fd = None
+                if directory_fd is not None:
+                    try:
+                        os.fsync(directory_fd)
+                    finally:
+                        os.close(directory_fd)
+        except Exception:
             try:
                 if os.path.exists(tmp):
                     os.remove(tmp)
             except OSError:
                 pass
+            if raise_on_error:
+                raise
+            return False
+        return True
 
     def latest_results(self):
         """Return only the most recent result per model (deduplicates across runs)."""

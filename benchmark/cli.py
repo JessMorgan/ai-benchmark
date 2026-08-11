@@ -7,7 +7,6 @@ Configuration: edit benchmark-config.json (or pass --config <path>).
 API keys can use ${VAR} or ${VAR:default} syntax for env-var expansion.
 """
 import argparse
-import contextlib
 import curses
 import glob
 import json
@@ -44,6 +43,7 @@ from benchmark.core import (
     resolve_targets,
     run_model,
     save_judge_response,
+    save_judge_response_metadata,
 )
 from benchmark.http import (
     close_active_requests,
@@ -1578,14 +1578,40 @@ class SourceJudgeWorkerPool:
         self.queue.put(job)
 
     def _worker(self):
-        while not self.stop_event.is_set():
+        while True:
             try:
                 job = self.queue.get(timeout=0.2)
             except queue.Empty:
+                if self.stop_event.is_set():
+                    break
                 continue
-            if job is self._stop:
-                break
-            self.process_job(job)
+            try:
+                if job is self._stop:
+                    return
+                # On cancellation, discard queued work instead of starting
+                # another judge request. The active request receives the same
+                # stop_event and can terminate cooperatively; every discarded
+                # item still receives task_done so queue accounting remains
+                # balanced.
+                if self.stop_event.is_set():
+                    continue
+                # Normal completion drains queued jobs before sentinels are
+                # inserted. Cancellation may still interrupt the request via
+                # stop_event, but the queue item is always accounted for.
+                try:
+                    self.process_job(job)
+                except Exception as exc:  # noqa: BLE001 - keep one bad job from killing the pool
+                    # ``process_judge_job`` normally records its own failure,
+                    # but the pool must remain live even if an unexpected
+                    # callback bug escapes. Queue accounting is completed in
+                    # the finally block and later jobs continue to drain.
+                    print(
+                        f"⚠️  Judge worker ({self.source}) failed: "
+                        f"{type(exc).__name__}: {exc}",
+                        file=sys.stderr,
+                    )
+            finally:
+                self.queue.task_done()
 
     def start(self, count=1):
         """Start workers up to ``count`` without exceeding the source limit."""
@@ -1593,6 +1619,11 @@ class SourceJudgeWorkerPool:
             target = min(self.limit, max(0, int(count)))
             new_threads = []
             for index in range(len(self._threads), target):
+                # Judge workers are daemonized so Ctrl+C cannot leave a
+                # process permanently stuck behind a provider that ignores
+                # cancellation. Normal completion still uses ``drain=True``
+                # and an unbounded join, so daemonization never abandons
+                # successful work on the normal path.
                 thread = threading.Thread(
                     target=self._worker,
                     name=f"judge-worker-{self.source}-{index + 1}",
@@ -1607,8 +1638,19 @@ class SourceJudgeWorkerPool:
         """Release the benchmark reservation and use the full source pool."""
         self.start(self.limit)
 
-    def stop(self, timeout=None):
-        """Stop and join all workers, preserving already-processed jobs."""
+    def drain(self):
+        """Wait until every queued job has finished processing."""
+        self.queue.join()
+
+    def stop(self, timeout=None, *, drain=False):
+        """Stop workers, optionally draining all queued jobs first.
+
+        Normal completion uses ``drain=True`` and an unbounded join. The
+        cancellation path skips the drain so Ctrl+C can save resumable state
+        without waiting on new work.
+        """
+        if drain:
+            self.queue.join()
         with self._lock:
             threads = list(self._threads)
         for _thread in threads:
@@ -2616,16 +2658,38 @@ def main():  # pragma: no cover - live benchmark orchestrator (no unit tests)
                     "rationale": outcome.rationale,
                     "error": outcome.error,
                 }
-                if outcome.response_text is not None:
-                    try:
-                        save_judge_response(
-                            output_dir, target_name, runner, plugin_id,
-                            judge_name, outcome.response_text,
-                        )
-                    except OSError:
-                        vote["error"] = (
-                            vote["error"] or "could not save judge response artifact"
-                        )
+                response_text = outcome.response_text or ""
+                artifact_error = None
+                try:
+                    # Always publish one raw artifact per attempt. A transport
+                    # failure produces an empty .txt plus metadata rather than
+                    # making the scheduler failure indistinguishable from a
+                    # missing/abandoned job.
+                    save_judge_response(
+                        output_dir, target_name, runner, plugin_id,
+                        judge_name, response_text,
+                    )
+                    save_judge_response_metadata(
+                        output_dir, target_name, runner, plugin_id, judge_name,
+                        {
+                            "target": target_name,
+                            "runner": runner,
+                            "plugin": plugin_id,
+                            "judge_model": judge_name,
+                            "status": "error" if outcome.error else "ok",
+                            "response_present": outcome.response_text is not None,
+                            "response_empty": not bool(response_text.strip()),
+                            "score": outcome.score,
+                            "confidence": outcome.confidence,
+                            "error": outcome.error,
+                            "rationale": outcome.rationale,
+                            "saved_at": datetime.now(timezone.utc).isoformat(),
+                        },
+                    )
+                except OSError as exc:
+                    artifact_error = f"could not save judge response artifact: {exc}"
+                if artifact_error:
+                    vote["error"] = vote["error"] or artifact_error
                 vote_identity = (state_key, runner, plugin_id)
                 with judge_votes_lock:
                     prior_votes = list(judge_votes.get(vote_identity, existing_votes))
@@ -2667,13 +2731,42 @@ def main():  # pragma: no cover - live benchmark orchestrator (no unit tests)
                     state.save_state(state_file, plugin_versions=plugin_versions)
                     _save_outputs(state, output_dir, active_plugins)
             except Exception as exc:  # noqa: BLE001 - isolate one judge job failure
+                # Preserve a per-attempt diagnostic even when the sidecar,
+                # transport, parser, or unexpected processing path fails
+                # before a JudgeResult exists. Artifact failures are surfaced
+                # rather than silently making an attempted job look absent.
+                artifact_error = None
+                try:
+                    save_judge_response(
+                        output_dir, target_name, runner, plugin_id, judge_name, ""
+                    )
+                    save_judge_response_metadata(
+                        output_dir, target_name, runner, plugin_id, judge_name,
+                        {
+                            "target": target_name,
+                            "runner": runner,
+                            "plugin": plugin_id,
+                            "judge_model": judge_name,
+                            "status": "exception",
+                            "response_present": False,
+                            "response_empty": True,
+                            "error": f"{type(exc).__name__}: {exc}",
+                            "saved_at": datetime.now(timezone.utc).isoformat(),
+                        },
+                    )
+                except OSError as artifact_exc:
+                    artifact_error = f"could not save judge failure artifact: {artifact_exc}"
+                    print(f"⚠️  {artifact_error}", file=sys.stderr)
                 state_key = item.get("state_key", target_name)
                 failure_vote = {
                     "model": judge_name,
                     "score": None,
                     "confidence": None,
                     "rationale": None,
-                    "error": f"judge input failed: {type(exc).__name__}: {exc}",
+                    "error": (
+                        f"judge input failed: {type(exc).__name__}: {exc}"
+                        + (f"; {artifact_error}" if artifact_error else "")
+                    ),
                 }
                 vote_identity = (state_key, runner, plugin_id)
                 with judge_votes_lock:
@@ -2742,10 +2835,10 @@ def main():  # pragma: no cover - live benchmark orchestrator (no unit tests)
                     pool,
                 )
 
-        def stop_judge_workers():
+        def stop_judge_workers(*, drain=False):
             """Stop and join all source-local judge workers."""
             for pool in judge_pools.values():
-                pool.stop(timeout=1.0)
+                pool.stop(timeout=None if drain else 1.0, drain=drain)
 
         def finish_judge():
             """Drain retained judge jobs and join source-local workers."""
@@ -2761,7 +2854,9 @@ def main():  # pragma: no cover - live benchmark orchestrator (no unit tests)
                 # A source with no active benchmark scheduler should still
                 # receive its full judge pool before the final drain.
                 pool.start(judge_source_limits[source])
-            stop_judge_workers()
+            # Normal completion must not exit until every queued judge job has
+            # called task_done and every worker has terminated.
+            stop_judge_workers(drain=True)
             if judge_models:
                 run_info["judge_status"] = "complete"
 
@@ -2918,8 +3013,19 @@ def main():  # pragma: no cover - live benchmark orchestrator (no unit tests)
         # timeout keeps the terminal tidy if it happens to finish quickly.
         tui_thread.join(timeout=0.5)
 
-        with contextlib.suppress(Exception):
-            state.save_state(state_file, plugin_versions=plugin_versions)
+        with persistence_lock:
+            # This final snapshot is serialized with all worker saves. Keep
+            # the historical benchmark_state.json.tmp path, but never let
+            # a final save race a judge worker's save. Unlike incremental
+            # saves, failure here must be visible: reporting a completed run
+            # without a durable final state would make judging progress
+            # appear lost on resume.
+            state.save_state(
+                state_file,
+                plugin_versions=plugin_versions,
+                raise_on_error=True,
+            )
+
 
         if interrupted:
             done = state.completed
