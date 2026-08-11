@@ -652,6 +652,22 @@ class BenchmarkState:
 
     def add_result(self, result):
         with self._lock:
+            # Judge workers may finish a plugin after its score is published
+            # but before the enclosing model result row is appended. Carry the
+            # per-plugin judge fields from live model_info into this new row so
+            # a concurrent judge update is not lost on resume.
+            state_key = result.get("state_key", result.get("model"))
+            info = self._model_info.get(state_key, {})
+            for key, value in info.items():
+                if "_judge_" not in key and key != "judge_status":
+                    continue
+                # Default-initialized fields do not replace meaningful values
+                # already carried by an older result row. Conversely, a live
+                # judge update must win over a stale row value before append.
+                if value not in (None, False, [], ""):
+                    result[key] = value
+                else:
+                    result.setdefault(key, value)
             self.results.append(result)
 
     def set_judge_progress(self, progress):

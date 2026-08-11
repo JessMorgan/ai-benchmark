@@ -129,6 +129,65 @@ class TestJudgeResumeDiscovery(unittest.TestCase):
             )
             self.assertEqual(len(eligible), 1)
 
+    def test_numeric_plugin_is_eligible_when_sibling_failed(self):
+        """A numeric plugin remains judgeable even when its model failed."""
+        with tempfile.TemporaryDirectory() as tmp:
+            sidecar = f"{tmp}/http/model/fake.json"
+            prepare_judge_sidecar(
+                sidecar, FakePlugin(), "Prompt", "Response",
+                target="model", runner="http", state_key="model",
+            )
+            state = BenchmarkState({"model": "Local"}, ["fake", "other"])
+            state.add_result({
+                "model": "model", "state_key": "model", "runner": "http",
+                "status": "error", "fake_score": 80, "other_score": "fail",
+            })
+            state.update("model", status="failed", fake_score=80)
+            eligible = cli._eligible_judge_sidecars(
+                tmp, {"model": {"source": "Local"}}, state,
+                {"fake"}, ["judge"],
+            )
+            self.assertEqual(len(eligible), 1)
+
+    def test_partial_model_info_score_is_eligible_before_result_row_exists(self):
+        """A completed plugin can be judged while its model is still partial."""
+        with tempfile.TemporaryDirectory() as tmp:
+            sidecar = f"{tmp}/http/model/fake.json"
+            prepare_judge_sidecar(
+                sidecar, FakePlugin(), "Prompt", "Response",
+                target="model", runner="http", state_key="model",
+            )
+            state = BenchmarkState({"model": "Local"}, ["fake"])
+            state.update("model", status="running", fake_score=80)
+            eligible = cli._eligible_judge_sidecars(
+                tmp, {"model": {"source": "Local"}}, state,
+                {"fake"}, ["judge"],
+            )
+            self.assertEqual(len(eligible), 1)
+
+    def test_missing_judge_remains_eligible_after_another_judge_vote(self):
+        """Resume queues only the judge that has not voted yet."""
+        with tempfile.TemporaryDirectory() as tmp:
+            sidecar = f"{tmp}/http/model/fake.json"
+            prepare_judge_sidecar(
+                sidecar, FakePlugin(), "Prompt", "Response",
+                target="model", runner="http", state_key="model",
+            )
+            state = BenchmarkState({"model": "Local"}, ["fake"])
+            state.add_result({
+                "model": "model", "state_key": "model", "runner": "http",
+                "status": "error", "fake_score": 80,
+                "fake_judge_votes": [{
+                    "model": "judge-a", "score": 90, "confidence": "high",
+                }],
+            })
+            state.update("model", status="failed")
+            only_b = cli._eligible_judge_sidecars(
+                tmp, {"model": {"source": "Local"}}, state,
+                {"fake"}, ["judge-a", "judge-b"],
+            )
+            self.assertEqual(len(only_b), 1)
+
     def test_retained_sidecar_is_not_eligible_after_all_judges_complete(self):
         """Startup discovery does not requeue a fully judged retained result."""
         with tempfile.TemporaryDirectory() as tmp:
@@ -155,6 +214,18 @@ class TestJudgeResumeDiscovery(unittest.TestCase):
                 ["judge"],
             )
             self.assertEqual(eligible, [])
+
+    def test_add_result_preserves_judge_update_before_row_append(self):
+        """A judge update made before result append survives in the row."""
+        state = BenchmarkState({"model": "Local"}, ["fake"])
+        state.update("model", fake_judge_score=91, fake_judge_votes=[{"model": "judge", "score": 91}], fake_judge_complete=True)
+        state.add_result({
+            "model": "model", "state_key": "model", "runner": "http",
+            "fake_score": 80,
+        })
+        result = state.latest_results()[0]
+        self.assertEqual(result["fake_judge_score"], 91)
+        self.assertTrue(result["fake_judge_complete"])
 
 
 class TestJudgeStateAndReports(unittest.TestCase):

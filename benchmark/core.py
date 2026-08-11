@@ -1504,6 +1504,20 @@ def _run_plugins(target_name, api_model, source, state, active_plugins, plugins_
                         f"{pid}_thinking_tokens": result.get(f"{pid}_thinking_tokens"),
                         f"{pid}_total_tokens": result.get(f"{pid}_total_tokens"),
                         f"{pid}_empty_reason": result.get(f"{pid}_empty_reason")})
+        # A judge can finish between this plugin's state update and the
+        # eventual model-level result append. Queue this plugin immediately;
+        # ``BenchmarkState.add_result`` merges any judge fields written during
+        # that window into the result row.
+        if judge_input_dir and judge_enqueue:
+            score = result.get(f"{pid}_score")
+            if isinstance(score, (int, float)) and not isinstance(score, bool):
+                sidecar = judge_sidecar_path(
+                    judge_input_dir, display_name or target_name, runner, pid,
+                )
+                if os.path.isfile(sidecar):
+                    judge_enqueue(
+                        sidecar, display_name or target_name, runner, pid,
+                    )
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = {executor.submit(run_one, plugin): plugin for plugin in plugins_to_run}

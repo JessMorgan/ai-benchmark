@@ -152,13 +152,13 @@ def _scan_judge_sidecars(judge_input_dir):
 
 def _eligible_judge_sidecars(judge_input_dir, targets, state, active_plugin_ids,
                              judge_models):
-    """Return retained sidecars for completed, configured benchmark results.
+    """Return retained sidecars for individually judgeable plugin results.
 
-    Sidecars survive an interrupted run and are the durable input for judging.
-    On resume, completed targets are intentionally absent from the benchmark
-    scheduler, so they must be discovered independently of the pending model
-    queues. Do not enqueue orphaned sidecars from removed targets, inactive
-    plugins, or results that were not completed successfully.
+    Eligibility is deliberately per ``(target, runner, plugin)`` rather than
+    per model. A model can have sibling plugins that failed, still be pending
+    or running on resume, and still have a numeric score for this plugin that
+    is valid judge input. Existing votes are checked per judge so a resumed
+    run queues only the missing judge/model-plugin combinations.
     """
     latest = {
         (result.get("state_key", result.get("model")), result.get("runner", "http")): result
@@ -184,17 +184,24 @@ def _eligible_judge_sidecars(judge_input_dir, targets, state, active_plugin_ids,
             expected_state_key = state_key
         if target_name not in targets or target != target_name:
             continue
-        if snapshot.get(expected_state_key, {}).get("status") != "completed":
+
+        result = latest.get((expected_state_key, runner), {})
+        info = snapshot.get(expected_state_key, {})
+        score = result.get(f"{plugin_id}_score")
+        if not (isinstance(score, (int, float)) and not isinstance(score, bool)):
+            score = info.get(f"{plugin_id}_score")
+        if not (isinstance(score, (int, float)) and not isinstance(score, bool)):
             continue
-        result = latest.get((expected_state_key, runner))
-        if not result or result.get(f"{plugin_id}_score") in (None, "fail"):
-            continue
-        if result.get(f"{plugin_id}_judge_complete"):
-            continue
-        votes = result.get(f"{plugin_id}_judge_votes", [])
+
+        result_votes = result.get(f"{plugin_id}_judge_votes", []) or []
+        info_votes = info.get(f"{plugin_id}_judge_votes", []) or []
+        votes = [*result_votes, *info_votes]
         judged_models = {
             vote.get("model") for vote in votes if isinstance(vote, dict)
         }
+        # Do not trust a stale aggregate completion flag by itself: the
+        # configured judge set is authoritative, and a missing judge remains
+        # eligible even when an older result incorrectly said complete.
         if set(judge_models).issubset(judged_models):
             continue
         eligible.append((sidecar, item))
@@ -2396,7 +2403,38 @@ def main():  # pragma: no cover - live benchmark orchestrator (no unit tests)
                              if isinstance(cfg.get("judge"), dict) else 0.0)
 
         def enqueue_judge(sidecar, target_name, runner, plugin_id):
+            latest = {
+                (result.get("state_key", result.get("model")), result.get("runner", "http")): result
+                for result in state.latest_results()
+            }
+            try:
+                with open(sidecar, encoding="utf-8") as handle:
+                    item = json.load(handle)
+            except (OSError, json.JSONDecodeError, TypeError):
+                # The sidecar is durable best-effort input. A producer may
+                # have failed between creating the path and completing its
+                # atomic replace; skip it here and let startup/final scans
+                # retry rather than failing the benchmark worker.
+                return
+            state_key = item.get("state_key", target_name)
+            result = latest.get((state_key, runner), {})
+            info = state.snapshot().get(state_key, {})
+            score = result.get(f"{plugin_id}_score")
+            if not (isinstance(score, (int, float)) and not isinstance(score, bool)):
+                score = info.get(f"{plugin_id}_score")
+            if not (isinstance(score, (int, float)) and not isinstance(score, bool)):
+                return
+            result_votes = result.get(f"{plugin_id}_judge_votes", []) or []
+            info_votes = info.get(f"{plugin_id}_judge_votes", []) or []
+            votes_by_model = {
+                vote.get("model"): vote
+                for vote in [*result_votes, *info_votes]
+                if isinstance(vote, dict) and vote.get("model")
+            }
+            judged_models = set(votes_by_model)
             for judge_name in judge_models:
+                if judge_name in judged_models:
+                    continue
                 source = judge_sources[judge_name]
                 key = (os.path.abspath(sidecar), target_name, runner, plugin_id, judge_name)
                 with judge_seen_lock:
@@ -2422,8 +2460,17 @@ def main():  # pragma: no cover - live benchmark orchestrator (no unit tests)
                     for result in state.latest_results()
                 }.get((item.get("state_key", target_name), runner), {})
                 state_key = item.get("state_key", target_name)
+                live_info = state.snapshot().get(state_key, {})
                 vote_key = f"{plugin_id}_judge_votes"
-                existing_votes = latest.get(vote_key, [])
+                existing_by_model = {
+                    vote.get("model"): vote
+                    for vote in [
+                        *(latest.get(vote_key, []) or []),
+                        *(live_info.get(vote_key, []) or []),
+                    ]
+                    if isinstance(vote, dict) and vote.get("model")
+                }
+                existing_votes = list(existing_by_model.values())
                 if any(vote.get("model") == judge_name for vote in existing_votes if isinstance(vote, dict)):
                     state.increment_judge_progress(judge_name, completed=1)
                     return
