@@ -199,7 +199,7 @@ class TestTuiWriteHelper(unittest.TestCase):
 
 
 class TestPluginCellBlock(unittest.TestCase):
-    """The ``_plugin_cell_block`` helper produces a single 26-char cell per
+    """The ``_plugin_cell_block`` helper produces a single 27-column cell per
     plugin, collapsing the existing 4-cell results layout to a bracket-
     delimited status message when the plugin is in flight or 429-sleeping.
     """
@@ -449,7 +449,54 @@ class TestPluginCellBlock(unittest.TestCase):
         }
         block = ai_benchmark._plugin_cell_block(
             "rate-limiter", s, self.p_streaming, None)
-        self.assertIn("95👩‍⚖️1", block)
+        self.assertIn("95⚖️ 1", block)
+        self.assertEqual(ai_benchmark._display_width(block), ai_benchmark.PLUGIN_BLOCK_WIDTH)
+        marker_end = block.index("95⚖️ 1") + len("95⚖️ 1")
+        self.assertEqual(block[marker_end], " ")
+
+    def test_no_judge_marker_before_any_vote(self):
+        s = {
+            "running_pids": [],
+            "rate-limiter_score": 95,
+            "judge_models": ["judge-a", "judge-b", "judge-c"],
+            "rate-limiter_judge_queued": True,
+            "rate-limiter_judge_votes": [],
+        }
+        block = ai_benchmark._plugin_cell_block(
+            "rate-limiter", s, self.p_streaming, None)
+        self.assertNotIn("⚖️", block)
+        self.assertNotIn("✅", block)
+
+    def test_two_judges_show_two_marker(self):
+        s = {
+            "running_pids": [],
+            "rate-limiter_score": 95,
+            "judge_models": ["judge-a", "judge-b", "judge-c"],
+            "rate-limiter_judge_votes": [
+                {"model": "judge-a", "score": 90},
+                {"model": "judge-b", "score": 92},
+            ],
+        }
+        block = ai_benchmark._plugin_cell_block(
+            "rate-limiter", s, self.p_streaming, None)
+        self.assertIn("95⚖️ 2", block)
+        self.assertEqual(ai_benchmark._display_width(block), ai_benchmark.PLUGIN_BLOCK_WIDTH)
+
+    def test_completed_three_judges_show_checkmark(self):
+        s = {
+            "running_pids": [],
+            "rate-limiter_score": 95,
+            "judge_models": ["judge-a", "judge-b", "judge-c"],
+            "rate-limiter_judge_votes": [
+                {"model": "judge-a", "score": 90},
+                {"model": "judge-b", "score": 92},
+                {"model": "judge-c", "score": 94},
+            ],
+        }
+        block = ai_benchmark._plugin_cell_block(
+            "rate-limiter", s, self.p_streaming, None)
+        self.assertIn("95✅", block)
+        self.assertNotIn("⚖️", block)
         self.assertEqual(ai_benchmark._display_width(block), ai_benchmark.PLUGIN_BLOCK_WIDTH)
 
     def test_completed_judge_uses_checkmark_score_marker(self):

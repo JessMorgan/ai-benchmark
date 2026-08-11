@@ -153,7 +153,7 @@ class TestFormatModelRow(unittest.TestCase):
             "model-a", self._snap(running_pids=["rate-limiter"]), 1, [plugin], abbrevs)
         self.assertIn("🔷", frozen2)
 
-    def test_judge_marker_is_added_after_model_number(self):
+    def test_zero_vote_row_has_no_judge_marker(self):
         plugin = mock.MagicMock()
         plugin.id = "rate-limiter"
         plugin.supports_streaming = True
@@ -167,7 +167,7 @@ class TestFormatModelRow(unittest.TestCase):
         })
         frozen, _ = cli._format_model_row(
             "model-a", state, 7, [plugin], {"Local": "LC"})
-        self.assertIn("7👩‍⚖️", frozen)
+        self.assertNotIn("⚖️", frozen)
 
     def test_completed_judge_uses_row_checkmark(self):
         plugin = mock.MagicMock()
@@ -192,13 +192,47 @@ class TestFormatModelRow(unittest.TestCase):
         state.update({
             "rate-limiter_score": 80,
             "judge_models": ["judge-a", "judge-b"],
+            "rate-limiter_judge_queued": True,
             "rate-limiter_judge_votes": [{"model": "judge-a", "score": 80}],
             "rate-limiter_judge_complete": True,
         })
         frozen, plugin_str = cli._format_model_row(
             "model-a", state, 7, [plugin], {"Local": "LC"})
-        self.assertIn("7👩‍⚖️", frozen)
-        self.assertIn("80👩‍⚖️1", plugin_str)
+        self.assertIn("7⚖️", frozen)
+        self.assertIn("80⚖️ 1", plugin_str)
+        self.assertEqual(cli._display_width(plugin_str), cli.PLUGIN_BLOCK_WIDTH)
+
+    def test_historical_votes_without_active_judging_have_no_row_marker(self):
+        plugin = mock.MagicMock()
+        plugin.id = "rate-limiter"
+        plugin.supports_streaming = True
+        state = self._snap(status="completed")
+        state.update({
+            "rate-limiter_score": 80,
+            "judge_models": ["judge-a", "judge-b"],
+            "rate-limiter_judge_queued": False,
+            "rate-limiter_judge_votes": [{"model": "judge-a", "score": 80}],
+        })
+        frozen, _ = cli._format_model_row(
+            "model-a", state, 7, [plugin], {"Local": "LC"})
+        self.assertNotIn("⚖️", frozen)
+
+    def test_zero_vote_completed_row_has_no_judge_marker(self):
+        plugin = mock.MagicMock()
+        plugin.id = "rate-limiter"
+        plugin.supports_streaming = True
+        state = self._snap(status="completed")
+        state.update({
+            "rate-limiter_score": 80,
+            "judge_models": ["judge-a", "judge-b", "judge-c"],
+            "rate-limiter_judge_queued": True,
+            "rate-limiter_judge_votes": [],
+        })
+        frozen, plugin_str = cli._format_model_row(
+            "model-a", state, 7, [plugin], {"Local": "LC"})
+        self.assertNotIn("⚖️", frozen)
+        self.assertNotIn("⚖️", plugin_str)
+
 
     def test_unknown_source_abbr_fallback(self):
         plugin = mock.MagicMock()
