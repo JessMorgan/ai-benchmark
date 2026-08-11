@@ -29,7 +29,10 @@ class TestCompletionBranches(unittest.TestCase):
         self.assertIn("#compdef ai-benchmark ai-benchmark.py", script)
         self.assertIn("case \"$state\" in", script)
         self.assertIn("_describe -t plugin-ids 'plugin IDs' plugin_ids", script)
-        for flag in ("--restart", "--config", "--runner"):
+        for flag in (
+            "--restart", "--config", "--runner", "--judge-spread-threshold",
+            "--no-judge-spread", "--judge-deviation-threshold", "--no-judge-deviation",
+        ):
             self.assertIn(flag, script)
 
     def test_zsh_quotes_plugin_ids_with_special_chars(self):
@@ -75,6 +78,8 @@ class TestShellCompletions(unittest.TestCase):
         self.assertIn("--plugins-whitelist", output)
         self.assertIn("--plugins-blacklist", output)
         self.assertIn("--generate-shell-completion", output)
+        self.assertIn("--judge-spread-threshold", output)
+        self.assertIn("--no-judge-deviation", output)
         for pid in self.plugin_ids:
             self.assertIn(pid, output)
 
@@ -90,6 +95,8 @@ class TestShellCompletions(unittest.TestCase):
         self.assertIn("--plugins-whitelist", output)
         self.assertIn("--plugins-blacklist", output)
         self.assertIn("--generate-shell-completion", output)
+        self.assertIn("--judge-spread-threshold", output)
+        self.assertIn("--no-judge-deviation", output)
         for pid in self.plugin_ids:
             self.assertIn(pid, output)
 

@@ -552,6 +552,32 @@ class TestRenderFooterVariants(unittest.TestCase):
         rendered = window.lines.get(39, "")
         self.assertIn("[judge-model: 12✅3❌15Σ]", rendered)
 
+    def test_stopped_judge_name_is_red_in_footer(self):
+        window = _FakeWindow()
+        with mock.patch.object(cli.curses, "color_pair", return_value=7) as color_pair:
+            cli._render_footer(
+                window, 120, 40, [], [], 39,
+                judge_progress={
+                    "stopped-judge": {
+                        "completed": 4, "failed": 1, "expected": 17,
+                        "stopped": True,
+                    },
+                    "active-judge": {
+                        "completed": 5, "failed": 0, "expected": 17,
+                    },
+                },
+            )
+        writes = [call for call in window.calls if call[0] == "addstr"]
+        self.assertIn(("addstr", 39, 0, " Judging [", 0), writes)
+        self.assertIn(("addstr", 39, 10, "stopped-judge", 7), writes)
+        self.assertIn(("addstr", 39, 23, ": 4✅1❌17Σ] [active-judge: 5✅0❌17Σ]", 0), writes)
+        final_write = writes[-1]
+        self.assertLessEqual(
+            final_write[2] + cli._display_width(final_write[3]),
+            119,
+        )
+        color_pair.assert_called_once_with(3)
+
 
 class TestFmtValueEdges(unittest.TestCase):
     def test_none_renders_dash(self):

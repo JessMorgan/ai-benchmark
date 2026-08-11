@@ -71,6 +71,84 @@ class TestCLIArgs(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0)
         self.assertIn("--no-preload", result.stdout)
+        self.assertIn("one or more configured", result.stdout)
+        self.assertIn("confidence-\n                        weighted consensus", result.stdout)
+
+    def test_help_groups_options_by_category(self):
+        result = subprocess.run(
+            [sys.executable, "ai-benchmark.py", "--help"],
+            capture_output=True,
+            text=True, check=False,
+        )
+        self.assertEqual(result.returncode, 0)
+        help_text = result.stdout
+        for heading in (
+            "General:",
+            "Benchmark configuration:",
+            "Execution:",
+            "Tools:",
+            "Output:",
+            "Judge analysis:",
+        ):
+            self.assertIn(heading, help_text)
+        for option in (
+            "--restart", "--config", "--out", "--timeout", "--token-levels",
+            "--temperature", "--plugin-temperature", "--plugin-thread-limit",
+            "--plugins-whitelist", "--plugins-blacklist", "--list-plugins",
+            "--generate-shell-completion", "--dump-default-config",
+            "--convert-config", "--base-url", "--api-key", "--save-responses",
+            "--judge-models", "--build-judge-queue", "--judge-queue-output",
+            "--judge-spread-threshold", "--no-judge-spread",
+            "--judge-deviation-threshold", "--no-judge-deviation", "--seed",
+            "--retry-on-429", "--no-retry-on-429", "--no-rerun-failed",
+            "--scripted", "--runner", "--no-install-opencode", "--no-preload",
+        ):
+            self.assertIn(option, help_text)
+        headings = [
+            "General:",
+            "Benchmark configuration:",
+            "Execution:",
+            "Tools:",
+            "Output:",
+            "Judge analysis:",
+        ]
+        sections = {}
+        for index, heading in enumerate(headings):
+            start = help_text.index(heading) + len(heading)
+            end = (
+                help_text.index(headings[index + 1], start)
+                if index + 1 < len(headings)
+                else len(help_text)
+            )
+            sections[heading] = help_text[start:end]
+
+        expected_groups = {
+            "General:": ("--help", "--restart", "--scripted", "--seed"),
+            "Benchmark configuration:": (
+                "--config", "--out", "--timeout", "--token-levels",
+                "--temperature", "--plugin-temperature", "--plugin-thread-limit",
+                "--plugins-whitelist", "--plugins-blacklist", "--no-rerun-failed",
+            ),
+            "Execution:": (
+                "--runner", "--no-install-opencode", "--no-preload",
+                "--retry-on-429", "--no-retry-on-429",
+            ),
+            "Tools:": (
+                "--list-plugins", "--generate-shell-completion",
+                "--dump-default-config", "--convert-config", "--base-url", "--api-key",
+            ),
+            "Output:": ("--save-responses",),
+            "Judge analysis:": (
+                "--judge-models",
+                "--build-judge-queue", "--judge-queue-output",
+                "--judge-spread-threshold", "--no-judge-spread",
+                "--judge-deviation-threshold", "--no-judge-deviation",
+            ),
+        }
+        for heading, options in expected_groups.items():
+            for option in options:
+                self.assertIn(option, sections[heading], option)
+        self.assertNotIn("options:\n", help_text)
 
     def test_dump_default_config_has_per_plugin_temperatures(self):
         result = subprocess.run(
