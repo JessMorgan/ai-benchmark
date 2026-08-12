@@ -25,6 +25,7 @@ from datetime import datetime, timezone
 
 from benchmark.completions import generate_shell_completion
 from benchmark.core import (
+    JUDGE_DEFAULT_MAX_TOKENS,
     BenchmarkState,
     PreloadResult,
     _apply_http_retry_default,
@@ -2757,8 +2758,8 @@ def main():  # pragma: no cover - live benchmark orchestrator (no unit tests)
 
         judge_effective_timeout = (cfg.get("judge", {}).get("timeout", timeout)
                                    if isinstance(cfg.get("judge"), dict) else timeout)
-        judge_token_levels = (cfg.get("judge", {}).get("token_levels", [1024])
-                              if isinstance(cfg.get("judge"), dict) else [1024])
+        judge_token_levels = (cfg.get("judge", {}).get("token_levels", [JUDGE_DEFAULT_MAX_TOKENS])
+                               if isinstance(cfg.get("judge"), dict) else [JUDGE_DEFAULT_MAX_TOKENS])
         judge_temperature = (cfg.get("judge", {}).get("temperature", 0.0)
                              if isinstance(cfg.get("judge"), dict) else 0.0)
 

@@ -5,6 +5,7 @@ from unittest import mock
 
 from benchmark import cli
 from benchmark.core import (
+    JUDGE_DEFAULT_MAX_TOKENS,
     JudgeResult,
     build_judge_prompt,
     confidence_weighted_consensus,
@@ -128,6 +129,23 @@ class TestJudgeCore(unittest.TestCase):
                 result = judge_response({}, "Local", "judge", sidecar, timeout=3)
         self.assertIsNone(result.response_text)
         self.assertEqual(result.error, "timeout")
+
+    def test_judge_response_uses_4096_default_token_budget(self):
+        response = mock.Mock(
+            error=None,
+            text='{"score": 75, "confidence": "medium", "rationale": "usable"}',
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            sidecar = f"{tmp}/input.json"
+            prepare_judge_sidecar(
+                sidecar, FakePlugin(), "Prompt", "Response",
+                target="model", runner="http",
+            )
+            with mock.patch("benchmark.core.nonstream_request", return_value=response) as request:
+                result = judge_response({}, "Local", "judge", sidecar, timeout=3)
+        self.assertEqual(JUDGE_DEFAULT_MAX_TOKENS, 4096)
+        self.assertEqual(result.score, 75)
+        self.assertEqual(request.call_args.args[5], 4096)
 
     def test_judge_response_retries_invalid_json(self):
         response = mock.Mock(error=None, text='{"score": 75, "confidence": "medium", "rationale": "usable"}')
