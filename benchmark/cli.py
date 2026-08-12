@@ -2736,6 +2736,25 @@ def main():  # pragma: no cover - live benchmark orchestrator (no unit tests)
             }
             for model in judge_models
         })
+
+        def replace_judge_progress(judge_name, previous_vote, current_vote):
+            """Replace one cell's prior outcome in the live footer totals."""
+            previous_completed = int(
+                previous_vote is not None and is_successful_judge_vote(previous_vote)
+            )
+            previous_failed = int(
+                previous_vote is not None and not is_successful_judge_vote(previous_vote)
+            )
+            completed = int(is_successful_judge_vote(current_vote))
+            failed = int(not is_successful_judge_vote(current_vote))
+            return state.replace_judge_progress(
+                judge_name,
+                previous_completed=previous_completed,
+                previous_failed=previous_failed,
+                completed=completed,
+                failed=failed,
+            )
+
         judge_effective_timeout = (cfg.get("judge", {}).get("timeout", timeout)
                                    if isinstance(cfg.get("judge"), dict) else timeout)
         judge_token_levels = (cfg.get("judge", {}).get("token_levels", [1024])
@@ -2807,6 +2826,12 @@ def main():  # pragma: no cover - live benchmark orchestrator (no unit tests)
                         state.increment_judge_progress(judge_name, expected=-1)
                     return
             item = {}
+            previous_vote = None
+            existing_votes = []
+            state_key = (
+                target_name if runner == "http"
+                else f"{target_name} [opencode]"
+            )
             try:
                 with open(sidecar, encoding="utf-8") as handle:
                     item = json.load(handle)
@@ -2814,7 +2839,7 @@ def main():  # pragma: no cover - live benchmark orchestrator (no unit tests)
                     (result.get("state_key", result.get("model")), result.get("runner", "http")): result
                     for result in state.latest_results()
                 }.get((item.get("state_key", target_name), runner), {})
-                state_key = item.get("state_key", target_name)
+                state_key = item.get("state_key", state_key)
                 live_info = state.snapshot().get(state_key, {})
                 vote_key = f"{plugin_id}_judge_votes"
                 existing_by_model = {
@@ -2826,13 +2851,16 @@ def main():  # pragma: no cover - live benchmark orchestrator (no unit tests)
                     if isinstance(vote, dict) and vote.get("model")
                 }
                 existing_votes = list(existing_by_model.values())
+                previous_vote = existing_by_model.get(judge_name)
                 if any(
                     vote.get("model") == judge_name
                     and is_successful_judge_vote(vote)
                     for vote in existing_votes
                     if isinstance(vote, dict)
                 ):
-                    state.increment_judge_progress(judge_name, completed=1)
+                    # The persisted successful vote was already included in
+                    # the initialized current-state totals. Duplicate queue
+                    # delivery must not count it a second time.
                     return
                 activity_id = state.start_judge_activity(
                     judge_name, target_name, plugin_id,
@@ -2950,11 +2978,10 @@ def main():  # pragma: no cover - live benchmark orchestrator (no unit tests)
                 # attempt remains visible in votes/artifacts, but its judge is
                 # still eligible for a future resume retry.
                 with judge_counts_lock:
+                    replace_judge_progress(judge_name, previous_vote, vote)
                     if is_successful_judge_vote(vote):
-                        state.increment_judge_progress(judge_name, completed=1)
                         run_info["judge_counts"]["completed"] += 1
                     else:
-                        state.increment_judge_progress(judge_name, failed=1)
                         run_info["judge_counts"]["failed"] += 1
                     run_info["judge_counts"]["votes"] += 1
                 with persistence_lock:
@@ -2987,7 +3014,24 @@ def main():  # pragma: no cover - live benchmark orchestrator (no unit tests)
                 except OSError as artifact_exc:
                     artifact_error = f"could not save judge failure artifact: {artifact_exc}"
                     print(f"⚠️  {artifact_error}", file=sys.stderr)
-                state_key = item.get("state_key", target_name)
+                state_key = item.get("state_key", state_key)
+                if previous_vote is None:
+                    latest = {
+                        (result.get("state_key", result.get("model")),
+                         result.get("runner", "http")): result
+                        for result in state.latest_results()
+                    }.get((state_key, runner), {})
+                    live_info = state.snapshot().get(state_key, {})
+                    existing_by_model = {
+                        vote.get("model"): vote
+                        for vote in [
+                            *(latest.get(f"{plugin_id}_judge_votes", []) or []),
+                            *(live_info.get(f"{plugin_id}_judge_votes", []) or []),
+                        ]
+                        if isinstance(vote, dict) and vote.get("model")
+                    }
+                    existing_votes = list(existing_by_model.values())
+                    previous_vote = existing_by_model.get(judge_name)
                 failure_vote = {
                     "model": judge_name,
                     "score": None,
@@ -3000,7 +3044,7 @@ def main():  # pragma: no cover - live benchmark orchestrator (no unit tests)
                 }
                 vote_identity = (state_key, runner, plugin_id)
                 with judge_votes_lock:
-                    prior_votes = list(judge_votes.get(vote_identity, []))
+                    prior_votes = list(judge_votes.get(vote_identity, existing_votes))
                     prior_votes = [v for v in prior_votes if v.get("model") != judge_name]
                     prior_votes.append(failure_vote)
                     judge_votes[vote_identity] = prior_votes
@@ -3028,8 +3072,8 @@ def main():  # pragma: no cover - live benchmark orchestrator (no unit tests)
                         and expected_judges.issubset(received_judges)
                     ),
                 )
-                state.increment_judge_progress(judge_name, failed=1)
                 with judge_counts_lock:
+                    replace_judge_progress(judge_name, previous_vote, failure_vote)
                     run_info["judge_counts"]["failed"] += 1
                 # Failed attempts do not advance completed progress and remain
                 # eligible for retry on resume.

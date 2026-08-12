@@ -26,6 +26,20 @@ class TestBenchmarkState(unittest.TestCase):
         self.assertEqual(progress, {"completed": 2, "failed": 2, "expected": 3})
         self.assertEqual(state.judge_progress_snapshot()["judge"]["failed"], 2)
 
+    def test_judge_progress_replaces_failed_vote_when_retry_succeeds(self):
+        state = self.module.BenchmarkState({"model-a": "Source1"}, ["fake"])
+        state.set_judge_progress({"judge": {"completed": 311, "failed": 31, "expected": 342}})
+        progress = state.replace_judge_progress(
+            "judge", previous_failed=1, completed=1,
+        )
+        self.assertEqual(progress, {"completed": 312, "failed": 30, "expected": 342})
+        self.assertEqual(state.judge_progress_snapshot()["judge"], progress)
+
+        unchanged = state.replace_judge_progress(
+            "judge", previous_completed=1, completed=1,
+        )
+        self.assertEqual(unchanged, progress)
+
     def test_state_tracks_plugin_fields(self):
         models = {"model-a": "Source1", "model-b": "Source2"}
         state = self.module.BenchmarkState(models, self.plugin_ids)

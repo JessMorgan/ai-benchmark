@@ -703,6 +703,29 @@ class BenchmarkState:
             self._judge_progress[model] = current
             return dict(current)
 
+    def replace_judge_progress(self, model, *, previous_completed=0,
+                               previous_failed=0, completed=0, failed=0):
+        """Replace one judge's prior outcome in the live progress totals.
+
+        Judge retries replace the vote for a model/plugin cell rather than
+        adding a second current outcome. In particular, a failed attempt that
+        later succeeds must move from ``failed`` to ``completed`` instead of
+        leaving both counters inflated. ``expected`` is intentionally
+        unchanged because the cell was already part of the judge's workload.
+        """
+        with self._lock:
+            current = dict(self._judge_progress.get(model, {}))
+            current["completed"] = max(
+                0,
+                current.get("completed", 0) - previous_completed + completed,
+            )
+            current["failed"] = max(
+                0,
+                current.get("failed", 0) - previous_failed + failed,
+            )
+            self._judge_progress[model] = current
+            return dict(current)
+
     def judge_progress_snapshot(self):
         """Return a copy of live per-judge progress for the TUI."""
         with self._lock:
