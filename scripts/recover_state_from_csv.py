@@ -96,17 +96,28 @@ def reconstruct_run_state(run_dir, *, apply=False):
     if not rows:
         raise ValueError("results.csv contains no rows")
     configured_targets = resolve_targets(load_config(config_path))
-    plugins = discover_plugins()
-    pids = [plugin.id for plugin in plugins]
-    versions = {plugin.id: plugin.version for plugin in plugins}
+    discovered_plugins = discover_plugins()
+    discovered_by_id = {plugin.id: plugin for plugin in discovered_plugins}
     score_columns = {
         match.group(1): key
         for key in rows[0]
         for match in [re.match(r"^(.*)_Score_\d+$", key)]
         if match and "_Judge_" not in key and match.group(1) != "Overall"
     }
-    if set(score_columns) != set(pids):
-        raise ValueError("results.csv plugin score columns do not match discovered plugins")
+    unknown_plugins = set(score_columns) - set(discovered_by_id)
+    if unknown_plugins:
+        raise ValueError(
+            "results.csv contains unknown plugin score columns: "
+            + ", ".join(sorted(unknown_plugins))
+        )
+    if not score_columns:
+        raise ValueError("results.csv contains no plugin score columns")
+    # Historical reports legitimately contain fewer plugins than the current
+    # checkout. Recover the plugin set recorded by the CSV rather than making
+    # old runs unrecoverable whenever a new challenge is added.
+    pids = [plugin.id for plugin in discovered_plugins if plugin.id in score_columns]
+    plugins = [discovered_by_id[pid] for pid in pids]
+    versions = {plugin.id: plugin.version for plugin in plugins}
 
     state_models = {}
     missing_config_models = set()

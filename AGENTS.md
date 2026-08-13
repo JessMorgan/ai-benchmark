@@ -19,7 +19,7 @@ to know what to grep first.
   - **`benchmark/outputs.py`** — `gen_markdown / gen_csv / gen_html / gen_pdf`.
   - **`benchmark/completions.py`** — `--generate-shell-completion`.
   - **`benchmark/opencode.py`** — the optional OpenCode subprocess runner.
-- **`plugins/challenges/`** — 13 task plugins; auto-discovered and metadata-validated. **`plugins/outputs/`** — md/csv/html/pdf output plugins.
+- **`plugins/challenges/`** — 15 task plugins; auto-discovered and metadata-validated. **`plugins/outputs/`** — md/csv/html/pdf output plugins.
 - **`tests/`** — unittest suite. **`pyproject.toml`** — project metadata, runtime deps, `dev` dependency group, pytest/coverage/mypy/ruff config. **`uv.lock`** — pinned dependency tree (managed by `uv`).
 
 ## Smoke / test commands (no API key needed)
@@ -85,11 +85,12 @@ LAST entry per model.
   prompt; `.meta.json` includes the rubric breakdown and `error`/`traceback`
   if `plugin.evaluate()` crashed.
 
-## Built-in plugins (13)
+## Built-in plugins (15)
 
-`code-review`, `debug-traversal`, `error-recovery`, `moe-dense`, `multi-step`,
-`multi-turn-conversation`, `orchestration`, `prd-creation`, `rate-limiter`,
-`software-architecture`, `structured-output`, `tool-calling`, `wireframes`.
+`code-review`, `debug-traversal`, `error-recovery`, `instruction-following`,
+`moe-dense`, `multi-step`, `multi-turn-conversation`, `orchestration`,
+`prd-creation`, `rate-limiter`, `reasoning`, `software-architecture`,
+`structured-output`, `tool-calling`, `wireframes`.
 Three (`code-review`, `moe-dense`, `structured-output`) set
 `supports_streaming=False` — they go through the **non-streaming**
 `_post_request_context` path.

@@ -26,7 +26,7 @@ class TestStateRecovery(unittest.TestCase):
             "Model", "Runner", "Source", "TTFT_s", "Total", "Time_s", "Status", "Error",
             "code-review_Score_15", "code-review_Response_s", "code-review_Thinking_Tokens",
             "code-review_Content_Tokens", "code-review_Total_Tokens", "code-review_TPS",
-            "code-review_Empty_Reason",
+            "code-review_Empty_Reason", "unknown-plugin_Score_20",
         ]
         with open(os.path.join(run_dir, "results.csv"), "w", newline="", encoding="utf-8") as handle:
             writer = csv.DictWriter(handle, fieldnames=fields)
@@ -34,10 +34,10 @@ class TestStateRecovery(unittest.TestCase):
             writer.writerow({field: "" for field in fields})
         return run_dir
 
-    def test_recovery_requires_all_discovered_plugin_columns(self):
+    def test_recovery_rejects_unknown_plugin_columns(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             run_dir = self._make_run(tmpdir)
-            with self.assertRaisesRegex(ValueError, "plugin score columns"):
+            with self.assertRaisesRegex(ValueError, "unknown plugin score columns"):
                 reconstruct_run_state(run_dir)
 
     def test_recovery_apply_preserves_backup_and_reloads(self):

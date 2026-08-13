@@ -9,12 +9,14 @@ AI Benchmark uses a plugin architecture. Each plugin defines a benchmark task, a
 | `code-review` | Code Review | 15 | No |
 | `debug-traversal` | Debug Traversal | 20 | Yes |
 | `error-recovery` | Error Recovery | 20 | Yes |
+| `instruction-following` | Instruction Following | 20 | Yes |
 | `moe-dense` | MoE vs Dense | 17 | No |
 | `multi-step` | Multi-Step Instructions | 20 | Yes |
 | `multi-turn-conversation` | Multi-Turn Conversation | 20 | Yes |
 | `orchestration` | Orchestration & Workflow | 16 | Yes |
 | `prd-creation` | PRD Creation | 20 | Yes |
 | `rate-limiter` | Rate Limiter | 20 | Yes |
+| `reasoning` | Logical Reasoning | 20 | Yes |
 | `software-architecture` | Software Architecture | 20 | Yes |
 | `structured-output` | Structured Output | 20 | No |
 | `tool-calling` | Tool Calling Agent | 25 | Yes |
@@ -88,6 +90,8 @@ See [Development](./development.md#writing-a-plugin) for a step-by-step guide.
 - [PRD Creation](./plugins/prd-creation.md)
 - [Wireframes](./plugins/wireframes.md)
 - [Software Architecture](./plugins/software-architecture.md)
+- [Instruction Following](./plugins/instruction-following.md)
+- [Logical Reasoning](./plugins/reasoning.md)
 
 The three additional challenge plugins (`debug-traversal`, `error-recovery`, and
 `multi-turn-conversation`) are documented by their prompts and rubric metadata
