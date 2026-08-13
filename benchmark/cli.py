@@ -3045,6 +3045,7 @@ def main():  # pragma: no cover - live benchmark orchestrator (no unit tests)
                             "error": outcome.error,
                             "terminal_429": outcome.terminal_429,
                             "rationale": outcome.rationale,
+                            "diagnostics": outcome.diagnostics,
                             "saved_at": datetime.now(timezone.utc).isoformat(),
                         },
                     )

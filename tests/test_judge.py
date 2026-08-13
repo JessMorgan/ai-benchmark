@@ -154,6 +154,39 @@ class TestJudgeCore(unittest.TestCase):
         self.assertIsNone(result.response_text)
         self.assertEqual(result.error, "timeout")
 
+    def test_judge_response_records_budget_diagnostics(self):
+        response = mock.Mock(
+            error=None,
+            text='{"score": 75, "confidence": "medium", "rationale": "usable"}',
+            think_text="r" * (2500 * 4),
+            usage={"completion_tokens_details": {"reasoning_tokens": 2500}},
+            finish_reason="length",
+        )
+        request_params = {
+            "chat_template_kwargs": {"thinking_token_budget": 2048},
+            "response_format": {"type": "json_object"},
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            sidecar = f"{tmp}/input.json"
+            prepare_judge_sidecar(
+                sidecar, FakePlugin(), "Prompt", "Response",
+                target="model", runner="http",
+            )
+            with mock.patch("benchmark.core.nonstream_request", return_value=response):
+                result = judge_response(
+                    {}, "Local", "judge", sidecar, timeout=3,
+                    request_params=request_params,
+                )
+        self.assertEqual(result.diagnostics["request_max_tokens"], 4096)
+        self.assertEqual(result.diagnostics["requested_thinking_token_budget"], 2048)
+        self.assertEqual(result.diagnostics["response_reasoning_tokens"], 2500)
+        self.assertEqual(result.diagnostics["response_reasoning_tokens_source"],
+                         "usage.details.reasoning_tokens")
+        self.assertFalse(result.diagnostics["thinking_budget_honored"])
+        self.assertEqual(result.diagnostics["response_finish_reason"], "length")
+        self.assertTrue(result.diagnostics["response_json_valid"])
+        self.assertEqual(result.diagnostics["request_params"], request_params)
+
     def test_judge_response_passes_request_params(self):
         response = mock.Mock(
             error=None,

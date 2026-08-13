@@ -219,18 +219,29 @@ def fetch_models_v1(base_url, api_key=None):
     return [m["id"] for m in models if "id" in m]
 
 
-def build_curl_cmd(model, prompt, max_tokens, stream, api_url, headers, system_prompt=None):
-    """Build a curl command string for the given API request."""
-    messages = []
-    if system_prompt:
-        messages.append({"role": "system", "content": system_prompt})
-    messages.append({"role": "user", "content": prompt})
-    data = json.dumps({
-        "model": model,
-        "messages": messages,
-        "max_tokens": max_tokens,
-        "stream": stream
-    }, ensure_ascii=False)
+def build_curl_cmd(model, prompt, max_tokens, stream, api_url, headers, system_prompt=None,
+                   request_body=None):
+    """Build a curl command string for the given API request.
+
+    ``request_body`` is the already-merged body passed to ``requests.post``.
+    Supplying it keeps the diagnostic curl command faithful to the actual
+    request, including provider-specific parameters such as
+    ``chat_template_kwargs`` and ``response_format``. The individual
+    arguments remain as a backward-compatible fallback for callers that only
+    need to construct a basic request.
+    """
+    if request_body is None:
+        messages = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append({"role": "user", "content": prompt})
+        request_body = {
+            "model": model,
+            "messages": messages,
+            "max_tokens": max_tokens,
+            "stream": stream,
+        }
+    data = json.dumps(request_body, ensure_ascii=False)
     auth_value = headers.get("Authorization", "")
     content_type = headers.get("Content-Type", "application/json")
     auth_header = (
@@ -329,7 +340,13 @@ def _post_request_context(source_config, source, body, timeout, stream, log_path
             prompt = msg["content"]
             break
     max_tokens = body.get("max_tokens", 2048)
-    curl_cmd = build_curl_cmd(model, prompt, max_tokens, stream, api_url, headers, system_prompt=system_prompt) if log_path else None
+    curl_cmd = (
+        build_curl_cmd(
+            model, prompt, max_tokens, stream, api_url, headers,
+            system_prompt=system_prompt, request_body=body,
+        )
+        if log_path else None
+    )
     resp = None
     watchdog = None
     # Use a short connection timeout so a stuck connect() returns quickly,

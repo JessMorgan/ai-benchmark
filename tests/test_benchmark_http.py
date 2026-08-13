@@ -2,6 +2,7 @@
 import contextlib
 import json
 import shlex
+import tempfile
 import threading
 import time
 import unittest
@@ -47,6 +48,23 @@ class TestBuildCurlCmd(unittest.TestCase):
         content_type_index = parts.index("Content-Type: application/json; profile='custom'")
         self.assertEqual(parts[content_type_index], "Content-Type: application/json; profile='custom'")
         self.assertEqual(json.loads(payload)["messages"][0]["content"], prompt)
+
+    def test_request_body_includes_provider_parameters_in_curl(self):
+        request_body = {
+            "model": "judge",
+            "messages": [{"role": "user", "content": "judge this"}],
+            "max_tokens": 4096,
+            "stream": False,
+            "chat_template_kwargs": {"thinking_token_budget": 2048},
+            "response_format": {"type": "json_object"},
+        }
+        command = build_curl_cmd(
+            "judge", "judge this", 4096, False,
+            "http://localhost/v1/chat/completions", {},
+            request_body=request_body,
+        )
+        payload = shlex.split(command)[shlex.split(command).index("-d") + 1]
+        self.assertEqual(json.loads(payload), request_body)
 
 
 class TestStreamRequest(unittest.TestCase):
@@ -884,11 +902,20 @@ class TestSystemPrompt(unittest.TestCase):
             captured["body"] = kwargs.get("json")
             return MockResponse()
 
-        with mock.patch("requests.post", side_effect=fake_post):
-            nonstream_request(
-                source_config, timeout=5, model="m", source="Local",
-                prompt="hi", max_tokens=4096, request_params=request_params,
-            )
+        with tempfile.TemporaryDirectory() as tmp:
+            log_path = f"{tmp}/judge.log"
+            with mock.patch("requests.post", side_effect=fake_post):
+                nonstream_request(
+                    source_config, timeout=5, model="m", source="Local",
+                    prompt="hi", max_tokens=4096, request_params=request_params,
+                    log_path=log_path,
+                )
+
+            with open(log_path, encoding="utf-8") as handle:
+                logged_command = handle.read()
+            logged_payload = shlex.split(logged_command)[
+                shlex.split(logged_command).index("-d") + 1
+            ]
 
         self.assertEqual(captured["body"]["chat_template_kwargs"], {
             "thinking_token_budget": 2048,
@@ -896,6 +923,7 @@ class TestSystemPrompt(unittest.TestCase):
         self.assertEqual(captured["body"]["response_format"], {
             "type": "json_object",
         })
+        self.assertEqual(json.loads(logged_payload), captured["body"])
 
     def test_nonstream_request_no_system_prompt_when_none(self):
         """nonstream_request only includes a user message when no system_prompt is provided."""

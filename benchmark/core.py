@@ -8,7 +8,7 @@ import threading
 import time
 import traceback
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Literal
 
@@ -171,6 +171,7 @@ class JudgeResult:
     error: str | None = None
     response_text: str | None = None
     terminal_429: bool = False
+    diagnostics: dict[str, Any] = field(default_factory=dict)
 
 
 def _is_exhausted_429(error):
@@ -389,6 +390,76 @@ def confidence_weighted_consensus(votes):
     }
 
 
+def _judge_response_diagnostics(response, request_params, max_tokens):
+    """Summarize request settings and response evidence for judge debugging.
+
+    OpenAI-compatible providers do not consistently expose whether a
+    ``chat_template_kwargs`` option was accepted. Recording the exact
+    requested values alongside usage, finish reason, and the provider's
+    reasoning-token count (when available) lets a completed run distinguish
+    an honored thinking cap from a provider that ignored it. The character
+    estimate is deliberately labeled as such because it is only a fallback
+    when usage details are unavailable.
+    """
+    params = copy.deepcopy(request_params) if isinstance(request_params, dict) else {}
+    chat_template = params.get("chat_template_kwargs")
+    requested_budget = (
+        chat_template.get("thinking_token_budget")
+        if isinstance(chat_template, dict)
+        else None
+    )
+    if isinstance(requested_budget, bool) or not isinstance(requested_budget, (int, float)):
+        requested_budget = None
+
+    usage = getattr(response, "usage", {})
+    if not isinstance(usage, dict):
+        usage = {}
+    details = usage.get("completion_tokens_details")
+    if not isinstance(details, dict):
+        details = usage.get("completion_token_details")
+    if not isinstance(details, dict):
+        details = {}
+    reported_reasoning = None
+    reasoning_source = None
+    for container, source in ((usage, "usage"), (details, "usage.details")):
+        for key in ("reasoning_tokens", "thinking_tokens"):
+            value = container.get(key)
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                reported_reasoning = value
+                reasoning_source = f"{source}.{key}"
+                break
+        if reported_reasoning is not None:
+            break
+
+    think_text = getattr(response, "think_text", "") or ""
+    if not isinstance(think_text, str):
+        think_text = ""
+    estimated_reasoning = int(count_tokens(think_text)) if think_text else None
+    observed_reasoning = reported_reasoning
+    if observed_reasoning is None:
+        observed_reasoning = estimated_reasoning
+        if observed_reasoning is not None:
+            reasoning_source = "estimated_from_reasoning_content"
+
+    budget_honored = None
+    if requested_budget is not None and observed_reasoning is not None:
+        budget_honored = observed_reasoning <= requested_budget
+    return {
+        "request_max_tokens": max_tokens,
+        "request_params": params,
+        "requested_thinking_token_budget": requested_budget,
+        "response_finish_reason": (
+            getattr(response, "finish_reason", None)
+            if isinstance(getattr(response, "finish_reason", None), str)
+            else None
+        ),
+        "response_usage": usage,
+        "response_reasoning_tokens": observed_reasoning,
+        "response_reasoning_tokens_source": reasoning_source,
+        "thinking_budget_honored": budget_honored,
+    }
+
+
 def judge_response(source_config, judge_source, judge_api_model, sidecar,
                    *, timeout, token_levels=None, temperature=0.0,
                    drop_params=None, request_params=None, stop_event=None, log_path=None):
@@ -413,6 +484,7 @@ def judge_response(source_config, judge_source, judge_api_model, sidecar,
             request_params=request_params,
             stop_event=stop_event,
         )
+        diagnostics = _judge_response_diagnostics(response, request_params, budgets[0])
         if response.error:
             # Transport failures, including exhausted HTTP 429 retries, are
             # terminal for this cell attempt. Do not spend the parser retry on
@@ -421,20 +493,24 @@ def judge_response(source_config, judge_source, judge_api_model, sidecar,
             return JudgeResult(
                 error=response.error,
                 terminal_429=_is_exhausted_429(response.error),
+                diagnostics=diagnostics,
             )
         parsed = parse_judge_response(response.text)
+        diagnostics["response_json_valid"] = parsed.error is None
         if parsed.error is None:
             return JudgeResult(
                 score=parsed.score,
                 confidence=parsed.confidence,
                 rationale=parsed.rationale,
                 response_text=response.text,
+                diagnostics=diagnostics,
             )
         parsed = JudgeResult(
             confidence=parsed.confidence,
             rationale=parsed.rationale,
             error=parsed.error,
             response_text=response.text,
+            diagnostics=diagnostics,
         )
     return parsed
 

@@ -223,6 +223,17 @@ both reasoning and the final JSON object. The judge request also uses
 `response_format: {"type": "json_object"}` by default to reduce reasoning or
 other prose leaking into the machine-parsed answer.
 
+Each HTTP request log now records the exact merged request body used for the
+`requests.post` call in its replayable curl command, including these
+provider-specific parameters. Judge response `.meta.json` files additionally
+record `request_params`, `request_max_tokens`, `response_finish_reason`,
+`response_usage`, `response_reasoning_tokens`, and `thinking_budget_honored`.
+The last field is `true` or `false` when the provider reports reasoning-token
+usage (or when it can be estimated from `reasoning_content`); otherwise it is
+`null`. An observed value greater than 2048 is evidence that the provider or
+model ignored the requested thinking budget, while `null` means the response
+did not expose enough usage information to verify it.
+
 ## Automatic Thinking-Truncation Escalation
 
 Even without per-model config, the benchmark **auto-retries** once when a streaming HTTP plugin produces an empty response classified as `thinking-truncation` (empty content + large `reasoning_content` + `finish_reason="length"` — the budget was consumed by thinking).
