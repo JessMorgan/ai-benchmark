@@ -200,21 +200,21 @@ Plugins are discovered automatically from `plugins/challenges/`. Each plugin is 
 
 | ID | Name | Version | Max score | Streaming |
 |---|---|---:|---:|---|
-| `code-review` | Code Review | 0.8.0 | 15 | No |
-| `debug-traversal` | Debug Traversal | 0.5.0 | 20 | Yes |
-| `error-recovery` | Error Recovery | 0.7.0 | 20 | Yes |
-| `instruction-following` | Instruction Following | 0.1.0 | 20 | Yes |
-| `moe-dense` | MoE vs Dense | 0.7.1 | 17 | No |
-| `multi-step` | Multi-Step Instructions | 0.9.0 | 20 | Yes |
-| `multi-turn-conversation` | Multi-Turn Conversation | 0.5.1 | 20 | Yes |
-| `orchestration` | Orchestration & Workflow | 0.8.0 | 16 | Yes |
-| `prd-creation` | PRD Creation | 0.6.1 | 20 | Yes |
-| `rate-limiter` | Rate Limiter | 0.7.0 | 20 | Yes |
-| `reasoning` | Logical Reasoning | 0.1.0 | 20 | Yes |
-| `software-architecture` | Software Architecture | 0.8.0 | 20 | Yes |
-| `structured-output` | Structured Output | 0.8.0 | 20 | No |
-| `tool-calling` | Tool Calling Agent | 0.9.0 | 25 | Yes |
-| `wireframes` | Wireframes | 0.7.1 | 20 | Yes |
+| `code-review` | Code Review | 0.8.1 | 15 | No |
+| `debug-traversal` | Debug Traversal | 0.5.1 | 20 | Yes |
+| `error-recovery` | Error Recovery | 0.7.1 | 20 | Yes |
+| `instruction-following` | Instruction Following | 0.1.1 | 20 | Yes |
+| `moe-dense` | MoE vs Dense | 0.7.2 | 17 | No |
+| `multi-step` | Multi-Step Instructions | 0.9.1 | 20 | Yes |
+| `multi-turn-conversation` | Multi-Turn Conversation | 0.5.2 | 20 | Yes |
+| `orchestration` | Orchestration & Workflow | 0.8.1 | 16 | Yes |
+| `prd-creation` | PRD Creation | 0.6.2 | 20 | Yes |
+| `rate-limiter` | Rate Limiter | 0.7.1 | 20 | Yes |
+| `reasoning` | Logical Reasoning | 0.1.1 | 20 | Yes |
+| `software-architecture` | Software Architecture | 0.8.1 | 20 | Yes |
+| `structured-output` | Structured Output | 0.8.1 | 20 | No |
+| `tool-calling` | Tool Calling Agent | 0.9.1 | 25 | Yes |
+| `wireframes` | Wireframes | 0.7.2 | 20 | Yes |
 
 Each plugin exposes a `version` attribute so results can be correlated to a specific plugin release. Discovery validates required metadata and rejects duplicate IDs before a run starts.
 

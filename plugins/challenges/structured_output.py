@@ -19,7 +19,7 @@ class StructuredOutputPlugin(BenchmarkTaskPlugin):
 
     @property
     def version(self):
-        return "0.8.0"
+        return "0.8.1"
 
     @property
     def name(self):

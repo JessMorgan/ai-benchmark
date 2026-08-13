@@ -99,30 +99,27 @@ The runtime inventory below matches `uv run ai-benchmark --list-plugins`:
 
 | ID | Version | Max | Stream |
 |---|---:|---:|---|
-| `code-review` | 0.8.0 | 15 | No |
-| `debug-traversal` | 0.5.0 | 20 | Yes |
-| `error-recovery` | 0.7.0 | 20 | Yes |
-| `instruction-following` | 0.1.0 | 20 | Yes |
-| `moe-dense` | 0.7.1 | 17 | No |
-| `multi-step` | 0.9.0 | 20 | Yes |
-| `multi-turn-conversation` | 0.5.1 | 20 | Yes |
-| `orchestration` | 0.8.0 | 16 | Yes |
-| `prd-creation` | 0.6.1 | 20 | Yes |
-| `rate-limiter` | 0.7.0 | 20 | Yes |
-| `reasoning` | 0.1.0 | 20 | Yes |
-| `software-architecture` | 0.8.0 | 20 | Yes |
-| `structured-output` | 0.8.0 | 20 | No |
-| `tool-calling` | 0.9.0 | 25 | Yes |
-| `wireframes` | 0.7.1 | 20 | Yes |
+| `code-review` | 0.8.1 | 15 | No |
+| `debug-traversal` | 0.5.1 | 20 | Yes |
+| `error-recovery` | 0.7.1 | 20 | Yes |
+| `instruction-following` | 0.1.1 | 20 | Yes |
+| `moe-dense` | 0.7.2 | 17 | No |
+| `multi-step` | 0.9.1 | 20 | Yes |
+| `multi-turn-conversation` | 0.5.2 | 20 | Yes |
+| `orchestration` | 0.8.1 | 16 | Yes |
+| `prd-creation` | 0.6.2 | 20 | Yes |
+| `rate-limiter` | 0.7.1 | 20 | Yes |
+| `reasoning` | 0.1.1 | 20 | Yes |
+| `software-architecture` | 0.8.1 | 20 | Yes |
+| `structured-output` | 0.8.1 | 20 | No |
+| `tool-calling` | 0.9.1 | 25 | Yes |
+| `wireframes` | 0.7.2 | 20 | Yes |
 
 `code-review`, `moe-dense`, and `structured-output` set
 `supports_streaming=False` and use the **non-streaming** request path.
 
 ## Git management
-Before committing any complete change:
-1. Run the full CI checks defined in `.github/workflows/tests.yml` (or their local equivalent): `uv sync --frozen`; `uv run pre-commit run --all-files --show-diff-on-failure`; `uv run coverage run -m pytest tests/ plugins/challenges/ plugins/outputs/ -q`; `uv run coverage report -m`; and `uv run coverage report --fail-under=90`. The CI matrix runs these checks on Python 3.10 through 3.14.
-2. Update all relevant documentation to reflect the new reality, including `AGENTS.md`, `README.md`, `docs/`, plugin documentation, CLI/configuration references, and any other checked-in documentation affected by the change.
-3. Confirm the documentation and runtime metadata agree, then commit the complete change to git.
+1. After any complete change, commit to git.
 
 ## Plugin updates
 1. **Update challenge-plugin versions when modified from what's in git.** This policy applies only to challenge plugins and their shared challenge-plugin code under `plugins/challenges/`; it does not apply to `plugins/__init__.py`, output plugins, documentation, or tests. Every internal or externally visible challenge-plugin code change requires a version bump. Non-scoring changes, such as behavior-preserving refactors or internal/API plumbing that cannot affect evaluation results, increment the revision (for example, `0.2.0` → `0.2.1`). A minor-version bump is reserved for changes that could affect scoring in any way, including prompt, rubric, scoring-code, validation, normalization, or execution changes (for example, `0.2.0` → `0.3.0`, resetting the revision). Complete rewrites or very major changes increment the major version (for example, `0.2.0` → `1.0.0`, resetting minor and revision). A bump is not required for every intermediate edit; record the largest applicable change from the version currently in git.

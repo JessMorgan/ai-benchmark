@@ -4,7 +4,7 @@
 |---|---|
 | ID | `instruction-following` |
 | Name | Instruction Following |
-| Version | `0.1.0` |
+| Version | `0.1.1` |
 | Max Score | 20 |
 | Streaming | Yes |
 

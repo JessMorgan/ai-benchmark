@@ -43,7 +43,7 @@ class Rubric:
         item["matched"] = bool(earned) if matched is None else bool(matched)
         item["negative_findings"] = list(negative_findings or [])
         item["errors"] = [str(error) for error in (errors or [])]
-        self.errors.extend(item["errors"])
+        self.errors.extend(str(error) for error in (errors or []))
         self.criteria.append(item)
 
     def eval_regex(self, name: str, max_points: float, text: str, patterns, flags=re.IGNORECASE):

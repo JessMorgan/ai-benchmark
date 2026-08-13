@@ -4,7 +4,7 @@
 |---|---|
 | ID | `multi-step` |
 | Name | Multi-Step Instructions |
-| Version | `0.9.0` |
+| Version | `0.9.1` |
 | Max Score | 20 |
 | Streaming | Yes |
 

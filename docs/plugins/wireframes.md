@@ -4,7 +4,7 @@
 |---|---|
 | ID | `wireframes` |
 | Name | Wireframes |
-| Version | `0.7.1` |
+| Version | `0.7.2` |
 | Max Score | 20 |
 | Streaming | Yes |
 

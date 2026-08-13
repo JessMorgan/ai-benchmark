@@ -9,7 +9,7 @@ class TestInstructionFollowingPlugin:
         self.plugin = InstructionFollowingPlugin()
 
     def test_metadata_prompt_and_temperature(self):
-        assert self.plugin.version == "0.1.0"
+        assert self.plugin.version == "0.1.1"
         assert "T-09" in self.plugin.get_prompt()
         assert self.plugin.get_temperature({"instruction_following_temperature": 0.2}) == 0.2
         assert self.plugin.get_temperature({}) is None
@@ -41,7 +41,7 @@ class TestReasoningPlugin:
         self.plugin = ReasoningPlugin()
 
     def test_metadata_prompt_and_temperature(self):
-        assert self.plugin.version == "0.1.0"
+        assert self.plugin.version == "0.1.1"
         assert "Profile happened before Auth" in self.plugin.get_prompt()
         assert self.plugin.get_temperature({"reasoning_temperature": 0.1}) == 0.1
         assert self.plugin.get_temperature({}) is None

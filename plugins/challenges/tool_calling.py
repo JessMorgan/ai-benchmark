@@ -14,7 +14,7 @@ class ToolCallingPlugin(BenchmarkTaskPlugin):
         return "tool-calling"
 
     @property
-    def version(self):        return "0.9.0"
+    def version(self):        return "0.9.1"
 
     @property
     def name(self):

@@ -20,7 +20,7 @@ class MultiTurnConversationPlugin(BenchmarkTaskPlugin):
 
     @property
     def version(self):
-        return "0.5.1"
+        return "0.5.2"
 
     @property
     def name(self):

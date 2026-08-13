@@ -14,7 +14,7 @@ class MoEDensePlugin(BenchmarkTaskPlugin):
 
     @property
     def version(self):
-        return "0.7.1"
+        return "0.7.2"
 
     @property
     def name(self):

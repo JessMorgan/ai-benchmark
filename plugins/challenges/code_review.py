@@ -13,7 +13,7 @@ class CodeReviewPlugin(BenchmarkTaskPlugin):
         return "code-review"
 
     @property
-    def version(self):        return "0.8.0"
+    def version(self):        return "0.8.1"
 
     @property
     def name(self):

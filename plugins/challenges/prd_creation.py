@@ -13,7 +13,7 @@ class PRDCreationPlugin(BenchmarkTaskPlugin):
 
     @property
     def version(self):
-        return "0.6.1"
+        return "0.6.2"
 
     @property
     def name(self):

@@ -222,6 +222,7 @@ def validate_sections(
         if len(content.strip()) < min_chars:
             missing.append(f"section {heading!r} is missing or too short")
         else:
+            assert matched_key is not None
             matched_heading = next(
                 candidate for candidate in candidates if candidate.lower() in matched_key
             )
