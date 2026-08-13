@@ -4,7 +4,7 @@
 |---|---|
 | ID | `code-review` |
 | Name | Code Review |
-| Version | `0.2.0` |
+| Version | `0.8.0` |
 | Max Score | 15 |
 | Streaming | No |
 

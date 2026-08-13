@@ -20,7 +20,8 @@ to know what to grep first.
   - **`benchmark/completions.py`** — `--generate-shell-completion`.
   - **`benchmark/opencode.py`** — the optional OpenCode subprocess runner.
 - **`plugins/challenges/`** — 15 task plugins; auto-discovered and metadata-validated. **`plugins/outputs/`** — md/csv/html/pdf output plugins.
-- **`tests/`** — unittest suite. **`pyproject.toml`** — project metadata, runtime deps, `dev` dependency group, pytest/coverage/mypy/ruff config. **`uv.lock`** — pinned dependency tree (managed by `uv`).
+- **`scripts/recover_state_from_csv.py`** — explicit, dry-run-by-default recovery of historical `benchmark_state.json` files from `results.csv`; accepts known historical plugin subsets and rejects unknown score columns.
+- **`tests/`** — pytest/unittest suite. **`pyproject.toml`** — project metadata, runtime deps, `dev` dependency group, pytest/coverage/mypy/ruff config. **`uv.lock`** — pinned dependency tree (managed by `uv`).
 
 ## Smoke / test commands (no API key needed)
 
@@ -31,7 +32,7 @@ project commands run through `uv run`.
 ```sh
 uv run ai-benchmark --list-plugins          # installed console script
 python3 ai-benchmark.py --list-plugins      # every discovered plugin (repo launcher)
-python3 ai-benchmark.py --dump-default-config      # YAML config template
+python3 ai-benchmark.py --dump-default-config      # JSON config template
 python3 ai-benchmark.py --convert-config in.yml    # convert JSON<->YAML (stdout)
 uv run pytest tests/ plugins/challenges/ plugins/outputs/ -q
 uv run mypy benchmark/ ai-benchmark.py
@@ -44,11 +45,14 @@ uv run python -m py_compile ai-benchmark.py benchmark/*.py
   ON; per-source `max_429_retries` overrides are preserved either way).
   See `benchmark.http._post_request_context` for the retry math.
 - `--no-rerun-failed` — keep `failed` models on resume; default re-runs them.
+- `--scripted` — continue non-interactively instead of prompting on resume/plugin changes.
 - `--restart` — discard prior state and start every model fresh.
 - `--no-preload` — override per-source `preload: true` and skip model warm-up
   probes for the run; `preload_timeout` defaults to 300 seconds per source.
 - `--save-responses` — write per-(model, plugin) response files plus
   `meta.json` with rubric breakdown + `error`/`traceback` on crash.
+- `--judge-models MODEL [...]` — run confidence-weighted semantic judging;
+  `--build-judge-queue STATE_FILE` ranks disagreements for manual review.
 - `--plugin-temperature ID=VAL` — overrides the matching `_<id>_temperature`
   config key; per-plugin wins over the global `--temperature`.
 
@@ -65,6 +69,7 @@ per dispatch):
 | `_tps`, `_response_time`, `_output_tokens` | both | Last completed run metrics |
 | `_stream_ok`, `_truncated`, `_repeating`, `_rubric` | both | Streaming + scoring flags |
 | `_empty_reason` | both | Empty-response classification (`None`/`error`/`thinking-truncation`/`thinking-only`/`max-tokens`/`empty`); surfaced in meta.json + CSV |
+| `_judge_votes`, `_judge_score`, `_judge_complete`, `_judge_error` | judge | Valid semantic-judge attempts, consensus, completion, and failure state |
 | `_bytes_received`, `_first_chunk_seen`, `_first_tok_ts`, `_start_ts` | runtime | Live TUI; reset on `start_plugin_run` |
 
 `state.results` is the list of result dicts; `latest_results()` keeps the
@@ -82,24 +87,42 @@ LAST entry per model.
   operator actually ran.
 - `logs/<model>.log` — curl + response bodies (when `--save-responses`).
 - `responses/<model>/<plugin>.txt` — model output; `.prompt.txt` is the
-  prompt; `.meta.json` includes the rubric breakdown and `error`/`traceback`
-  if `plugin.evaluate()` crashed.
+  prompt; `.think.txt` and `<plugin>.meta.json` preserve reasoning and rubric
+  diagnostics. Failed evaluations include `error`/`traceback` when
+  `plugin.evaluate()` crashes.
+- `judge-inputs/` — retained prompt/response sidecars used for resumable
+  semantic judging; raw judge responses are stored beside benchmark artifacts.
 
 ## Built-in plugins (15)
 
-`code-review`, `debug-traversal`, `error-recovery`, `instruction-following`,
-`moe-dense`, `multi-step`, `multi-turn-conversation`, `orchestration`,
-`prd-creation`, `rate-limiter`, `reasoning`, `software-architecture`,
-`structured-output`, `tool-calling`, `wireframes`.
-Three (`code-review`, `moe-dense`, `structured-output`) set
-`supports_streaming=False` — they go through the **non-streaming**
-`_post_request_context` path.
+The runtime inventory below matches `uv run ai-benchmark --list-plugins`:
+
+| ID | Version | Max | Stream |
+|---|---:|---:|---|
+| `code-review` | 0.8.0 | 15 | No |
+| `debug-traversal` | 0.5.0 | 20 | Yes |
+| `error-recovery` | 0.7.0 | 20 | Yes |
+| `instruction-following` | 0.1.0 | 20 | Yes |
+| `moe-dense` | 0.7.1 | 17 | No |
+| `multi-step` | 0.9.0 | 20 | Yes |
+| `multi-turn-conversation` | 0.5.1 | 20 | Yes |
+| `orchestration` | 0.8.0 | 16 | Yes |
+| `prd-creation` | 0.6.1 | 20 | Yes |
+| `rate-limiter` | 0.7.0 | 20 | Yes |
+| `reasoning` | 0.1.0 | 20 | Yes |
+| `software-architecture` | 0.8.0 | 20 | Yes |
+| `structured-output` | 0.8.0 | 20 | No |
+| `tool-calling` | 0.9.0 | 25 | Yes |
+| `wireframes` | 0.7.1 | 20 | Yes |
+
+`code-review`, `moe-dense`, and `structured-output` set
+`supports_streaming=False` and use the **non-streaming** request path.
 
 ## Git management
 1. After any complete change, commit to git.
 
 ## Plugin updates
-1. **Update plugin version when modified from what's in git** Very minor changes such as fixing spelling add to the revision (0.0.1).  Any time the prompt or scoring are changed, up the minor (0.1.0, resetting the revision [0.0.x] to zero).  Complete rewrites or very very major changes, update the major (1.0.0, resetting minor and revision to zero).  Notably, a version bump isn't required for every edit; only the largest change from what is currently in git needs to be recorded.
+1. **Update plugin version when modified from what's in git** Very minor changes such as fixing spelling add to the revision (0.0.1).  Any time the prompt or scoring are changed, up the minor (0.1.0, resetting the revision [0.0.x] to zero).  Complete rewrites or very very major changes, update the major (1.0.0, resetting minor and revision to zero).  Notably, a version bump isn't required for every edit; only the largest change from what is currently in git needs to be recorded.  Additionally, this only applies to code changes; documentation and test should not get version bumps.
 
 ## Known gotchas (each is a recent fix; the regression test lives in `tests/`)
 

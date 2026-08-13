@@ -41,13 +41,13 @@ To refresh the lock file against newer releases: `uv lock --upgrade`, then
 Use `pytest`:
 
 ```sh
-python -m pytest tests/ -v
+uv run pytest tests/ plugins/challenges/ plugins/outputs/ -q
 ```
 
 To run a specific test file:
 
 ```sh
-python -m pytest tests/test_cli.py -v
+uv run pytest tests/test_cli.py -v
 ```
 
 ## Type Checking
@@ -55,7 +55,7 @@ python -m pytest tests/test_cli.py -v
 Run `mypy` on the core modules:
 
 ```sh
-python -m mypy benchmark/ ai-benchmark.py
+uv run mypy benchmark/ ai-benchmark.py
 ```
 
 ## Linting
@@ -68,16 +68,16 @@ ruff check .
 
 ## Writing a Plugin
 
-1. Create a new file in `plugins/` (e.g. `plugins/my_task.py`).
+1. Create a new module in `plugins/challenges/` (for example, `plugins/challenges/my_task.py`).
 2. Define a class that inherits from `BenchmarkTaskPlugin`.
 3. Implement the required properties and methods.
-4. Optionally override `supports_streaming`.
+4. Optionally override `supports_streaming`; challenge modules are discovered automatically, so do not add manual registration.
 
 Minimal example:
 
 ```python
 """My custom benchmark task."""
-from benchmark.plugin import BenchmarkTaskPlugin
+from benchmark.plugin import BenchmarkTaskPlugin, EvaluationResult
 
 
 class MyTaskPlugin(BenchmarkTaskPlugin):
@@ -132,7 +132,7 @@ Use `global_config.get("my-task_temperature")` in `get_temperature()`.
 
 ## Testing Plugins
 
-Add tests in `tests/test_scoring.py` or create a new test file. Use the plugin's `score()` method directly with sample responses.
+Add tests under `plugins/challenges/test_*.py` or `tests/`. Test metadata, empty/partial responses, and a complete response through the plugin's `evaluate()`/`score()` methods. Run the focused tests before the full suite.
 
 Example:
 
@@ -157,8 +157,8 @@ pre-commit install
 
 ## Contribution Checklist
 
-- [ ] Tests pass (`python -m pytest tests/ -v`)
-- [ ] Type checks pass (`python -m mypy ...`)
+- [ ] Tests pass (`uv run pytest tests/ plugins/challenges/ plugins/outputs/ -q`)
+- [ ] Type checks pass (`uv run mypy benchmark/ ai-benchmark.py`)
 - [ ] Lint passes (`ruff check .`)
 - [ ] New plugins include documentation in `docs/plugins/`
 - [ ] README or docs updated if user-facing behavior changed

@@ -4,8 +4,8 @@
 |---|---|
 | ID | `moe-dense` |
 | Name | MoE vs Dense |
-| Version | `0.1.0` |
-| Max Score | 15 |
+| Version | `0.7.1` |
+| Max Score | 17 |
 | Streaming | No |
 
 ## Task

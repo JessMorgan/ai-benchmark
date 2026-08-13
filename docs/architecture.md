@@ -106,7 +106,7 @@ Both request functions:
 
 ## Plugin Scoring
 
-Each plugin's `score()` method receives the raw response text and returns a float. The benchmark does not interpret the score; it simply records it.
+Each plugin's `evaluate()` method receives the raw response text and returns an `EvaluationResult` containing a native task-scale score, rubric criteria, and diagnostics. Plugins may use regex checks, typed parsers, and isolated execution validators; the shared `Rubric` helper records evidence and bounded penalties. The benchmark core normalizes the native score exactly once to the public 0–100 percentage schema and serializes rubric entries as `points`/`total`. `score()` remains the native offline-evaluation convenience method and delegates to `evaluate()` for the built-in challenge plugins.
 
 ## Output Generators
 
@@ -157,7 +157,8 @@ This is useful when failures are known to be non-transient or when you want to p
 
 ## Error Handling
 
-- Plugin failures record `"fail"` string scores.
+- Plugin failures record `"fail"` string scores and preserve error/traceback metadata when response saving is enabled.
 - Output generators safely ignore non-numeric scores.
+- Historical CSV recovery accepts a known subset of currently discovered plugins, so reports from before a plugin was added remain recoverable; unknown plugin score columns are rejected.
 - Worker exceptions are printed but do not stop other workers.
 - Ctrl+C closes active requests and saves state.

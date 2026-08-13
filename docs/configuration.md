@@ -120,7 +120,7 @@ sources:
     max_backoff_seconds: 300  # hard cap per sleep
 ```
 
-Defaults are **opt-out**: every source retries up to twice by default. To restore the previous fail-fast behaviour, set `max_429_retries: 0` per source (or globally with `--no-default-429-retry` when implemented). When a 429 is returned, the runner sleeps `max(Retry-After, backoff_seconds * backoff_factor ** attempt)` bounded by `max_backoff_seconds`, with ±20 % jitter applied only when `Retry-After` is absent. Each retry is logged to that model's `logs/<model>.log` and `stop_event` cancels the sleep immediately, so Ctrl+C still terminates the runner quickly.
+Defaults are **opt-out**: every source retries up to twice by default. To restore the previous fail-fast behaviour, set `max_429_retries: 0` per source or pass `--no-retry-on-429` globally. Explicit per-source `max_429_retries` values are preserved by the global toggle. When a 429 is returned, the runner sleeps `max(Retry-After, backoff_seconds * backoff_factor ** attempt)` bounded by `max_backoff_seconds`, with ±20 % jitter applied only when `Retry-After` is absent. Each retry is logged to that model's `logs/<model>.log` and `stop_event` cancels the sleep immediately, so Ctrl+C still terminates the runner quickly.
 
 ### Environment Variable Expansion
 
@@ -258,7 +258,9 @@ You can set the temperature for each plugin using either of these config keys:
   "code-review_temperature": 0.3,
   "orchestration_temperature": 0.5,
   "tool-calling_temperature": 0.2,
-  "structured-output_temperature": 0.2
+  "structured-output_temperature": 0.2,
+  "instruction-following_temperature": 0.2,
+  "reasoning_temperature": 0.1
 }
 ```
 

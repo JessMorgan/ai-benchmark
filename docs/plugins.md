@@ -4,23 +4,23 @@ AI Benchmark uses a plugin architecture. Each plugin defines a benchmark task, a
 
 ## Built-In Plugins
 
-| ID | Name | Internal Max Score | Streaming |
-|---|---|---|---|
-| `code-review` | Code Review | 15 | No |
-| `debug-traversal` | Debug Traversal | 20 | Yes |
-| `error-recovery` | Error Recovery | 20 | Yes |
-| `instruction-following` | Instruction Following | 20 | Yes |
-| `moe-dense` | MoE vs Dense | 17 | No |
-| `multi-step` | Multi-Step Instructions | 20 | Yes |
-| `multi-turn-conversation` | Multi-Turn Conversation | 20 | Yes |
-| `orchestration` | Orchestration & Workflow | 16 | Yes |
-| `prd-creation` | PRD Creation | 20 | Yes |
-| `rate-limiter` | Rate Limiter | 20 | Yes |
-| `reasoning` | Logical Reasoning | 20 | Yes |
-| `software-architecture` | Software Architecture | 20 | Yes |
-| `structured-output` | Structured Output | 20 | No |
-| `tool-calling` | Tool Calling Agent | 25 | Yes |
-| `wireframes` | Wireframes | 20 | Yes |
+| ID | Name | Version | Internal Max Score | Streaming |
+|---|---|---:|---:|---|
+| `code-review` | Code Review | 0.8.0 | 15 | No |
+| `debug-traversal` | Debug Traversal | 0.5.0 | 20 | Yes |
+| `error-recovery` | Error Recovery | 0.7.0 | 20 | Yes |
+| `instruction-following` | Instruction Following | 0.1.0 | 20 | Yes |
+| `moe-dense` | MoE vs Dense | 0.7.1 | 17 | No |
+| `multi-step` | Multi-Step Instructions | 0.9.0 | 20 | Yes |
+| `multi-turn-conversation` | Multi-Turn Conversation | 0.5.1 | 20 | Yes |
+| `orchestration` | Orchestration & Workflow | 0.8.0 | 16 | Yes |
+| `prd-creation` | PRD Creation | 0.6.1 | 20 | Yes |
+| `rate-limiter` | Rate Limiter | 0.7.0 | 20 | Yes |
+| `reasoning` | Logical Reasoning | 0.1.0 | 20 | Yes |
+| `software-architecture` | Software Architecture | 0.8.0 | 20 | Yes |
+| `structured-output` | Structured Output | 0.8.0 | 20 | No |
+| `tool-calling` | Tool Calling Agent | 0.9.0 | 25 | Yes |
+| `wireframes` | Wireframes | 0.7.1 | 20 | Yes |
 
 ## Selecting Plugins
 
@@ -94,11 +94,12 @@ See [Development](./development.md#writing-a-plugin) for a step-by-step guide.
 - [Logical Reasoning](./plugins/reasoning.md)
 
 The three additional challenge plugins (`debug-traversal`, `error-recovery`, and
-`multi-turn-conversation`) are documented by their prompts and rubric metadata
+`multi-turn-conversation`) currently keep their prompt and rubric documentation
 in the corresponding source modules. Use `python ai-benchmark.py --list-plugins`
-for the authoritative runtime inventory.
+for the authoritative runtime inventory and versions; this table is a checked-in
+snapshot for quick reference.
 
-## New Challenge Plugins
+## Selected Challenge Plugins
 
 ### `prd-creation`
 

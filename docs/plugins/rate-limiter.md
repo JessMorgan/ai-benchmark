@@ -4,7 +4,7 @@
 |---|---|
 | ID | `rate-limiter` |
 | Name | Rate Limiter |
-| Version | `0.1.0` |
+| Version | `0.7.0` |
 | Max Score | 20 |
 | Streaming | Yes |
 

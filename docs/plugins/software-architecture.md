@@ -4,7 +4,7 @@
 |---|---|
 | ID | `software-architecture` |
 | Name | Software Architecture |
-| Version | `0.1.0` |
+| Version | `0.8.0` |
 | Max Score | 20 |
 | Streaming | Yes |
 

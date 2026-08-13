@@ -75,10 +75,14 @@ All configuration lives in a JSON file (default: `benchmark-config.json`):
 | `output_dir` | Directory for results and logs |
 | `timeout` | API request timeout in seconds |
 | `token_levels` | Max-token limits tried on truncation (ascending order) |
+| `model_token_levels` | Per-target max-token overrides keyed by target or `source/api_model` |
+| `model_thread_limit` | Positive top-level fallback for concurrent target pipelines per source |
+| `plugin_thread_limit` | Top-level fallback for concurrent plugins within one target |
 | `plugins_whitelist` | List of plugin IDs to run (empty = all) |
 | `plugins_blacklist` | List of plugin IDs to skip (empty = none) |
-| `sources` | Named API endpoints with URL, headers, and optional per-source settings such as `opencode_timeout` |
-| `models` | Map of model name → source name, or model name → object with `source` and optional `drop_params` |
+| `sources` | Named API endpoints with URL, headers, and optional per-source settings such as `opencode_timeout`, `preload`, `model_thread_limit`, and `max_429_retries` |
+| `models` | Map of model name → source name, or model name → object with `source`, `drop_params`, and optional `token_levels` |
+| `agents` | Optional named targets with a model, source, and system prompt |
 
 ### Per-model configuration
 
@@ -106,6 +110,7 @@ The extended form allows per-model settings such as dropping specific API parame
 |---|---|
 | `source` | Source name from the `sources` section |
 | `drop_params` | List of request body keys to omit (e.g. `seed`, `temperature`) |
+| `token_levels` | Optional per-target max-token limits; takes precedence over global levels |
 
 **API keys** use `${VAR}` or `${VAR:default}` env-var syntax:
 ```json
@@ -123,22 +128,40 @@ python ai-benchmark.py [options]  # repository launcher
 |---|---|
 | `--config PATH` | Config file path (default: `benchmark-config.json`) |
 | `--restart` | Discard prior state and run all models from scratch |
+| `--scripted` | Continue non-interactively instead of prompting on resume/plugin changes |
 | `--out DIR` | Override the output directory from config |
 | `--timeout SEC` | Override API request timeout |
 | `--token-levels N [N ...]` | Override token levels (e.g. `--token-levels 4096 8192 16384`) |
+| `--temperature VAL` | Default plugin temperature |
+| `--plugin-temperature ID=VAL [...]` | Override selected plugin temperatures |
+| `--plugin-thread-limit N` | Max plugin workers per target; `0` means one per plugin |
 | `--dump-default-config` | Print a config template to stdout and exit |
 | `--base-url URL` | (with `--dump-default-config`) Discover models from `/v1/models` |
 | `--api-key KEY` | (with `--base-url`) API key for model discovery |
 | `--plugins-whitelist ID [ID ...]` | Run only these plugins |
 | `--plugins-blacklist ID [ID ...]` | Run all plugins except these |
+| `--no-rerun-failed` | Keep failed models failed on resume |
 | `--seed INT` | Fixed random seed for all API requests |
 | `--runner {http,opencode,both}` | Select the existing HTTP runner (default), the OpenCode runner, or both (per-target OpenCode→HTTP pipeline) |
+| `--no-preload` | Disable configured source preload probes |
+| `--retry-on-429 / --no-retry-on-429` | Enable or disable default HTTP 429 backoff |
+| `--save-responses` | Save prompts, responses, reasoning, and metadata sidecars |
+| `--judge-models MODEL [...]` | Run confidence-weighted semantic judging |
+| `--build-judge-queue STATE_FILE` | Build a ranked judge-disagreement queue |
+| `--judge-queue-output PATH` | Choose the judge queue output path |
+| `--judge-spread-threshold POINTS` | Configure the judge spread queue threshold |
+| `--no-judge-spread` | Disable judge spread queueing |
+| `--judge-deviation-threshold POINTS` | Configure deterministic/consensus deviation queueing |
+| `--no-judge-deviation` | Disable judge deviation queueing |
 | `--no-install-opencode` | Do not auto-download OpenCode into `.tools/opencode/` when it is missing or too old; fail with an error instead |
+| `--list-plugins` | List discovered plugins and versions |
+| `--generate-shell-completion SHELL` | Generate Bash, Zsh, or Fish completion |
+| `--convert-config PATH` | Convert JSON/YAML config and print it to stdout |
 | `-h, --help` | Show this help message |
 
 ## Resume / Continue
 
-By default, re-running resumes from where you left off — completed models are skipped, and failed models are retried. Saved state is stored in `benchmark_state.json` inside the output directory and is preserved after completion so you can re-run to retry any failures. New models added to the config between runs are picked up automatically. Use `--restart` to force a clean run.
+By default, re-running resumes from where you left off — completed models are skipped, and failed models are retried. Saved state is stored in `benchmark_state.json` inside the output directory and is preserved after completion so you can re-run to retry any failures. New models added to the config between runs are picked up automatically. Use `--restart` to force a clean run. Use `--scripted` to continue automatically without the interactive restart/continue prompt.
 
 If the saved state file is unreadable or fails to load (e.g. a corrupt `benchmark_state.json`), the run **aborts with an error** instead of silently discarding prior results — inspect or repair the state file, or pass `--restart` to explicitly discard it.
 
@@ -167,26 +190,31 @@ After completion the output directory contains:
 | `results.html` | HTML report |
 | `results.pdf` | PDF report (requires `fpdf2`) |
 | `logs/*.log` | Per-model request/response logs |
+| `responses/` | Prompts, final responses, reasoning sidecars, and per-plugin metadata when `--save-responses` is enabled |
+| `benchmark_state.json` | Resume state and per-plugin results |
+| `run-info.json` | Run metadata, concurrency/preload data, and HTTP 429 backoff statistics |
 
 ## Plugins
 
 Plugins are discovered automatically from `plugins/challenges/`. Each plugin is a Python module containing a `BenchmarkTaskPlugin` subclass. Run `python ai-benchmark.py --list-plugins` for the authoritative inventory. The current built-in plugins are:
 
-| ID | Name |
-|---|---|
-| `code-review` | Code Review |
-| `debug-traversal` | Debug Traversal |
-| `error-recovery` | Error Recovery |
-| `moe-dense` | MoE vs Dense |
-| `multi-step` | Multi-Step Instructions |
-| `multi-turn-conversation` | Multi-Turn Conversation |
-| `orchestration` | Orchestration & Workflow |
-| `prd-creation` | PRD Creation |
-| `rate-limiter` | Rate Limiter |
-| `software-architecture` | Software Architecture |
-| `structured-output` | Structured Output |
-| `tool-calling` | Tool Calling Agent |
-| `wireframes` | Wireframes |
+| ID | Name | Version | Max score | Streaming |
+|---|---|---:|---:|---|
+| `code-review` | Code Review | 0.8.0 | 15 | No |
+| `debug-traversal` | Debug Traversal | 0.5.0 | 20 | Yes |
+| `error-recovery` | Error Recovery | 0.7.0 | 20 | Yes |
+| `instruction-following` | Instruction Following | 0.1.0 | 20 | Yes |
+| `moe-dense` | MoE vs Dense | 0.7.1 | 17 | No |
+| `multi-step` | Multi-Step Instructions | 0.9.0 | 20 | Yes |
+| `multi-turn-conversation` | Multi-Turn Conversation | 0.5.1 | 20 | Yes |
+| `orchestration` | Orchestration & Workflow | 0.8.0 | 16 | Yes |
+| `prd-creation` | PRD Creation | 0.6.1 | 20 | Yes |
+| `rate-limiter` | Rate Limiter | 0.7.0 | 20 | Yes |
+| `reasoning` | Logical Reasoning | 0.1.0 | 20 | Yes |
+| `software-architecture` | Software Architecture | 0.8.0 | 20 | Yes |
+| `structured-output` | Structured Output | 0.8.0 | 20 | No |
+| `tool-calling` | Tool Calling Agent | 0.9.0 | 25 | Yes |
+| `wireframes` | Wireframes | 0.7.1 | 20 | Yes |
 
 Each plugin exposes a `version` attribute so results can be correlated to a specific plugin release. Discovery validates required metadata and rejects duplicate IDs before a run starts.
 
@@ -214,7 +242,7 @@ Coverage configuration lives in `pyproject.toml` (`[tool.coverage]`). This produ
 
 Each model is scored on the active plugins across multiple dimensions:
 
-- **Score**: Normalized integer quality percentage (0–100) based on rubric keywords
+- **Score**: Normalized integer quality percentage (0–100) based on each plugin's rubric, validators, and (where configured) isolated execution checks
 - **Speed**: Tokens per second (TPS)
 - **Latency**: Time to first token (TTFT) for streaming
 - **Cost**: Approximate per-model overhead

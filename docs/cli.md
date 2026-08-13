@@ -7,7 +7,7 @@ installed `ai-benchmark` console script, both of which delegate to
 ## Usage
 
 ```sh
-aio-benchmark [options]            # installed console script
+ai-benchmark [options]            # installed console script
 python ai-benchmark.py [options]    # repository launcher
 ```
 
@@ -17,6 +17,7 @@ python ai-benchmark.py [options]    # repository launcher
 |---|---|
 | `--config PATH` | Config file path (default: `benchmark-config.json`) |
 | `--restart` | Discard prior state and run all models from scratch |
+| `--scripted` | Continue non-interactively instead of prompting on resume/plugin changes |
 | `--out DIR` | Override the output directory from config |
 | `--timeout SEC` | Override API request timeout |
 | `--token-levels N [N ...]` | Override token levels (e.g. `--token-levels 4096 8192 16384`) |
@@ -28,6 +29,7 @@ python ai-benchmark.py [options]    # repository launcher
 | `--list-plugins` | List discovered plugins and exit |
 | `--generate-shell-completion bash/zsh/fish` | Generate shell completion script |
 | `--dump-default-config` | Print a default config template and exit |
+| `--convert-config PATH` | Convert JSON/YAML config and print it to stdout |
 | `--base-url URL` | (with `--dump-default-config`) Discover models from `/v1/models` |
 | `--api-key KEY` | (with `--base-url`) API key for model discovery |
 | `--save-responses` | Save each model's plugin response text to the selected runner namespace under `<output_dir>/{http,opencode}/responses/` |
@@ -36,6 +38,12 @@ python ai-benchmark.py [options]    # repository launcher
 | `--retry-on-429` / `--no-retry-on-429` | Toggle HTTP-429 retry/backoff globally. Default is **ON**; pass `--no-retry-on-429` to opt out (sources with explicit `max_429_retries` are preserved). See [Configuration Reference](configuration.md#http-429-retry--backoff) for the per-source keys and migration notes. |
 | `--runner {http,opencode,both}` | Select the existing HTTP runner (default), the OpenCode CLI runner, or both. In `both`, each target pipelines OpenCode into HTTP. |
 | `--judge-models MODEL [MODEL ...]` | Opt in to semantic judging with one or more configured model keys; their valid ratings are combined into a confidence-weighted consensus. Judge inputs are retained under `<output_dir>/judge-inputs/` and scores appear beside deterministic scores. |
+| `--build-judge-queue STATE_FILE` | Build a ranked JSON queue of cells selected by judge spread or deterministic/consensus deviation and exit |
+| `--judge-queue-output PATH` | Write the judge queue to this path instead of beside the state file |
+| `--judge-spread-threshold POINTS` | Include cells whose valid judge scores span at least this many points; default 30 |
+| `--no-judge-spread` | Disable judge-spread queue selection |
+| `--judge-deviation-threshold POINTS` | Include cells whose consensus differs from the deterministic score by at least this many points; default 40 |
+| `--no-judge-deviation` | Disable deterministic/consensus deviation queue selection |
 | `--no-install-opencode` | Do not auto-download OpenCode into `.tools/opencode/` when it is missing or too old; fail with an error instead |
 | `--no-preload` | Disable per-source model warm-up probes for this run, overriding `preload: true` |
 | `-h, --help` | Show help message |
