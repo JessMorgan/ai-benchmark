@@ -179,6 +179,31 @@ def test_judge_pool_drains_all_jobs_before_stop():
     assert all(not thread.is_alive() for thread in pool._threads)
 
 
+def test_judge_pool_rotates_judges_and_prioritizes_never_judged_cells():
+    stop = threading.Event()
+    processed = []
+
+    def process(job):
+        processed.append(job[0])
+
+    pool = SourceJudgeWorkerPool("Cloud", 1, process, stop)
+    pool.start(1)
+    # Retry work is enqueued first, but fresh work must be selected first.
+    # Within each tier, judges rotate instead of one judge draining its whole
+    # backlog before another judge gets a turn.
+    for job in (
+        ("a-retry-1", None, None, None, "judge-a", False),
+        ("b-retry-1", None, None, None, "judge-b", False),
+        ("a-fresh", None, None, None, "judge-a", True),
+        ("b-fresh", None, None, None, "judge-b", True),
+    ):
+        pool.enqueue(job)
+    pool.stop(drain=True)
+
+    assert processed == ["a-fresh", "b-fresh", "a-retry-1", "b-retry-1"]
+    assert pool.queue.unfinished_tasks == 0
+
+
 def test_judge_pool_continues_after_unexpected_callback_exception():
     stop = threading.Event()
     processed = []

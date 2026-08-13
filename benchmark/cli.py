@@ -20,6 +20,7 @@ import threading
 import time
 import traceback
 import unicodedata
+from collections import deque
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from datetime import datetime, timezone
 
@@ -1680,12 +1681,130 @@ class _CombinedStopEvent:
         return True
 
 
+class _FairJudgeQueue:
+    """A source-local judge queue with fair judge rotation and fresh priority.
+
+    Jobs are kept in separate fresh and retry queues for each judge. Fresh
+    cells (with no previous vote) are always selected before retry cells, and
+    judges rotate round-robin within the selected tier. This prevents a judge
+    with a large failed-vote backlog from starving a judge with only a few
+    never-judged cells while retaining the source-wide concurrency limit.
+    """
+
+    def __init__(self):
+        self._condition = threading.Condition()
+        self._fresh = {}
+        self._retry = {}
+        self._fresh_order = deque()
+        self._retry_order = deque()
+        self._unfinished_tasks = 0
+        self._stop_tokens = 0
+
+    @property
+    def unfinished_tasks(self):
+        """Expose queue accounting used by tests and shutdown diagnostics."""
+        with self._condition:
+            return self._unfinished_tasks
+
+    @staticmethod
+    def _job_key(job):
+        if isinstance(job, tuple) and len(job) > 4:
+            return job[4]
+        return None
+
+    @staticmethod
+    def _job_is_fresh(job):
+        # ``expected_added`` is true when this judge has no prior vote for the
+        # cell; failed/invalid prior attempts are retry work.
+        return not isinstance(job, tuple) or len(job) <= 5 or bool(job[5])
+
+    @staticmethod
+    def _append_once(order, key):
+        if key not in order:
+            order.append(key)
+
+    def put(self, job):
+        key = self._job_key(job)
+        fresh = self._job_is_fresh(job)
+        with self._condition:
+            buckets = self._fresh if fresh else self._retry
+            buckets.setdefault(key, deque()).append(job)
+            self._append_once(self._fresh_order if fresh else self._retry_order, key)
+            self._unfinished_tasks += 1
+            self._condition.notify()
+
+    def get(self, timeout=None):
+        deadline = None if timeout is None else time.monotonic() + timeout
+        with self._condition:
+            while True:
+                if self._stop_tokens:
+                    self._stop_tokens -= 1
+                    return _FAIR_QUEUE_STOP
+                order = self._fresh_order if self._fresh_order else self._retry_order
+                buckets = self._fresh if self._fresh_order else self._retry
+                if order:
+                    key = order.popleft()
+                    jobs = buckets[key]
+                    job = jobs.popleft()
+                    if jobs:
+                        order.append(key)
+                    else:
+                        del buckets[key]
+                        other = self._retry if buckets is self._fresh else self._fresh
+                        other_order = self._retry_order if buckets is self._fresh else self._fresh_order
+                        if key in other:
+                            self._append_once(other_order, key)
+                    return job
+                if timeout is not None:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise queue.Empty
+                    self._condition.wait(remaining)
+                else:
+                    self._condition.wait()
+
+    def task_done(self):
+        with self._condition:
+            if self._unfinished_tasks <= 0:
+                raise ValueError("task_done() called too many times")
+            self._unfinished_tasks -= 1
+            if self._unfinished_tasks == 0:
+                self._condition.notify_all()
+
+    def join(self):
+        with self._condition:
+            while self._unfinished_tasks:
+                self._condition.wait()
+
+    def cancel_pending(self):
+        """Discard queued, not-yet-started jobs while preserving active jobs."""
+        with self._condition:
+            pending = sum(len(jobs) for jobs in self._fresh.values())
+            pending += sum(len(jobs) for jobs in self._retry.values())
+            self._fresh.clear()
+            self._retry.clear()
+            self._fresh_order.clear()
+            self._retry_order.clear()
+            self._unfinished_tasks -= pending
+            self._condition.notify_all()
+
+    def request_stop(self, count):
+        with self._condition:
+            self._stop_tokens += count
+            self._condition.notify_all()
+
+
+_FAIR_QUEUE_STOP = object()
+
+
 class SourceJudgeWorkerPool:
     """Run judge jobs with a source-local, dynamically expandable pool.
 
     The pool starts with the reserved judge capacity used while benchmark
     targets are active. Once the source benchmark scheduler completes, callers
-    can expand it to ``limit`` so all source slots judge concurrently.
+    can expand it to ``limit`` so all source slots judge concurrently. Within
+    that pool, judge models rotate fairly and never-judged cells precede
+    retries.
     """
 
     def __init__(self, source, limit, process_job, stop_event):
@@ -1693,8 +1812,7 @@ class SourceJudgeWorkerPool:
         self.limit = max(1, int(limit))
         self.process_job = process_job
         self.stop_event = stop_event
-        self.queue = queue.Queue()
-        self._stop = object()
+        self.queue = _FairJudgeQueue()
         self._lock = threading.Lock()
         self._threads = []
 
@@ -1716,9 +1834,9 @@ class SourceJudgeWorkerPool:
                 if self.stop_event.is_set():
                     break
                 continue
+            if job is _FAIR_QUEUE_STOP:
+                return
             try:
-                if job is self._stop:
-                    return
                 # On cancellation, discard queued work instead of starting
                 # another judge request. The active request receives the same
                 # stop_event and can terminate cooperatively; every discarded
@@ -1726,9 +1844,6 @@ class SourceJudgeWorkerPool:
                 # balanced.
                 if self.stop_event.is_set():
                     continue
-                # Normal completion drains queued jobs before sentinels are
-                # inserted. Cancellation may still interrupt the request via
-                # stop_event, but the queue item is always accounted for.
                 try:
                     self.process_job(job)
                 except Exception as exc:  # noqa: BLE001 - keep one bad job from killing the pool
@@ -1782,10 +1897,11 @@ class SourceJudgeWorkerPool:
         """
         if drain:
             self.queue.join()
+        else:
+            self.queue.cancel_pending()
         with self._lock:
             threads = list(self._threads)
-        for _thread in threads:
-            self.queue.put(self._stop)
+        self.queue.request_stop(len(threads))
         for thread in threads:
             thread.join(timeout=timeout)
 
