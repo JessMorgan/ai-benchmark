@@ -859,6 +859,44 @@ class TestSystemPrompt(unittest.TestCase):
         self.assertEqual(messages[0], {"role": "system", "content": "You are a coder."})
         self.assertEqual(messages[1], {"role": "user", "content": "hi"})
 
+    def test_nonstream_request_includes_provider_request_params(self):
+        """Provider-specific nested request parameters are sent unchanged."""
+        source_config = {"Local": {"api_url": "http://localhost/chat/completions", "headers": {}}}
+        captured = {}
+        request_params = {
+            "chat_template_kwargs": {"thinking_token_budget": 2048},
+            "response_format": {"type": "json_object"},
+        }
+
+        class MockResponse:
+            status_code = 200
+
+            def iter_content(self, chunk_size=8192):
+                body = json.dumps({
+                    "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
+                })
+                yield body.encode("utf-8")
+
+            def close(self):
+                pass
+
+        def fake_post(url, **kwargs):
+            captured["body"] = kwargs.get("json")
+            return MockResponse()
+
+        with mock.patch("requests.post", side_effect=fake_post):
+            nonstream_request(
+                source_config, timeout=5, model="m", source="Local",
+                prompt="hi", max_tokens=4096, request_params=request_params,
+            )
+
+        self.assertEqual(captured["body"]["chat_template_kwargs"], {
+            "thinking_token_budget": 2048,
+        })
+        self.assertEqual(captured["body"]["response_format"], {
+            "type": "json_object",
+        })
+
     def test_nonstream_request_no_system_prompt_when_none(self):
         """nonstream_request only includes a user message when no system_prompt is provided."""
         source_config = {"Local": {"api_url": "http://localhost/chat/completions", "headers": {}}}

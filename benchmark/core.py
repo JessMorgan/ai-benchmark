@@ -1,4 +1,5 @@
 """Core benchmark logic shared by the CLI and tests."""
+import copy
 import hashlib
 import json
 import os
@@ -54,6 +55,14 @@ PRELOAD_DEFAULT_TIMEOUT = 300
 PRELOAD_MAX_TOKENS = 256
 JUDGE_PROMPT_VERSION = "judge-v1"
 JUDGE_DEFAULT_MAX_TOKENS = 4096
+JUDGE_DEFAULT_REQUEST_PARAMS = {
+    "chat_template_kwargs": {
+        # Leave Nemotron's thinking mode enabled; cap its internal reasoning
+        # so it still has room to emit the required JSON judgment.
+        "thinking_token_budget": 2048,
+    },
+    "response_format": {"type": "json_object"},
+}
 JUDGE_MAX_RATIONALE_CHARS = 2000
 JUDGE_CONFIDENCE_WEIGHTS = {"high": 1.0, "medium": 0.6, "low": 0.3}
 
@@ -167,6 +176,28 @@ class JudgeResult:
 def _is_exhausted_429(error):
     """Return whether an HTTP error is an exhausted rate-limit response."""
     return isinstance(error, str) and error.lstrip().startswith("HTTP 429:")
+
+
+def resolve_judge_request_params(cfg):
+    """Return provider-specific request parameters for semantic judges.
+
+    The defaults preserve the model's native thinking mode while bounding
+    Nemotron's reasoning budget and requesting a JSON object. A ``judge``
+    config block may override or extend these values through ``request_params``.
+    Nested dictionaries are merged so setting one chat-template option does
+    not discard the default thinking budget.
+    """
+    params = copy.deepcopy(JUDGE_DEFAULT_REQUEST_PARAMS)
+    judge_cfg = cfg.get("judge") if isinstance(cfg, dict) else None
+    configured = judge_cfg.get("request_params") if isinstance(judge_cfg, dict) else None
+    if not isinstance(configured, dict):
+        return params
+    for key, value in configured.items():
+        if isinstance(params.get(key), dict) and isinstance(value, dict):
+            params[key].update(copy.deepcopy(value))
+        else:
+            params[key] = copy.deepcopy(value)
+    return params
 
 
 def build_judge_prompt(plugin, original_prompt, response_text):
@@ -360,7 +391,7 @@ def confidence_weighted_consensus(votes):
 
 def judge_response(source_config, judge_source, judge_api_model, sidecar,
                    *, timeout, token_levels=None, temperature=0.0,
-                   drop_params=None, stop_event=None, log_path=None):
+                   drop_params=None, request_params=None, stop_event=None, log_path=None):
     """Run one HTTP judge request, retrying once when its JSON is invalid."""
     with open(sidecar, encoding="utf-8") as handle:
         item = json.load(handle)
@@ -379,6 +410,7 @@ def judge_response(source_config, judge_source, judge_api_model, sidecar,
             budgets[0], log_path=log_path,
             log_label=f"Judge {item['target']} / {item['plugin']} (attempt {attempt + 1})",
             temperature=temperature, drop_params=drop_params or [],
+            request_params=request_params,
             stop_event=stop_event,
         )
         if response.error:
@@ -733,6 +765,10 @@ def dump_default_config():
         "output_dir": "benchmark-output-dir",
         "timeout": 1200,
         "token_levels": [16384],
+        "judge": {
+            "token_levels": [JUDGE_DEFAULT_MAX_TOKENS],
+            "request_params": copy.deepcopy(JUDGE_DEFAULT_REQUEST_PARAMS),
+        },
         # Per-target max-token overrides for thinking models; keys are target
         # names or "{source}/{api_model}", values beat the global token_levels.
         "model_token_levels": {},

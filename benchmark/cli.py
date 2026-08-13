@@ -41,6 +41,7 @@ from benchmark.core import (
     load_config,
     parse_plugin_temperatures,
     preload_model,
+    resolve_judge_request_params,
     resolve_model_thread_limit,
     resolve_preload_timeout,
     resolve_targets,
@@ -2878,6 +2879,7 @@ def main():  # pragma: no cover - live benchmark orchestrator (no unit tests)
                                if isinstance(cfg.get("judge"), dict) else [JUDGE_DEFAULT_MAX_TOKENS])
         judge_temperature = (cfg.get("judge", {}).get("temperature", 0.0)
                              if isinstance(cfg.get("judge"), dict) else 0.0)
+        judge_request_params = resolve_judge_request_params(cfg)
 
         def enqueue_judge(sidecar, target_name, runner, plugin_id):
             latest = {
@@ -2992,6 +2994,7 @@ def main():  # pragma: no cover - live benchmark orchestrator (no unit tests)
                         timeout=judge_effective_timeout,
                         token_levels=judge_token_levels,
                         temperature=judge_temperature,
+                        request_params=judge_request_params,
                         drop_params=(raw_targets.get(judge_name, {}).get("drop_params", [])
                                      if isinstance(raw_targets.get(judge_name), dict) else []),
                         stop_event=judge_request_stop_events[judge_name],

@@ -19,6 +19,7 @@ All benchmark configuration lives in a single file (default: `benchmark-config.j
 | `sources` | object | required | Named API endpoint definitions |
 | `models` | object | required | Model-to-source mapping |
 | `agents` | object | optional | Agent definitions with system prompts |
+| `judge` | object | optional | Semantic-judge timeout, token budget, temperature, and provider-specific request parameters |
 
 ## Sources
 
@@ -188,6 +189,39 @@ Or keep the `models` map simple and use the top-level `model_token_levels` map, 
 ```
 
 Precedence: per-target `token_levels` inside the model/agent entry > `model_token_levels` map (matched by target name, then `{source}/{api_model}`) > global `token_levels` / `--token-levels`. The same budget is applied to the target's OpenCode legs via the generated config's `limit.output`.
+
+## Semantic Judge Request Parameters
+
+The optional `judge.request_params` object is merged into every HTTP request
+made by a semantic judge. It supports provider-specific OpenAI-compatible
+parameters that are not part of the benchmark's normal model request. The
+built-in defaults preserve each model's native thinking mode, cap Nemotron
+thinking at **2048 tokens**, and request a JSON object:
+
+```yaml
+judge:
+  token_levels: [4096]
+  request_params:
+    chat_template_kwargs:
+      thinking_token_budget: 2048
+    response_format:
+      type: json_object
+```
+
+The benchmark intentionally does not send `enable_thinking: false`: the
+instruct Nemotron variant already has thinking disabled by its model behavior,
+while the thinking variant remains enabled and is bounded by
+`thinking_token_budget`. Nested dictionaries are merged, so a provider-specific
+override can add `enable_thinking` or replace the response format without
+silently dropping the default budget. Use the relevant provider's supported
+request fields when overriding these defaults; unsupported fields can be
+removed with the judge model's `drop_params` configuration.
+
+`judge.token_levels` controls the total `max_tokens` cap for judge generation.
+It is separate from `thinking_token_budget`: the total cap must leave room for
+both reasoning and the final JSON object. The judge request also uses
+`response_format: {"type": "json_object"}` by default to reduce reasoning or
+other prose leaking into the machine-parsed answer.
 
 ## Automatic Thinking-Truncation Escalation
 

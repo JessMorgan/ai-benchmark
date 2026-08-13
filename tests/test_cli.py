@@ -48,6 +48,27 @@ class TestCLIArgs(unittest.TestCase):
         from plugins import format_plugin_list
         self.assertEqual(format_plugin_list([]), "No plugins discovered.")
 
+    def test_dump_default_config_has_judge_request_defaults(self):
+        result = subprocess.run(
+            [sys.executable, "ai-benchmark.py", "--dump-default-config"],
+            capture_output=True,
+            text=True, check=False,
+        )
+        self.assertEqual(result.returncode, 0)
+        cfg = json.loads(result.stdout)
+        self.assertEqual(
+            cfg["judge"]["request_params"]["chat_template_kwargs"]["thinking_token_budget"],
+            2048,
+        )
+        self.assertEqual(
+            cfg["judge"]["request_params"]["response_format"],
+            {"type": "json_object"},
+        )
+        self.assertNotIn(
+            "enable_thinking",
+            cfg["judge"]["request_params"]["chat_template_kwargs"],
+        )
+
     def test_dump_default_config_has_per_source_plugin_thread_limit(self):
         result = subprocess.run(
             [sys.executable, "ai-benchmark.py", "--dump-default-config"],

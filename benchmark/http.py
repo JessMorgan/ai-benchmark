@@ -270,7 +270,7 @@ def _log_response(log_path, curl_cmd, response_body, log_label):
 
 
 def _build_request_body(model, prompt, max_tokens, session_seed, temperature, drop_params, stream,
-                        system_prompt=None):
+                        system_prompt=None, request_params=None):
     """Build the JSON body for an API request."""
     messages = []
     if system_prompt:
@@ -286,6 +286,8 @@ def _build_request_body(model, prompt, max_tokens, session_seed, temperature, dr
         body["temperature"] = temperature
     if session_seed:
         body["seed"] = session_seed
+    if isinstance(request_params, dict):
+        body.update(copy.deepcopy(request_params))
     for p in drop_params or []:
         body.pop(p, None)
     return body
@@ -633,6 +635,7 @@ def _parse_sse_line(line: str, first_tok: float | None, text: str,
 def stream_request(source_config, timeout, model, source, prompt, max_tokens=2048,
                    log_path=None, log_label=None, session_seed=0, temperature=None,
                    drop_params=None, stop_event=None, system_prompt=None,
+                   request_params=None,
                    on_chunk: Callable[[str], None] | None = None,
                    on_think_chunk: Callable[[str], None] | None = None,
                    pid: str | None = None,
@@ -661,7 +664,8 @@ def stream_request(source_config, timeout, model, source, prompt, max_tokens=204
     usage: dict[str, Any] = {}
     tool_calls: list = []
     body = _build_request_body(model, prompt, max_tokens, session_seed, temperature, drop_params,
-                               stream=True, system_prompt=system_prompt)
+                               stream=True, system_prompt=system_prompt,
+                               request_params=request_params)
     with _post_request_context(source_config, source, body, timeout, True, log_path, log_label,
                                stop_event=stop_event, pid=pid, on_retry=on_retry) as request:
         if request.error:
@@ -766,6 +770,7 @@ def _read_response_body(resp: requests.Response, stop_event) -> ResponseBodyResu
 def nonstream_request(source_config, timeout, model, source, prompt, max_tokens=2048,
                       log_path=None, log_label=None, session_seed=0, temperature=None,
                       drop_params=None, stop_event=None, system_prompt=None,
+                      request_params=None,
                       pid: str | None = None,
                       on_retry: Callable[[], None] | None = None) -> NonStreamResult:
     """Make a non-streaming chat-completion request and return parsed results.
@@ -784,7 +789,8 @@ def nonstream_request(source_config, timeout, model, source, prompt, max_tokens=
     finish_reason = None
     tool_calls: list = []
     body = _build_request_body(model, prompt, max_tokens, session_seed, temperature, drop_params,
-                               stream=False, system_prompt=system_prompt)
+                               stream=False, system_prompt=system_prompt,
+                               request_params=request_params)
     raw_resp_text = None
     with _post_request_context(source_config, source, body, timeout, False, log_path, log_label,
                                stop_event=stop_event, pid=pid, on_retry=on_retry) as request:

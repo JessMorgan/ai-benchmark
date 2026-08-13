@@ -6,12 +6,14 @@ from unittest import mock
 from benchmark import cli
 from benchmark.core import (
     JUDGE_DEFAULT_MAX_TOKENS,
+    JUDGE_DEFAULT_REQUEST_PARAMS,
     JudgeResult,
     build_judge_prompt,
     confidence_weighted_consensus,
     judge_response,
     parse_judge_response,
     prepare_judge_sidecar,
+    resolve_judge_request_params,
     save_judge_response,
     save_judge_response_metadata,
 )
@@ -67,6 +69,28 @@ class TestJudgeCore(unittest.TestCase):
         self.assertIn("Do this", prompt)
         self.assertIn("Done well", prompt)
         self.assertIn("semantic score", prompt.lower())
+
+    def test_default_judge_request_params_bound_thinking_and_request_json(self):
+        params = resolve_judge_request_params({})
+        self.assertEqual(params, JUDGE_DEFAULT_REQUEST_PARAMS)
+        self.assertEqual(params["chat_template_kwargs"]["thinking_token_budget"], 2048)
+        self.assertEqual(params["response_format"], {"type": "json_object"})
+        self.assertNotIn("enable_thinking", params["chat_template_kwargs"])
+
+    def test_judge_request_params_are_nested_mergeable(self):
+        params = resolve_judge_request_params({
+            "judge": {
+                "request_params": {
+                    "chat_template_kwargs": {"enable_thinking": True},
+                    "response_format": {"type": "json_schema"},
+                },
+            },
+        })
+        self.assertEqual(params["chat_template_kwargs"], {
+            "thinking_token_budget": 2048,
+            "enable_thinking": True,
+        })
+        self.assertEqual(params["response_format"], {"type": "json_schema"})
 
     def test_judge_response_artifact_uses_existing_response_naming_convention(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -129,6 +153,29 @@ class TestJudgeCore(unittest.TestCase):
                 result = judge_response({}, "Local", "judge", sidecar, timeout=3)
         self.assertIsNone(result.response_text)
         self.assertEqual(result.error, "timeout")
+
+    def test_judge_response_passes_request_params(self):
+        response = mock.Mock(
+            error=None,
+            text='{"score": 75, "confidence": "medium", "rationale": "usable"}',
+        )
+        request_params = {
+            "chat_template_kwargs": {"thinking_token_budget": 2048},
+            "response_format": {"type": "json_object"},
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            sidecar = f"{tmp}/input.json"
+            prepare_judge_sidecar(
+                sidecar, FakePlugin(), "Prompt", "Response",
+                target="model", runner="http",
+            )
+            with mock.patch("benchmark.core.nonstream_request", return_value=response) as request:
+                result = judge_response(
+                    {}, "Local", "judge", sidecar, timeout=3,
+                    request_params=request_params,
+                )
+        self.assertEqual(result.score, 75)
+        self.assertEqual(request.call_args.kwargs["request_params"], request_params)
 
     def test_judge_response_uses_4096_default_token_budget(self):
         response = mock.Mock(
