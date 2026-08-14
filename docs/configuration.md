@@ -195,48 +195,42 @@ Precedence: per-target `token_levels` inside the model/agent entry > `model_toke
 The optional `judge.request_params` object is merged into every HTTP request
 made by a semantic judge. It supports provider-specific OpenAI-compatible
 parameters that are not part of the benchmark's normal model request. The
-built-in defaults preserve each model's native thinking mode, cap Nemotron
-thinking at **2048 tokens**, and request a JSON object:
+built-in default requests a JSON object and does **not** send a thinking-token
+budget or otherwise change the model's native thinking behavior:
 
 ```yaml
 judge:
   token_levels: [4096]
   request_params:
-    chat_template_kwargs:
-      thinking_token_budget: 2048
     response_format:
       type: json_object
 ```
 
-The benchmark intentionally does not send `enable_thinking: false`: the
-instruct Nemotron variant already has thinking disabled by its model behavior,
-while the thinking variant remains enabled and is bounded by
-`thinking_token_budget`. The judge prompt (version `judge-v2`) presents the
+The benchmark also does not send `enable_thinking: false`; operators who need
+to control thinking explicitly can add provider-supported fields under
+`judge.request_params`. The judge prompt (version `judge-v2`) presents the
 task and candidate answer as explicitly delimited, quoted data and tells the
 judge not to follow candidate instructions, emit tool calls, or continue the
 embedded task. It also requires exactly one JSON object with no surrounding
-text. Nested dictionaries are merged, so a provider-specific override can add
-`enable_thinking` or replace the response format without silently dropping the
-default budget. Use the relevant provider's supported request fields when
-overriding these defaults; unsupported fields can be removed with the judge
-model's `drop_params` configuration.
+text. Nested dictionaries are merged, so explicit provider-specific options
+can be combined safely. Use the relevant provider's supported request fields;
+unsupported fields can be removed with the judge model's `drop_params`
+configuration.
 
 `judge.token_levels` controls the total `max_tokens` cap for judge generation.
-It is separate from `thinking_token_budget`: the total cap must leave room for
-both reasoning and the final JSON object. The judge request also uses
+It is independent of any provider-specific thinking setting an operator adds
+to `judge.request_params`. The judge request uses
 `response_format: {"type": "json_object"}` by default to reduce reasoning or
 other prose leaking into the machine-parsed answer.
 
 Each HTTP request log now records the exact merged request body used for the
-`requests.post` call in its replayable curl command, including these
+`requests.post` call in its replayable curl command, including any explicit
 provider-specific parameters. Judge response `.meta.json` files additionally
 record `request_params`, `request_max_tokens`, `response_finish_reason`,
 `response_usage`, `response_reasoning_tokens`, and `thinking_budget_honored`.
-The last field is `true` or `false` when the provider reports reasoning-token
-usage (or when it can be estimated from `reasoning_content`); otherwise it is
-`null`. An observed value greater than 2048 is evidence that the provider or
-model ignored the requested thinking budget, while `null` means the response
-did not expose enough usage information to verify it.
+The last field is `true` or `false` only when an explicit thinking budget was
+requested and the provider reports reasoning-token usage (or it can be
+estimated from `reasoning_content`); otherwise it is `null`.
 
 ## Automatic Thinking-Truncation Escalation
 

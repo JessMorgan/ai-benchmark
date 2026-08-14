@@ -85,12 +85,11 @@ class TestJudgeCore(unittest.TestCase):
         self.assertNotIn("<task>", prompt)
         self.assertNotIn("<response>", prompt)
 
-    def test_default_judge_request_params_bound_thinking_and_request_json(self):
+    def test_default_judge_request_params_request_json_without_thinking_budget(self):
         params = resolve_judge_request_params({})
         self.assertEqual(params, JUDGE_DEFAULT_REQUEST_PARAMS)
-        self.assertEqual(params["chat_template_kwargs"]["thinking_token_budget"], 2048)
-        self.assertEqual(params["response_format"], {"type": "json_object"})
-        self.assertNotIn("enable_thinking", params["chat_template_kwargs"])
+        self.assertEqual(params, {"response_format": {"type": "json_object"}})
+        self.assertNotIn("chat_template_kwargs", params)
 
     def test_judge_request_params_are_nested_mergeable(self):
         params = resolve_judge_request_params({
@@ -102,7 +101,6 @@ class TestJudgeCore(unittest.TestCase):
             },
         })
         self.assertEqual(params["chat_template_kwargs"], {
-            "thinking_token_budget": 2048,
             "enable_thinking": True,
         })
         self.assertEqual(params["response_format"], {"type": "json_schema"})

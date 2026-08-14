@@ -56,11 +56,6 @@ PRELOAD_MAX_TOKENS = 256
 JUDGE_PROMPT_VERSION = "judge-v2"
 JUDGE_DEFAULT_MAX_TOKENS = 4096
 JUDGE_DEFAULT_REQUEST_PARAMS = {
-    "chat_template_kwargs": {
-        # Leave Nemotron's thinking mode enabled; cap its internal reasoning
-        # so it still has room to emit the required JSON judgment.
-        "thinking_token_budget": 2048,
-    },
     "response_format": {"type": "json_object"},
 }
 JUDGE_MAX_RATIONALE_CHARS = 2000
@@ -182,11 +177,10 @@ def _is_exhausted_429(error):
 def resolve_judge_request_params(cfg):
     """Return provider-specific request parameters for semantic judges.
 
-    The defaults preserve the model's native thinking mode while bounding
-    Nemotron's reasoning budget and requesting a JSON object. A ``judge``
-    config block may override or extend these values through ``request_params``.
-    Nested dictionaries are merged so setting one chat-template option does
-    not discard the default thinking budget.
+    The defaults preserve each model's native behavior and request a JSON
+    object. A ``judge`` config block may override or extend these values
+    through ``request_params``. Nested dictionaries are merged so explicit
+    provider-specific options can be combined safely.
     """
     params = copy.deepcopy(JUDGE_DEFAULT_REQUEST_PARAMS)
     judge_cfg = cfg.get("judge") if isinstance(cfg, dict) else None

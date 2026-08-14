@@ -57,17 +57,10 @@ class TestCLIArgs(unittest.TestCase):
         self.assertEqual(result.returncode, 0)
         cfg = json.loads(result.stdout)
         self.assertEqual(
-            cfg["judge"]["request_params"]["chat_template_kwargs"]["thinking_token_budget"],
-            2048,
+            cfg["judge"]["request_params"],
+            {"response_format": {"type": "json_object"}},
         )
-        self.assertEqual(
-            cfg["judge"]["request_params"]["response_format"],
-            {"type": "json_object"},
-        )
-        self.assertNotIn(
-            "enable_thinking",
-            cfg["judge"]["request_params"]["chat_template_kwargs"],
-        )
+        self.assertNotIn("chat_template_kwargs", cfg["judge"]["request_params"])
 
     def test_dump_default_config_has_per_source_plugin_thread_limit(self):
         result = subprocess.run(
