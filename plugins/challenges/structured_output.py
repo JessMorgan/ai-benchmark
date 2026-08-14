@@ -2,7 +2,7 @@
 import json
 import re
 
-from benchmark.plugin import BenchmarkTaskPlugin, EvaluationResult
+from benchmark.plugin import BenchmarkTaskPlugin
 from plugins.challenges._rubric import Rubric
 from plugins.challenges._validators import parse_structured
 
@@ -19,7 +19,7 @@ class StructuredOutputPlugin(BenchmarkTaskPlugin):
 
     @property
     def version(self):
-        return "0.8.1"
+        return "0.9.0"
 
     @property
     def name(self):
@@ -27,7 +27,7 @@ class StructuredOutputPlugin(BenchmarkTaskPlugin):
 
     @property
     def max_score(self):
-        return 20.0
+        return 22.0
 
     @property
     def supports_streaming(self):
@@ -179,6 +179,14 @@ class StructuredOutputPlugin(BenchmarkTaskPlugin):
                 errors=structured_validation.errors,
                 negative_findings=["candidate could not be parsed as the required object"],
             )
+            for name, maximum in (
+                ("Required top-level fields", 4.0),
+                ("Basic types and constraints", 6.0),
+                ("Non-empty values / completeness", 4.0),
+                ("Strict format (no extra keys)", 2.0),
+                ("No placeholder values", 2.0),
+            ):
+                rubric.add_criterion(name, maximum, 0.0)
             return rubric.results()
         rubric.add_criterion("Valid JSON/YAML syntax", 4.0, 4.0)
 
@@ -193,50 +201,54 @@ class StructuredOutputPlugin(BenchmarkTaskPlugin):
             earned = (len(present) / len(required)) * 2.0
         rubric.add_criterion("Required top-level fields", 4.0, earned)
 
+        # Six points are distributed evenly across the sixteen typed checks
+        # below. Keeping the per-check weight aligned with the criterion's
+        # declared maximum prevents two points from being silently clamped.
+        type_check_points = 6.0 / 16.0
         type_score = 0.0
 
         if isinstance(data.get("name"), str) and data.get("name"):
-            type_score += 0.5
+            type_score += type_check_points
 
         age = data.get("age")
         if isinstance(age, int) and 18 <= age <= 120:
-            type_score += 0.5
+            type_score += type_check_points
 
         if self._is_email(data.get("email")):
-            type_score += 0.5
+            type_score += type_check_points
 
         if self._is_uuid_v4(data.get("id")):
-            type_score += 0.5
+            type_score += type_check_points
 
         department = data.get("department")
         if isinstance(department, str) and department in {"Engineering", "Sales", "Marketing", "HR"}:
-            type_score += 0.5
+            type_score += type_check_points
 
         roles = data.get("roles")
         allowed_roles = {"admin", "editor", "viewer", "auditor"}
         if isinstance(roles, list) and roles and all(isinstance(r, str) and r in allowed_roles for r in roles):
-            type_score += 0.5
+            type_score += type_check_points
 
         address = data.get("address")
         if isinstance(address, dict):
             if all(k in address for k in ("street", "city", "state", "zip")):
-                type_score += 0.5
+                type_score += type_check_points
             if isinstance(address.get("state"), str) and re.match(r"^[A-Z]{2}$", address.get("state", "")):
-                type_score += 0.5
+                type_score += type_check_points
             if isinstance(address.get("zip"), str) and re.match(r"^\d{5}$", address.get("zip", "")):
-                type_score += 0.5
+                type_score += type_check_points
 
         settings = data.get("settings")
         if isinstance(settings, dict):
             theme = settings.get("theme")
             if theme in {"dark", "light", "auto"}:
-                type_score += 0.5
+                type_score += type_check_points
             notifications = settings.get("notifications")
             if isinstance(notifications, dict) and all(k in notifications for k in ("email", "sms", "push")):
-                type_score += 0.5
+                type_score += type_check_points
             language = settings.get("language")
             if isinstance(language, str) and re.match(r"^[a-zA-Z]{2}$", language):
-                type_score += 0.5
+                type_score += type_check_points
 
         tags = data.get("tags")
         if isinstance(tags, list) and tags and all(
@@ -246,17 +258,17 @@ class StructuredOutputPlugin(BenchmarkTaskPlugin):
             and 1 <= tag.get("priority", 0) <= 5
             for tag in tags
         ):
-            type_score += 0.5
+            type_score += type_check_points
 
         metadata = data.get("metadata")
         if isinstance(metadata, dict):
             if self._is_iso_datetime(metadata.get("created_at")):
-                type_score += 0.5
+                type_score += type_check_points
             if isinstance(metadata.get("active"), bool):
-                type_score += 0.5
+                type_score += type_check_points
             score_val = metadata.get("score")
             if isinstance(score_val, (int, float)) and 0.0 <= float(score_val) <= 1.0:
-                type_score += 0.5
+                type_score += type_check_points
 
         rubric.add_criterion("Basic types and constraints", 6.0, type_score)
 
@@ -283,6 +295,11 @@ class StructuredOutputPlugin(BenchmarkTaskPlugin):
                 "Strict format (no extra keys)", 0.5,
                 "structured object does not exactly match the required key set",
             )
+        if has_explanatory_text:
+            rubric.penalize_criterion(
+                "Strict format (no extra keys)", 0.5,
+                "response contains explanatory text outside structured data",
+            )
 
         if complete:
             bad_values = {"unknown", "n/a", "none", "null", "", None}
@@ -293,12 +310,7 @@ class StructuredOutputPlugin(BenchmarkTaskPlugin):
             earned = 0.0
         rubric.add_criterion("No placeholder values", 2.0, earned)
 
-        evaluation = rubric.results()
-        score = evaluation.score
-        criteria = evaluation.rubric
-        if has_explanatory_text:
-            score = round(max(score - 0.5, 0.0), 1)
-        return EvaluationResult(score, criteria)
+        return rubric.results()
 
     def score(self, response_text):
         return self.evaluate(response_text).score

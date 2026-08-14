@@ -4,8 +4,8 @@
 |---|---|
 | ID | `prd-creation` |
 | Name | PRD Creation |
-| Version | `0.6.2` |
-| Max Score | 20 |
+| Version | `0.7.0` |
+| Max Score | 22 |
 | Streaming | Yes |
 
 ## Task

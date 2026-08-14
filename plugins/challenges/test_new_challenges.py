@@ -55,10 +55,8 @@ class TestErrorRecoveryPlugin(unittest.TestCase):
         self.assertEqual(self.plugin.get_temperature({"error_recovery_temperature": 0.6}), 0.6)
         self.assertIsNone(self.plugin.get_temperature({}))
 
-    def test_empty_response_scores_base_structure(self):
-        # The evaluator awards one point for the structure criterion even
-        # before any content-specific signals are present.
-        self.assertEqual(self.plugin.score(""), 1.0)
+    def test_empty_response_scores_zero(self):
+        self.assertEqual(self.plugin.score(""), 0.0)
 
     def test_complete_resilient_design_scores_high(self):
         response = '''

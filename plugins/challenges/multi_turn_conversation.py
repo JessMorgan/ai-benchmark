@@ -20,7 +20,7 @@ class MultiTurnConversationPlugin(BenchmarkTaskPlugin):
 
     @property
     def version(self):
-        return "0.5.2"
+        return "0.6.0"
 
     @property
     def name(self):
@@ -118,19 +118,21 @@ class MultiTurnConversationPlugin(BenchmarkTaskPlugin):
             earned += 1.0
         rubric.add_criterion("Feedback 2 incorporated (warmth, future)", 3.0, earned)
 
-        # Check summary of changes
+        # Check summary of changes. Keep the zero-point criterion in the
+        # rubric when the section is absent so every evaluation has the same
+        # schema and the missing requirement is visible.
         summary = re.search(r"##?\s*Summary\s*of\s*Changes", t)
+        earned = 0.0
         if summary:
             # Look for specific mentions of what changed
             diff_v1v2 = re.search(r"(?:V1|Version 1|Initial).*?(?:V2|Version 2)", t, re.DOTALL)
             diff_v2v3 = re.search(r"(?:V2|Version 2).*?(?:V3|Version 3)", t, re.DOTALL)
             changes = re.findall(r"(?:changed|added|removed|replaced|modified|softened|tightened|personalize)", t, re.IGNORECASE)
-            earned = 0.0
             if diff_v1v2 or diff_v2v3:
                 earned += 1.0
             if len(changes) >= 2:
                 earned += 1.0
-            rubric.add_criterion("Summary of changes", 2.0, earned)
+        rubric.add_criterion("Summary of changes", 2.0, earned)
 
         # Check for evidence of iterative improvement (distinct versions)
         earned = 0.0

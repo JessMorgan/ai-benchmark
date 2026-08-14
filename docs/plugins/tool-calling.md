@@ -4,7 +4,7 @@
 |---|---|
 | ID | `tool-calling` |
 | Name | Tool Calling Agent |
-| Version | `0.9.1` |
+| Version | `0.10.0` |
 | Max Score | 25 |
 | Streaming | Yes |
 

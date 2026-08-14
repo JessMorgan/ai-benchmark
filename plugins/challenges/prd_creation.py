@@ -13,7 +13,7 @@ class PRDCreationPlugin(BenchmarkTaskPlugin):
 
     @property
     def version(self):
-        return "0.6.2"
+        return "0.7.0"
 
     @property
     def name(self):
@@ -21,7 +21,7 @@ class PRDCreationPlugin(BenchmarkTaskPlugin):
 
     @property
     def max_score(self):
-        return 20.0
+        return 22.0
 
     @property
     def supports_streaming(self):

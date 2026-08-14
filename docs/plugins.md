@@ -8,18 +8,18 @@ AI Benchmark uses a plugin architecture. Each plugin defines a benchmark task, a
 |---|---|---:|---:|---|
 | `code-review` | Code Review | 0.8.1 | 15 | No |
 | `debug-traversal` | Debug Traversal | 0.5.1 | 20 | Yes |
-| `error-recovery` | Error Recovery | 0.7.1 | 20 | Yes |
+| `error-recovery` | Error Recovery | 0.8.0 | 20 | Yes |
 | `instruction-following` | Instruction Following | 0.1.1 | 20 | Yes |
 | `moe-dense` | MoE vs Dense | 0.7.2 | 17 | No |
 | `multi-step` | Multi-Step Instructions | 0.9.1 | 20 | Yes |
-| `multi-turn-conversation` | Multi-Turn Conversation | 0.5.2 | 20 | Yes |
+| `multi-turn-conversation` | Multi-Turn Conversation | 0.6.0 | 20 | Yes |
 | `orchestration` | Orchestration & Workflow | 0.8.1 | 16 | Yes |
-| `prd-creation` | PRD Creation | 0.6.2 | 20 | Yes |
+| `prd-creation` | PRD Creation | 0.7.0 | 22 | Yes |
 | `rate-limiter` | Rate Limiter | 0.7.1 | 20 | Yes |
 | `reasoning` | Logical Reasoning | 0.1.1 | 20 | Yes |
 | `software-architecture` | Software Architecture | 0.8.1 | 20 | Yes |
-| `structured-output` | Structured Output | 0.8.1 | 20 | No |
-| `tool-calling` | Tool Calling Agent | 0.9.1 | 25 | Yes |
+| `structured-output` | Structured Output | 0.9.0 | 22 | No |
+| `tool-calling` | Tool Calling Agent | 0.10.0 | 25 | Yes |
 | `wireframes` | Wireframes | 0.7.2 | 20 | Yes |
 
 ## Selecting Plugins
@@ -118,7 +118,7 @@ Tests a model's ability to act as a product manager by creating a comprehensive 
 - Timeline / Milestones
 - Open Questions / Risks
 
-**Scoring:** Up to 20 points based on the presence, structure, and depth of each PRD section.
+**Scoring:** Up to 22 points based on the presence, structure, and depth of each PRD section.
 
 ### `wireframes`
 

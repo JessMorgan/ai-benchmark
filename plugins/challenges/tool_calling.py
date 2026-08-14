@@ -14,7 +14,7 @@ class ToolCallingPlugin(BenchmarkTaskPlugin):
         return "tool-calling"
 
     @property
-    def version(self):        return "0.9.1"
+    def version(self):        return "0.10.0"
 
     @property
     def name(self):
@@ -94,12 +94,6 @@ class ToolCallingPlugin(BenchmarkTaskPlugin):
         rubric = Rubric(self.max_score)
         tool_validation = parse_tool_calls(t)
         rubric.record_validation(tool_validation)
-        if not tool_validation.valid:
-            rubric.penalize_criterion(
-                "Output format compliance", 1.0,
-                "one or more tool-call payloads failed schema validation",
-            )
-
         earned = 0.0
         tool_call_blocks = re.findall(r'<tool_call>.*?</tool_call>', t, re.DOTALL)
         if tool_call_blocks:
@@ -108,6 +102,11 @@ class ToolCallingPlugin(BenchmarkTaskPlugin):
             if len(parsed) >= 2:
                 earned += 1.0
         rubric.add_criterion("Output format compliance", 3.0, earned)
+        if not tool_validation.valid:
+            rubric.penalize_criterion(
+                "Output format compliance", 1.0,
+                "one or more tool-call payloads failed schema validation",
+            )
 
         earned = 0.0
         tool_call_index = t.find('<tool_call>')

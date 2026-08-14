@@ -4,8 +4,8 @@
 |---|---|
 | ID | `structured-output` |
 | Name | Structured Output |
-| Version | `0.8.1` |
-| Max Score | 20 |
+| Version | `0.9.0` |
+| Max Score | 22 |
 | Streaming | No |
 
 ## Task
@@ -31,9 +31,9 @@ Required top-level fields:
 |---|---|---|
 | Valid JSON/YAML syntax | 4 | Parses successfully |
 | Required fields present | 4 | All top-level fields |
-| Basic types and constraints | 6 | UUID, email, ranges, enums |
+| Basic types and constraints | 6 | Six points distributed across UUID, email, ranges, enums, and nested-field checks |
 | Completeness | 4 | Non-empty values |
-| Strict format | 2 | No extra top-level keys |
+| Strict format | 2 | No extra top-level keys or explanatory text outside the structured data |
 | No placeholders | 2 | No `unknown`, `n/a`, `null`, etc. |
 
 ## Temperature

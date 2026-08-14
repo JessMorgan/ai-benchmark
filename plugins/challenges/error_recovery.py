@@ -9,7 +9,7 @@ Tests the model's ability to:
 """
 import re
 
-from benchmark.plugin import BenchmarkTaskPlugin
+from benchmark.plugin import BenchmarkTaskPlugin, EvaluationResult
 from plugins.challenges._execution import extract_python_source, run_python_check
 from plugins.challenges._rubric import Rubric
 from plugins.challenges._validators import find_definitions, parse_python, stub_definitions
@@ -22,7 +22,7 @@ class ErrorRecoveryPlugin(BenchmarkTaskPlugin):
 
     @property
     def version(self):
-        return "0.7.1"
+        return "0.8.0"
 
     @property
     def name(self):
@@ -86,6 +86,9 @@ class ErrorRecoveryPlugin(BenchmarkTaskPlugin):
 
     def evaluate(self, response_text):
         t = response_text
+        if not t or not t.strip():
+            return EvaluationResult(0.0, [])
+
         rubric = Rubric(self.max_score)
         python_validation = parse_python(t, require_block=True)
         rubric.record_validation(python_validation)

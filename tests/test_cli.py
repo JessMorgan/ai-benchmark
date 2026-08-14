@@ -39,7 +39,7 @@ class TestCLIArgs(unittest.TestCase):
         self.assertIn("structured-output", output)
         self.assertIn("Structured Output", output)
         # Check a specific ID/name/version line
-        self.assertRegex(output, r"structured-output\s+Structured Output\s+0\.8\.1")
+        self.assertRegex(output, r"structured-output\s+Structured Output\s+0\.9\.0")
         # Footer hint helps users use the IDs
         self.assertIn("--plugins-whitelist", output)
         self.assertIn("--plugins-blacklist", output)

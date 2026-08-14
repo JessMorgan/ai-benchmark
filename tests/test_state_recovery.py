@@ -40,14 +40,53 @@ class TestStateRecovery(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "unknown plugin score columns"):
                 reconstruct_run_state(run_dir)
 
+    def _make_recovery_fixture(self, tmpdir):
+        """Create a deterministic multi-row run without repository artifacts."""
+        run_dir = os.path.join(tmpdir, "fixture-run")
+        os.makedirs(run_dir)
+        models = [f"fixture-model-{index:03d}" for index in range(221)]
+        with open(os.path.join(run_dir, "benchmark-config.yml"), "w", encoding="utf-8") as handle:
+            handle.write(
+                "sources:\n"
+                "  Local:\n"
+                "    api_url: http://127.0.0.1:1/chat/completions\n"
+                "    headers: {}\n"
+                "models:\n"
+                + "".join(f"  {model}: Local\n" for model in models)
+            )
+        fields = [
+            "Model", "Runner", "Source", "TTFT_s", "Total", "Time_s", "Status", "Error",
+            "code-review_Score_15", "code-review_Response_s", "code-review_Thinking_Tokens",
+            "code-review_Content_Tokens", "code-review_Total_Tokens", "code-review_TPS",
+            "code-review_Empty_Reason",
+        ]
+        with open(os.path.join(run_dir, "results.csv"), "w", newline="", encoding="utf-8") as handle:
+            writer = csv.DictWriter(handle, fieldnames=fields)
+            writer.writeheader()
+            for index, model in enumerate(models):
+                completed = index < 161
+                writer.writerow({
+                    "Model": model,
+                    "Runner": "http",
+                    "Source": "Local",
+                    "TTFT_s": "0.1",
+                    "Total": "1.0",
+                    "Time_s": "1.0",
+                    "Status": "OK" if completed else "FAIL",
+                    "Error": "" if completed else "fixture failure",
+                    "code-review_Score_15": "10" if completed else "fail",
+                    "code-review_Response_s": "0.5",
+                    "code-review_Thinking_Tokens": "0",
+                    "code-review_Content_Tokens": "10",
+                    "code-review_Total_Tokens": "10",
+                    "code-review_TPS": "20",
+                    "code-review_Empty_Reason": "",
+                })
+        return run_dir
+
     def test_recovery_apply_preserves_backup_and_reloads(self):
-        source = "2026-08-02-more-tests-more-models-opencode"
         with tempfile.TemporaryDirectory() as tmpdir:
-            run_dir = os.path.join(tmpdir, "run")
-            os.makedirs(run_dir)
-            for name in ("results.csv", "benchmark-config.yml"):
-                with open(os.path.join(source, name), "rb") as src, open(os.path.join(run_dir, name), "wb") as dst:
-                    dst.write(src.read())
+            run_dir = self._make_recovery_fixture(tmpdir)
             state_path = os.path.join(run_dir, "benchmark_state.json")
             corrupt = b'{"model_info": : invalid}'
             with open(state_path, "wb") as handle:
@@ -67,16 +106,8 @@ class TestStateRecovery(unittest.TestCase):
                 self.assertEqual(len(json.load(handle)["results"]), 221)
 
     def test_recovery_is_dry_run_by_default(self):
-        # Use a copy of the real report/config and only assert no state is
-        # created by default; the full-run migration is validated against
-        # the current 221-row report fixture.
-        source = "2026-08-02-more-tests-more-models-opencode"
         with tempfile.TemporaryDirectory() as tmpdir:
-            run_dir = os.path.join(tmpdir, "run")
-            os.makedirs(run_dir)
-            for name in ("results.csv", "benchmark-config.yml"):
-                with open(os.path.join(source, name), "rb") as src, open(os.path.join(run_dir, name), "wb") as dst:
-                    dst.write(src.read())
+            run_dir = self._make_recovery_fixture(tmpdir)
             report, reconstructed = reconstruct_run_state(run_dir)
             self.assertEqual(report["rows"], 221)
             self.assertEqual(report["completed"], 161)

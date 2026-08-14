@@ -101,18 +101,18 @@ The runtime inventory below matches `uv run ai-benchmark --list-plugins`:
 |---|---:|---:|---|
 | `code-review` | 0.8.1 | 15 | No |
 | `debug-traversal` | 0.5.1 | 20 | Yes |
-| `error-recovery` | 0.7.1 | 20 | Yes |
+| `error-recovery` | 0.8.0 | 20 | Yes |
 | `instruction-following` | 0.1.1 | 20 | Yes |
 | `moe-dense` | 0.7.2 | 17 | No |
 | `multi-step` | 0.9.1 | 20 | Yes |
-| `multi-turn-conversation` | 0.5.2 | 20 | Yes |
+| `multi-turn-conversation` | 0.6.0 | 20 | Yes |
 | `orchestration` | 0.8.1 | 16 | Yes |
-| `prd-creation` | 0.6.2 | 20 | Yes |
+| `prd-creation` | 0.7.0 | 22 | Yes |
 | `rate-limiter` | 0.7.1 | 20 | Yes |
 | `reasoning` | 0.1.1 | 20 | Yes |
 | `software-architecture` | 0.8.1 | 20 | Yes |
-| `structured-output` | 0.8.1 | 20 | No |
-| `tool-calling` | 0.9.1 | 25 | Yes |
+| `structured-output` | 0.9.0 | 22 | No |
+| `tool-calling` | 0.10.0 | 25 | Yes |
 | `wireframes` | 0.7.2 | 20 | Yes |
 
 `code-review`, `moe-dense`, and `structured-output` set

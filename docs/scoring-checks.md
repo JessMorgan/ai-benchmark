@@ -6,8 +6,8 @@ This document explains how this codebase scores benchmark responses today
 ## What we do today
 
 All `plugins/challenges/*.py` files expose an `evaluate(response_text)`
-method that returns `(score, criteria_list)`.  Internally they almost
-exclusively use:
+method that returns an `EvaluationResult` containing the native score, rubric,
+and diagnostics.  Internally they almost exclusively use:
 
 - `plugins/challenges/_rubric.py::Rubric.eval_regex` which adds points
   for each `(regex, points)` pair whose pattern matches anywhere in the

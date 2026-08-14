@@ -54,10 +54,10 @@ OPENCODE_VERSION_MARKER = "version.txt"
 # step it waits for the provider's next response indefinitely, and a stalled
 # or looping task would otherwise burn the full benchmark timeout with zero
 # diagnostics. These guards terminate the subprocess early and surface an
-# actionable error instead. All three are data-backed from the
-# ``2026-08-02-more-tests-more-models-opencode`` run (healthy streams emit
-# ``step_start`` within seconds, never exceed 19 steps, and never repeat an
-# identical text event); each can be disabled per call by passing 0/None.
+# actionable error instead. All three defaults are based on observed
+# healthy benchmark streams (which emit ``step_start`` within seconds, stay
+# below 20 steps, and do not repeat identical text events); each can be
+# disabled per call by passing 0/None.
 
 # Kill the subprocess when NO bytes have arrived on stdout or stderr for this
 # many seconds. Catches silent hangs (provider never returns even a
