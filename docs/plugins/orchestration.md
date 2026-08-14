@@ -4,7 +4,7 @@
 |---|---|
 | ID | `orchestration` |
 | Name | Orchestration & Workflow |
-| Version | `0.8.1` |
+| Version | `1.0.0` |
 | Max Score | 16 |
 | Streaming | Yes |
 

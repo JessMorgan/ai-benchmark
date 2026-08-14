@@ -1,15 +1,12 @@
-"""Structured output (JSON/YAML) benchmark task."""
-import json
+"""Strict structured employee-record output challenge."""
+from __future__ import annotations
+
 import re
+from datetime import datetime
 
 from benchmark.plugin import BenchmarkTaskPlugin
 from plugins.challenges._rubric import Rubric
 from plugins.challenges._validators import parse_structured
-
-try:
-    import yaml
-except ImportError:  # pragma: no cover
-    yaml = None  # type: ignore[assignment]
 
 
 class StructuredOutputPlugin(BenchmarkTaskPlugin):
@@ -19,7 +16,7 @@ class StructuredOutputPlugin(BenchmarkTaskPlugin):
 
     @property
     def version(self):
-        return "0.9.0"
+        return "1.0.0"
 
     @property
     def name(self):
@@ -35,293 +32,111 @@ class StructuredOutputPlugin(BenchmarkTaskPlugin):
 
     def get_prompt(self):
         return (
-            "Produce a valid JSON or YAML object representing an employee record. "
-            "Do not include any explanatory text outside the structured data.\n\n"
-            "Required top-level fields:\n"
-            "- id (string, UUID v4 format, e.g. '550e8400-e29b-41d4-a716-446655440000')\n"
-            "- name (string)\n"
-            "- age (integer, 18-120 inclusive)\n"
-            "- email (string, valid email format)\n"
-            "- department (string, one of: Engineering, Sales, Marketing, HR)\n"
-            "- roles (array of strings, each one of: admin, editor, viewer, auditor)\n"
-            "- address (object with keys: street, city, state (2-letter US code uppercase), zip (5-digit string))\n"
-            "- settings (object with keys: theme (one of: dark, light, auto), "
-            "  notifications (object with keys: email (boolean), sms (boolean), push (boolean)), "
-            "  language (2-letter ISO 639-1 code, e.g. 'en', 'es'))\n"
-            "- tags (array of objects, each with name (string) and priority (integer 1-5))\n"
-            "- metadata (object with created_at (ISO 8601 datetime with timezone, e.g. '2024-01-15T09:30:00Z'), "
-            "  active (boolean), score (float 0.0-1.0))\n\n"
-            "Example JSON format:\n"
-            "{\n"
-            "  \"id\": \"550e8400-e29b-41d4-a716-446655440000\",\n"
-            "  \"name\": \"Alice\",\n"
-            "  \"age\": 30,\n"
-            "  \"email\": \"alice@example.com\",\n"
-            "  \"department\": \"Engineering\",\n"
-            "  \"roles\": [\"admin\", \"editor\"],\n"
-            "  \"address\": {\n"
-            "    \"street\": \"123 Main St\",\n"
-            "    \"city\": \"Springfield\",\n"
-            "    \"state\": \"IL\",\n"
-            "    \"zip\": \"62701\"\n"
-            "  },\n"
-            "  \"settings\": {\n"
-            "    \"theme\": \"dark\",\n"
-            "    \"notifications\": {\"email\": true, \"sms\": false, \"push\": true},\n"
-            "    \"language\": \"en\"\n"
-            "  },\n"
-            "  \"tags\": [{\"name\": \"full-time\", \"priority\": 1}, {\"name\": \"remote\", \"priority\": 3}],\n"
-            "  \"metadata\": {\n"
-            "    \"created_at\": \"2024-01-15T09:30:00Z\",\n"
-            "    \"active\": true,\n"
-            "    \"score\": 0.95\n"
-            "  }\n"
-            "}\n\n"
-            "Example YAML format:\n"
-            "id: 550e8400-e29b-41d4-a716-446655440000\n"
-            "name: Alice\n"
-            "age: 30\n"
-            "email: alice@example.com\n"
-            "department: Engineering\n"
-            "roles:\n"
-            "  - admin\n"
-            "  - editor\n"
-            "address:\n"
-            "  street: 123 Main St\n"
-            "  city: Springfield\n"
-            "  state: IL\n"
-            "  zip: '62701'\n"
-            "settings:\n"
-            "  theme: dark\n"
-            "  notifications:\n"
-            "    email: true\n"
-            "    sms: false\n"
-            "    push: true\n"
-            "  language: en\n"
-            "tags:\n"
-            "  - name: full-time\n"
-            "    priority: 1\n"
-            "  - name: remote\n"
-            "    priority: 3\n"
-            "metadata:\n"
-            "  created_at: 2024-01-15T09:30:00Z\n"
-            "  active: true\n"
-            "  score: 0.95"
+            "Return exactly one JSON or YAML object and no explanatory text. The object must "
+            "contain exactly these top-level keys: id (UUID v4 string), name (non-empty string), "
+            "age (integer 18-120), email (valid email), department (Engineering/Sales/Marketing/HR), "
+            "roles (non-empty array of admin/editor/viewer/auditor), address {street, city, state "
+            "(uppercase US two-letter code), zip (five-digit string)}, settings {theme (dark/light/auto), "
+            "notifications {email, sms, push booleans}, language (ISO 639-1)}, tags (non-empty array "
+            "of {name string, priority integer 1-5}), metadata {created_at ISO-8601 datetime with "
+            "timezone, active boolean, score number 0.0-1.0}."
         )
 
     def get_temperature(self, global_config):
-        if "structured_output_temperature" in global_config:
-            return global_config["structured_output_temperature"]
-        return None
+        return global_config.get("structured_output_temperature")
 
-    def _extract_candidate(self, response_text):
-        """Extract structured data from markdown fences or raw text."""
-        t = response_text.strip()
-        match = re.search(r'```(?:json|yaml)?\s*(.*?)\s*```', t, re.DOTALL)
-        if match:
-            return match.group(1).strip()
-        return t
-
-    def _parse_data(self, candidate):
-        """Try to parse candidate as JSON then YAML."""
-        stripped = candidate.strip()
-        looks_like_json = stripped.startswith(("{", "["))
-        if looks_like_json:
-            try:
-                return json.loads(candidate)
-            except json.JSONDecodeError:
-                return None
-        if yaml is not None:
-            try:
-                return yaml.safe_load(candidate)
-            except yaml.YAMLError:
-                pass
-        return None
+    _required = frozenset({"id", "name", "age", "email", "department", "roles", "address", "settings", "tags", "metadata"})
+    _departments = frozenset({"Engineering", "Sales", "Marketing", "HR"})
+    _roles = frozenset({"admin", "editor", "viewer", "auditor"})
+    _languages = frozenset({"en", "es", "fr", "de", "ja", "zh", "pt", "it", "ko", "ar", "hi", "ru"})
 
     @staticmethod
-    def _is_uuid_v4(value):
-        if not isinstance(value, str):
-            return False
-        pattern = r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
-        return bool(re.match(pattern, value))
+    def _uuid(value):
+        return isinstance(value, str) and bool(re.fullmatch(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}", value))
 
     @staticmethod
-    def _is_email(value):
-        if not isinstance(value, str):
-            return False
-        pattern = r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$"
-        return bool(re.match(pattern, value))
+    def _email(value):
+        return isinstance(value, str) and bool(re.fullmatch(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", value))
 
     @staticmethod
-    def _is_iso_datetime(value):
-        if not isinstance(value, str):
+    def _datetime(value):
+        if isinstance(value, datetime):
+            return value.tzinfo is not None
+        if not isinstance(value, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})", value):
             return False
-        # ISO 8601 with optional timezone, e.g. 2024-01-15T09:30:00Z or +00:00
-        pattern = r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})?$"
-        return bool(re.match(pattern, value))
+        try:
+            datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return False
+        return True
+
+    @staticmethod
+    def _bool(value):
+        return type(value) is bool
+
+    def _checks(self, data):
+        address = data.get("address")
+        settings = data.get("settings")
+        notifications = settings.get("notifications") if isinstance(settings, dict) else None
+        tags = data.get("tags")
+        metadata = data.get("metadata")
+        return [
+            isinstance(data.get("name"), str) and bool(data["name"].strip()),
+            type(data.get("age")) is int and 18 <= data["age"] <= 120,
+            self._email(data.get("email")),
+            self._uuid(data.get("id")),
+            data.get("department") in self._departments,
+            isinstance(data.get("roles"), list) and bool(data["roles"]) and all(isinstance(value, str) and value in self._roles for value in data["roles"]),
+            isinstance(address, dict) and all(isinstance(address.get(key), str) and bool(address[key].strip()) for key in ("street", "city")),
+            isinstance(address, dict) and isinstance(address.get("state"), str) and bool(re.fullmatch(r"[A-Z]{2}", address["state"])),
+            isinstance(address, dict) and isinstance(address.get("zip"), str) and bool(re.fullmatch(r"\d{5}", address["zip"])),
+            isinstance(settings, dict) and settings.get("theme") in {"dark", "light", "auto"},
+            isinstance(notifications, dict) and all(type(notifications.get(key)) is bool for key in ("email", "sms", "push")),
+            isinstance(settings, dict) and settings.get("language") in self._languages,
+            isinstance(tags, list) and bool(tags) and all(isinstance(tag, dict) and isinstance(tag.get("name"), str) and bool(tag["name"].strip()) and type(tag.get("priority")) is int and 1 <= tag["priority"] <= 5 for tag in tags),
+            isinstance(metadata, dict) and self._datetime(metadata.get("created_at")),
+            isinstance(metadata, dict) and self._bool(metadata.get("active")),
+            isinstance(metadata, dict) and type(metadata.get("score")) in (int, float) and not isinstance(metadata.get("score"), bool) and 0.0 <= float(metadata["score"]) <= 1.0,
+        ]
+
+    def _leaf_values(self, value):
+        if isinstance(value, dict):
+            for child in value.values():
+                yield from self._leaf_values(child)
+        elif isinstance(value, list):
+            for child in value:
+                yield from self._leaf_values(child)
+        else:
+            yield value
 
     def evaluate(self, response_text):
-        t = response_text.strip()
+        text = response_text.strip()
         rubric = Rubric(self.max_score)
-
-        structured_validation = parse_structured(t)
-        rubric.record_validation(structured_validation)
-
-        has_explanatory_text = bool(
-            re.search(r'```', t)
-            and re.sub(r'```[\s\S]*?```', '', t).strip()
-        )
-
-        data = structured_validation.value if structured_validation.valid else None
-        if data is None:
-            rubric.add_criterion(
-                "Valid JSON/YAML syntax", 4.0, 0.0,
-                errors=structured_validation.errors,
-                negative_findings=["candidate could not be parsed as the required object"],
-            )
-            for name, maximum in (
-                ("Required top-level fields", 4.0),
-                ("Basic types and constraints", 6.0),
-                ("Non-empty values / completeness", 4.0),
-                ("Strict format (no extra keys)", 2.0),
-                ("No placeholder values", 2.0),
-            ):
-                rubric.add_criterion(name, maximum, 0.0)
+        validation = parse_structured(text)
+        rubric.record_validation(validation)
+        if not validation.valid or not isinstance(validation.value, dict):
+            names = [("Valid JSON/YAML syntax", 4.0), ("Required top-level fields", 4.0), ("Basic types and constraints", 6.0), ("Non-empty values / completeness", 4.0), ("Strict format (no extra keys)", 2.0), ("No placeholder values", 2.0)]
+            for name, maximum in names:
+                rubric.add_criterion(name, maximum, 0.0, negative_findings=[{"finding": "structured object could not be parsed"}] if name == "Valid JSON/YAML syntax" else [])
             return rubric.results()
+        data = validation.value
         rubric.add_criterion("Valid JSON/YAML syntax", 4.0, 4.0)
-
-        required = {
-            "id", "name", "age", "email", "department", "roles",
-            "address", "settings", "tags", "metadata",
-        }
-        present = required & set(data.keys())
-        if len(present) == len(required):
-            earned = 4.0
-        else:
-            earned = (len(present) / len(required)) * 2.0
-        rubric.add_criterion("Required top-level fields", 4.0, earned)
-
-        # Six points are distributed evenly across the sixteen typed checks
-        # below. Keeping the per-check weight aligned with the criterion's
-        # declared maximum prevents two points from being silently clamped.
-        type_check_points = 6.0 / 16.0
-        type_score = 0.0
-
-        if isinstance(data.get("name"), str) and data.get("name"):
-            type_score += type_check_points
-
-        age = data.get("age")
-        if isinstance(age, int) and 18 <= age <= 120:
-            type_score += type_check_points
-
-        if self._is_email(data.get("email")):
-            type_score += type_check_points
-
-        if self._is_uuid_v4(data.get("id")):
-            type_score += type_check_points
-
-        department = data.get("department")
-        if isinstance(department, str) and department in {"Engineering", "Sales", "Marketing", "HR"}:
-            type_score += type_check_points
-
-        roles = data.get("roles")
-        allowed_roles = {"admin", "editor", "viewer", "auditor"}
-        if isinstance(roles, list) and roles and all(isinstance(r, str) and r in allowed_roles for r in roles):
-            type_score += type_check_points
-
-        address = data.get("address")
-        if isinstance(address, dict):
-            if all(k in address for k in ("street", "city", "state", "zip")):
-                type_score += type_check_points
-            if isinstance(address.get("state"), str) and re.match(r"^[A-Z]{2}$", address.get("state", "")):
-                type_score += type_check_points
-            if isinstance(address.get("zip"), str) and re.match(r"^\d{5}$", address.get("zip", "")):
-                type_score += type_check_points
-
-        settings = data.get("settings")
-        if isinstance(settings, dict):
-            theme = settings.get("theme")
-            if theme in {"dark", "light", "auto"}:
-                type_score += type_check_points
-            notifications = settings.get("notifications")
-            if isinstance(notifications, dict) and all(k in notifications for k in ("email", "sms", "push")):
-                type_score += type_check_points
-            language = settings.get("language")
-            if isinstance(language, str) and re.match(r"^[a-zA-Z]{2}$", language):
-                type_score += type_check_points
-
-        tags = data.get("tags")
-        if isinstance(tags, list) and tags and all(
-            isinstance(tag, dict)
-            and isinstance(tag.get("name"), str)
-            and isinstance(tag.get("priority"), int)
-            and 1 <= tag.get("priority", 0) <= 5
-            for tag in tags
-        ):
-            type_score += type_check_points
-
-        metadata = data.get("metadata")
-        if isinstance(metadata, dict):
-            if self._is_iso_datetime(metadata.get("created_at")):
-                type_score += type_check_points
-            if isinstance(metadata.get("active"), bool):
-                type_score += type_check_points
-            score_val = metadata.get("score")
-            if isinstance(score_val, (int, float)) and 0.0 <= float(score_val) <= 1.0:
-                type_score += type_check_points
-
-        rubric.add_criterion("Basic types and constraints", 6.0, type_score)
-
-        complete = (
-            data.get("name")
-            and data.get("email")
-            and isinstance(roles, list)
-            and len(roles) > 0
-            and isinstance(tags, list)
-            and len(tags) > 0
-        )
-        earned = 2.0 if complete else 0.0
-        rubric.add_criterion("Non-empty values / completeness", 4.0, earned)
-
-        if isinstance(data, dict) and set(data.keys()) == required:
-            earned = 2.0
-        elif isinstance(data, dict):
-            earned = max(0.0, 2.0 - abs(len(data.keys()) - len(required)) * 0.5)
-        else:
-            earned = 0.0
-        rubric.add_criterion("Strict format (no extra keys)", 2.0, earned)
-        if isinstance(data, dict) and set(data.keys()) != required:
-            rubric.penalize_criterion(
-                "Strict format (no extra keys)", 0.5,
-                "structured object does not exactly match the required key set",
-            )
-        if has_explanatory_text:
-            rubric.penalize_criterion(
-                "Strict format (no extra keys)", 0.5,
-                "response contains explanatory text outside structured data",
-            )
-
-        if complete:
-            bad_values = {"unknown", "n/a", "none", "null", "", None}
-            leaf_values = []
-            self._collect_leaf_values(data, leaf_values)
-            earned = 2.0 if all(v not in bad_values for v in leaf_values) else 0.0
-        else:
-            earned = 0.0
-        rubric.add_criterion("No placeholder values", 2.0, earned)
-
+        present = self._required & set(data)
+        rubric.add_criterion("Required top-level fields", 4.0, 4.0 if present == self._required else 2.0 * len(present) / len(self._required), negative_findings=[] if present == self._required else [{"finding": f"missing keys: {sorted(self._required - present)}"}])
+        checks = self._checks(data)
+        rubric.add_criterion("Basic types and constraints", 6.0, round(6.0 * sum(checks) / len(checks), 1))
+        complete = present == self._required and all(value not in (None, "", [], {}) for value in (data.get("name"), data.get("email"), data.get("roles"), data.get("tags")))
+        rubric.add_criterion("Non-empty values / completeness", 4.0, 4.0 if complete else 0.0)
+        exact_keys = set(data) == self._required
+        rubric.add_criterion("Strict format (no extra keys)", 2.0, 2.0 if exact_keys else 0.0, negative_findings=[] if exact_keys else [{"finding": f"unexpected top-level keys: {sorted(set(data) - self._required)}"}])
+        fenced = ["fence"] if "```" in text else []
+        outside = re.sub(r"```[\s\S]*?```", "", text).strip()
+        if fenced and outside:
+            rubric.penalize_criterion("Strict format (no extra keys)", 0.5, "response contains explanatory text outside structured data")
+        bad = {"unknown", "n/a", "none", "null", ""}
+        placeholders = [value for value in self._leaf_values(data) if isinstance(value, str) and value.strip().lower() in bad]
+        rubric.add_criterion("No placeholder values", 2.0, 2.0 if complete and not placeholders else 0.0, negative_findings=[] if not placeholders else [{"finding": "placeholder value present"}])
         return rubric.results()
 
     def score(self, response_text):
         return self.evaluate(response_text).score
-
-    def _collect_leaf_values(self, obj, out):
-        """Recursively collect leaf values for placeholder checking."""
-        if isinstance(obj, dict):
-            for v in obj.values():
-                self._collect_leaf_values(v, out)
-        elif isinstance(obj, list):
-            for item in obj:
-                self._collect_leaf_values(item, out)
-        else:
-            out.append(obj)

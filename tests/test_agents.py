@@ -197,7 +197,7 @@ class TestModelPreload(unittest.TestCase):
         """A thinking model that burns the probe budget on reasoning_content
         (empty content, non-empty think_text, finish_reason="length") still
         proves it is warm and must count as preloaded, not as an
-        ``empty preload response`` failure. Regression for the 2026-08-02
+        ``empty preload response`` failure. Regression for an earlier
         run where 83/122 probes were thinking-truncation and the affected
         models were skipped for the entire benchmark."""
         response = NonStreamResult(

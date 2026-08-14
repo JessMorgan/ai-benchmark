@@ -4,55 +4,38 @@
 |---|---|
 | ID | `software-architecture` |
 | Name | Software Architecture |
-| Version | `0.8.1` |
+| Version | `1.0.0` |
 | Max Score | 20 |
 | Streaming | Yes |
 
 ## Task
 
-The model acts as a senior backend/coding architect and produces a comprehensive software architecture document for the FlowState productivity platform based on a PRD.
+The model produces a comprehensive architecture for the FlowState platform.
+The response is sectioned and should include:
 
-The document must include:
+- Executive Summary and Requirements Summary
+- Architecture Style and Component Diagram / Description
+- Real-Time Sync & Communication
+- Data Model, API Design, and Technology Stack
+- Deployment Architecture
+- Resiliency & Failure Modes
+- Security Considerations
+- Scalability & Performance
+- Trade-offs & Decisions
+- Observability & SLOs
 
-1. Executive Summary
-2. Requirements Summary
-3. Architecture Style
-4. Component Diagram / Description
-5. Data Model
-6. API Design
-7. Technology Stack
-8. Deployment Architecture
-9. Security Considerations
-10. Scalability & Performance
-11. Trade-offs & Decisions
+## Scoring
 
-## Scoring Rubric
-
-| Criterion | Max | Description |
-|---|---|---|
-| Executive Summary | 1 | Brief architecture overview |
-| Requirements Summary | 2 | Functional and non-functional requirements |
-| Architecture Style | 2 | Microservices, monolith, event-driven, etc. |
-| Component Description | 3 | Major components and responsibilities |
-| Data Model | 3 | Entities, relationships, storage choices |
-| API Design | 2 | REST/GraphQL endpoints |
-| Technology Stack | 2 | Languages, frameworks, databases |
-| Deployment Architecture | 2 | Cloud, containers, CI/CD |
-| Security Considerations | 2 | Auth, encryption, TLS |
-| Scalability & Performance | 2 | Caching, load balancing, sharding |
-| Trade-offs & Decisions | 1 | Rationale for major choices |
+The evaluator first awards up to 3 points for the required section set. The
+remaining points are section-local: architecture and components (2.5), data
+and API design (2.5), real-time communication (2.5), scalability/capacity
+(2.5), resiliency (2.5), security (2.5), and observability/SLOs (1.5). Capacity
+claims without a workload estimate and availability claims without supporting
+failure handling receive bounded deductions. Global mentions do not satisfy a
+section's criterion.
 
 ## Temperature
 
-Default temperature can be set with:
-
 ```json
-"software-architecture_temperature": 0.5
+"software_architecture_temperature": 0.5
 ```
-
-## Tips for Models
-
-- Be specific with technology names.
-- Include concrete endpoints or schema examples.
-- Mention scalability numbers (e.g., 1M DAU).
-- Justify major architectural decisions.

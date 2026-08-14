@@ -6,7 +6,13 @@ import os
 import shutil
 import signal
 import subprocess
+import sys
 import tempfile
+
+try:
+    import resource
+except ImportError:  # pragma: no cover - Windows has no resource module
+    resource = None  # type: ignore[assignment]
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -65,18 +71,74 @@ def _kill_process_group(process: subprocess.Popen[str]) -> None:
         process.kill()
 
 
-def run_python_check(source: str, harness: str, *, timeout: float = 5.0) -> ExecutionResult:
-    """Run source plus harness in an isolated, network-disabled Podman container.
+def _run_local_restricted(source: str, harness: str, *, timeout: float) -> ExecutionResult:
+    """Run a check without Podman using resource limits and a clean process.
 
-    The image must already be present locally: ``--pull=never`` prevents an
-    unexpected image download from violating the no-network execution
-    contract. Missing Podman/image/runtime access is ``skipped``; a started
-    container that fails its harness is ``failed``. A timeout remains distinct
-    so reports can identify unbounded user code.
+    This fallback is intentionally reported as ``local-restricted`` rather
+    than pretending to provide container isolation. It is useful on developer
+    machines and CI hosts without Podman, but it is not a security boundary:
+    callers should prefer Podman for untrusted benchmark responses.
+    """
+    with tempfile.TemporaryDirectory(prefix="ai-benchmark-local-exec-") as tmpdir:
+        script = Path(tmpdir) / "check.py"
+        script.write_text(source + "\n\n" + harness, encoding="utf-8")
+
+        def limit_resources() -> None:
+            if resource is None:
+                return
+            resource.setrlimit(resource.RLIMIT_CPU, (2, 2))
+            resource.setrlimit(resource.RLIMIT_AS, (128 * 1024 * 1024, 128 * 1024 * 1024))
+            resource.setrlimit(resource.RLIMIT_FSIZE, (2 * 1024 * 1024, 2 * 1024 * 1024))
+            if hasattr(resource, "RLIMIT_NPROC"):
+                resource.setrlimit(resource.RLIMIT_NPROC, (32, 32))
+
+        try:
+            process = subprocess.Popen(
+                [sys.executable, "-I", str(script)],
+                cwd=tmpdir,
+                env={"PATH": os.environ.get("PATH", "")},
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                start_new_session=True,
+                # The child is single-purpose and the fallback is explicitly
+                # weaker than Podman; resource limits are still preferable to
+                # an unrestricted subprocess.
+                preexec_fn=limit_resources if resource is not None else None,  # noqa: PLW1509
+            )
+            try:
+                stdout, stderr = process.communicate(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                _kill_process_group(process)
+                stdout, stderr = process.communicate()
+                return ExecutionResult(
+                    "timeout", output=(stdout + stderr).strip(),
+                    error=f"execution exceeded {timeout:g}s",
+                    isolation="local-restricted",
+                )
+        except OSError as exc:
+            return ExecutionResult("failed", error=f"local execution failed: {exc}", isolation="local-restricted")
+
+    output = (stdout + stderr).strip()
+    return ExecutionResult(
+        "passed" if process.returncode == 0 else "failed",
+        passed=process.returncode == 0,
+        output=output,
+        error=None if process.returncode == 0 else f"process exited {process.returncode}",
+        isolation="local-restricted",
+    )
+
+
+def run_python_check(source: str, harness: str, *, timeout: float = 5.0) -> ExecutionResult:
+    """Run source plus a pytest-compatible assertion harness.
+
+    Podman is preferred and provides the network-disabled boundary. When it is
+    unavailable, a resource-limited local process is used and the result
+    records that weaker isolation mode explicitly.
     """
     podman = _podman_binary()
     if not podman:
-        return ExecutionResult("skipped", error="Podman is not installed")
+        return _run_local_restricted(source, harness, timeout=timeout)
     with tempfile.TemporaryDirectory(prefix="ai-benchmark-exec-") as tmpdir:
         # The container runs as an unprivileged numeric user. Make only the
         # temporary bind source traversable/readable; it contains no host data
@@ -120,13 +182,13 @@ def run_python_check(source: str, harness: str, *, timeout: float = 5.0) -> Exec
                     output=output,
                     error=f"execution exceeded {timeout:g}s",
                 )
-        except OSError as exc:
-            return ExecutionResult("skipped", error=f"Podman unavailable: {exc}")
+        except OSError:
+            return _run_local_restricted(source, harness, timeout=timeout)
     output = (stdout + stderr).strip()
     if process is None:  # pragma: no cover - defensive; Popen either returns or raises
-        return ExecutionResult("skipped", error="Podman process was not started")
+        return _run_local_restricted(source, harness, timeout=timeout)
     if process.returncode == 125 and _runtime_unavailable(output):
-        return ExecutionResult("skipped", output=output, error="container runtime unavailable")
+        return _run_local_restricted(source, harness, timeout=timeout)
     if "PHASE4_HARNESS_SKIPPED:" in output:
         reason = output.split("PHASE4_HARNESS_SKIPPED:", 1)[1].splitlines()[0].strip()
         return ExecutionResult("skipped", output=output, error=reason, skipped_reason=reason)

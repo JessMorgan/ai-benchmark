@@ -161,7 +161,7 @@ class TestPurgeResultsExtraction(unittest.TestCase):
 
 def _build_14_targets_state() -> dict:
     """Synthetic fixture mirroring the user's
-    ``2026-07-27-updated-tests-and-models (attempt 2)`` run: 13 models
+    an earlier benchmark run: 13 models
     present in BOTH `state.results` AND `state.model_info` plus 1
     orphan model present ONLY in `state.model_info`, all 14 carrying
     ``pluginA_output_tokens == 1``. Plus a single noise model that has

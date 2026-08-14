@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""HISTORICAL MIGRATION: ran once on 2026-07-24 to add KPI guard / NFR section
+"""HISTORICAL MIGRATION: retained for audit context to add KPI guard / NFR section
 to benchmark-agents.yml. Re-runs are safe (each edit is idempotent on the
 NEW strings; new edits to benchmark-agents.yml will break the oldString
 match, returning exit code 1 — that's a deliberate sanity signal, not a bug).

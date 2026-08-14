@@ -19,7 +19,7 @@ to know what to grep first.
   - **`benchmark/outputs.py`** — `gen_markdown / gen_csv / gen_html / gen_pdf`.
   - **`benchmark/completions.py`** — `--generate-shell-completion`.
   - **`benchmark/opencode.py`** — the optional OpenCode subprocess runner.
-- **`plugins/challenges/`** — 15 task plugins; auto-discovered and metadata-validated. **`plugins/outputs/`** — md/csv/html/pdf output plugins.
+- **`plugins/challenges/`** — 18 task plugins; auto-discovered and metadata-validated. **`plugins/outputs/`** — md/csv/html/pdf output plugins.
 - **`scripts/recover_state_from_csv.py`** — explicit, dry-run-by-default recovery of historical `benchmark_state.json` files from `results.csv`; accepts known historical plugin subsets and rejects unknown score columns.
 - **`tests/`** — pytest/unittest suite. **`pyproject.toml`** — project metadata, runtime deps, `dev` dependency group, pytest/coverage/mypy/ruff config. **`uv.lock`** — pinned dependency tree (managed by `uv`).
 
@@ -93,36 +93,43 @@ LAST entry per model.
 - `judge-inputs/` — retained prompt/response sidecars used for resumable
   semantic judging; raw judge responses are stored beside benchmark artifacts.
 
-## Built-in plugins (15)
+## Built-in plugins (18)
 
 The runtime inventory below matches `uv run ai-benchmark --list-plugins`:
 
 | ID | Version | Max | Stream |
 |---|---:|---:|---|
-| `code-review` | 0.8.1 | 15 | No |
-| `debug-traversal` | 0.5.1 | 20 | Yes |
-| `error-recovery` | 0.8.0 | 20 | Yes |
-| `instruction-following` | 0.1.1 | 20 | Yes |
-| `moe-dense` | 0.7.2 | 17 | No |
-| `multi-step` | 0.9.1 | 20 | Yes |
-| `multi-turn-conversation` | 0.6.0 | 20 | Yes |
-| `orchestration` | 0.8.1 | 16 | Yes |
-| `prd-creation` | 0.7.0 | 22 | Yes |
-| `rate-limiter` | 0.7.1 | 20 | Yes |
-| `reasoning` | 0.1.1 | 20 | Yes |
-| `software-architecture` | 0.8.1 | 20 | Yes |
-| `structured-output` | 0.9.0 | 22 | No |
-| `tool-calling` | 0.10.0 | 25 | Yes |
-| `wireframes` | 0.7.2 | 20 | Yes |
+| `code-review` | 1.0.0 | 15 | No |
+| `debug-consistency` | 0.1.0 | 20 | Yes |
+| `debug-traversal` | 1.0.0 | 20 | Yes |
+| `error-recovery` | 1.0.0 | 20 | Yes |
+| `event-processor` | 0.1.0 | 20 | Yes |
+| `instruction-following` | 1.0.0 | 20 | Yes |
+| `long-context` | 0.1.0 | 20 | Yes |
+| `moe-dense` | 1.0.0 | 17 | No |
+| `multi-step` | 1.0.0 | 20 | Yes |
+| `multi-turn-conversation` | 1.0.0 | 20 | Yes |
+| `orchestration` | 1.0.0 | 16 | Yes |
+| `prd-creation` | 1.0.0 | 22 | Yes |
+| `rate-limiter` | 1.0.0 | 20 | Yes |
+| `reasoning` | 1.0.0 | 20 | Yes |
+| `software-architecture` | 1.0.0 | 20 | Yes |
+| `structured-output` | 1.0.0 | 22 | No |
+| `tool-calling` | 1.0.0 | 25 | Yes |
+| `wireframes` | 1.0.0 | 20 | Yes |
 
 `code-review`, `moe-dense`, and `structured-output` set
-`supports_streaming=False` and use the **non-streaming** request path.
+`supports_streaming=False` and use the **non-streaming** request path. Code-shaped
+plugins use a pytest-compatible assertion harness in the Podman sandbox, with a
+resource-limited local fallback recorded as `local-restricted` when Podman is
+unavailable.
 
 ## Git management
 Before committing any complete change:
 1. Run the full CI checks defined in `.github/workflows/tests.yml` (or their local equivalent): `uv sync --frozen`; `uv run pre-commit run --all-files --show-diff-on-failure`; `uv run coverage run -m pytest tests/ plugins/challenges/ plugins/outputs/ -q`; `uv run coverage report -m`; and `uv run coverage report --fail-under=90`. The CI matrix runs these checks on Python 3.10 through 3.14. Fix every issue reported by these checks before committing, then rerun the checks until they pass.
 2. Update all relevant documentation to reflect the new reality, including `AGENTS.md`, `README.md`, `docs/`, plugin documentation, CLI/configuration references, and any other checked-in documentation affected by the change.
 3. Confirm the documentation and runtime metadata agree, then commit the complete change to git.
+4. When adding a footer or co-author attribution, include the agent name (e.g. OpenCode, FreeBuff, CodeBuff, Hermes Agent, etc.) and model name (e.g. GPT-5.6 Luna, Big Pickle, DeepSeek v4 Flash 0731, etc.)
 
 ## Plugin updates
 1. **Update challenge-plugin versions when modified from what's in git.** This policy applies only to challenge plugins and their shared challenge-plugin code under `plugins/challenges/`; it does not apply to `plugins/__init__.py`, output plugins, documentation, or tests. Every internal or externally visible challenge-plugin code change requires a version bump. Non-scoring changes, such as behavior-preserving refactors or internal/API plumbing that cannot affect evaluation results, increment the revision (for example, `0.2.0` → `0.2.1`). A minor-version bump is reserved for changes that could affect scoring in any way, including prompt, rubric, scoring-code, validation, normalization, or execution changes (for example, `0.2.0` → `0.3.0`, resetting the revision). Complete rewrites or very major changes increment the major version (for example, `0.2.0` → `1.0.0`, resetting minor and revision). A bump is not required for every intermediate edit; record the largest applicable change from the version currently in git.
@@ -155,8 +162,10 @@ Before committing any complete change:
    `resp` before the interruptible `stop_event.wait(delay)`. Don't reorder —
    Ctrl+C would leak.
 5. **Per-plugin max_score varies** — `code-review=15`, `moe-dense=17`,
-   `orchestration=16`, `tool-calling=25`, others=20. Tests in
-   `tests/test_tui_cells.py` pin score normalisation.
+   `orchestration=16`, `prd-creation=22`, `structured-output=22`,
+   `tool-calling=25`, and the remaining plugins use 20. Cross-plugin
+   contract tests pin the inventory and native scales; public results are
+   normalized once to percentage-v1.
 6. **Thinking-truncation auto-escalation.** `_run_plugin_task` in
    `benchmark/core.py` auto-retries once with a doubled `max_tokens` budget
    when a streaming HTTP leg classifies as `thinking-truncation` (empty
@@ -185,5 +194,6 @@ when the user invokes a skill workflow (`skill <name>`).
 - `docs/configuration.md` — YAML/JSON config, per-source 429 retry knobs.
 - `docs/plugins.md` — plugin catalog + lifecycle.
 - `docs/development.md` — dev setup + writing plugins + test conventions.
-- `docs/scoring-checks.md` — rubric philosophy + future richer checks (regex,
-  structural parsing, Mermaid validation, LLM-as-judge, code-execution).
+- `docs/scoring-checks.md` — implemented rubric philosophy, section-local and
+  typed parsing, executable sandbox checks, adversarial coverage, and the
+  remaining deliberately limited qualitative checks.

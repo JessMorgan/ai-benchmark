@@ -1,8 +1,8 @@
 # Design: Model Pre-Loading (warm-up probe) before benchmark legs
 
 **Status:** Design for review — no code implemented yet.
-**Date:** 2026-08-04
-**Related:** opencode failure root-cause analysis (`2026-08-02-more-tests-more-models-opencode` run — 21/22 opencode failures were the 120s no-output guard killing legs whose backend was still loading/serving the model; HTTP TTFT for the same models was 20–260s).
+**Date:** Design note
+**Related:** opencode failure root-cause analysis (a prior benchmark run — 21/22 opencode failures were the 120s no-output guard killing legs whose backend was still loading/serving the model; HTTP TTFT for the same models was 20–260s).
 
 ---
 

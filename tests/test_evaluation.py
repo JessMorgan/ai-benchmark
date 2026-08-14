@@ -21,9 +21,9 @@ def test_saved_response_diagnostics_are_json_serializable():
 
     assert result["plugin"] == "rate-limiter"
     assert result["diagnostics"]["criterion_count"] > 0
-    token_bucket = next(item for item in result["rubric"] if item["name"] == "Token Bucket")
+    token_bucket = next(item for item in result["rubric"] if item["name"] == "Strategy API contract")
     assert token_bucket["matched"] is True
-    assert token_bucket["evidence"] == []
+    assert token_bucket["evidence"] == [{"kind": "class", "name": "TokenBucket"}]
     assert any(item.get("evidence") for item in result["rubric"])
     json.dumps(result)
 

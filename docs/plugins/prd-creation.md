@@ -4,7 +4,7 @@
 |---|---|
 | ID | `prd-creation` |
 | Name | PRD Creation |
-| Version | `0.7.0` |
+| Version | `1.0.0` |
 | Max Score | 22 |
 | Streaming | Yes |
 

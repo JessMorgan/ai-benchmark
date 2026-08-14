@@ -1,5 +1,6 @@
-"""Tool calling and agent routing benchmark task."""
-import json
+"""Typed tool-routing and itinerary synthesis challenge."""
+from __future__ import annotations
+
 import re
 from datetime import date, datetime
 
@@ -14,7 +15,8 @@ class ToolCallingPlugin(BenchmarkTaskPlugin):
         return "tool-calling"
 
     @property
-    def version(self):        return "0.10.0"
+    def version(self):
+        return "1.0.0"
 
     @property
     def name(self):
@@ -30,47 +32,19 @@ class ToolCallingPlugin(BenchmarkTaskPlugin):
 
     def get_prompt(self):
         return (
-            "You are a travel-planning agent with access to the following tools:\n"
-            "1. get_weather(location: str, unit: str = 'celsius')\n"
-            "2. search_flights(origin: str, destination: str, date: str)\n"
-            "3. book_hotel(city: str, check_in: str, check_out: str, guests: int)\n"
-            "4. get_stock_price(ticker: str)\n"
-            "5. convert_currency(amount: float, from_curr: str, to_curr: str)\n"
-            "6. send_email(to: str, subject: str, body: str)\n\n"
-            "User Request: 'I am planning a business trip from New York (JFK) to Tokyo "
-            "departing on 2024-08-15. I need a hotel in Tokyo from 2024-08-16 to "
-            "2024-08-20 for 2 guests. Please check the weather in Tokyo in celsius, "
-            "search for the flight, book the hotel, check Sony's stock price (SONY), "
-            "convert 1000 USD to JPY, and email the itinerary to alice@example.com with "
-            "subject 'Tokyo Trip Itinerary'.'\n\n"
-            "First, briefly plan which tools you will call and in what order "
-            "inside a <plan>...</plan> block. "
-            "Then output each tool call exactly in this format block:\n"
-            "<tool_call>{\"name\": \"tool_name\", \"args\": {\"arg1\": \"val1\"}}</tool_call>\n\n"
-            "After outputting the necessary tool calls sequentially, synthesize a mock final response "
-            "assuming hypothetical return values. Include the converted amount in JPY."
+            "Plan and call exactly these six tools in this order: get_weather(Tokyo,celsius), "
+            "search_flights(JFK,Tokyo,2024-08-15), book_hotel(Tokyo,2024-08-16,2024-08-20,2), "
+            "get_stock_price(SONY), convert_currency(1000,USD,JPY), send_email(alice@example.com, "
+            "subject Tokyo Trip Itinerary, body). Put the plan in `<plan>...</plan>`, each call in "
+            "one valid `<tool_call>{...}</tool_call>`, and after the calls provide a final response "
+            "covering weather, flight, hotel, stock, email, and a numeric converted JPY amount."
         )
 
     def get_temperature(self, global_config):
-        if "tool_calling_temperature" in global_config:
-            return global_config["tool_calling_temperature"]
-        return None
+        return global_config.get("tool_calling_temperature")
 
     @staticmethod
-    def _extract_tool_calls(response_text):
-        """Extract all <tool_call>...</tool_call> blocks and parse JSON inside."""
-        calls = []
-        for match in re.finditer(r'<tool_call>(.*?)</tool_call>', response_text, re.DOTALL):
-            raw = match.group(1).strip()
-            try:
-                calls.append(json.loads(raw))
-            except json.JSONDecodeError:
-                continue
-        return calls
-
-    @staticmethod
-    def _date_argument_is_valid(value, expected):
-        """Accept the requested date as an ISO date or ISO datetime."""
+    def _date_matches(value, expected):
         if not isinstance(value, str):
             return False
         candidate = value.strip().replace("Z", "+00:00")
@@ -80,145 +54,46 @@ class ToolCallingPlugin(BenchmarkTaskPlugin):
             try:
                 parsed = date.fromisoformat(candidate)
             except ValueError:
-                match = re.match(r"^(\d{4})[-/](\d{2})[-/](\d{2})$", value.strip())
-                if not match:
-                    return False
-                try:
-                    parsed = date(int(match.group(1)), int(match.group(2)), int(match.group(3)))
-                except ValueError:
-                    return False
+                return False
         return parsed.isoformat() == expected
 
     def evaluate(self, response_text):
-        t = response_text
+        text = response_text.strip()
         rubric = Rubric(self.max_score)
-        tool_validation = parse_tool_calls(t)
-        rubric.record_validation(tool_validation)
-        earned = 0.0
-        tool_call_blocks = re.findall(r'<tool_call>.*?</tool_call>', t, re.DOTALL)
-        if tool_call_blocks:
-            earned += 2.0
-            parsed = self._extract_tool_calls(t)
-            if len(parsed) >= 2:
-                earned += 1.0
-        rubric.add_criterion("Output format compliance", 3.0, earned)
-        if not tool_validation.valid:
-            rubric.penalize_criterion(
-                "Output format compliance", 1.0,
-                "one or more tool-call payloads failed schema validation",
-            )
-
-        earned = 0.0
-        tool_call_index = t.find('<tool_call>')
-        before_tools = t[:tool_call_index] if tool_call_index != -1 else t
-        before_tools_sample = before_tools[:1000]
-        if re.search(r'<plan>.*?</plan>', before_tools_sample, re.DOTALL):
-            earned += 1.5
-        if re.search(r'(?i)(plan|step|first|then|finally|order|sequence)', before_tools_sample):
-            earned += 0.5
-        rubric.add_criterion("Planning / reasoning", 2.0, earned)
-
-        calls = tool_validation.value if tool_validation.valid else []
-        call_names = [c.get("name") for c in calls if isinstance(c, dict)]
-        args_list = [c.get("args", {}) for c in calls if isinstance(c, dict)]
-
-        required_tools = {
-            "get_weather",
-            "search_flights",
-            "book_hotel",
-            "get_stock_price",
-            "convert_currency",
-            "send_email",
-        }
-        present_tools = set(call_names) & required_tools
-        earned = (len(present_tools) / len(required_tools)) * 5.0 if present_tools else 0.0
-        rubric.add_criterion("Required tools present", 5.0, earned)
-
-        arg_score = 0.0
-        for name, args in zip(call_names, args_list):
-            if not isinstance(args, dict):
-                continue
-            if name == "get_weather":
-                loc = args.get("location", "")
-                if isinstance(loc, str) and "tokyo" in loc.lower():
-                    arg_score += 0.5
-                if args.get("unit", "").lower() in {"celsius", "c"}:
-                    arg_score += 0.5
-            elif name == "search_flights":
-                origin = args.get("origin", "")
-                dest = args.get("destination", "")
-                date = args.get("date", "")
-                if isinstance(origin, str) and "jfk" in origin.lower():
-                    arg_score += 0.5
-                if isinstance(dest, str) and "tokyo" in dest.lower():
-                    arg_score += 0.5
-                if self._date_argument_is_valid(date, "2024-08-15"):
-                    arg_score += 0.5
-            elif name == "book_hotel":
-                city = args.get("city", "")
-                check_in = args.get("check_in", "")
-                check_out = args.get("check_out", "")
-                guests = args.get("guests")
-                if isinstance(city, str) and "tokyo" in city.lower():
-                    arg_score += 0.5
-                if (
-                    self._date_argument_is_valid(check_in, "2024-08-16")
-                    and self._date_argument_is_valid(check_out, "2024-08-20")
-                ):
-                    arg_score += 0.5
-                if isinstance(guests, int) and guests == 2:
-                    arg_score += 0.5
-            elif name == "get_stock_price":
-                ticker = args.get("ticker", "")
-                if isinstance(ticker, str) and ticker.upper() == "SONY":
-                    arg_score += 0.5
-            elif name == "convert_currency":
-                amount = args.get("amount")
-                from_curr = args.get("from_curr", "")
-                to_curr = args.get("to_curr", "")
-                if amount == 1000:
-                    arg_score += 0.5
-                if str(from_curr).upper() == "USD" and str(to_curr).upper() == "JPY":
-                    arg_score += 0.5
-            elif name == "send_email":
-                to = args.get("to", "")
-                subject = args.get("subject", "")
-                if isinstance(to, str) and "alice@example.com" in to.lower():
-                    arg_score += 0.5
-                if isinstance(subject, str) and "tokyo" in subject.lower():
-                    arg_score += 0.5
-        rubric.add_criterion("Correct arguments", 8.0, arg_score)
-
-        expected_order = [
-            "get_weather",
-            "search_flights",
-            "book_hotel",
-            "get_stock_price",
-            "convert_currency",
-            "send_email",
+        if not text:
+            return rubric.results()
+        validation = parse_tool_calls(text)
+        rubric.record_validation(validation)
+        calls = validation.value if isinstance(validation.value, list) else []
+        names = [call.get("name") for call in calls if isinstance(call, dict)]
+        expected = ["get_weather", "search_flights", "book_hotel", "get_stock_price", "convert_currency", "send_email"]
+        blocks = re.findall(r"<tool_call>.*?</tool_call>", text, re.IGNORECASE | re.DOTALL)
+        exact_format = bool(blocks) and validation.valid and len(blocks) == len(calls)
+        rubric.add_criterion("Output format compliance", 3.0, 3.0 if exact_format else (1.0 if blocks else 0.0), negative_findings=[] if exact_format else [{"finding": "all tool calls must be valid typed JSON blocks"}])
+        plan_end = text.lower().find("<tool_call>")
+        plan = text[:plan_end] if plan_end >= 0 else ""
+        plan_match = re.fullmatch(r"\s*<plan>\s*([\s\S]*?)\s*</plan>\s*", plan, re.IGNORECASE)
+        plan_body = plan_match.group(1).lower() if plan_match else ""
+        plan_ok = bool(plan_match) and all(name in plan_body for name in expected)
+        rubric.add_criterion("Planning / reasoning", 2.0, 2.0 if plan_ok else 0.0)
+        counts_ok = names == expected and len(names) == len(set(names))
+        distinct = len(set(names) & set(expected))
+        rubric.add_criterion("Required tools present", 5.0, 5.0 if counts_ok else 5.0 * distinct / len(expected), negative_findings=[] if counts_ok else [{"finding": "exactly one call for each required tool is required"}])
+        args = [call.get("args", {}) for call in calls if isinstance(call, dict)]
+        checks = [
+            ("get_weather", lambda a: str(a.get("location", "")).lower() == "tokyo" and str(a.get("unit", "")).lower() in {"celsius", "c"}, 1.0),
+            ("search_flights", lambda a: str(a.get("origin", "")).upper() == "JFK" and str(a.get("destination", "")).lower() == "tokyo" and self._date_matches(a.get("date"), "2024-08-15"), 1.5),
+            ("book_hotel", lambda a: str(a.get("city", "")).lower() == "tokyo" and self._date_matches(a.get("check_in"), "2024-08-16") and self._date_matches(a.get("check_out"), "2024-08-20") and a.get("guests") == 2, 1.5),
+            ("get_stock_price", lambda a: str(a.get("ticker", "")).upper() == "SONY", 1.0),
+            ("convert_currency", lambda a: a.get("amount") == 1000 and str(a.get("from_curr")).upper() == "USD" and str(a.get("to_curr")).upper() == "JPY", 1.0),
+            ("send_email", lambda a: str(a.get("to", "")).lower() == "alice@example.com" and "tokyo trip itinerary" in str(a.get("subject", "")).lower() and bool(a.get("body")), 2.0),
         ]
-        order_matches = sum(1 for a, b in zip(call_names, expected_order) if a == b)
-        present_order = [name for name in call_names if name in required_tools]
-        expected_present = [name for name in expected_order if name in present_order]
-        in_order = present_order == expected_present
-        earned = 0.0
-        if len(present_order) >= 3 and in_order:
-            earned = (len(present_order) / len(expected_order)) * 3.0
-        elif len(present_order) >= 3:
-            earned = (max(order_matches, 1) / len(expected_order)) * 3.0
-        rubric.add_criterion("Correct ordering / dependencies", 3.0, earned)
-
-        synthesis = t[t.rfind("</tool_call>") + len("</tool_call>"):] if "</tool_call>" in t else t
-        has_weather = re.search(r'(?:weather|degrees|celsius|fahrenheit|sunny|rain|cloud)', synthesis.lower())
-        has_flight = re.search(r'(?:flight|jfk|tokyo|depart)', synthesis.lower())
-        has_hotel = re.search(r'(?:hotel|check.in|guests|reservation)', synthesis.lower())
-        has_stock = re.search(r'(?:price|shares|stock|sony|quote)', synthesis.lower())
-        has_currency = re.search(r'(?:yen|jpy|usd|currency|exchange|converted)', synthesis.lower())
-        has_email = re.search(r'(?:email|itinerary|alice|sent)', synthesis.lower())
-        synthesis_hits = sum([bool(has_weather), bool(has_flight), bool(has_hotel), bool(has_stock), bool(has_currency), bool(has_email)])
-        earned = round((synthesis_hits / 6.0) * 4.0, 1)
-        rubric.add_criterion("Synthesis / final response", 4.0, earned)
-
+        arg_score = sum(weight for name, predicate, weight in checks for call_name, call_args in zip(names, args) if call_name == name and isinstance(call_args, dict) and predicate(call_args))
+        rubric.add_criterion("Correct arguments", 8.0, arg_score)
+        rubric.add_criterion("Correct ordering / dependencies", 3.0, 3.0 if names == expected else 0.0)
+        final = text[text.rfind("</tool_call>") + len("</tool_call>"):] if "</tool_call>" in text else ""
+        synthesis_hits = sum(bool(re.search(pattern, final, re.IGNORECASE)) for pattern in (r"weather|celsius|degree", r"flight|JFK|Tokyo", r"hotel|reservation|guest", r"stock|SONY|price", r"\b\d+(?:\.\d+)?\s*JPY\b", r"email|itinerary|alice@example\.com"))
+        rubric.add_criterion("Synthesis / final response", 4.0, 4.0 if synthesis_hits == 6 else synthesis_hits * 2.0 / 3.0, negative_findings=[] if synthesis_hits == 6 else [{"finding": "final response must include all results and a numeric JPY amount"}])
         return rubric.results()
 
     def score(self, response_text):

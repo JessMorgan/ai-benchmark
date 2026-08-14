@@ -132,7 +132,7 @@ Use `global_config.get("my-task_temperature")` in `get_temperature()`.
 
 ## Testing Plugins
 
-Add tests under `plugins/challenges/test_*.py` or `tests/`. Test metadata, empty/partial responses, and a complete response through the plugin's `evaluate()`/`score()` methods. Run the focused tests before the full suite.
+Add tests under `plugins/challenges/test_*.py` or `tests/`. Every challenge should have empty, partial, adversarial, and complete fixtures. For document tasks, assert section-local and contradiction behavior. For code-generation tasks, define an exact API and run pytest-compatible assertion tests through `run_python_check`; Podman is preferred and `local-restricted` fallback is explicitly recorded. Do not use dated benchmark-run paths as fixtures.
 
 Example:
 
@@ -161,4 +161,6 @@ pre-commit install
 - [ ] Type checks pass (`uv run mypy benchmark/ ai-benchmark.py`)
 - [ ] Lint passes (`ruff check .`)
 - [ ] New plugins include documentation in `docs/plugins/`
+- [ ] Code-generation plugins have executable API tests and adversarial contract fixtures
+- [ ] No source or test directly references a dated historical benchmark directory
 - [ ] README or docs updated if user-facing behavior changed

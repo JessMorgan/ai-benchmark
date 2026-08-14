@@ -1,10 +1,14 @@
-"""Multi-step instruction following benchmark task."""
+"""Executable multi-step function-generation challenge."""
+from __future__ import annotations
+
+import ast
 import re
 
 from benchmark.plugin import BenchmarkTaskPlugin, EvaluationResult
+from plugins.challenges._analysis import fenced_blocks, text_without_fences
 from plugins.challenges._execution import extract_python_source, run_python_check
 from plugins.challenges._rubric import Rubric
-from plugins.challenges._validators import find_definitions, parse_python, stub_definitions
+from plugins.challenges._validators import parse_python, stub_definitions
 
 
 class MultiStepPlugin(BenchmarkTaskPlugin):
@@ -13,7 +17,8 @@ class MultiStepPlugin(BenchmarkTaskPlugin):
         return "multi-step"
 
     @property
-    def version(self):        return "0.9.1"
+    def version(self):
+        return "1.0.0"
 
     @property
     def name(self):
@@ -29,160 +34,141 @@ class MultiStepPlugin(BenchmarkTaskPlugin):
 
     def get_prompt(self):
         return (
-            "Follow the multi-step instructions below exactly. "
-            "Your final response must include all requested artifacts in the order specified.\n\n"
-            "Step 1: Write a Python function named `greet_user` that takes one argument `name` (a string) "
-            "and returns a greeting string in the exact format: 'Hello, <name>! Welcome.'\n\n"
-            "Step 2: Write a Python function named `validate_name` that takes one argument `name` (a string) "
-            "and returns True if the name is non-empty, contains only alphabetic characters and spaces, "
-            "and is at most 50 characters long; otherwise return False.\n\n"
-            "Step 3: Write a Python function named `format_greeting` that takes two arguments, `greeting` "
-            "(a string) and `times` (an integer), and returns the greeting repeated `times` times, "
-            "each on its own line. If `times` is less than 1, return an empty string.\n\n"
-            "Step 4: At the end of your response, add a line exactly in this format "
-            "(including the square brackets and the trailing period):\n"
-            "[SUMMARY: <total_lines> lines, <total_functions> functions, completed all steps].\n\n"
-            "Important constraints:\n"
-            "- Do not write a main block or example usage.\n"
-            "- Do not add explanatory text outside the code blocks and summary line.\n"
-            "- Each function must be in its own fenced Python code block.\n"
-            "- The summary line must match the format exactly."
+            "Implement exactly the three functions below. Return exactly three fenced Python "
+            "code blocks followed by the summary line; do not include prose or a main block.\n\n"
+            "1. `greet_user(name: str) -> str` returns exactly `Hello, <name>! Welcome.`\n"
+            "2. `validate_name(name: str) -> bool` returns True only when name is non-empty, "
+            "contains alphabetic characters and spaces only, and has at most 50 characters.\n"
+            "3. `format_greeting(greeting: str, times: int) -> str` returns greeting repeated "
+            "times with newline separators, or an empty string when times < 1.\n\n"
+            "Each function must be in its own fenced Python block. End with exactly:\n"
+            "[SUMMARY: 3 functions, 3 code blocks, completed all steps]."
         )
 
     def get_temperature(self, global_config):
-        if "multi_step_temperature" in global_config:
-            return global_config["multi_step_temperature"]
-        return None
+        return global_config.get("multi_step_temperature")
+
+    @staticmethod
+    def _definitions(tree: ast.AST) -> set[str]:
+        return {
+            node.name for node in ast.walk(tree)
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        }
 
     def evaluate(self, response_text):
-        t = response_text
-        if not t or not t.strip():
+        if not response_text or not response_text.strip():
             return EvaluationResult(0.0, [])
-
+        text = response_text.strip()
         rubric = Rubric(self.max_score)
-        python_validation = parse_python(t, require_block=True)
-        rubric.record_validation(python_validation)
-        definitions = find_definitions(python_validation.value) if python_validation.valid else {}
+        blocks = fenced_blocks(text, "python")
+        validation = parse_python(text)
+        rubric.record_validation(validation)
+        tree = validation.value if validation.valid else None
+        definitions = self._definitions(tree) if tree is not None else set()
 
-        earned = 0.0
-        if "greet_user" in definitions and not re.search(r"def\s+greet_user", t):
-            earned += 1.0
-        if re.search(r"def\s+greet_user\s*\(\s*name\s*:\s*str\s*\)", t):
-            earned += 1.0
-        elif re.search(r"def\s+greet_user\s*\(\s*name\s*\)", t):
-            earned += 0.5
-        if re.search(r"['\"]Hello,\s*\{?name\}?[!\.]?\s*Welcome\.['\"]", t):
-            earned += 2.0
-        elif re.search(r"Hello,\s*.*Welcome", t):
-            earned += 1.0
-        if re.search(r"return\s+['\"]", t):
-            earned += 1.0
-        if re.search(r"def\s+greet_user", t):
-            earned += 1.0
-        rubric.add_criterion("greet_user function", 5.0, earned)
+        expected = {"greet_user", "validate_name", "format_greeting"}
+        present = expected & definitions
+        rubric.add_criterion(
+            "Required function contract", 4.0,
+            4.0 if present == expected else 4.0 * len(present) / len(expected),
+            evidence=[{"kind": "definition", "name": name} for name in sorted(present)],
+            negative_findings=(
+                [{"finding": f"missing required function: {name}"} for name in sorted(expected - present)]
+            ),
+        )
 
-        earned = 0.0
-        if "validate_name" in definitions and not re.search(r"def\s+validate_name", t):
-            earned += 1.0
-        if re.search(r"def\s+validate_name\s*\(\s*name\s*:\s*str\s*\)", t):
-            earned += 1.0
-        elif re.search(r"def\s+validate_name\s*\(\s*name\s*\)", t):
-            earned += 0.5
-        if re.search(r"len\(\s*(?:name|name\.strip\(\))\s*\)\s*(?:<=?\s*50|<\s*51)", t):
-            earned += 1.5
-        if re.search(r"name\s*\.\s*(isalpha|isalnum)\s*\(\)", t) or re.search(
-            r"name\s*\.\s*replace\s*\([^\n]{0,40}\)\s*\.\s*isalpha\s*\(\)", t,
-        ) or re.search(r"all\s*\([^\n]*(?:isalpha|is\s+alpha)[^\n]*for\s+\w+\s+in\s+name", t, re.IGNORECASE):
-            earned += 1.5
-        if re.search(r"return\s+(True|False)", t):
-            earned += 1.0
-        rubric.add_criterion("validate_name function", 5.0, earned)
+        signatures = {
+            "greet_user": re.compile(r"def\s+greet_user\s*\(\s*name\s*:\s*str\s*\)\s*->\s*str"),
+            "validate_name": re.compile(r"def\s+validate_name\s*\(\s*name\s*:\s*str\s*\)\s*->\s*bool"),
+            "format_greeting": re.compile(r"def\s+format_greeting\s*\(\s*greeting\s*:\s*str\s*,\s*times\s*:\s*int\s*\)\s*->\s*str"),
+        }
+        signature_hits = sum(bool(pattern.search(text)) for pattern in signatures.values())
+        rubric.add_criterion(
+            "Typed signatures", 1.0, 1.0 * signature_hits / 3.0,
+            evidence=[{"kind": "signature", "name": name} for name, pattern in signatures.items() if pattern.search(text)],
+        )
 
-        earned = 0.0
-        if "format_greeting" in definitions and not re.search(r"def\s+format_greeting", t):
-            earned += 1.0
-        if re.search(r"def\s+format_greeting\s*\(\s*greeting\s*:\s*str\s*,\s*times\s*:\s*int\s*\)", t):
-            earned += 1.0
-        elif re.search(r"def\s+format_greeting\s*\(\s*greeting\s*,\s*times\s*\)", t):
-            earned += 0.5
-        if re.search(r"if\s+times\s*<\s*1", t):
-            earned += 1.5
-        if re.search(r"return\s+.*join|join\s*\(\s*\[\s*greeting\s*\]\s*\*\s*times\s*\)", t):
-            earned += 1.5
-        if re.search(r"greeting\s*\*\s*times|for\s+.*in\s+range\(\s*times\s*\)", t):
-            earned += 1.0
-        rubric.add_criterion("format_greeting function", 5.0, earned)
+        summary = re.fullmatch(
+            r"\[SUMMARY:\s*3\s+functions,\s*3\s+code\s+blocks,\s*completed all steps\]\.\s*",
+            text.splitlines()[-1] if text.splitlines() else "",
+        )
+        block_contract = False
+        if len(blocks) == 3 and summary:
+            block_names = []
+            block_contract = True
+            for block in blocks:
+                try:
+                    block_tree = ast.parse(block)
+                except SyntaxError:
+                    block_contract = False
+                    break
+                block_defs = [
+                    node.name for node in block_tree.body
+                    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                ]
+                if len(block_defs) != 1:
+                    block_contract = False
+                    break
+                block_names.append(block_defs[0])
+            block_contract = block_contract and block_names == [
+                "greet_user", "validate_name", "format_greeting"
+            ]
+        rubric.add_criterion(
+            "Exact response contract", 2.0,
+            3.0 if block_contract and text_without_fences(text).strip() == text.splitlines()[-1].strip() else 0.0,
+            negative_findings=(
+                [{"finding": "each required function must occupy its own Python block, followed only by the exact summary"}]
+                if not block_contract else []
+            ),
+        )
 
-        earned = 0.0
-        summary_match = re.search(r"\[SUMMARY:\s*(\d+)\s*lines?,\s*(\d+)\s*functions?,\s*completed all steps\]\.", t)
-        if summary_match:
-            earned = 3.0
-        elif re.search(r"\[SUMMARY:.*completed all steps\]", t):
-            earned = 1.5
-        elif re.search(r"completed all steps", t, re.IGNORECASE):
-            earned = 0.5
-        rubric.add_criterion("Summary line format", 3.0, earned)
+        stubs = stub_definitions(tree, expected) if tree is not None else []
+        rubric.add_criterion(
+            "Non-stub implementation", 1.0,
+            2.0 if not stubs and present == expected else 0.0,
+            negative_findings=[{"finding": f"stub definition: {name}"} for name in stubs],
+        )
 
-        earned = 2.0
-        if re.search(r"if\s+__name__\s*==\s*['\"]__main__['\"]", t):
-            earned -= 1.0
-        code_blocks = re.findall(r"```[\s\S]*?```", t)
-        execution_results = []
-        if source := extract_python_source(t):
-            checks = (
-                (
-                    "greet_user function",
-                    'assert greet_user("Ada") == "Hello, Ada! Welcome."',
-                ),
-                (
-                    "validate_name function",
-                    (
-                        "assert validate_name(\"Ada Lovelace\") is True\n"
-                        "assert validate_name(\"\") is False\n"
-                        "assert validate_name(\"Ada123\") is False\n"
-                        "assert validate_name(\"x\" * 51) is False"
-                    ),
-                ),
-                (
-                    "format_greeting function",
-                    (
-                        'assert format_greeting("Hi", 3) == "Hi\\nHi\\nHi"\n'
-                        'assert format_greeting("Hi", 0) == ""'
-                    ),
-                ),
-            )
-            execution_results = [run_python_check(source, harness) for _, harness in checks]
-        if (
-            len(code_blocks) < 3 and not execution_results
-        ) or any(
-            result.status in {"failed", "timeout"}
-            for result in execution_results
-        ):
-            earned -= 1.0
-        earned = round(max(earned, 0.0), 1)
-        rubric.add_criterion("No extra prose/main block", 2.0, earned)
-        if re.search(r"(?m)^\s*if\s+__name__\s*==", t):
-            rubric.penalize_criterion("No extra prose/main block", 1.0, "response includes a forbidden main block")
-        if python_validation.valid and stub_definitions(
-                python_validation.value,
-                {"greet_user", "validate_name", "format_greeting"},
-        ):
-            rubric.penalize_criterion("No extra prose/main block", 0.5, "response contains a required-function stub")
+        forbidden = []
+        outside = text_without_fences(text)
+        if re.search(r"(?m)^\s*if\s+__name__\s*==", outside):
+            forbidden.append("main block")
+        if re.search(r"(?m)^\s*(?:Here|Explanation|The following|This code)\b", outside, re.IGNORECASE):
+            forbidden.append("explanatory prose")
+        rubric.add_criterion(
+            "No forbidden prose or main block", 1.0,
+            2.0 if not forbidden else 0.0,
+            negative_findings=[{"finding": value} for value in forbidden],
+        )
 
+        source = extract_python_source(text)
+        execution = None
         if source:
-            for (criterion, _harness), execution in zip(checks, execution_results):
-                rubric.record_execution(
-                    execution,
-                    criterion=criterion,
-                    penalty=1.0,
-                    failure_reason=f"isolated {criterion} harness failed",
-                )
-                if execution.status == "passed":
-                    rubric.credit_criterion(
-                        criterion,
-                        1.0,
-                        "isolated harness passed",
-                    )
+            checks = """
+assert greet_user("Ada") == "Hello, Ada! Welcome."
+assert validate_name("Ada Lovelace") is True
+assert validate_name("") is False
+assert validate_name("Ada123") is False
+assert validate_name("x" * 51) is False
+assert format_greeting("Hi", 3) == "Hi\\nHi\\nHi"
+assert format_greeting("Hi", 0) == ""
+"""
+            execution = run_python_check(source, checks)
+            rubric.record_execution(
+                execution,
+                criterion="Non-stub implementation",
+                penalty=1.0,
+                failure_reason="required function behavior failed its isolated API tests",
+            )
+            if execution.status == "passed":
+                rubric.credit_criterion("Non-stub implementation", 2.0, "all API tests passed")
+        else:
+            rubric.add_criterion("Behavioral API tests", 11.0, 0.0, negative_findings=[{"finding": "no executable Python source"}])
+        if execution is not None and execution.status != "passed":
+            # Keep partial lexical credit, but make the behavioral failure visible.
+            rubric.add_criterion("Behavioral API tests", 11.0, 0.0, negative_findings=[{"finding": execution.error or execution.status}])
+        elif execution is not None:
+            rubric.add_criterion("Behavioral API tests", 11.0, 11.0, evidence=[{"kind": "execution", "status": execution.status}])
 
         return rubric.results()
 

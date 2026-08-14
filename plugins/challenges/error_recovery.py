@@ -1,18 +1,13 @@
-"""Error recovery / robustness benchmark task.
+"""Executable resilient multi-provider API challenge."""
+from __future__ import annotations
 
-Tests the model's ability to:
-1. Handle simulated API failures gracefully
-2. Design fallback strategies when primary services fail
-3. Implement retry logic with exponential backoff
-4. Provide meaningful error messages to end users
-5. Design circuit breakers and degradation strategies
-"""
+import ast
 import re
 
 from benchmark.plugin import BenchmarkTaskPlugin, EvaluationResult
 from plugins.challenges._execution import extract_python_source, run_python_check
 from plugins.challenges._rubric import Rubric
-from plugins.challenges._validators import find_definitions, parse_python, stub_definitions
+from plugins.challenges._validators import parse_python, stub_definitions
 
 
 class ErrorRecoveryPlugin(BenchmarkTaskPlugin):
@@ -22,7 +17,7 @@ class ErrorRecoveryPlugin(BenchmarkTaskPlugin):
 
     @property
     def version(self):
-        return "0.8.0"
+        return "1.0.0"
 
     @property
     def name(self):
@@ -38,220 +33,145 @@ class ErrorRecoveryPlugin(BenchmarkTaskPlugin):
 
     def get_prompt(self):
         return (
-            "You are building a resilient microservice that fetches weather data "
-            "from three external providers: WeatherAPI, OpenMeteo, and VisualCrossing. "
-            "Your service must:\n\n"
-            "1. Query all three providers simultaneously\n"
-            "2. Return the first successful response (or aggregate)\n"
-            "3. Handle partial failures gracefully\n\n"
-            "SCENARIO: Write a Python function `get_weather_resilient(city: str) -> dict` "
-            "that queries these three providers and:\n\n"
-            "ARCHITECTURE REQUIREMENTS:\n"
-            "- Use asyncio for concurrent queries\n"
-            "- If one provider fails (HTTP error, timeout, bad data), fall through to the next\n"
-            "- If all three fail, raise a custom `AllProvidersFailedError` with details\n"
-            "- Log each failure with provider name and error reason\n"
-            "- Return the FIRST successful response as-is\n"
-            "- Make provider I/O injectable through `WeatherClient.fetch(provider, city)`;\n"
-            "  the benchmark harness will replace WeatherClient with deterministic fakes\n\n"
-            "EDGE CASES TO HANDLE:\n"
-            "- A provider returns 200 OK but with an error payload (e.g., {\"error\": \"rate limited\"})\n"
-            "- A provider times out (simulate with a delay)\n"
-            "- A provider returns data in a different format than expected\n"
-            "- Two providers succeed but return conflicting data (different temperatures)\n\n"
-            "OUTPUT FORMAT:\n"
-            "```python\n"
-            "import asyncio\n"
-            "import logging\n"
-            "from typing import Any\n\n"
-            "class AllProvidersFailedError(Exception):\n"
-            "    ...\n\n"
+            "Implement an async resilient weather fetcher with this exact API:\n\n"
+            "class AllProvidersFailedError(Exception): ...\n"
             "class WeatherClient:\n"
-            "    \"\"\"Mock client demonstrating resilient multi-provider pattern.\"\"\"\n"
-            "    ...\n\n"
-            "async def get_weather_resilient(city: str) -> dict:\n"
-            "    ...\n\n"
-            "async def demo():\n"
-            "    \"\"\"Demonstrate error handling scenarios.\"\"\"\n"
-            "    ...\n"
-            "```\n\n"
-            "Include docstrings and type hints. The demo function should show at least "
-            "3 scenarios: all providers succeed, one provider fails, all providers fail."
+            "    async def fetch(self, provider: str, city: str) -> dict: ...\n"
+            "async def get_weather_resilient(city: str, client: WeatherClient) -> dict\n\n"
+            "The function must attempt WeatherAPI, OpenMeteo, and VisualCrossing; treat an "
+            "exception, timeout, malformed response, or a 200 response containing an error "
+            "field as failure; return the first successful response unchanged; log every "
+            "failure with provider and reason; and raise exactly AllProvidersFailedError "
+            "with provider details when all fail. Provider calls must be concurrent.\n\n"
+            "Also provide `async def demo()` showing all-success, partial-failure, and all-failure "
+            "scenarios. Use only the standard library and include type hints/docstrings."
         )
 
     def get_temperature(self, global_config):
-        if "error_recovery_temperature" in global_config:
-            return global_config["error_recovery_temperature"]
-        return None
+        return global_config.get("error_recovery_temperature")
+
+    @staticmethod
+    def _classes(tree: ast.AST) -> set[str]:
+        return {node.name for node in ast.walk(tree) if isinstance(node, ast.ClassDef)}
 
     def evaluate(self, response_text):
-        t = response_text
-        if not t or not t.strip():
+        if not response_text or not response_text.strip():
             return EvaluationResult(0.0, [])
-
+        text = response_text.strip()
         rubric = Rubric(self.max_score)
-        python_validation = parse_python(t, require_block=True)
-        rubric.record_validation(python_validation)
-        definitions = find_definitions(python_validation.value) if python_validation.valid else {}
+        validation = parse_python(text)
+        rubric.record_validation(validation)
+        tree = validation.value if validation.valid else None
+        classes = self._classes(tree) if tree is not None else set()
+        functions = {
+            node.name for node in ast.walk(tree)
+            if tree is not None and isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        }
+        required = {"AllProvidersFailedError", "WeatherClient", "get_weather_resilient", "demo"}
+        present = required & (classes | functions)
+        rubric.add_criterion(
+            "Required API contract", 3.0, 3.0 * len(present) / len(required),
+            evidence=[{"kind": "definition", "name": name} for name in sorted(present)],
+            negative_findings=[{"finding": f"missing required definition: {name}"} for name in sorted(required - present)],
+        )
 
-        # Asyncio / concurrent design
-        earned = 0.0
-        if any(name in definitions for name in ("get_weather_resilient", "demo")):
-            earned += 1.0
-        if re.search(r"(?:async def|asyncio|await|gather|create_task)", t):
-            earned += 2.0
-        if re.search(r"(?:asyncio\.gather|as_completed|wait|TaskGroup)", t):
-            earned += 1.0
-        rubric.add_criterion("Concurrent / asyncio design", 3.0, earned)
+        signatures = [
+            r"class\s+AllProvidersFailedError\s*\(",
+            r"class\s+WeatherClient\s*[:(]",
+            r"async\s+def\s+fetch\s*\(",
+            r"async\s+def\s+get_weather_resilient\s*\(\s*city\s*:\s*str\s*,\s*client\s*:\s*WeatherClient",
+        ]
+        hits = sum(bool(re.search(pattern, text)) for pattern in signatures)
+        rubric.add_criterion("Typed injectable signatures", 2.0, 2.0 * hits / len(signatures))
 
-        # Retry / fallback logic
-        earned = 0.0
-        if re.search(r"(?:fallback|fall through|next provider|alternate|secondary)", t, re.IGNORECASE):
-            earned += 1.0
-        if re.search(r"(?:retry|backoff|exponential|timeout|attempt)", t, re.IGNORECASE):
-            earned += 1.0
-        if re.search(r"(?:try:|except|Exception|finally)", t):
-            earned += 1.0
-        rubric.add_criterion("Fallback / retry logic", 3.0, earned)
+        concepts = {
+            "concurrent provider calls": r"asyncio\.(?:gather|create_task|as_completed)|TaskGroup",
+            "fallback/error handling": r"try\s*:|except\s+|fallback|next provider",
+            "timeouts": r"wait_for|timeout",
+            "error payload validation": r"(?:error\s*['\"]?\s*:|error.*payload|malformed|schema)",
+            "logging": r"logging|logger\.(?:error|warning|exception)",
+        }
+        concept_hits = sum(bool(re.search(pattern, text, re.IGNORECASE)) for pattern in concepts.values())
+        rubric.add_criterion(
+            "Recovery design", 2.0, 2.0 * concept_hits / len(concepts),
+            evidence=[{"kind": "concept", "name": name} for name, pattern in concepts.items() if re.search(pattern, text, re.IGNORECASE)],
+        )
 
-        # Error handling
-        earned = 0.0
-        if re.search(r"class\s+AllProvidersFailedError", t):
-            earned += 1.0
-        if re.search(r"(?:raise|raise.*Error|raise.*Exception)", t):
-            earned += 1.0
-        if re.search(r"(?:logging|logger|log\.error|log\.warning|print\()", t):
-            earned += 1.0
-        rubric.add_criterion("Error types / custom exception / logging", 3.0, earned)
+        stubs = stub_definitions(tree, required) if tree is not None else []
+        rubric.add_criterion(
+            "Non-stub implementation", 1.0, 1.0 if not stubs and present == required else 0.0,
+            negative_findings=[{"finding": f"stub definition: {name}"} for name in stubs],
+        )
 
-        # Edge case handling
-        earned = 0.0
-        if re.search(r"(?:rate\s*limit|error.*payload|bad.*data|invalid)", t, re.IGNORECASE):
-            earned += 1.0
-        if re.search(r"(?:format|schema|parse|unexpected|mismatch)", t, re.IGNORECASE):
-            earned += 1.0
-        if re.search(r"(?:conflict|disagree|differ|contradict|discrepancy)", t, re.IGNORECASE):
-            earned += 1.0
-        if re.search(r"(?:timeout|delay|time\.sleep|asyncio\.wait_for)", t):
-            earned += 1.0
-        rubric.add_criterion("Edge case coverage", 3.0, earned)
+        demo_markers = sum(bool(re.search(pattern, text, re.IGNORECASE)) for pattern in (
+            r"all\s+(?:providers\s+)?succeed", r"one|partial|fallback", r"all\s+(?:providers\s+)?fail",
+        ))
+        rubric.add_criterion(
+            "Demo scenarios", 1.0, 1.0 * demo_markers / 3.0)
 
-        # Code quality
-        earned = 0.0
-        if re.search(r'->\s*(?:dict|dict\[|Optional|Any|dict\[str)', t):
-            earned += 1.0
-        if re.search(r':\s*(?:str|int|bool|float|dict|list|Optional)', t):
-            earned += 1.0
-        if '"""' in t or 'docstring' in t:  # check for docstrings
-            earned += 1.0
-        rubric.add_criterion("Type hints & docstrings", 3.0, earned)
+        quality_hits = sum(bool(re.search(pattern, text)) for pattern in (r"->\s*(?:dict|None|Any)", r"\"\"\""))
+        rubric.add_criterion("Type hints and docstrings", 1.0, min(1.0, float(quality_hits) / 2.0))
 
-        # Demo / usage example
-        earned = 0.0
-        if re.search(r"(?:demo|example|usage|if __name__)", t):
-            earned += 1.0
-        if re.search(r"(?:all succeed|all fail|one fail|partial|scenario)", t, re.IGNORECASE):
-            earned += 1.0
-        if re.search(r"(?:print|return|result|output)", t):
-            earned += 1.0
-        rubric.add_criterion("Demo scenarios", 3.0, earned)
-
-        # Structure / completeness
-        earned = 1.0
-        if re.search(r"class\s+AllProvidersFailedError", t):
-            earned += 0.5
-        if re.search(r"class\s+WeatherClient", t):
-            earned += 0.5
-        if re.search(r"async\s+def\s+get_weather_resilient", t):
-            earned += 0.5
-        if re.search(r"async\s+def\s+demo", t):
-            earned += 0.5
-        rubric.add_criterion("Structure / completeness", 2.0, earned)
-
-        placeholders = re.findall(r"(?m)^\s*\.\.\.\s*$", t)
-        if python_validation.valid:
-            placeholders.extend(stub_definitions(
-                python_validation.value,
-                {"WeatherClient", "get_weather_resilient", "demo"},
-            ))
-        if placeholders:
-            rubric.penalize_criterion(
-                "Structure / completeness", 2.0,
-                f"response contains {len(placeholders)} placeholder or pass-only line(s)",
-            )
-            rubric.penalize_criterion(
-                "Demo scenarios", 1.0,
-                "placeholder implementation cannot demonstrate the requested scenarios",
-            )
-
-        source = extract_python_source(t)
+        source = extract_python_source(text)
         if source:
-            # The prompt defines an injectable WeatherClient.fetch seam. Replace
-            # that class in the generated module, then assert that the response
-            # actually falls through a failed/error-payload provider and raises
-            # the required exception when every provider fails. Responses that
-            # do not expose the documented seam are explicitly skipped rather
-            # than receiving a misleading execution failure.
-            harness = """
+            harness = r'''
 import asyncio
 import inspect
 
-_error_type = globals().get("AllProvidersFailedError", Exception)
-_target = globals().get("get_weather_resilient")
-_client_type = globals().get("WeatherClient")
-assert inspect.iscoroutinefunction(_target)
-if not isinstance(_client_type, type):
-    print("PHASE4_HARNESS_SKIPPED: WeatherClient injection seam is missing")
-else:
-    _original_client = _client_type
+assert isinstance(AllProvidersFailedError, type)
+assert issubclass(AllProvidersFailedError, Exception)
+assert inspect.iscoroutinefunction(get_weather_resilient)
 
-    def _install(_mode):
-        _calls = []
-        class _FakeWeatherClient:
-            async def fetch(self, _provider, _city):
-                _calls.append(_provider)
-                _index = len(_calls)
-                if _mode == "all-fail":
-                    raise RuntimeError(f"provider-{_index} unavailable")
-                if _mode == "error-payload" and _index == 1:
-                    return {"error": "rate limited"}
-                if _mode == "fallback" and _index == 1:
-                    raise RuntimeError("primary unavailable")
-                return {"city": "phase4-city", "temperature": 21}
-        globals()["WeatherClient"] = _FakeWeatherClient
-        return _calls
+class FakeClient:
+    providers = {"WeatherAPI", "OpenMeteo", "VisualCrossing"}
+    def __init__(self, mode):
+        self.mode = mode
+        self.calls = []
+        self.started = []
+    async def fetch(self, provider, city):
+        self.started.append(provider)
+        await asyncio.sleep(0.02)
+        self.calls.append(provider)
+        if self.mode == "all-fail":
+            raise RuntimeError(provider + " unavailable")
+        if self.mode == "partial" and provider == "WeatherAPI":
+            raise RuntimeError("primary unavailable")
+        if self.mode == "payload" and provider == "WeatherAPI":
+            return {"error": "rate limited"}
+        return {"city": city, "temperature": 21}
 
-    async def _invoke(_mode):
-        _calls = _install(_mode)
-        try:
-            _value = await asyncio.wait_for(_target("phase4-city"), timeout=1.0)
-            return _value, _calls
-        finally:
-            globals()["WeatherClient"] = _original_client
+def assert_all_providers_were_attempted(client):
+    assert set(client.calls) == client.providers
+    assert set(client.started) == client.providers
 
-    async def _phase4_check():
-        _success, _calls = await _invoke("fallback")
-        assert isinstance(_success, dict) and _success.get("temperature") == 21
-        assert len(_calls) >= 2, "fallback must try a second provider"
-        _payload, _calls = await _invoke("error-payload")
-        assert isinstance(_payload, dict) and "error" not in _payload
-        assert len(_calls) >= 2, "error payload must fall through"
-        try:
-            await _invoke("all-fail")
-        except _error_type:
-            pass
-        else:
-            raise AssertionError("all provider failures must raise AllProvidersFailedError")
+async def run_checks():
+    for mode in ("all-success", "partial", "payload"):
+        client = FakeClient(mode)
+        value = await asyncio.wait_for(get_weather_resilient("Paris", client), 1)
+        assert value == {"city": "Paris", "temperature": 21}
+        assert_all_providers_were_attempted(client)
 
-    asyncio.run(_phase4_check())
-"""
+    client = FakeClient("all-fail")
+    try:
+        await asyncio.wait_for(get_weather_resilient("Paris", client), 1)
+    except AllProvidersFailedError as exc:
+        assert all(provider in str(exc) for provider in client.providers)
+        assert_all_providers_were_attempted(client)
+    else:
+        raise AssertionError("all failures must raise AllProvidersFailedError")
+
+asyncio.run(run_checks())
+'''
             execution = run_python_check(source, harness)
-            rubric.record_execution(
-                execution,
-                criterion="Concurrent / asyncio design",
-                penalty=1.0,
-                failure_reason="isolated bounded provider scenario failed",
+            behavior_points = 10.0 if execution.status == "passed" else 0.0
+            rubric.add_criterion(
+                "Behavioral provider tests", 10.0, behavior_points,
+                evidence=[{"kind": "execution", "status": execution.status, "isolation": execution.isolation}],
+                negative_findings=[] if execution.status == "passed" else [{"finding": execution.error or execution.status}],
             )
+        else:
+            rubric.add_criterion("Behavioral provider tests", 10.0, 0.0, negative_findings=[{"finding": "no executable source"}])
+
         return rubric.results()
 
     def score(self, response_text):

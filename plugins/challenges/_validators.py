@@ -152,6 +152,12 @@ def parse_tool_calls(text: str) -> Validation:
 def parse_structured(text: str, *, fmt: str | None = None) -> Validation:
     """Parse one JSON/YAML candidate and return its typed value."""
     candidates = extract_fenced_blocks(text, fmt) if fmt else extract_fenced_blocks(text)
+    if len(candidates) > 1:
+        return Validation(
+            False,
+            evidence=[{"kind": "structured-candidate-count", "count": len(candidates)}],
+            errors=["multiple structured candidates found; exactly one is required"],
+        )
     source = candidates[0] if candidates else text.strip()
     if not source:
         return Validation(False, errors=["no structured candidate found"])
@@ -170,7 +176,7 @@ def parse_structured(text: str, *, fmt: str | None = None) -> Validation:
         return Validation(False, errors=["structured candidate is not an object"], value=value)
     return Validation(
         True,
-        evidence=[{"kind": "structured-parse", "format": fmt or "auto", "keys": sorted(value)}],
+        evidence=[{"kind": "structured-parse", "format": fmt or "auto", "keys": sorted(value), "candidate_count": len(candidates) or 1}],
         value=value,
     )
 

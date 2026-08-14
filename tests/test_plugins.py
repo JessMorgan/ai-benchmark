@@ -74,9 +74,12 @@ class TestPluginDiscovery(unittest.TestCase):
             ids,
             [
                 "code-review",
+                "debug-consistency",
                 "debug-traversal",
                 "error-recovery",
+                "event-processor",
                 "instruction-following",
+                "long-context",
                 "moe-dense",
                 "multi-step",
                 "multi-turn-conversation",

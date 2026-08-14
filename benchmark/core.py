@@ -48,7 +48,7 @@ PRELOAD_DEFAULT_TIMEOUT = 300
 # thinking/reasoning model (deepseek-r1, qwen3.x, gemma4, ...) can emit at
 # least one content token after its reasoning preamble -- the old 16-token
 # budget was fully consumed by ``reasoning_content`` for 68% of the probes
-# in the 2026-08-02 run, producing ``content=""`` + ``finish_reason="length"``
+# in a prior benchmark run, producing ``content=""`` + ``finish_reason="length"``
 # responses that were wrongly classified as ``empty preload response`` and
 # skipped the model for the whole benchmark. 256 tokens is comfortably past
 # typical reasoning preambles while keeping the probe cheap.
@@ -143,7 +143,7 @@ def preload_model(source_config, source, api_model, timeout,
     # ``think_text``, ``finish_reason="length"``) proves the model is warm
     # and responding; treating it as ``empty preload response`` was a false
     # negative that skipped thinking models for the entire benchmark (see
-    # the 2026-08-02 run: 83/122 probes were thinking-truncation). A
+    # an earlier run showed many probes were thinking-truncated). A
     # transport error still fails the probe regardless of ``think_text``
     # (the ``not error`` guard above this check).
     if not error and not response.text.strip() and not response.think_text.strip():

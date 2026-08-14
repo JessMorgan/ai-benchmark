@@ -1,10 +1,11 @@
-"""MoE vs Dense architecture analysis benchmark task."""
+"""MoE versus dense architecture analysis challenge."""
+from __future__ import annotations
 
 import re
 
 from benchmark.plugin import BenchmarkTaskPlugin
+from plugins.challenges._analysis import first_section, markdown_sections
 from plugins.challenges._rubric import Rubric
-from plugins.challenges._validators import validate_sections
 
 
 class MoEDensePlugin(BenchmarkTaskPlugin):
@@ -14,7 +15,7 @@ class MoEDensePlugin(BenchmarkTaskPlugin):
 
     @property
     def version(self):
-        return "0.7.2"
+        return "1.0.0"
 
     @property
     def name(self):
@@ -22,10 +23,6 @@ class MoEDensePlugin(BenchmarkTaskPlugin):
 
     @property
     def max_score(self):
-        # 15 points of existing rubric + 2 points for the new sharper
-        # "Quantitative trade-off" criterion.  If we kept this at 15.0,
-        # Rubric.results() would cap the displayed score at min(earned, 15)
-        # and silently redistribute points without expanding the score range.
         return 17.0
 
     @property
@@ -34,166 +31,71 @@ class MoEDensePlugin(BenchmarkTaskPlugin):
 
     def get_prompt(self):
         return (
-            "Write a detailed technical analysis comparing Mixture-of-Experts (MoE) architecture "
-            "(used in Mixtral 8x7B, Qwen3-MoE, DeepSeekMoE) versus dense transformer architecture "
-            "(used in Llama 3, Gemma, GPT-4o). Your analysis must cover:\n\n"
-            "- The mathematical formulation of the sparse MoE gating/routing mechanism (include the top-k "
-            "routing equation and softmax gating)\n"
-            "- How the auxiliary load-balancing loss works — include the exact mathematical formulation\n"
-            "- At least 2 specific training stability challenges unique to MoE (token dropping, expert "
-            "collapse, or others)\n"
-            "- Inference implications: memory bandwidth, expert parallelism, vs dense compute patterns\n"
-            "- Specific benchmarks or tasks where MoE outperforms dense architectures, and where dense "
-            "outperforms MoE (name at least 2 of each)\n"
-            "- Reference at least 2 specific papers, technical reports, or model cards\n\n"
-            "Be precise and technical — this is for an ML engineering audience. 4-5 paragraphs."
+            "Write a technical comparison with headings Gating, Load Balancing, Training, "
+            "Inference, Benchmarks, and References. Include a top-k routing equation, a load "
+            "balancing equation with defined variables, two concrete MoE advantages and two "
+            "concrete dense advantages tied to named tasks/models, two named references, and "
+            "specific numeric trade-offs. Do not merely list keywords."
         )
 
     def get_temperature(self, global_config):
-        if "moe_dense_temperature" in global_config:
-            return global_config["moe_dense_temperature"]
-        return None
+        return global_config.get("moe_dense_temperature")
 
     def evaluate(self, response_text):
-        t = response_text.lower()
+        text = response_text.strip()
         rubric = Rubric(self.max_score)
-        rubric.record_validation(validate_sections(t, [
-            "gating", "load-balancing", "training", "inference", "benchmark",
-        ], min_chars=20))
-
-        rubric.eval_regex(
-            "Covers both architectures",
-            2.0,
-            t,
-            [
-                (r'(?:mixture.of.expert|moe|sparse.*moe)', 1.0),
-                (r'(?:dense\s*(?:transformer|model|architecture)|standard\s*transformer)', 1.0),
-            ],
+        if not text:
+            return rubric.results()
+        sections = markdown_sections(text)
+        rubric.record_validation(type("Validation", (), {
+            "valid": len(sections) >= 4,
+            "evidence": [{"kind": "section", "heading": section.heading} for section in sections],
+            "errors": [],
+        })())
+        gating = first_section(text, ["Gating", "Routing"])
+        load = first_section(text, ["Load Balancing", "Auxiliary Loss"])
+        training = first_section(text, ["Training"])
+        inference = first_section(text, ["Inference"])
+        benchmarks = first_section(text, ["Benchmarks", "Comparison"])
+        references = first_section(text, ["References", "Papers"])
+        gating_text = gating.body if gating else ""
+        load_text = load.body if load else ""
+        required_sections = {
+            "gating", "load balancing", "training", "inference", "benchmarks", "references",
+        }
+        present_sections = {section.normalized for section in sections}
+        matched_sections = {
+            required: next((present for present in present_sections if required in present), None)
+            for required in required_sections
+        }
+        section_hits = sum(value is not None for value in matched_sections.values())
+        rubric.add_criterion(
+            "Required comparison sections", 2.0,
+            2.0 * section_hits / len(required_sections),
+            evidence=[{"kind": "section", "name": name, "heading": heading}
+                      for name, heading in matched_sections.items() if heading],
+            negative_findings=[{"finding": f"missing section: {name}"}
+                              for name, heading in matched_sections.items() if heading is None],
         )
-
-        rubric.eval_regex(
-            "Gating/routing mechanism",
-            2.5,
-            t,
-            [
-                (r'(?:gating|routing|gate|router|top.k|softmax.*gate)', 1.5),
-                (r'(?:expert.*select|which.*expert|rout.*token)', 1.0),
-            ],
-        )
-
-        rubric.eval_regex(
-            "Load-balancing loss",
-            2.5,
-            t,
-            [
-                (r'(?:load.balanc|auxiliary.*loss|aux.*loss|balance.*loss)', 1.5),
-                (r'(?:importance|loss.*formula|load.*equation|L_aux)', 1.0),
-            ],
-        )
-
-        rubric.eval_regex(
-            "Training challenges",
-            2.0,
-            t,
-            [
-                (r'(?:token.dropp|expert.collaps|instability|collapse|dropping)', 1.0),
-                (r'(?:training.*challeng|difficult|problem|issue|stability)', 1.0),
-            ],
-        )
-
-        rubric.eval_regex(
-            "Inference implications",
-            2.0,
-            t,
-            [
-                (r'(?:inference|memory.*bandwidth|expert.*parallel|sparse.*compute)', 1.0),
-                (r'(?:throughput|latency|batch.*size|parameter.*efficien)', 1.0),
-            ],
-        )
-
-        rubric.eval_regex(
-            "Benchmarks/comparison",
-            2.0,
-            t,
-            [
-                (r'(?:benchmark|mmlu|gsm8k|human-eval|mbpp|hellaswag|arc|truthful)', 1.0),
-                (r'(?:outperform|better.*than|compared to|vs\.|versus|advantage)', 1.0),
-            ],
-        )
-
-        rubric.eval_regex(
-            "Paper references",
-            2.0,
-            t,
-            [
-                (r'(?:paper|report|arxiv|technical.*report)', 1.0),
-                (r'(?:2023|2024|2025|et\s*al|vashwani|shazeer|fedus|lepikhin|du et al)', 1.0),
-            ],
-        )
-
-        # Quantitative trade-off (0-2): sharpen this task so merely listing
-        # concepts earns less than articulating a numeric comparison.  We
-        # require (a) at least one specific numeric measurement tied to
-        # compute or scale, and (b) an explicit side-by-side comparison
-        # anchored in numerics.  Pattern B uses re.DOTALL so multi-line
-        # comparisons like "70.6% MMLU \nvs 69.8% MMLU" still match; the
-        # default eval_regex flag is just IGNORECASE which would miss
-        # those.
-        rubric.eval_regex(
-            "Quantitative measurement (specifics)",
-            1.0,
-            t,
-            [
-                (
-                    # Word-boundary anchored so "30%" in prose still matches,
-                    # but "\\d+ teraflops / \\d+x faster" must have a real
-                    # unit.  `mixture[\\s\\-_]of[\\s\\-_]experts?` covers
-                    # hyphens, spaces, underscores between tokens.  The
-                    # `more\\s+compute` arm allows trailing adjectives like
-                    # "more compute intensive / required / overhead".
-                    (r'\b\d+(?:\.\d+)?\s*(?:%|x\b|'
-                    r'TFLOPs?|GFLOPs?|FLOPs?|BFLOPs|'
-                    r'billion|trillion|million|billion\s+parameters?|trillion\s+parameters?|'
-                    r'TOPS(?:/s)?\b|'
-                    r'(?:B|M|K)\s+params?|(?:B|M|K)\s+parameters?)|'
-                    r'\b\d+\s*[xX]\s*(?:faster|slower|larger|smaller|cheaper|'
-                    r'more\s+compute(?:\s+(?:intensive|required|overhead|operations|heavy))?)|'
-                    r'\b(?:total\s+params?|active\s+params?|inference\s+params?|'
-                    r'trainable\s+params?|'
-                    r'total\s+parameters?|active\s+parameters?|inference\s+parameters?|'
-                    r'trainable\s+parameters?|total\s+parameter\s+count)|'
-                    r'\b\d+(?:\.\d+)?\s*(?:tokens?\s*[/]?\s*s\b|tokens?\s+per\s+second\b)'),
-                    1.0,
-                ),
-            ],
-        )
-        rubric.eval_regex(
-            "Quantitative side-by-side comparison",
-            1.0,
-            t,
-            [
-                (
-                    # Four flavors of side-by-side comparison, all anchored
-                    # by a numeric token on at least one side so a generic
-                    # "MoE is faster than dense" without numerics cannot earn
-                    # credit.  Flavors 3 and 4 are expressed as single
-                    # subgraphs that contain both the digit and the
-                    # comparative - rather than as variable-width
-                    # lookbehinds, which Python's stdlib `re` rejects (it
-                    # only supports fixed-width lookbehinds).
-                    (r'\b\d+(?:\.\d+)?%[\s\S]{0,200}?(?:vs\.?|versus|compared\s+to|over|higher\s+than|lower\s+than)[\s\S]{0,200}?\b\d+(?:\.\d+)?%|'
-                    r'\b\d+(?:\.\d+)?\s*(?:B|M|K)\s*(?:params?|parameters?)[\s\S]{0,200}?(?:vs\.?|versus|compared\s+to)[\s\S]{0,200}?\b\d+(?:\.\d+)?\s*(?:B|M|K)\s*(?:params?|parameters?)|'
-                    r'\b\d+(?:\.\d+)?\s*[xX][\s\S]{0,80}?\b(?:faster|slower|cheaper|more\s+expensive|larger|smaller)\s+than[\s\S]{0,80}?\b(?:dense|MoE|mixture[\s\-_]of[\s\-_]experts?|mixtral|llama|gemma|gpt-4)\b|'
-                    r'\b(?:dense|MoE|mixture[\s\-_]of[\s\-_]experts?|mixtral|llama|gemma|gpt-4)[\s\S]{0,80}?\b(?:faster|slower|cheaper|more\s+expensive|larger|smaller|denser|sparser)\s+than[\s\S]{0,200}?\b\d+(?:\.\d+)?'),
-                    1.0,
-                ),
-            ],
-            flags=re.IGNORECASE | re.DOTALL,
-        )
-
-        if not re.search(r"(?:equation|formula|=|loss\s*=)", t):
-            rubric.penalize_criterion("Gating/routing mechanism", 0.5, "no mathematical formulation was provided")
-            rubric.penalize_criterion("Load-balancing loss", 0.5, "no load-balancing equation was provided")
+        gate_ok = bool(re.search(r"top\s*-?\s*k", gating_text, re.IGNORECASE) and re.search(r"softmax", gating_text, re.IGNORECASE) and re.search(r"(?:router|gate|expert)", gating_text, re.IGNORECASE) and re.search(r"(?:=|equation|formula)", gating_text, re.IGNORECASE))
+        rubric.add_criterion("Gating/routing mechanism", 3.0, 3.0 if gate_ok else 0.0, negative_findings=[] if gate_ok else [{"finding": "section must contain top-k, softmax, and an equation"}])
+        load_ok = bool(re.search(r"(?:load.?balanc|auxiliary)", load_text, re.IGNORECASE) and re.search(r"(?:f[_\s]?i|p[_\s]?i|importance|capacity)", load_text, re.IGNORECASE) and re.search(r"(?:=|equation|formula|L[_\s]?aux)", load_text, re.IGNORECASE))
+        rubric.add_criterion("Load-balancing loss", 3.0, 3.0 if load_ok else 0.0)
+        training_hits = sum(bool(re.search(pattern, (training.body if training else ""), re.IGNORECASE)) for pattern in (r"token.?drop", r"expert.?collapse|instab|capacity"))
+        rubric.add_criterion("Training challenges", 2.0, float(training_hits))
+        inference_hits = sum(bool(re.search(pattern, (inference.body if inference else ""), re.IGNORECASE)) for pattern in (r"memory|bandwidth|parallel|latency|throughput|compute"))
+        rubric.add_criterion("Inference implications", 2.0, min(2.0, float(inference_hits)))
+        benchmark_text = benchmarks.body if benchmarks else ""
+        advantage_pairs = len(re.findall(r"(?:moe|mixture.of.experts).{0,150}(?:outperform|better|advantage|wins).{0,150}(?:dense|task|model)", benchmark_text, re.IGNORECASE))
+        dense_pairs = len(re.findall(r"dense.{0,150}(?:outperform|better|advantage|wins).{0,150}(?:moe|mixture.of.experts|task|model)", benchmark_text, re.IGNORECASE))
+        named_tasks = len(set(re.findall(r"\b(?:MMLU|GSM8K|HumanEval|MBPP|HellaSwag|ARC|coding|translation|classification)\b", benchmark_text, re.IGNORECASE)))
+        rubric.add_criterion("Benchmarks/comparison", 2.0, 2.0 if advantage_pairs >= 2 and dense_pairs >= 2 and named_tasks >= 2 else min(2.0, float(advantage_pairs + dense_pairs) / 2.0))
+        ref_text = references.body if references else ""
+        refs = set(re.findall(r"\b(?:Mixtral|Switch Transformer|Shazeer|GLaM|DeepSeekMoE|Fedus|Sparsely-Gated|arXiv|technical report)\b", ref_text, re.IGNORECASE))
+        rubric.add_criterion("Paper references", 2.0, 2.0 if len(refs) >= 2 else float(len(refs)))
+        numeric = re.findall(r"\b\d+(?:\.\d+)?\s*(?:%|x|B|M|K|TFLOPs?|params?|tokens?/s)\b", text, re.IGNORECASE)
+        side_by_side = bool(re.search(r"\b(?:moe|dense)\b.{0,120}\b(?:vs\.?|versus|compared|than)\b.{0,120}\b(?:moe|dense)\b", text, re.IGNORECASE))
+        rubric.add_criterion("Quantitative trade-off", 3.0, 3.0 if len(numeric) >= 2 and side_by_side else min(3.0, float(len(numeric))))
         return rubric.results()
 
     def score(self, response_text):

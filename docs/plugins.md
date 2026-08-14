@@ -6,21 +6,24 @@ AI Benchmark uses a plugin architecture. Each plugin defines a benchmark task, a
 
 | ID | Name | Version | Internal Max Score | Streaming |
 |---|---|---:|---:|---|
-| `code-review` | Code Review | 0.8.1 | 15 | No |
-| `debug-traversal` | Debug Traversal | 0.5.1 | 20 | Yes |
-| `error-recovery` | Error Recovery | 0.8.0 | 20 | Yes |
-| `instruction-following` | Instruction Following | 0.1.1 | 20 | Yes |
-| `moe-dense` | MoE vs Dense | 0.7.2 | 17 | No |
-| `multi-step` | Multi-Step Instructions | 0.9.1 | 20 | Yes |
-| `multi-turn-conversation` | Multi-Turn Conversation | 0.6.0 | 20 | Yes |
-| `orchestration` | Orchestration & Workflow | 0.8.1 | 16 | Yes |
-| `prd-creation` | PRD Creation | 0.7.0 | 22 | Yes |
-| `rate-limiter` | Rate Limiter | 0.7.1 | 20 | Yes |
-| `reasoning` | Logical Reasoning | 0.1.1 | 20 | Yes |
-| `software-architecture` | Software Architecture | 0.8.1 | 20 | Yes |
-| `structured-output` | Structured Output | 0.9.0 | 22 | No |
-| `tool-calling` | Tool Calling Agent | 0.10.0 | 25 | Yes |
-| `wireframes` | Wireframes | 0.7.2 | 20 | Yes |
+| `code-review` | Code Review | 1.0.0 | 15 | No |
+| `debug-consistency` | Debug Report Consistency | 0.1.0 | 20 | Yes |
+| `debug-traversal` | Debug Traversal | 1.0.0 | 20 | Yes |
+| `error-recovery` | Error Recovery | 1.0.0 | 20 | Yes |
+| `event-processor` | Concurrent Event Processor | 0.1.0 | 20 | Yes |
+| `instruction-following` | Instruction Following | 1.0.0 | 20 | Yes |
+| `long-context` | Long-Context Retrieval | 0.1.0 | 20 | Yes |
+| `moe-dense` | MoE vs Dense | 1.0.0 | 17 | No |
+| `multi-step` | Multi-Step Instructions | 1.0.0 | 20 | Yes |
+| `multi-turn-conversation` | Multi-Turn Conversation | 1.0.0 | 20 | Yes |
+| `orchestration` | Orchestration & Workflow | 1.0.0 | 16 | Yes |
+| `prd-creation` | PRD Creation | 1.0.0 | 22 | Yes |
+| `rate-limiter` | Rate Limiter | 1.0.0 | 20 | Yes |
+| `reasoning` | Logical Reasoning | 1.0.0 | 20 | Yes |
+| `software-architecture` | Software Architecture | 1.0.0 | 20 | Yes |
+| `structured-output` | Structured Output | 1.0.0 | 22 | No |
+| `tool-calling` | Tool Calling Agent | 1.0.0 | 25 | Yes |
+| `wireframes` | Wireframes | 1.0.0 | 20 | Yes |
 
 ## Selecting Plugins
 
@@ -92,12 +95,14 @@ See [Development](./development.md#writing-a-plugin) for a step-by-step guide.
 - [Software Architecture](./plugins/software-architecture.md)
 - [Instruction Following](./plugins/instruction-following.md)
 - [Logical Reasoning](./plugins/reasoning.md)
+- [Debug Report Consistency](./plugins/debug-consistency.md)
+- [Long-Context Retrieval](./plugins/long-context.md)
+- [Concurrent Event Processor](./plugins/event-processor.md)
 
-The three additional challenge plugins (`debug-traversal`, `error-recovery`, and
-`multi-turn-conversation`) currently keep their prompt and rubric documentation
-in the corresponding source modules. Use `python ai-benchmark.py --list-plugins`
-for the authoritative runtime inventory and versions; this table is a checked-in
-snapshot for quick reference.
+All challenge plugins have dedicated documentation or an explicit source-level
+contract. Use `python ai-benchmark.py --list-plugins` for the authoritative
+runtime inventory and versions; this table is a checked-in snapshot for quick
+reference.
 
 ## Selected Challenge Plugins
 
@@ -118,7 +123,7 @@ Tests a model's ability to act as a product manager by creating a comprehensive 
 - Timeline / Milestones
 - Open Questions / Risks
 
-**Scoring:** Up to 22 points based on the presence, structure, and depth of each PRD section.
+**Scoring:** Up to 22 native points. Required headings are matched structurally, and goals, personas, stories, requirements, NFRs, KPIs, competitors, milestones, and risks are checked within their own section; content copied into an unrelated section does not earn that criterion.
 
 ### `wireframes`
 
@@ -132,7 +137,7 @@ Tests a model's capability as a frontend architect / UX designer by producing te
 - Navigation flows between screens
 - Annotations and interaction notes
 
-**Scoring:** Up to 20 points based on screen coverage, structural wireframe content, UI components, navigation, annotations, and PRD feature coverage.
+**Scoring:** Up to 20 points based on distinct named screen blocks, per-screen structure and components, validated navigation edges, interaction notes, and PRD feature coverage. Global keyword mentions do not substitute for a screen block.
 
 ### `software-architecture`
 
@@ -151,4 +156,4 @@ Tests a model's capability as a backend/coding architect by producing a software
 - Scalability & Performance
 - Trade-offs & Decisions
 
-**Scoring:** Up to 20 points based on the presence, structure, and technical depth of each architecture section.
+**Scoring:** Up to 20 native points: 3 for the required section set and the remainder for section-local architecture/components, data/API, real-time communication, scale/capacity, resiliency, security, and observability checks. Capacity and SLO claims are cross-checked against supporting mechanisms; global keyword mentions do not substitute for the relevant section.

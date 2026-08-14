@@ -1,4 +1,6 @@
-"""Multi-step workflow orchestration benchmark task."""
+"""Structured workflow orchestration challenge."""
+from __future__ import annotations
+
 import re
 
 from benchmark.plugin import BenchmarkTaskPlugin
@@ -12,7 +14,8 @@ class OrchestrationPlugin(BenchmarkTaskPlugin):
         return "orchestration"
 
     @property
-    def version(self):        return "0.8.1"
+    def version(self):
+        return "1.0.0"
 
     @property
     def name(self):
@@ -28,80 +31,58 @@ class OrchestrationPlugin(BenchmarkTaskPlugin):
 
     def get_prompt(self):
         return (
-            "You are an orchestration AI handling a complex data pipeline execution. Task:\n"
-            "'Process 1TB of raw server logs, perform GeoIP lookup on IPs, run anomaly detection, "
-            "and generate a final PDF report.'\n\n"
-            "Produce a structured execution plan including:\n"
-            "1. Task Decomposition: Break the prompt into distinct steps.\n"
-            "2. Dependency Graph: Mark which steps are [PARALLEL] and which are [SEQUENTIAL], "
-            "using explicit [DEPENDS_ON: task_id] tags.\n"
-            "3. Execution Trace: Output a simulated trace showing the initialization, running, "
-            "and completion states of each step.\n\n"
-            "Use clear headings and concise logic."
+            "Plan this pipeline: process 1TB server logs, perform GeoIP lookup, run anomaly "
+            "detection, and generate a PDF report. Use exactly four tasks with IDs 1-4. Mark "
+            "parallel/sequential status per task, use `[DEPENDS_ON: task_id]`, and provide an "
+            "execution trace containing init, running, and complete for every task."
         )
 
     def get_temperature(self, global_config):
-        if "orchestration_temperature" in global_config:
-            return global_config["orchestration_temperature"]
-        return None
+        return global_config.get("orchestration_temperature")
 
     def evaluate(self, response_text):
-        t = response_text
+        text = response_text.strip()
         rubric = Rubric(self.max_score)
-        graph_validation = parse_workflow_graph(t)
-        rubric.record_validation(graph_validation)
-
-        earned = 0.0
-        steps = sum(1 for _ in re.finditer(r'(?:task|step)\s*\d+', t, re.IGNORECASE))
-        if steps >= 3:
-            earned += 2.0
-        elif steps >= 2:
-            earned += 1.0
-        if re.search(r'(?:geoip|anomal|pdf|report|logs|server)', t, re.IGNORECASE):
-            earned += 2.0
-        rubric.add_criterion("Task breakdown presence", 4.0, earned)
-
-        earned = 0.0
-        if graph_validation.valid or re.search(r'(?:\[DEPENDS_ON[^\]]*\]|\bdepends\s+on\b|\b(?:task|step)[ _-]?\d+\s*-->?\s*(?:task|step)[ _-]?\d+)', t, re.IGNORECASE):
-            earned = 4.0 if graph_validation.valid else 2.0
-        elif re.search(r'depends on', t, re.IGNORECASE):
-            earned = 2.0
-        rubric.add_criterion("Explicit dependency tagging", 4.0, earned)
-
-        earned = 0.0
-        has_parallel = re.search(r'\[PARALLEL\]', t) or re.search(r'\bparallel\b', t, re.IGNORECASE)
-        has_sequential = re.search(r'\[SEQUENTIAL\]', t) or re.search(r'\bsequential\b', t, re.IGNORECASE)
-        if has_parallel and has_sequential:
-            earned = 4.0
-        elif has_parallel or has_sequential:
-            earned = 2.0
-        rubric.add_criterion("Parallel vs sequential logic", 4.0, earned)
-
-        earned = 0.0
-        if re.search(r'(?:trace|execution|pipeline)', t, re.IGNORECASE):
-            earned += 1.0
-        has_start = re.search(r'(?:init|start|running|pending)', t, re.IGNORECASE)
-        has_end = re.search(r'(?:complete|done|success|finish)', t, re.IGNORECASE)
-        if has_start and has_end:
-            earned += 3.0
-        rubric.add_criterion("State / execution trace", 4.0, earned)
-
-        if graph_validation.errors:
-            for criterion in ("Explicit dependency tagging", "Parallel vs sequential logic"):
-                rubric.penalize_criterion(
-                    criterion, 1.0,
-                    "workflow graph contains an invalid dependency or contradiction",
-                )
-        contradictory_tasks = re.findall(
-            r"(?is)(?:task|step)\s*\d+[^\n]*(?:\[?PARALLEL\]?|\bparallel\b)[^\n]*(?:\[?SEQUENTIAL\]?|\bsequential\b)",
-            t,
+        if not text:
+            return rubric.results()
+        graph = parse_workflow_graph(text)
+        rubric.record_validation(graph)
+        task_lines = [
+            line for line in text.splitlines()
+            if re.search(r"\b(?:task|step)[ _-]?\d+\b", line, re.IGNORECASE)
+            and not re.search(r"DEPENDS_ON|depends on", line, re.IGNORECASE)
+        ]
+        declared_ids = {
+            match.group(1)
+            for line in task_lines
+            if (match := re.search(r"\b(?:task|step)[ _-]?(\d+)\b", line, re.IGNORECASE))
+        }
+        operations = sum(
+            any(re.search(pattern, line, re.IGNORECASE) for pattern in (r"logs?", r"geo.?ip", r"anomal", r"pdf|report"))
+            for line in task_lines
         )
-        if contradictory_tasks:
-            rubric.penalize_criterion(
-                "Parallel vs sequential logic", 1.0,
-                "the same workflow task is labeled both parallel and sequential",
-            )
-
+        rubric.add_criterion(
+            "Task breakdown presence", 4.0,
+            4.0 if declared_ids == {"1", "2", "3", "4"} and operations >= 4 else min(4.0, float(len(declared_ids))),
+            negative_findings=[] if declared_ids == {"1", "2", "3", "4"} and operations >= 4 else [{"finding": "declare exactly four task operations with IDs 1-4"}],
+        )
+        edges = graph.value.get("edges", []) if isinstance(graph.value, dict) else []
+        rubric.add_criterion("Explicit dependency tagging", 4.0, 4.0 if graph.valid and len(edges) >= 3 else (2.0 if edges else 0.0), negative_findings=[] if graph.valid else [{"finding": "dependency graph is incomplete, cyclic, or references unknown tasks"}])
+        labels_ok = True
+        for task_id in ("1", "2", "3", "4"):
+            lines = [line for line in text.splitlines() if re.search(rf"\b(?:task|step)[ _-]?{task_id}\b", line, re.IGNORECASE)]
+            if not lines or not any(re.search(r"parallel|sequential", line, re.IGNORECASE) for line in lines):
+                labels_ok = False
+            if any(re.search(r"parallel", line, re.IGNORECASE) and re.search(r"sequential", line, re.IGNORECASE) for line in lines):
+                labels_ok = False
+        rubric.add_criterion("Parallel vs sequential logic", 4.0, 4.0 if labels_ok else 0.0, negative_findings=[] if labels_ok else [{"finding": "each task needs one non-contradictory execution label"}])
+        trace_ok = True
+        for task_id in ("1", "2", "3", "4"):
+            lines = [line for line in text.splitlines() if re.search(rf"\b(?:task|step)[ _-]?{task_id}\b", line, re.IGNORECASE)]
+            joined = " ".join(lines)
+            if not all(re.search(pattern, joined, re.IGNORECASE) for pattern in (r"init|initialize|pending", r"running|start", r"complete|done|finish")):
+                trace_ok = False
+        rubric.add_criterion("State / execution trace", 4.0, 4.0 if trace_ok else 0.0, negative_findings=[] if trace_ok else [{"finding": "every task needs init, running, and complete states"}])
         return rubric.results()
 
     def score(self, response_text):
