@@ -211,11 +211,15 @@ judge:
 The benchmark intentionally does not send `enable_thinking: false`: the
 instruct Nemotron variant already has thinking disabled by its model behavior,
 while the thinking variant remains enabled and is bounded by
-`thinking_token_budget`. Nested dictionaries are merged, so a provider-specific
-override can add `enable_thinking` or replace the response format without
-silently dropping the default budget. Use the relevant provider's supported
-request fields when overriding these defaults; unsupported fields can be
-removed with the judge model's `drop_params` configuration.
+`thinking_token_budget`. The judge prompt (version `judge-v2`) presents the
+task and candidate answer as explicitly delimited, quoted data and tells the
+judge not to follow candidate instructions, emit tool calls, or continue the
+embedded task. It also requires exactly one JSON object with no surrounding
+text. Nested dictionaries are merged, so a provider-specific override can add
+`enable_thinking` or replace the response format without silently dropping the
+default budget. Use the relevant provider's supported request fields when
+overriding these defaults; unsupported fields can be removed with the judge
+model's `drop_params` configuration.
 
 `judge.token_levels` controls the total `max_tokens` cap for judge generation.
 It is separate from `thinking_token_budget`: the total cap must leave room for

@@ -27,6 +27,7 @@ from datetime import datetime, timezone
 from benchmark.completions import generate_shell_completion
 from benchmark.core import (
     JUDGE_DEFAULT_MAX_TOKENS,
+    JUDGE_PROMPT_VERSION,
     BenchmarkState,
     PreloadResult,
     _apply_http_retry_default,
@@ -2418,7 +2419,7 @@ def main():  # pragma: no cover - live benchmark orchestrator (no unit tests)
         "targets": list(targets.keys()),
         "judge_model": judge_model,
         "judge_models": judge_models,
-        "judge_prompt_version": "judge-v1" if judge_models else None,
+        "judge_prompt_version": JUDGE_PROMPT_VERSION if judge_models else None,
         "judge_status": "disabled" if not judge_models else "pending",
         "judge_counts": {"queued": 0, "completed": 0, "failed": 0, "votes": 0},
         "preload": {
@@ -3300,7 +3301,7 @@ def main():  # pragma: no cover - live benchmark orchestrator (no unit tests)
                       judge_enqueue=enqueue_judge if judge_models else None,
                       judge_model=judge_model,
                       judge_models=judge_models,
-                      judge_prompt_version="judge-v1" if judge_models else None,
+                      judge_prompt_version=JUDGE_PROMPT_VERSION if judge_models else None,
                       api_model=target_info["api_model"],
                       system_prompt=target_info["system_prompt"],
                       is_agent=target_info["is_agent"], runner=phase_runner,
