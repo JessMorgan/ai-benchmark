@@ -96,6 +96,7 @@ class TestPluginDiscovery(unittest.TestCase):
 
     def test_plugins_have_required_metadata(self):
         plugins = discover_plugins()
+        self.assertTrue(next(p for p in plugins if p.id == "moe-dense").supports_streaming)
         inventory = plugin_inventory(plugins)
         self.assertEqual([entry["id"] for entry in inventory], [p.id for p in plugins])
         for p in plugins:

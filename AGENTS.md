@@ -106,7 +106,7 @@ The runtime inventory below matches `uv run ai-benchmark --list-plugins`:
 | `event-processor` | 0.1.0 | 20 | Yes |
 | `instruction-following` | 1.0.0 | 20 | Yes |
 | `long-context` | 0.1.0 | 20 | Yes |
-| `moe-dense` | 1.0.0 | 17 | No |
+| `moe-dense` | 1.0.1 | 17 | Yes |
 | `multi-step` | 1.0.0 | 20 | Yes |
 | `multi-turn-conversation` | 1.0.0 | 20 | Yes |
 | `orchestration` | 1.0.0 | 16 | Yes |
@@ -118,9 +118,10 @@ The runtime inventory below matches `uv run ai-benchmark --list-plugins`:
 | `tool-calling` | 1.0.0 | 25 | Yes |
 | `wireframes` | 1.0.0 | 20 | Yes |
 
-`code-review`, `moe-dense`, and `structured-output` set
-`supports_streaming=False` and use the **non-streaming** request path. Code-shaped
-plugins use a pytest-compatible assertion harness in the Podman sandbox, with a
+`code-review` and `structured-output` set
+`supports_streaming=False` and use the **non-streaming** request path. `moe-dense`
+uses the streaming path. Code-shaped plugins
+use a pytest-compatible assertion harness in the Podman sandbox, with a
 resource-limited local fallback recorded as `local-restricted` when Podman is
 unavailable.
 

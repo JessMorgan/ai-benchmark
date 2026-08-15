@@ -15,7 +15,7 @@ class MoEDensePlugin(BenchmarkTaskPlugin):
 
     @property
     def version(self):
-        return "1.0.0"
+        return "1.0.1"
 
     @property
     def name(self):
@@ -27,7 +27,7 @@ class MoEDensePlugin(BenchmarkTaskPlugin):
 
     @property
     def supports_streaming(self):
-        return False
+        return True
 
     def get_prompt(self):
         return (
