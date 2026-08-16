@@ -112,6 +112,104 @@ def _safe_iter_lines(resp: requests.Response):
         yield _StreamLineError(f"{type(exc).__name__}: {exc}")
 
 
+def _api_protocol(cfg) -> str:
+    """Return the request/response protocol for a source config.
+
+    ``"openai"`` is the default OpenAI-compatible format used by every
+    pre-existing source. ``"1min"`` selects the 1min.ai native
+    ``/api/chat-with-ai`` endpoint, which uses a different request body
+    (``type``/``model``/``promptObject``) and a different response/SSE shape.
+    The choice is driven by the optional ``api_protocol`` source key; unknown
+    or missing values fall back to the OpenAI format.
+    """
+    if isinstance(cfg, dict) and cfg.get("api_protocol") == "1min":
+        return "1min"
+    return "openai"
+
+
+def _build_1min_request_body(model, prompt, system_prompt=None):
+    """Build the 1min.ai ``/api/chat-with-ai`` request body.
+
+    The 1min.ai chat endpoint accepts ``type``, ``model``, and a
+    ``promptObject`` with a single ``prompt`` string. It has no system-message
+    field and no ``max_tokens``/``temperature``/``seed`` parameters, so a
+    supplied system prompt is folded into the user prompt to preserve the
+    persona and all benchmark generation knobs are ignored. Streaming is
+    selected via the ``?isStreaming=true`` query parameter (handled in
+    ``_post_request_context``), not via a body field.
+    """
+    text = f"{system_prompt}\n\n{prompt}" if system_prompt else prompt
+    return {
+        "type": "UNIFY_CHAT_WITH_AI",
+        "model": model,
+        "promptObject": {"prompt": text},
+    }
+
+
+def _parse_1min_result(data):
+    """Extract ``(text, error)`` from a 1min.ai non-streaming response body.
+
+    A success body carries the generated text under
+    ``aiRecord.aiRecordDetail.resultObject`` (a list of strings). Error bodies
+    carry ``{"success": false, "error": {"message": ...}}``; a 200 response
+    whose ``aiRecord.status`` is not ``SUCCESS`` is also surfaced as an error
+    so a silent empty result is never mis-scored.
+    """
+    if isinstance(data, dict) and data.get("success") is False:
+        err = data.get("error") or {}
+        msg = err.get("message") if isinstance(err, dict) else str(err)
+        return "", f"1min error: {msg}"
+    record = data.get("aiRecord") if isinstance(data, dict) else None
+    if not isinstance(record, dict):
+        return "", "Invalid 1min response: missing aiRecord"
+    status = record.get("status")
+    if status not in (None, "SUCCESS"):
+        return "", f"1min aiRecord status: {status}"
+    result_object = (record.get("aiRecordDetail") or {}).get("resultObject")
+    if isinstance(result_object, list):
+        text = "\n".join(str(item) for item in result_object)
+    elif isinstance(result_object, str):
+        text = result_object
+    elif result_object is not None:
+        text = json.dumps(result_object, ensure_ascii=False)
+    else:
+        text = ""
+    return text, None
+
+
+def _iter_1min_sse_events(resp: requests.Response) -> Iterator[tuple[str, Any] | _StreamLineError]:
+    """Yield ``(event, data)`` pairs from a 1min.ai named-event SSE stream.
+
+    1min.ai streams use named SSE events (``event: content``, ``event: done``,
+    ``event: error``, ``event: result``) instead of the OpenAI ``data:``-only
+    delta format. Each ``data:`` payload is paired with the most recent
+    ``event:`` name; transport failures are surfaced as ``_StreamLineError``.
+    """
+    event_name: str | None = None
+    for line in _safe_iter_lines(resp):
+        if isinstance(line, _StreamLineError):
+            yield line
+            return
+        if not isinstance(line, str):
+            continue
+        line = line.strip()
+        if not line:
+            event_name = None
+            continue
+        if line.startswith("event:"):
+            event_name = line[len("event:"):].strip()
+            continue
+        if line.startswith("data:"):
+            payload = line[len("data:"):].strip()
+            if not payload:
+                continue
+            try:
+                data = json.loads(payload)
+            except json.JSONDecodeError:
+                continue
+            yield (event_name or "message", data)
+
+
 _log_lock = threading.Lock()
 
 # Active HTTP responses so Ctrl+C can close them and unblock plugin threads.
@@ -242,16 +340,16 @@ def build_curl_cmd(model, prompt, max_tokens, stream, api_url, headers, system_p
             "stream": stream,
         }
     data = json.dumps(request_body, ensure_ascii=False)
-    auth_value = headers.get("Authorization", "")
-    content_type = headers.get("Content-Type", "application/json")
-    auth_header = (
-        f"  -H {shlex.quote('Authorization: ' + auth_value)} \\\n"
-        if auth_value else ""
+    # Render every configured header (not just Authorization/Content-Type) so
+    # providers that authenticate via other headers — e.g. 1min.ai's
+    # ``API-KEY`` — produce a fully replayable curl command.
+    header_lines = "".join(
+        f"  -H {shlex.quote(f'{key}: {value}')} \\\n"
+        for key, value in headers.items()
     )
     return (
         f"curl -s -X POST {shlex.quote(api_url)} \\\n"
-        f"{auth_header}"
-        f"  -H {shlex.quote('Content-Type: ' + content_type)} \\\n"
+        f"{header_lines}"
         f"  -d {shlex.quote(data)}"
     )
 
@@ -328,7 +426,15 @@ def _post_request_context(source_config, source, body, timeout, stream, log_path
     Ctrl+C aborts immediately.
     """
     cfg = source_config.get(source, {})
-    api_url = cfg.get("api_url", "http://localhost:11434/chat/completions")
+    protocol = _api_protocol(cfg)
+    default_url = (
+        "https://api.1min.ai/api/chat-with-ai"
+        if protocol == "1min" else "http://localhost:11434/chat/completions"
+    )
+    api_url = cfg.get("api_url", default_url)
+    # 1min.ai selects streaming via a URL query parameter, not a body field.
+    if protocol == "1min" and stream:
+        api_url = api_url + ("&" if "?" in api_url else "?") + "isStreaming=true"
     headers = cfg.get("headers", {"Content-Type": "application/json"})
     model = body.get("model", "")
     system_prompt = None
@@ -680,9 +786,14 @@ def stream_request(source_config, timeout, model, source, prompt, max_tokens=204
     finish_reason = None
     usage: dict[str, Any] = {}
     tool_calls: list = []
-    body = _build_request_body(model, prompt, max_tokens, session_seed, temperature, drop_params,
-                               stream=True, system_prompt=system_prompt,
-                               request_params=request_params)
+    cfg = source_config.get(source) or {}
+    protocol = _api_protocol(cfg)
+    if protocol == "1min":
+        body = _build_1min_request_body(model, prompt, system_prompt=system_prompt)
+    else:
+        body = _build_request_body(model, prompt, max_tokens, session_seed, temperature, drop_params,
+                                   stream=True, system_prompt=system_prompt,
+                                   request_params=request_params)
     with _post_request_context(source_config, source, body, timeout, True, log_path, log_label,
                                stop_event=stop_event, pid=pid, on_retry=on_retry) as request:
         if request.error:
@@ -692,6 +803,35 @@ def stream_request(source_config, timeout, model, source, prompt, max_tokens=204
         if resp is None:
             return StreamResult(text, think_text, first_tok, time.time(),
                                 "HTTP request returned no response", finish_reason, usage)
+        if protocol == "1min":
+            for item in _iter_1min_sse_events(resp):
+                if isinstance(item, _StreamLineError):
+                    error = item.error
+                    break
+                event, data = item
+                if stop_event and stop_event.is_set():
+                    error = "Cancelled"
+                    break
+                if event == "error":
+                    msg = (data.get("message") or data.get("error")
+                           or "Unknown 1min stream error") if isinstance(data, dict) else data
+                    error = f"1min stream error: {msg}"
+                    break
+                if event == "done":
+                    break
+                if event == "content":
+                    chunk = data.get("content", "") if isinstance(data, dict) else str(data)
+                    if chunk:
+                        if first_tok is None:
+                            first_tok = time.time()
+                        text += chunk
+                        if on_chunk is not None:
+                            with contextlib.suppress(Exception):
+                                on_chunk(chunk)
+            error = _check_total_timeout(start, timeout, error, finish_reason)
+            _log_response(log_path, request.curl_cmd, text, log_label)
+            return StreamResult(text, think_text, first_tok, time.time(),
+                                error, finish_reason, usage, tool_calls)
         prev_text_len = 0
         prev_think_len = 0
         for line in _safe_iter_lines(resp):
@@ -805,9 +945,14 @@ def nonstream_request(source_config, timeout, model, source, prompt, max_tokens=
     usage: dict[str, Any] = {}
     finish_reason = None
     tool_calls: list = []
-    body = _build_request_body(model, prompt, max_tokens, session_seed, temperature, drop_params,
-                               stream=False, system_prompt=system_prompt,
-                               request_params=request_params)
+    cfg = source_config.get(source) or {}
+    protocol = _api_protocol(cfg)
+    if protocol == "1min":
+        body = _build_1min_request_body(model, prompt, system_prompt=system_prompt)
+    else:
+        body = _build_request_body(model, prompt, max_tokens, session_seed, temperature, drop_params,
+                                   stream=False, system_prompt=system_prompt,
+                                   request_params=request_params)
     raw_resp_text = None
     with _post_request_context(source_config, source, body, timeout, False, log_path, log_label,
                                stop_event=stop_event, pid=pid, on_retry=on_retry) as request:
@@ -825,24 +970,34 @@ def nonstream_request(source_config, timeout, model, source, prompt, max_tokens=
         if raw_resp_text is None:
             return NonStreamResult(text, think_text, usage, time.time() - start,
                                    "Empty response body", finish_reason)
-        try:
-            data = json.loads(raw_resp_text)
-            message = data["choices"][0]["message"]
-            text = message["content"] or ""
-            think_text = message.get("reasoning_content", "")
-            usage = data.get("usage", {})
-            finish_reason = data.get("choices", [{}])[0].get("finish_reason")
-            tool_calls = message.get("tool_calls") or []
-            # Native tool calls (OpenAI-style ``message.tool_calls``) are
-            # rendered into the final text so the tool-calling plugin can
-            # score them, mirroring the streaming path.
-            if tool_calls:
-                rendered = _render_tool_calls(tool_calls)
-                if rendered:
-                    text = (text.rstrip() + "\n" + rendered) if text else rendered
-        except (json.JSONDecodeError, KeyError, IndexError, TypeError) as exc:
-            error = f"Invalid completion response: {type(exc).__name__}: {exc}"
-            tool_calls = []
+        if protocol == "1min":
+            try:
+                data = json.loads(raw_resp_text)
+            except json.JSONDecodeError as exc:
+                error = f"Invalid 1min response: {type(exc).__name__}: {exc}"
+            else:
+                text, one_min_error = _parse_1min_result(data)
+                if one_min_error:
+                    error = one_min_error
+        else:
+            try:
+                data = json.loads(raw_resp_text)
+                message = data["choices"][0]["message"]
+                text = message["content"] or ""
+                think_text = message.get("reasoning_content", "")
+                usage = data.get("usage", {})
+                finish_reason = data.get("choices", [{}])[0].get("finish_reason")
+                tool_calls = message.get("tool_calls") or []
+                # Native tool calls (OpenAI-style ``message.tool_calls``) are
+                # rendered into the final text so the tool-calling plugin can
+                # score them, mirroring the streaming path.
+                if tool_calls:
+                    rendered = _render_tool_calls(tool_calls)
+                    if rendered:
+                        text = (text.rstrip() + "\n" + rendered) if text else rendered
+            except (json.JSONDecodeError, KeyError, IndexError, TypeError) as exc:
+                error = f"Invalid completion response: {type(exc).__name__}: {exc}"
+                tool_calls = []
         _log_response(log_path, request.curl_cmd, raw_resp_text, log_label)
     error = _check_total_timeout(start, timeout, error, finish_reason)
     return NonStreamResult(text, think_text, usage, time.time() - start,

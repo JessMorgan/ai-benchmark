@@ -888,6 +888,19 @@ def dump_default_config():
                 "preload": False,
                 "preload_timeout": PRELOAD_DEFAULT_TIMEOUT,
                 "opencode_timeout": int(OPENCODE_NO_OUTPUT_GRACE)
+            },
+            "1min.ai": {
+                "api_protocol": "1min",
+                "api_url": "https://api.1min.ai/api/chat-with-ai",
+                "headers": {
+                    "API-KEY": "${ONEMIN_API_KEY:your-1min-api-key}",
+                    "Content-Type": "application/json"
+                },
+                "plugin_thread_limit": 1,
+                "model_thread_limit": 1,
+                "preload": False,
+                "preload_timeout": PRELOAD_DEFAULT_TIMEOUT,
+                "opencode_timeout": int(OPENCODE_NO_OUTPUT_GRACE)
             }
         },
         "models": {

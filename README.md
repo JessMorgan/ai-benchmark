@@ -80,7 +80,7 @@ All configuration lives in a JSON file (default: `benchmark-config.json`):
 | `plugin_thread_limit` | Top-level fallback for concurrent plugins within one target |
 | `plugins_whitelist` | List of plugin IDs to run (empty = all) |
 | `plugins_blacklist` | List of plugin IDs to skip (empty = none) |
-| `sources` | Named API endpoints with URL, headers, and optional per-source settings such as `opencode_timeout`, `preload`, `model_thread_limit`, and `max_429_retries` |
+| `sources` | Named API endpoints with URL, headers, and optional per-source settings such as `opencode_timeout`, `preload`, `model_thread_limit`, `api_protocol`, and `max_429_retries` |
 | `models` | Map of model name → source name, or model name → object with `source`, `drop_params`, and optional `token_levels` |
 | `agents` | Optional named targets with a model, source, and system prompt |
 
@@ -115,6 +115,24 @@ The extended form allows per-model settings such as dropping specific API parame
 **API keys** use `${VAR}` or `${VAR:default}` env-var syntax:
 ```json
 "Authorization": "Bearer ${MY_API_KEY:sk-fallback-key}"
+```
+
+### 1min.ai sources
+
+Set `api_protocol: "1min"` on a source to talk to the native 1min.ai
+`/api/chat-with-ai` endpoint. The source authenticates with an `API-KEY`
+header and uses 1min.ai's request/response shape (no system message, no
+`max_tokens`/`temperature`/`seed`); see `docs/configuration.md` for details.
+
+```json
+"1min.ai": {
+  "api_protocol": "1min",
+  "api_url": "https://api.1min.ai/api/chat-with-ai",
+  "headers": {
+    "API-KEY": "${ONEMIN_API_KEY:your-1min-api-key}",
+    "Content-Type": "application/json"
+  }
+}
 ```
 
 ## CLI Reference

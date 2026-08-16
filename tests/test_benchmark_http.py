@@ -1024,5 +1024,282 @@ class TestFetchModelsV1(unittest.TestCase):
         self.assertEqual(captured["headers"]["Authorization"], "Bearer secret")
 
 
+class TestOneMinProtocol(unittest.TestCase):
+    """Tests for the 1min.ai native ``api_protocol: 1min`` handling."""
+
+    _ONEMIN_CFG: ClassVar[dict] = {
+        "1min": {
+            "api_protocol": "1min",
+            "api_url": "https://api.1min.ai/api/chat-with-ai",
+            "headers": {"API-KEY": "secret", "Content-Type": "application/json"},
+        }
+    }
+
+    def test_1min_nonstream_builds_native_body_and_parses_result(self):
+        """1min sources send the native body and read ``aiRecord.resultObject``."""
+        captured = {}
+
+        class MockResponse:
+            status_code = 200
+
+            def iter_content(self, chunk_size=8192):
+                yield json.dumps({
+                    "aiRecord": {
+                        "status": "SUCCESS",
+                        "aiRecordDetail": {"resultObject": ["Hello", " world"]},
+                    }
+                }).encode("utf-8")
+
+            def close(self):
+                pass
+
+        def fake_post(url, **kwargs):
+            captured["url"] = url
+            captured["body"] = kwargs.get("json")
+            return MockResponse()
+
+        with mock.patch("requests.post", side_effect=fake_post):
+            result = nonstream_request(
+                self._ONEMIN_CFG, timeout=5, model="gpt-4o-mini", source="1min",
+                prompt="hi", max_tokens=10,
+            )
+
+        self.assertIsNone(result.error)
+        self.assertEqual(result.text, "Hello\n world")
+        self.assertEqual(captured["url"], "https://api.1min.ai/api/chat-with-ai")
+        self.assertEqual(captured["body"], {
+            "type": "UNIFY_CHAT_WITH_AI",
+            "model": "gpt-4o-mini",
+            "promptObject": {"prompt": "hi"},
+        })
+
+    def test_1min_stream_appends_isStreaming_and_parses_named_events(self):
+        """1min streaming uses ``?isStreaming=true`` and named SSE events."""
+        captured = {}
+
+        class MockResponse:
+            status_code = 200
+
+            def iter_lines(self, decode_unicode=False):
+                yield "event: content"
+                yield "data: " + json.dumps({"content": "Hel"})
+                yield "event: content"
+                yield "data: " + json.dumps({"content": "lo"})
+                yield "event: done"
+                yield "data: " + json.dumps({"message": "Stream completed"})
+
+            def close(self):
+                pass
+
+        def fake_post(url, **kwargs):
+            captured["url"] = url
+            return MockResponse()
+
+        with mock.patch("requests.post", side_effect=fake_post):
+            result = stream_request(
+                self._ONEMIN_CFG, timeout=5, model="gpt-4o-mini", source="1min",
+                prompt="hi", max_tokens=10,
+            )
+
+        self.assertIsNone(result.error)
+        self.assertEqual(result.text, "Hello")
+        self.assertIn("isStreaming=true", captured["url"])
+
+    def test_1min_nonstream_error_body_surfaces_message(self):
+        """A 1min ``{"success": false}`` body surfaces its error message."""
+        class MockResponse:
+            status_code = 200
+
+            def iter_content(self, chunk_size=8192):
+                yield json.dumps({
+                    "success": False,
+                    "error": {"code": "RATE_LIMITED", "message": "Too many requests"},
+                }).encode("utf-8")
+
+            def close(self):
+                pass
+
+        with mock.patch("requests.post", return_value=MockResponse()):
+            result = nonstream_request(
+                self._ONEMIN_CFG, timeout=5, model="gpt-4o-mini", source="1min",
+                prompt="hi", max_tokens=10,
+            )
+
+        self.assertIsNotNone(result.error)
+        self.assertIn("Too many requests", result.error)
+
+    def test_1min_stream_error_event_surfaces(self):
+        """A 1min ``event: error`` aborts the stream with the message."""
+        class MockResponse:
+            status_code = 200
+
+            def iter_lines(self, decode_unicode=False):
+                yield "event: error"
+                yield "data: " + json.dumps({"message": "boom"})
+
+            def close(self):
+                pass
+
+        with mock.patch("requests.post", return_value=MockResponse()):
+            result = stream_request(
+                self._ONEMIN_CFG, timeout=5, model="m", source="1min",
+                prompt="hi", max_tokens=10,
+            )
+
+        self.assertIsNotNone(result.error)
+        self.assertIn("boom", result.error)
+
+    def test_1min_folds_system_prompt_into_prompt(self):
+        """1min has no system-message field, so the persona is folded in."""
+        captured = {}
+
+        class MockResponse:
+            status_code = 200
+
+            def iter_content(self, chunk_size=8192):
+                yield json.dumps({
+                    "aiRecord": {
+                        "status": "SUCCESS",
+                        "aiRecordDetail": {"resultObject": ["ok"]},
+                    }
+                }).encode("utf-8")
+
+            def close(self):
+                pass
+
+        def fake_post(url, **kwargs):
+            captured["body"] = kwargs.get("json")
+            return MockResponse()
+
+        with mock.patch("requests.post", side_effect=fake_post):
+            nonstream_request(
+                self._ONEMIN_CFG, timeout=5, model="gpt-4o-mini", source="1min",
+                prompt="hi", max_tokens=10, system_prompt="You are a coder.",
+            )
+
+        self.assertEqual(
+            captured["body"]["promptObject"]["prompt"],
+            "You are a coder.\n\nhi",
+        )
+
+    def test_api_protocol_defaults(self):
+        """Only ``api_protocol: 1min`` opts out of the OpenAI format."""
+        from benchmark.http import _api_protocol
+        self.assertEqual(_api_protocol(None), "openai")
+        self.assertEqual(_api_protocol({}), "openai")
+        self.assertEqual(_api_protocol({"api_protocol": "openai"}), "openai")
+        self.assertEqual(_api_protocol({"api_protocol": "1min"}), "1min")
+
+    def test_parse_1min_result_branches(self):
+        """Every resultObject/error shape is mapped deterministically."""
+        from benchmark.http import _parse_1min_result
+        text, err = _parse_1min_result({
+            "aiRecord": {"status": "SUCCESS", "aiRecordDetail": {"resultObject": "plain"}},
+        })
+        self.assertEqual((text, err), ("plain", None))
+        text, err = _parse_1min_result({
+            "aiRecord": {"status": "SUCCESS", "aiRecordDetail": {"resultObject": {"a": 1}}},
+        })
+        self.assertEqual(text, '{"a": 1}')
+        text, err = _parse_1min_result({"aiRecord": {"status": "SUCCESS"}})
+        self.assertEqual((text, err), ("", None))
+        text, err = _parse_1min_result({})
+        self.assertEqual(text, "")
+        self.assertIn("missing aiRecord", err)
+        text, err = _parse_1min_result({"aiRecord": {"status": "FAILED"}})
+        self.assertIn("FAILED", err)
+        text, err = _parse_1min_result({"success": False, "error": "nope"})
+        self.assertIn("nope", err)
+
+    def test_1min_sse_events_malformed_and_unnamed(self):
+        """Malformed JSON data lines are skipped; unnamed data uses 'message'."""
+        from benchmark.http import _iter_1min_sse_events
+
+        class MockResponse:
+            def iter_lines(self, decode_unicode=False):
+                yield "data: not-json"
+                yield "data: " + json.dumps({"content": "unnamed"})
+
+        self.assertEqual(
+            list(_iter_1min_sse_events(MockResponse())),
+            [("message", {"content": "unnamed"})],
+        )
+
+    def test_1min_sse_events_transport_error(self):
+        """Iterator failures surface as a stream-line error sentinel."""
+        from benchmark.http import _iter_1min_sse_events, _StreamLineError
+
+        class MockResponse:
+            def iter_lines(self, decode_unicode=False):
+                def boom():
+                    raise RuntimeError("dropped")
+                    yield
+                yield from boom()
+
+        events = list(_iter_1min_sse_events(MockResponse()))
+        self.assertEqual(len(events), 1)
+        self.assertIsInstance(events[0], _StreamLineError)
+
+    def test_1min_nonstream_invalid_json(self):
+        """A non-JSON 1min body produces an Invalid 1min response error."""
+        class MockResponse:
+            status_code = 200
+
+            def iter_content(self, chunk_size=8192):
+                yield b"not json"
+
+            def close(self):
+                pass
+
+        with mock.patch("requests.post", return_value=MockResponse()):
+            result = nonstream_request(
+                self._ONEMIN_CFG, timeout=5, model="m", source="1min",
+                prompt="hi", max_tokens=10,
+            )
+        self.assertIsNotNone(result.error)
+        self.assertIn("Invalid 1min response", result.error)
+
+    def test_1min_stream_respects_stop_event(self):
+        """A mid-stream stop_event aborts a 1min stream as Cancelled."""
+        stop_event = threading.Event()
+
+        class SlowMockResponse:
+            status_code = 200
+
+            def iter_lines(self, decode_unicode=False):
+                for _ in range(100):
+                    yield "event: content"
+                    yield "data: " + json.dumps({"content": "x"})
+                    time.sleep(0.01)
+
+            def close(self):
+                pass
+
+        def set_stop_after_delay():
+            time.sleep(0.05)
+            stop_event.set()
+
+        with mock.patch("requests.post", return_value=SlowMockResponse()):
+            thread = threading.Thread(target=set_stop_after_delay)
+            thread.start()
+            result = stream_request(
+                self._ONEMIN_CFG, timeout=5, model="m", source="1min",
+                prompt="hi", max_tokens=10, stop_event=stop_event,
+            )
+            thread.join()
+
+        self.assertEqual(result.error, "Cancelled")
+
+    def test_curl_command_includes_api_key_header(self):
+        """curl commands render every header, including 1min's API-KEY."""
+        command = build_curl_cmd(
+            model="gpt-4o-mini", prompt="hi", max_tokens=10, stream=False,
+            api_url="https://api.1min.ai/api/chat-with-ai",
+            headers={"API-KEY": "secret", "Content-Type": "application/json"},
+        )
+        self.assertIn("API-KEY: secret", command)
+        self.assertIn("Content-Type: application/json", command)
+
+
 if __name__ == "__main__":
     unittest.main()

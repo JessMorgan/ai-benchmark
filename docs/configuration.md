@@ -41,6 +41,38 @@ Each entry under `sources` defines an API endpoint. The key is the source name u
 }
 ```
 
+### 1min.ai Sources
+
+A source can target the native 1min.ai chat endpoint by setting
+`api_protocol: "1min"`:
+
+```yaml
+sources:
+  1min.ai:
+    api_protocol: "1min"
+    api_url: https://api.1min.ai/api/chat-with-ai
+    headers:
+      API-KEY: "${ONEMIN_API_KEY:your-1min-api-key}"
+      Content-Type: application/json
+    model_thread_limit: 1
+```
+
+This switches the request/response encoding from the default OpenAI-compatible
+format to 1min.ai's native shape. The runner:
+
+- sends `{"type": "UNIFY_CHAT_WITH_AI", "model": ..., "promptObject": {"prompt": ...}}`;
+- selects streaming by appending `?isStreaming=true` automatically;
+- reads non-streaming text from `aiRecord.aiRecordDetail.resultObject`;
+- parses named SSE events (`content`, `result`, `done`, `error`);
+- authenticates via the `API-KEY` header.
+
+1min.ai's chat endpoint has no system-message field and no
+`max_tokens`/`temperature`/`seed` parameters. A supplied agent system prompt is
+folded into the user prompt, and generation knobs (`token_levels`, temperature,
+`seed`, `drop_params`, and judge `request_params`) are ignored for 1min sources.
+HTTP 429 retry/backoff still applies. The OpenCode runner and `/v1/models`
+discovery are OpenAI-shaped and do not consult `api_protocol`.
+
 ### Per-Source Model Concurrency
 
 `model_thread_limit` controls how many complete target pipelines may run at
