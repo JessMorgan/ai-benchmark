@@ -200,7 +200,7 @@ budget or otherwise change the model's native thinking behavior:
 
 ```yaml
 judge:
-  token_levels: [4096]
+  token_levels: [16384]
   request_params:
     response_format:
       type: json_object
@@ -217,8 +217,8 @@ can be combined safely. Use the relevant provider's supported request fields;
 unsupported fields can be removed with the judge model's `drop_params`
 configuration.
 
-`judge.token_levels` controls the total `max_tokens` cap for judge generation.
-It is independent of any provider-specific thinking setting an operator adds
+`judge.token_levels` controls the total `max_tokens` cap for judge generation;
+the default is `16384`. It is independent of any provider-specific thinking setting an operator adds
 to `judge.request_params`. The judge request uses
 `response_format: {"type": "json_object"}` by default to reduce reasoning or
 other prose leaking into the machine-parsed answer.

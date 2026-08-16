@@ -54,7 +54,7 @@ PRELOAD_DEFAULT_TIMEOUT = 300
 # typical reasoning preambles while keeping the probe cheap.
 PRELOAD_MAX_TOKENS = 256
 JUDGE_PROMPT_VERSION = "judge-v2"
-JUDGE_DEFAULT_MAX_TOKENS = 4096
+JUDGE_DEFAULT_MAX_TOKENS = 16384
 JUDGE_DEFAULT_REQUEST_PARAMS = {
     "response_format": {"type": "json_object"},
 }

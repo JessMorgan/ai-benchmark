@@ -190,7 +190,7 @@ class TestJudgeCore(unittest.TestCase):
                     {}, "Local", "judge", sidecar, timeout=3,
                     request_params=request_params,
                 )
-        self.assertEqual(result.diagnostics["request_max_tokens"], 4096)
+        self.assertEqual(result.diagnostics["request_max_tokens"], 16384)
         self.assertEqual(result.diagnostics["requested_thinking_token_budget"], 2048)
         self.assertEqual(result.diagnostics["response_reasoning_tokens"], 2500)
         self.assertEqual(result.diagnostics["response_reasoning_tokens_source"],
@@ -223,7 +223,7 @@ class TestJudgeCore(unittest.TestCase):
         self.assertEqual(result.score, 75)
         self.assertEqual(request.call_args.kwargs["request_params"], request_params)
 
-    def test_judge_response_uses_4096_default_token_budget(self):
+    def test_judge_response_uses_16384_default_token_budget(self):
         response = mock.Mock(
             error=None,
             text='{"score": 75, "confidence": "medium", "rationale": "usable"}',
@@ -236,9 +236,9 @@ class TestJudgeCore(unittest.TestCase):
             )
             with mock.patch("benchmark.core.nonstream_request", return_value=response) as request:
                 result = judge_response({}, "Local", "judge", sidecar, timeout=3)
-        self.assertEqual(JUDGE_DEFAULT_MAX_TOKENS, 4096)
+        self.assertEqual(JUDGE_DEFAULT_MAX_TOKENS, 16384)
         self.assertEqual(result.score, 75)
-        self.assertEqual(request.call_args.args[5], 4096)
+        self.assertEqual(request.call_args.args[5], 16384)
 
     def test_judge_response_retries_invalid_json(self):
         response = mock.Mock(error=None, text='{"score": 75, "confidence": "medium", "rationale": "usable"}')
