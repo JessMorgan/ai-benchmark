@@ -352,6 +352,85 @@ class TestPartialPluginFailure(unittest.TestCase):
         self.assertEqual(result["moe-dense_score"], 7)
 
 
+class TestConsecutive429CircuitBreaker(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.module = load_benchmark_module()
+        discovered = {plugin.id: plugin for plugin in discover_plugins()}
+        cls.plugins = [discovered[pid] for pid in (
+            "rate-limiter", "moe-dense", "reasoning", "wireframes",
+        )]
+
+    def _run(self, fake_run_plugin_task):
+        state = self.module.BenchmarkState(
+            {"dummy-model": "Local"},
+            [plugin.id for plugin in self.plugins],
+        )
+        source_config = {
+            "Local": {
+                "api_url": "http://localhost:11434/chat/completions",
+                "headers": {},
+                "plugin_thread_limit": 1,
+            }
+        }
+        with tempfile.TemporaryDirectory() as output_dir, mock.patch.object(
+            self.module, "_run_plugin_task", side_effect=fake_run_plugin_task,
+        ):
+            self.module.run_model(
+                "dummy-model", "Local", state, self.plugins, source_config,
+                timeout=1, token_levels=[100], output_dir=output_dir,
+                session_seed=0, global_cfg={},
+            )
+        return state
+
+    def test_two_consecutive_exhausted_429s_cancel_remaining_plugins(self):
+        calls = []
+
+        def fake_run_plugin_task(target_name, api_model, source, plugin, *args, **kwargs):
+            calls.append(plugin.id)
+            if len(calls) <= 2:
+                return PluginTaskResult(None, "HTTP 429: rate limited")
+            self.fail(f"plugin {plugin.id} should have been cancelled after two 429s")
+
+        state = self._run(fake_run_plugin_task)
+
+        self.assertEqual(calls, ["rate-limiter", "moe-dense"])
+        result = state.latest_results()[0]
+        self.assertEqual(result["status"], "error")
+        self.assertEqual(
+            result["error"],
+            "Cancelled after 2 consecutive exhausted HTTP 429 responses",
+        )
+        self.assertTrue(result["cancelled_after_consecutive_429"])
+        self.assertEqual(result["reasoning_score"], "fail")
+        self.assertEqual(state.snapshot()["dummy-model"]["status"], "failed")
+
+    def test_nonconsecutive_429s_do_not_trip_circuit_breaker(self):
+        calls = []
+        outcomes = ["429", "success", "429", "success"]
+
+        def fake_run_plugin_task(target_name, api_model, source, plugin, *args, **kwargs):
+            index = len(calls)
+            calls.append(plugin.id)
+            if outcomes[index] == "429":
+                return PluginTaskResult(None, "HTTP 429: rate limited")
+            pid = plugin.id
+            return PluginTaskResult({
+                f"{pid}_score": 10,
+                f"{pid}_response_time": 0.1,
+                f"{pid}_output_tokens": 10,
+                f"{pid}_tps": 100.0,
+                f"{pid}_stream_ok": True,
+            }, None)
+
+        state = self._run(fake_run_plugin_task)
+
+        self.assertEqual(calls, [plugin.id for plugin in self.plugins])
+        result = state.latest_results()[0]
+        self.assertEqual(result["status"], "error")
+        self.assertNotIn("cancelled_after_consecutive_429", result)
+
+
 class TestSaveResponses(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

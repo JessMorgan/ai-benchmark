@@ -35,7 +35,7 @@ python ai-benchmark.py [options]    # repository launcher
 | `--save-responses` | Save each model's plugin response text to the selected runner namespace under `<output_dir>/{http,opencode}/responses/` |
 | `--seed INT` | Fixed random seed for all API requests |
 | `--no-rerun-failed` | Keep failed models as failed on resume (default re-runs them) |
-| `--retry-on-429` / `--no-retry-on-429` | Toggle HTTP-429 retry/backoff globally. Default is **ON**; pass `--no-retry-on-429` to opt out (sources with explicit `max_429_retries` are preserved). See [Configuration Reference](configuration.md#http-429-retry--backoff) for the per-source keys and migration notes. |
+| `--retry-on-429` / `--no-retry-on-429` | Toggle HTTP-429 retry/backoff globally. Default is **ON**; pass `--no-retry-on-429` to opt out (sources with explicit `max_429_retries` are preserved). A model run is cancelled after two consecutive plugin tests exhaust their 429 retries. See [Configuration Reference](configuration.md#http-429-retry--backoff) for the per-source keys and migration notes. |
 | `--runner {http,opencode,both}` | Select the existing HTTP runner (default), the OpenCode CLI runner, or both. In `both`, each target pipelines OpenCode into HTTP. |
 | `--judge-models MODEL [MODEL ...]` | Opt in to semantic judging with one or more configured model keys; their valid ratings are combined into a confidence-weighted consensus. Judge inputs are retained under `<output_dir>/judge-inputs/` and scores appear beside deterministic scores. |
 | `--build-judge-queue STATE_FILE` | Build a ranked JSON queue of cells selected by judge spread or deterministic/consensus deviation and exit |

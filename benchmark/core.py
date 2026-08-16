@@ -1618,11 +1618,24 @@ def _run_plugins(target_name, api_model, source, state, active_plugins, plugins_
     results = {plugin.id: None for plugin in plugins_to_run}
     errors = {}
     lock = threading.Lock()
+    model_stop_event = threading.Event()
+    consecutive_429 = 0
+    breaker_triggered = False
+    breaker_reason = "Cancelled after 2 consecutive exhausted HTTP 429 responses"
     logs_dir = os.path.join(output_dir, "logs")
     log_file = os.path.join(logs_dir, f"{sanitize_filename(display_name or target_name)}.log")
 
     def run_one(plugin):
+        nonlocal consecutive_429, breaker_triggered
         pid = plugin.id
+        # The model-level circuit breaker is distinct from the process-wide
+        # stop event: one rate-limited model must not cancel other models.
+        # Queued plugins check it before dispatch, while in-flight HTTP
+        # requests receive the same event so their retry sleep can stop.
+        if (stop_event and stop_event.is_set()) or model_stop_event.is_set():
+            with lock:
+                errors[pid] = breaker_reason if breaker_triggered else "Cancelled"
+            return
         # Track in-flight plugin tasks via the canonical ``running_pids``
         # list (not a pid-suffix status string) so the live TUI can render
         # each plugin's "[streaming]"/"[requested]" bracket cell and the
@@ -1635,7 +1648,7 @@ def _run_plugins(target_name, api_model, source, state, active_plugins, plugins_
             task_result = _run_plugin_task(target_name, api_model, source, plugin, source_config,
                                            timeout, token_levels, session_seed, log_file,
                                            global_cfg or {}, state=state,
-                                           stop_event=stop_event,
+                                           stop_event=model_stop_event,
                                            save_responses=save_responses,
                                            output_dir=output_dir,
                                            judge_input_dir=judge_input_dir,
@@ -1661,6 +1674,18 @@ def _run_plugins(target_name, api_model, source, state, active_plugins, plugins_
             results[pid] = result
             if err:
                 errors[pid] = err
+            # A successful or non-429 test breaks the streak. Cancellation
+            # caused by the breaker itself is not a test outcome and must not
+            # reset the counter while the remaining futures drain.
+            if err == breaker_reason or err == "Cancelled":
+                pass
+            elif _is_exhausted_429(err):
+                consecutive_429 += 1
+                if consecutive_429 >= 2:
+                    breaker_triggered = True
+                    model_stop_event.set()
+            else:
+                consecutive_429 = 0
         if err or result is None:
             return
         state.update(target_name,                        **{f"{pid}_score": result[f"{pid}_score"],
@@ -1693,6 +1718,11 @@ def _run_plugins(target_name, api_model, source, state, active_plugins, plugins_
         pending = set(futures.keys())
         while pending:
             if stop_event and stop_event.is_set():
+                model_stop_event.set()
+                for f in pending:
+                    f.cancel()
+                break
+            if breaker_triggered:
                 for f in pending:
                     f.cancel()
                 break
@@ -1737,6 +1767,15 @@ def _run_plugins(target_name, api_model, source, state, active_plugins, plugins_
     r["stream_ok"] = any_stream_ok
     if first_tok_time is not None:
         r["ttft"] = round(first_tok_time, 3)
+
+    if breaker_triggered:
+        r["status"] = "error"
+        r["error"] = breaker_reason
+        r["cancelled_after_consecutive_429"] = True
+        r["total_time"] = round(time.time() - start, 1)
+        state.add_result(r)
+        state.update(target_name, status="failed", error=r["error"], elapsed=r["total_time"], last_error=r["error"])
+        return
 
     if stop_event and stop_event.is_set():
         r["status"] = "error"

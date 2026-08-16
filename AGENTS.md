@@ -42,8 +42,11 @@ uv run python -m py_compile ai-benchmark.py benchmark/*.py
 ## Key CLI flags (full reference in `docs/cli.md`)
 
 - `--retry-on-429` / `--no-retry-on-429` — toggle HTTP 429 backoff (default
-  ON; per-source `max_429_retries` overrides are preserved either way).
-  See `benchmark.http._post_request_context` for the retry math.
+  ON; per-source `max_429_retries` overrides are preserved either way). After
+  two consecutive plugin tests exhaust their 429 retries for one model in a
+  run, the remaining tests for that model are cancelled. A successful or
+  non-429 test resets the consecutive count. See
+  `benchmark.http._post_request_context` for the retry math.
 - `--no-rerun-failed` — keep `failed` models on resume; default re-runs them.
 - `--scripted` — continue non-interactively instead of prompting on resume/plugin changes.
 - `--restart` — discard prior state and start every model fresh.
