@@ -32,6 +32,7 @@ python ai-benchmark.py [options]    # repository launcher
 | `--convert-config PATH` | Convert JSON/YAML config and print it to stdout |
 | `--base-url URL` | (with `--dump-default-config`) Discover models from `/v1/models` |
 | `--api-key KEY` | (with `--base-url`) API key for model discovery |
+| `--chatplayground-config` | Enumerate ChatPlayground.ai models from the web UI and print a ready-to-run config (uses `CHATPLAYGROUND_EMAIL`/`CHATPLAYGROUND_PASSWORD`) |
 | `--save-responses` | Save each model's plugin response text to the selected runner namespace under `<output_dir>/{http,opencode}/responses/` |
 | `--seed INT` | Fixed random seed for all API requests |
 | `--no-rerun-failed` | Keep failed models as failed on resume (default re-runs them) |

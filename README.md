@@ -139,11 +139,15 @@ header and uses 1min.ai's request/response shape (no system message, no
 
 Set `api_protocol: "chatplayground"` to drive the ChatPlayground.ai web app
 with Playwright using a username/password (Clerk login, no API key). Install
-Chromium once with `uv run playwright install chromium`; run
-`python -m benchmark.chatplayground` to enumerate the model slugs exposed by
-the sidebar. Each model is addressed by its `/chat/<slug>` route, so put the
-slug in `models` (e.g. `deepseek-v4-pro`, `gpt-5.6-terra`). Answers are buffered
-(no TTFT/TPS), and browser work is serialized under one logged-in session.
+Chromium once with `uv run playwright install chromium`. Each model is
+addressed by its `/chat/<slug>` route, so put the slug in `models` (e.g.
+`deepseek-v4-pro`, `gpt-5.6-terra`). Answers are buffered (no TTFT/TPS), and
+browser work is serialized under one logged-in session.
+
+To enumerate the site's model slugs and emit a ready-to-run config, run
+`ai-benchmark --chatplayground-config > benchmark-config.json` with
+`CHATPLAYGROUND_EMAIL`/`CHATPLAYGROUND_PASSWORD` set (or use
+`python -m benchmark.chatplayground` for raw selector/model diagnostics).
 
 ```json
 "ChatPlayground": {
@@ -181,6 +185,7 @@ python ai-benchmark.py [options]  # repository launcher
 | `--dump-default-config` | Print a config template to stdout and exit |
 | `--base-url URL` | (with `--dump-default-config`) Discover models from `/v1/models` |
 | `--api-key KEY` | (with `--base-url`) API key for model discovery |
+| `--chatplayground-config` | Enumerate ChatPlayground.ai models and print a ready-to-run config |
 | `--plugins-whitelist ID [ID ...]` | Run only these plugins |
 | `--plugins-blacklist ID [ID ...]` | Run all plugins except these |
 | `--no-rerun-failed` | Keep failed models failed on resume |

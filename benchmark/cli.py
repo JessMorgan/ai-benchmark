@@ -2152,6 +2152,8 @@ def main():  # pragma: no cover - live benchmark orchestrator (no unit tests)
                              help='Base URL for model discovery via /v1/models API (used with --dump-default-config)')
     tools_group.add_argument('--api-key', default=None,
                              help='API key for model discovery (used with --dump-default-config --base-url)')
+    tools_group.add_argument('--chatplayground-config', action='store_true',
+                             help='Enumerate ChatPlayground.ai models from the web UI and print a ready-to-run config to stdout (uses CHATPLAYGROUND_EMAIL/PASSWORD env vars)')
 
     output_group = parser.add_argument_group('Output')
     output_group.add_argument('--save-responses', action='store_true',
@@ -2206,6 +2208,16 @@ def main():  # pragma: no cover - live benchmark orchestrator (no unit tests)
             print(json.dumps(cfg, indent=2))
         else:
             dump_default_config()
+        sys.exit(0)
+
+    if args.chatplayground_config:
+        from benchmark.chatplayground import generate_config as generate_chatplayground_config
+        try:
+            cfg = generate_chatplayground_config()
+        except Exception as exc:  # noqa: BLE001 - browser/network tool; report and exit
+            print(f"❌ Could not enumerate ChatPlayground models: {exc}", file=sys.stderr)
+            sys.exit(1)
+        print(json.dumps(cfg, indent=2))
         sys.exit(0)
 
     if args.convert_config:

@@ -78,6 +78,20 @@ class TestCLIArgs(unittest.TestCase):
             self.assertFalse(src_cfg["preload"])
             self.assertEqual(src_cfg["preload_timeout"], 300)
 
+    def test_chatplayground_config_flag_reports_missing_credentials(self):
+        env = dict(os.environ)
+        env.pop("CHATPLAYGROUND_EMAIL", None)
+        env.pop("CHATPLAYGROUND_PASSWORD", None)
+        result = subprocess.run(
+            [sys.executable, "ai-benchmark.py", "--chatplayground-config"],
+            capture_output=True,
+            text=True, check=False,
+            env=env,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("CHATPLAYGROUND_EMAIL", result.stderr)
+        self.assertIn("Could not enumerate ChatPlayground models", result.stderr)
+
     def test_help_and_completion_expose_no_preload(self):
         result = subprocess.run(
             [sys.executable, "ai-benchmark.py", "--help"],
@@ -111,7 +125,8 @@ class TestCLIArgs(unittest.TestCase):
             "--temperature", "--plugin-temperature", "--plugin-thread-limit",
             "--plugins-whitelist", "--plugins-blacklist", "--list-plugins",
             "--generate-shell-completion", "--dump-default-config",
-            "--convert-config", "--base-url", "--api-key", "--save-responses",
+            "--convert-config", "--base-url", "--api-key", "--chatplayground-config",
+            "--save-responses",
             "--judge-models", "--build-judge-queue", "--judge-queue-output",
             "--judge-spread-threshold", "--no-judge-spread",
             "--judge-deviation-threshold", "--no-judge-deviation", "--seed",
@@ -151,6 +166,7 @@ class TestCLIArgs(unittest.TestCase):
             "Tools:": (
                 "--list-plugins", "--generate-shell-completion",
                 "--dump-default-config", "--convert-config", "--base-url", "--api-key",
+                "--chatplayground-config",
             ),
             "Output:": ("--save-responses",),
             "Judge analysis:": (

@@ -118,6 +118,58 @@ class TestConfigHelpers(unittest.TestCase):
         # Untouched keys keep their defaults.
         self.assertEqual(merged["email_input"], cp.DEFAULT_SELECTORS["email_input"])
 
+    def test_config_from_env_reads_environment(self):
+        env = {
+            "CHATPLAYGROUND_EMAIL": "a@b.com",
+            "CHATPLAYGROUND_PASSWORD": "pw",
+            "CHATPLAYGROUND_BASE_URL": "https://cp.example",
+            "CHATPLAYGROUND_HEADLESS": "0",
+        }
+        with mock.patch.dict("os.environ", env, clear=True):
+            cfg = cp.config_from_env()
+        self.assertEqual(cfg["api_protocol"], "chatplayground")
+        self.assertEqual(cfg["email"], "a@b.com")
+        self.assertEqual(cfg["password"], "pw")
+        self.assertEqual(cfg["base_url"], "https://cp.example")
+        self.assertFalse(cfg["headless"])
+
+    def test_config_from_env_headless_defaults_true(self):
+        with mock.patch.dict("os.environ", clear=True):
+            cfg = cp.config_from_env()
+        self.assertTrue(cfg["headless"])
+        self.assertEqual(cfg["base_url"], DEFAULT_BASE_URL)
+
+    def test_generate_config_builds_ready_to_run_config(self):
+        source_cfg = _cfg()
+        page = _FakePage(models=("gpt-5.6-terra", "deepseek-v4-pro"))
+        with mock.patch.object(cp, "_get_page", return_value=page):
+            cfg = cp.generate_config(source_cfg)
+
+        self.assertEqual(cfg["output_dir"], "benchmark-results")
+        self.assertEqual(cfg["token_levels"], [16384])
+        source = cfg["sources"]["ChatPlayground"]
+        self.assertEqual(source["api_protocol"], "chatplayground")
+        # Browser-safe scheduler defaults are applied automatically.
+        self.assertEqual(source["model_thread_limit"], 1)
+        self.assertEqual(source["plugin_thread_limit"], 1)
+        self.assertFalse(source["preload"])
+        self.assertEqual(
+            cfg["models"],
+            {"gpt-5.6-terra": "ChatPlayground", "deepseek-v4-pro": "ChatPlayground"},
+        )
+
+    def test_generate_config_requires_credentials(self):
+        with self.assertRaises(ValueError):
+            cp.generate_config({"api_protocol": "chatplayground", "email": "", "password": ""})
+
+    def test_generate_config_fails_without_models(self):
+        page = _FakePage(models=())
+        with (
+            mock.patch.object(cp, "_get_page", return_value=page),
+            self.assertRaises(RuntimeError),
+        ):
+            cp.generate_config(_cfg())
+
 
 class TestRequest(unittest.TestCase):
     def setUp(self):

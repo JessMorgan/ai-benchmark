@@ -24,6 +24,7 @@ def generate_shell_completion(shell, plugins):
         "--dump-default-config",
         "--base-url",
         "--api-key",
+        "--chatplayground-config",
         "--save-responses",
         "--no-preload",
         "--runner",
@@ -93,6 +94,7 @@ _arguments \\
     '--dump-default-config[Print a default config file to stdout and exit]' \\
     '--base-url[Base URL for model discovery via /v1/models API]:url:' \\
     '--api-key[API key for model discovery]:key:' \\
+    '--chatplayground-config[Enumerate ChatPlayground.ai models and print a ready-to-run config]' \\
     '--save-responses[Save each model\'s plugin response text to <output_dir>/responses/]' \\
     '--no-preload[Disable per-source model pre-loading for this run]' \\        '--runner[Execution runner]:runner:(http opencode both)' \\
     '--judge-models[One or more configured judge models; scores form a confidence-weighted consensus]:model:' \\
@@ -128,6 +130,7 @@ esac
             "-l dump-default-config -d 'Print a default config file to stdout and exit'",
             "-l base-url -F -d 'Base URL for model discovery via /v1/models API'",
             "-l api-key -F -d 'API key for model discovery'",
+            "-l chatplayground-config -d 'Enumerate ChatPlayground.ai models and print a ready-to-run config'",
             "-l save-responses -d 'Save each model\\'s plugin response text to <output_dir>/responses/'",
             "-l no-preload -d 'Disable per-source model pre-loading for this run'",
             "-l runner -x -a 'http opencode both' -d 'Execution runner'",

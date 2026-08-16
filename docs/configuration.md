@@ -149,9 +149,19 @@ sources:
       send_button: "Send"
 ```
 
-To enumerate the model slugs exposed by the UI, run
-`python -m benchmark.chatplayground` with the credentials in the environment;
-it prints a JSON probe including `models` (the slugs to put in `models`).
+To enumerate the model slugs exposed by the UI and emit a ready-to-run config
+in one step, run the CLI flag (credentials come from the environment):
+
+```sh
+CHATPLAYGROUND_EMAIL=you@example.com CHATPLAYGROUND_PASSWORD=... \
+  python ai-benchmark.py --chatplayground-config > benchmark-config.json
+```
+
+This logs in, reads the sidebar's model slugs, and prints a config whose
+`models` maps every slug to the `ChatPlayground` source (with browser-safe
+`model_thread_limit`/`plugin_thread_limit` of 1 and `preload: false`). For raw
+selector/model diagnostics, run `python -m benchmark.chatplayground` with the
+credentials in the environment; it prints a JSON probe including `models`.
 
 ### Per-Source Model Concurrency
 

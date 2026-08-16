@@ -280,18 +280,72 @@ def probe(cfg) -> dict:
         return info
 
 
-def _cli_probe() -> dict:
-    """Run a probe from a minimal source config built out of environment vars."""
+def config_from_env() -> dict:
+    """Build a ChatPlayground source config from environment variables.
+
+    ``CHATPLAYGROUND_EMAIL``/``CHATPLAYGROUND_PASSWORD`` supply the Clerk
+    credentials; ``CHATPLAYGROUND_BASE_URL`` and ``CHATPLAYGROUND_HEADLESS``
+    (default ``"1"``) override the site and browser mode.
+    """
     import os
 
-    cfg = {
+    return {
         "api_protocol": "chatplayground",
         "base_url": os.environ.get("CHATPLAYGROUND_BASE_URL", DEFAULT_BASE_URL),
         "email": os.environ.get("CHATPLAYGROUND_EMAIL", ""),
         "password": os.environ.get("CHATPLAYGROUND_PASSWORD", ""),
         "headless": os.environ.get("CHATPLAYGROUND_HEADLESS", "1") == "1",
     }
-    return probe(cfg)
+
+
+def _complete_source_config(source_cfg: dict) -> dict:
+    """Return ``source_cfg`` with the browser-safe defaults benchmark needs.
+
+    Browser work is serialized under a module lock regardless of scheduler
+    settings, but pinning both thread limits to 1 (and skipping the HTTP-only
+    preload probe) keeps the scheduler from queueing parallel browser turns.
+    """
+    cfg = dict(source_cfg)
+    cfg.setdefault("api_protocol", "chatplayground")
+    cfg.setdefault("model_thread_limit", 1)
+    cfg.setdefault("plugin_thread_limit", 1)
+    cfg.setdefault("preload", False)
+    return cfg
+
+
+def generate_config(source_cfg: dict | None = None, models: list[str] | None = None) -> dict:
+    """Return a ready-to-run benchmark config dict for a ChatPlayground source.
+
+    When ``source_cfg`` is omitted it is built from the environment (see
+    :func:`config_from_env`). When ``models`` is omitted the model slugs are
+    enumerated from the live sidebar's "AI MODELS" list. Each discovered slug
+    becomes a ``models`` entry pointing at the ``ChatPlayground`` source.
+    """
+    if source_cfg is None:
+        source_cfg = config_from_env()
+    if not credentials(source_cfg)[0]:
+        raise ValueError(
+            "ChatPlayground credentials are missing; set CHATPLAYGROUND_EMAIL "
+            "and CHATPLAYGROUND_PASSWORD"
+        )
+    if models is None:
+        models = list_models(source_cfg)
+    if not models:
+        raise RuntimeError("No ChatPlayground models discovered from the UI")
+    return {
+        "output_dir": "benchmark-results",
+        "timeout": 600,
+        "token_levels": [16384],
+        "plugins_whitelist": [],
+        "plugins_blacklist": [],
+        "sources": {"ChatPlayground": _complete_source_config(source_cfg)},
+        "models": {slug: "ChatPlayground" for slug in models},
+    }
+
+
+def _cli_probe() -> dict:
+    """Run a probe from a minimal source config built out of environment vars."""
+    return probe(config_from_env())
 
 
 if __name__ == "__main__":  # pragma: no cover - diagnostic entry point
