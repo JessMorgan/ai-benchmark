@@ -105,7 +105,7 @@ The runtime inventory below matches `uv run ai-benchmark --list-plugins`:
 | `code-review` | 1.0.0 | 15 | No |
 | `debug-consistency` | 0.1.0 | 20 | Yes |
 | `debug-traversal` | 1.0.0 | 20 | Yes |
-| `error-recovery` | 1.0.0 | 20 | Yes |
+| `error-recovery` | 1.1.0 | 20 | Yes |
 | `event-processor` | 0.1.0 | 20 | Yes |
 | `instruction-following` | 1.0.0 | 20 | Yes |
 | `long-context` | 0.1.0 | 20 | Yes |

@@ -9,7 +9,7 @@ AI Benchmark uses a plugin architecture. Each plugin defines a benchmark task, a
 | `code-review` | Code Review | 1.0.0 | 15 | No |
 | `debug-consistency` | Debug Report Consistency | 0.1.0 | 20 | Yes |
 | `debug-traversal` | Debug Traversal | 1.0.0 | 20 | Yes |
-| `error-recovery` | Error Recovery | 1.0.0 | 20 | Yes |
+| `error-recovery` | Error Recovery | 1.1.0 | 20 | Yes |
 | `event-processor` | Concurrent Event Processor | 0.1.0 | 20 | Yes |
 | `instruction-following` | Instruction Following | 1.0.0 | 20 | Yes |
 | `long-context` | Long-Context Retrieval | 0.1.0 | 20 | Yes |

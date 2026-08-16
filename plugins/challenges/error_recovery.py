@@ -17,7 +17,7 @@ class ErrorRecoveryPlugin(BenchmarkTaskPlugin):
 
     @property
     def version(self):
-        return "1.0.0"
+        return "1.1.0"
 
     @property
     def name(self):
@@ -63,10 +63,10 @@ class ErrorRecoveryPlugin(BenchmarkTaskPlugin):
         rubric.record_validation(validation)
         tree = validation.value if validation.valid else None
         classes = self._classes(tree) if tree is not None else set()
-        functions = {
-            node.name for node in ast.walk(tree)
-            if tree is not None and isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-        }
+        functions = (
+            {node.name for node in ast.walk(tree) if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))}
+            if tree is not None else set()
+        )
         required = {"AllProvidersFailedError", "WeatherClient", "get_weather_resilient", "demo"}
         present = required & (classes | functions)
         rubric.add_criterion(

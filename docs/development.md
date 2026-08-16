@@ -66,6 +66,37 @@ Run `ruff`:
 ruff check .
 ```
 
+## Investigating EOF / Stream-Abort Failures
+
+A `litellm.APIConnectionError: Ollama_chatException - EOF` (or a stream that
+ends without `[DONE]`/`finish_reason`) is the proxy reporting that the model
+backend dropped the connection mid-generation. The benchmark already surfaces
+this as `stream_error` in the plugin's `meta.json` and records the replayable
+curl + response body in `logs/<model>.log`, so the first step is to reproduce
+one failure in isolation. The EOF itself is a symptom; pin the layer that owns
+it before changing benchmark code:
+
+1. **Which layer raised it?** Re-run the logged curl directly against the
+   model server (bypassing litellm). If raw Ollama returns cleanly, the proxy
+   is the failing layer; if Ollama itself reports `{'error': 'EOF'}`, the model
+   process is dying or being killed.
+2. **Ollama server logs.** On the model host check `journalctl -u ollama -n 200`
+   (or the equivalent service log) for OOM kills, `context length exceeded`,
+   panic, or loader errors around the failure timestamps.
+3. **Correlate with the request shape.** Note whether EOFs cluster on
+   long-context prompts, thinking-capable models, `response_format`/judge
+   requests, or specific plugins. A shape-specific cluster points at
+   context-window or provider-parameter problems rather than hardware.
+4. **Concurrency / VRAM pressure.** Re-run the failing request serially
+   (`plugin_thread_limit: 1`, `model_thread_limit: 1`). EOFs that disappear
+   under serial load point at resource exhaustion, not the model itself.
+5. **Timing.** Compare `response_time` and `stream_error` in `meta.json`;
+   a 2–3 s abort is a near-instant backend failure, while a long delay before
+   EOF suggests a timeout or watchdog close.
+
+Record the outcome of each probe in the run's notes so a repeated EOF can be
+attributed to the proxy, the model server, or the benchmark request itself.
+
 ## Writing a Plugin
 
 1. Create a new module in `plugins/challenges/` (for example, `plugins/challenges/my_task.py`).
