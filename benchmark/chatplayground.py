@@ -2,9 +2,15 @@
 
 ChatPlayground.ai (https://web.chatplayground.ai) is a closed, JavaScript-
 rendered web app with no public API: it authenticates with a username/password
-and renders every chat interaction client-side. This module drives that UI with
-Playwright — log in with the credentials configured on the source, select a
-model, submit the prompt, and read back the completed (buffered) answer.
+(Clerk) and renders every chat interaction client-side. This module drives that
+UI with Playwright — log in with the credentials configured on the source,
+navigate to a single-model chat route, submit the prompt, and read back the
+completed (buffered) answer.
+
+Each model is addressed by the slug used in the site's ``/chat/<slug>`` route
+(e.g. ``deepseek-v4-pro``, ``gpt-5.6-terra``, ``gemini-3-flash``). Use
+``list_models(cfg)`` (or ``python -m benchmark.chatplayground``) to enumerate
+the slugs exposed by the sidebar's "AI MODELS" list.
 
 Playwright is imported lazily inside ``_get_page`` so the rest of the benchmark
 (and the test suite, which mocks the driver) never needs a browser at import
@@ -19,42 +25,71 @@ import time
 
 DEFAULT_BASE_URL = "https://web.chatplayground.ai"
 
-# Best-effort CSS selectors for the single-page app. Every key can be overridden
-# through the source's ``selectors`` mapping. The site is JavaScript-rendered,
-# so these cannot be read from a static page; run ``probe(cfg)`` (or
-# ``python -m benchmark.chatplayground --probe``) against the live site to
-# capture the current selectors and adjust this mapping as needed.
+# Selectors for the single-page app, captured against the live site. Every key
+# can be overridden through the source's ``selectors`` mapping. ``login_submit``
+# and ``send_button`` are accessible names (matched exactly via
+# ``get_by_role``), not CSS selectors, because the buttons share a text
+# substring with other controls ("Continue with Google", "Send" vs nothing).
 DEFAULT_SELECTORS = {
-    # Route the login form lives at (joined to ``base_url``).
+    # Route the Clerk login form lives at (joined to ``base_url``).
     "login_url": "/login",
-    "email_input": "input[type=email], input[name=email], input[autocomplete=username]",
-    "password_input": "input[type=password]",
-    "login_submit": "button[type=submit], button:has-text('Log in'), button:has-text('Sign in')",
-    # Route the chat view lives at (joined to ``base_url``).
-    "chat_url": "/",
-    # Opens the model picker.
-    "model_trigger": "button:has-text('Model'), [data-testid=model-select]",
-    # A container selector matching the individual options in the picker.
-    "model_option": "[role=option], [data-testid=model-option], li",
+    "email_input": "input[name=identifier]",
+    "password_input": "input[name=password]",
+    # Accessible name of the Clerk submit button ("Continue", not "Continue with Google").
+    "login_submit": "Continue",
+    # Prefix for single-model chat routes; the model slug is appended.
+    "chat_path": "/chat",
     # The prompt composer and its submit affordance.
-    "prompt_input": "textarea, div[role=textbox], [contenteditable=true]",
-    "send_button": "button[type=submit], button:has-text('Send')",
-    # Shown only while a response is still generating; when it disappears the
-    # answer is complete. Optional — when unset, completion is detected via the
-    # response container plus a settle delay.
-    "stop_generation": "button:has-text('Stop'), [data-testid=stop-generating]",
-    # Container(s) holding completed assistant answers; the last one is read.
-    "response": "[data-testid=assistant-message], .assistant-message, [data-message-author=assistant]",
+    "prompt_input": "textarea[name=input]",
+    "send_button": "Send",
+    # Shown only while a response is still generating; its disappearance marks
+    # completion.
+    "stop_generation": "button:has-text('Stop')",
+    # Exact label preceding each assistant answer in the transcript.
+    "assistant_label": "ASSISTANT",
     # Extra settle time (ms) after the stop affordance disappears.
     "settle_ms": 1500,
     # Overall selector wait timeout (ms).
-    "wait_timeout_ms": 15000,
+    "wait_timeout_ms": 30000,
 }
 
 # RLock: ``probe`` holds the lock while calling ``list_models``, which also
 # acquires it.
 _lock = threading.RLock()
 _state = None
+
+# JS that returns the text of the last assistant answer. The answer is a sibling
+# of the ``ASSISTANT`` label inside its content wrapper; reading the wrapper's
+# ``innerText`` (minus the label itself) preserves code/newline formatting that
+# the plugin evaluators rely on.
+_READ_RESPONSE_JS = """
+(label) => {
+  const labels = [...document.querySelectorAll('p')]
+    .filter(p => (p.innerText || '').trim() === label);
+  if (!labels.length) return '';
+  const wrapper = labels[labels.length - 1].parentElement;
+  if (!wrapper) return '';
+  return wrapper.innerText.replace(label, '').trim();
+}
+"""
+
+# JS that returns the model slugs from the sidebar's "AI MODELS" section. The
+# heading is a leaf node whose parent holds the model links; scoping there keeps
+# conversation-history links (also ``/chat/...``) out of the result.
+_LIST_MODELS_JS = """
+() => {
+  const headings = [...document.querySelectorAll('*')]
+    .filter(e => e.children.length === 0 && (e.innerText || '').trim() === 'AI MODELS');
+  if (!headings.length) return [];
+  const container = headings[0].parentElement;
+  if (!container) return [];
+  return [...container.querySelectorAll('a[href*="/chat/"]')]
+    .map(a => a.getAttribute('href'))
+    .filter(href => href && href.includes('/chat/'))
+    .map(href => href.split('/chat/')[1].split('?')[0])
+    .filter(slug => slug && slug !== 'new');
+}
+"""
 
 
 def is_chatplayground(cfg) -> bool:
@@ -93,14 +128,13 @@ def _close_session():
 
 
 def _login(page, email, password, base_url, sel):
-    """Navigate to the login form and authenticate with email/password."""
+    """Navigate to the Clerk login form and authenticate with email/password."""
     page.goto(base_url.rstrip("/") + (sel.get("login_url") or "/login"))
     page.fill(sel["email_input"], email)
     page.fill(sel["password_input"], password)
-    page.click(sel["login_submit"])
-    # Wait until the SPA leaves the login form. The chat view is the success
-    # signal; we don't assert a specific URL because the app may use hashes.
-    page.wait_for_selector(sel["prompt_input"], timeout=sel.get("wait_timeout_ms", 15000))
+    page.get_by_role("button", name=sel["login_submit"], exact=True).click()
+    # Wait until the SPA leaves the login form and renders the chat composer.
+    page.wait_for_selector(sel["prompt_input"], timeout=sel.get("wait_timeout_ms", 30000))
 
 
 def _get_page(cfg):
@@ -135,37 +169,39 @@ def _get_page(cfg):
     return _state["page"]
 
 
-def _select_model(page, model, sel):
-    """Open the model picker and choose ``model`` (best-effort by visible text)."""
-    page.click(sel["model_trigger"])
-    page.wait_for_selector(sel["model_option"], timeout=sel.get("wait_timeout_ms", 15000))
-    page.locator(sel["model_option"]).filter(has_text=model).first.click()
-
-
 def _submit_prompt(page, prompt, sel):
     """Type the prompt and send it."""
     page.fill(sel["prompt_input"], prompt)
-    page.click(sel["send_button"])
+    page.get_by_role("button", name=sel["send_button"], exact=True).click()
+
+
+def _has_response(page, sel):
+    """Return whether an assistant answer has appeared yet."""
+    return page.get_by_text(sel["assistant_label"], exact=True).count() > 0
 
 
 def _wait_for_completion(page, timeout, stop_event, sel):
-    """Wait for the in-flight answer to finish, honouring ``stop_event``."""
+    """Wait for the in-flight answer to finish, honouring ``stop_event``.
+
+    The "Stop" affordance is present while a response is generating. A turn is
+    complete once that affordance has appeared and then disappeared; a very fast
+    response may never show it, so an assistant answer already being present is
+    also treated as completion.
+    """
     deadline = time.monotonic() + timeout
-    stop = sel.get("stop_generation")
-    if stop:
-        # Generation starts when the stop affordance appears...
+    stop = sel["stop_generation"]
+    saw_stop = False
+    while time.monotonic() < deadline:
+        if stop_event is not None and stop_event.is_set():
+            return False
         with contextlib.suppress(Exception):
-            page.wait_for_selector(stop, timeout=sel.get("wait_timeout_ms", 15000))
-        # ...and finishes when it detaches/hides. Poll so a cancelled run can
-        # interrupt the wait.
-        while time.monotonic() < deadline:
-            if stop_event is not None and stop_event.is_set():
-                return False
-            if page.locator(stop).count() == 0:
-                break
-            time.sleep(0.25)
-    else:
-        page.wait_for_selector(sel["response"], timeout=sel.get("wait_timeout_ms", 15000))
+            if page.locator(stop).count() > 0:
+                saw_stop = True
+                time.sleep(0.25)
+                continue
+        if saw_stop or _has_response(page, sel):
+            break
+        time.sleep(0.25)
     settle = int(sel.get("settle_ms", 1500))
     if settle > 0:
         end = min(time.monotonic() + settle / 1000.0, deadline)
@@ -178,18 +214,19 @@ def _wait_for_completion(page, timeout, stop_event, sel):
 
 def _read_response(page, sel):
     """Return the text of the last completed assistant message."""
-    locator = page.locator(sel["response"]).last
-    return locator.inner_text()
+    return str(page.evaluate(_READ_RESPONSE_JS, sel["assistant_label"]) or "")
 
 
 def _send_prompt(page, model, prompt, timeout, stop_event, cfg):
-    """Run one chat turn and return the buffered answer text."""
+    """Run one chat turn on ``model`` and return the buffered answer text."""
     sel = selectors(cfg)
     base_url = cfg.get("base_url", DEFAULT_BASE_URL)
-    page.goto(base_url.rstrip("/") + (sel.get("chat_url") or "/"))
-    page.wait_for_selector(sel["prompt_input"], timeout=sel.get("wait_timeout_ms", 15000))
+    chat_path = (sel.get("chat_path") or "/chat").rstrip("/")
     if model:
-        _select_model(page, model, sel)
+        page.goto(f"{base_url.rstrip('/')}{chat_path}/{model}")
+    else:
+        page.goto(base_url.rstrip("/"))
+    page.wait_for_selector(sel["prompt_input"], timeout=sel.get("wait_timeout_ms", 30000))
     _submit_prompt(page, prompt, sel)
     if not _wait_for_completion(page, timeout, stop_event, sel):
         raise TimeoutError("ChatPlayground request cancelled")
@@ -218,14 +255,11 @@ def request(cfg, model, prompt, *, timeout, stop_event=None, system_prompt=None)
 
 
 def list_models(cfg) -> list[str]:
-    """Enumerate the model names exposed by the UI's model picker."""
+    """Enumerate the model slugs exposed by the sidebar's "AI MODELS" list."""
     with _lock:
         page = _get_page(cfg)
-        sel = selectors(cfg)
-        page.click(sel["model_trigger"])
-        page.wait_for_selector(sel["model_option"], timeout=sel.get("wait_timeout_ms", 15000))
-        names = page.locator(sel["model_option"]).all_inner_texts()
-    return [name.strip() for name in names if name and name.strip()]
+        slugs = page.evaluate(_LIST_MODELS_JS) or []
+    return [str(slug) for slug in slugs if slug]
 
 
 def probe(cfg) -> dict:
@@ -238,7 +272,6 @@ def probe(cfg) -> dict:
             "textarea_count": page.locator("textarea").count(),
             "input_count": page.locator("input").count(),
             "button_count": page.locator("button").count(),
-            "buttons": page.locator("button").all_inner_texts(),
         }
         try:
             info["models"] = list_models(cfg)

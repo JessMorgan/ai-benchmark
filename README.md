@@ -138,11 +138,12 @@ header and uses 1min.ai's request/response shape (no system message, no
 ### ChatPlayground.ai sources
 
 Set `api_protocol: "chatplayground"` to drive the ChatPlayground.ai web app
-with Playwright using a username/password (no API key). Install Chromium once
-with `uv run playwright install chromium`; run
-`python -m benchmark.chatplayground` to enumerate models and capture selector
-diagnostics. Answers are buffered (no TTFT/TPS), and browser work is serialized
-under one logged-in session.
+with Playwright using a username/password (Clerk login, no API key). Install
+Chromium once with `uv run playwright install chromium`; run
+`python -m benchmark.chatplayground` to enumerate the model slugs exposed by
+the sidebar. Each model is addressed by its `/chat/<slug>` route, so put the
+slug in `models` (e.g. `deepseek-v4-pro`, `gpt-5.6-terra`). Answers are buffered
+(no TTFT/TPS), and browser work is serialized under one logged-in session.
 
 ```json
 "ChatPlayground": {
@@ -153,6 +154,9 @@ under one logged-in session.
   "headless": true,
   "model_thread_limit": 1,
   "plugin_thread_limit": 1
+},
+"models": {
+  "deepseek-v4-pro": "ChatPlayground"
 }
 ```
 

@@ -76,10 +76,10 @@ discovery are OpenAI-shaped and do not consult `api_protocol`.
 ### ChatPlayground.ai Sources (Interactive Web)
 
 ChatPlayground.ai is a closed, JavaScript-rendered web app with no public API:
-it authenticates with a username/password and renders chat client-side. A
-source with `api_protocol: "chatplayground"` drives that UI with Playwright —
-log in once, select a model, submit the prompt, and read back the completed
-(buffered) answer.
+it authenticates with a username/password (Clerk) and renders chat client-side.
+A source with `api_protocol: "chatplayground"` drives that UI with Playwright —
+log in once, navigate to the model's single-model chat route, submit the prompt,
+and read back the completed (buffered) answer.
 
 ```yaml
 sources:
@@ -91,7 +91,31 @@ sources:
     headless: true
     model_thread_limit: 1
     plugin_thread_limit: 1
+
+models:
+  gpt-5.6-terra: ChatPlayground
+  deepseek-v4-pro: ChatPlayground
 ```
+
+Each model is addressed by the **slug** used in the site's `/chat/<slug>`
+route; the adapter navigates to `{base_url}/chat/{api_model}`. The sidebar's
+"AI MODELS" list currently exposes:
+
+| Display name | Slug |
+|---|---|
+| ChatGPT-5.6 Terra | `gpt-5.6-terra` |
+| ChatGPT-5.6 Luna | `gpt-5.6-luna` |
+| Gemini (Latest Model) | `gemini-3-flash` |
+| Claude (Latest Model) | `claude-sonnet-4-6` |
+| Kimi K | `kimi-k2.6` |
+| DeepSeek V4 Pro | `deepseek-v4-pro` |
+| DeepSeek V4 Flash | `deepseek-v4-flash` |
+| Qwen3.7 Plus | `qwen3.7-plus` |
+| Llama 4 Scout | `llama-4-scout` |
+| Command A | `command-a` |
+| Amazon Nova | `nova-2-lite-v1` |
+| Grok 4.5 | `grok-4.5` |
+| Mistral Large 3 | `mistral-large-3` |
 
 Prerequisites:
 
@@ -110,8 +134,9 @@ Behavior and limitations:
 - Browser operations are serialized under a module lock and one logged-in
   session is reused across plugin tasks, so keep `model_thread_limit` and
   `plugin_thread_limit` at `1`.
-- CSS selectors are best-effort defaults (see `benchmark/chatplayground.py`)
-  and can be overridden per source via a `selectors` mapping:
+- The CSS selectors were captured against the live site (see
+  `benchmark/chatplayground.py`) and can be overridden per source via a
+  `selectors` mapping if the site changes:
 
 ```yaml
 sources:
@@ -120,13 +145,13 @@ sources:
     email: "${CHATPLAYGROUND_EMAIL}"
     password: "${CHATPLAYGROUND_PASSWORD}"
     selectors:
-      prompt_input: "textarea#composer"
-      send_button: "button[data-testid=send]"
+      prompt_input: "textarea[name=input]"
+      send_button: "Send"
 ```
 
-To enumerate the models exposed by the UI (and capture selector diagnostics),
-run `python -m benchmark.chatplayground` with the credentials in the
-environment; it prints a JSON probe including the discovered model names.
+To enumerate the model slugs exposed by the UI, run
+`python -m benchmark.chatplayground` with the credentials in the environment;
+it prints a JSON probe including `models` (the slugs to put in `models`).
 
 ### Per-Source Model Concurrency
 
