@@ -638,6 +638,19 @@ def _expand_env(val):
     return val
 
 
+def load_dotenv_file(path=None):
+    """Load environment variables from a ``.env`` file into ``os.environ``.
+
+    The file defaults to ``.env`` in the current working directory. A missing
+    file is ignored, and variables already present in the environment take
+    precedence over file values (dotenv's ``override=False`` default). Returns
+    ``True`` when a file was found and loaded, ``False`` otherwise.
+    """
+    from dotenv import load_dotenv
+
+    return bool(load_dotenv(dotenv_path=path if path is not None else ".env", override=False))
+
+
 def load_config(path):
     """Load benchmark config from a JSON or YAML file. Returns the full config dict."""
     with open(path) as f:

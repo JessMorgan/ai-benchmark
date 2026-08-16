@@ -117,6 +117,10 @@ The extended form allows per-model settings such as dropping specific API parame
 "Authorization": "Bearer ${MY_API_KEY:sk-fallback-key}"
 ```
 
+Variables may come from the process environment or from a `.env` file in the
+current directory, which the CLI loads at startup (`python-dotenv`). A missing
+`.env` is ignored and real environment variables win over file values.
+
 ### 1min.ai sources
 
 Set `api_protocol: "1min"` on a source to talk to the native 1min.ai

@@ -9,6 +9,8 @@ preload failure paths, and early-return guards in ``_run_plugin_task`` /
 import contextlib
 import io
 import json
+import os
+import tempfile
 import unittest
 from unittest import mock
 
@@ -22,6 +24,7 @@ from benchmark.core import (
     dump_default_config,
     generate_config_from_api,
     get_target_plugins_blacklist,
+    load_dotenv_file,
     preload_model,
     resolve_model_sources,
     resolve_preload_timeout,
@@ -78,6 +81,36 @@ class TestExpandEnv(unittest.TestCase):
 
     def test_non_string_scalars_passthrough(self):
         self.assertEqual(_expand_env(42), 42)
+
+
+class TestLoadDotenvFile(unittest.TestCase):
+    def test_loads_vars_from_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            env_path = os.path.join(tmp, ".env")
+            with open(env_path, "w") as f:
+                f.write("CHATPLAYGROUND_EMAIL=user@example.com\nCHATPLAYGROUND_PASSWORD=pw\n")
+            with mock.patch.dict("os.environ", {}, clear=True):
+                self.assertTrue(load_dotenv_file(env_path))
+                self.assertEqual(os.environ.get("CHATPLAYGROUND_EMAIL"), "user@example.com")
+                self.assertEqual(os.environ.get("CHATPLAYGROUND_PASSWORD"), "pw")
+
+    def test_missing_file_returns_false(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertFalse(load_dotenv_file(os.path.join(tmp, "nope.env")))
+
+    def test_existing_environment_wins(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            env_path = os.path.join(tmp, ".env")
+            with open(env_path, "w") as f:
+                f.write("CHATPLAYGROUND_EMAIL=from-file@example.com\n")
+            with mock.patch.dict("os.environ", {"CHATPLAYGROUND_EMAIL": "from-env@example.com"}, clear=True):
+                load_dotenv_file(env_path)
+                self.assertEqual(os.environ.get("CHATPLAYGROUND_EMAIL"), "from-env@example.com")
+
+    def test_default_path_is_dotenv_in_cwd(self):
+        with mock.patch("dotenv.load_dotenv", return_value=True) as loader:
+            self.assertTrue(load_dotenv_file())
+        loader.assert_called_once_with(dotenv_path=".env", override=False)
         self.assertEqual(_expand_env(3.5), 3.5)
         self.assertEqual(_expand_env(None), None)
 

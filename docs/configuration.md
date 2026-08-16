@@ -150,7 +150,8 @@ sources:
 ```
 
 To enumerate the model slugs exposed by the UI and emit a ready-to-run config
-in one step, run the CLI flag (credentials come from the environment):
+in one step, run the CLI flag. Credentials come from the environment — either
+inline or from a local `.env` file (see [Dotenv Files](#dotenv-files)):
 
 ```sh
 CHATPLAYGROUND_EMAIL=you@example.com CHATPLAYGROUND_PASSWORD=... \
@@ -247,13 +248,40 @@ Defaults are **opt-out**: every source retries up to twice by default. To restor
 
 ### Environment Variable Expansion
 
-Header values support `${VAR}` and `${VAR:default}` syntax:
+Any string value in the config supports `${VAR}` and `${VAR:default}` syntax
+(headers, `email`/`password`, etc.), expanded when the config is loaded:
 
 ```json
 "Authorization": "Bearer ${OPENAI_API_KEY:sk-fallback-key}"
+"email": "${CHATPLAYGROUND_EMAIL}"
 ```
 
-The value is replaced with the environment variable value, or the default if the variable is unset.
+The value is replaced with the environment variable value, or the default if
+the variable is unset. The variables may come from the process environment or
+from a local `.env` file (see below).
+
+### Dotenv Files
+
+The CLI loads a `.env` file from the current working directory at startup
+(using `python-dotenv`), so credentials can live in a file instead of being
+exported into the shell:
+
+```sh
+# .env
+CHATPLAYGROUND_EMAIL=you@example.com
+CHATPLAYGROUND_PASSWORD=...
+OPENAI_API_KEY=sk-...
+```
+
+```sh
+python ai-benchmark.py --chatplayground-config > benchmark-config.json
+```
+
+- A missing `.env` is ignored.
+- Variables already present in the real environment take precedence over the
+  `.env` values (dotenv's `override=False` default).
+- Only `./.env` in the current directory is read; no parent directories are
+  searched.
 
 ## Models
 

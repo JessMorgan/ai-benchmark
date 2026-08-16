@@ -40,6 +40,7 @@ from benchmark.core import (
     is_successful_judge_vote,
     judge_response,
     load_config,
+    load_dotenv_file,
     parse_plugin_temperatures,
     preload_model,
     resolve_judge_request_params,
@@ -2061,6 +2062,11 @@ def _prompt_corrupt_state(recovery, scripted=False):
 
 
 def main():  # pragma: no cover - live benchmark orchestrator (no unit tests)
+    # Load a local .env file (if present) so ${VAR} config expansion and
+    # env-driven tools (e.g. --chatplayground-config) can read credentials
+    # without prefixing every command. Real environment variables take
+    # precedence over file values.
+    load_dotenv_file()
     try:
         subprocess.run(['stty', 'sane'], stderr=subprocess.DEVNULL,
                        stdin=sys.stdin, timeout=1, check=False)

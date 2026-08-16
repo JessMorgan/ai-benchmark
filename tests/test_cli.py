@@ -92,6 +92,28 @@ class TestCLIArgs(unittest.TestCase):
         self.assertIn("CHATPLAYGROUND_EMAIL", result.stderr)
         self.assertIn("Could not enumerate ChatPlayground models", result.stderr)
 
+    def test_convert_config_loads_dotenv_from_cwd(self):
+        project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        launcher = os.path.join(project_root, "ai-benchmark.py")
+        with tempfile.TemporaryDirectory() as tmp:
+            with open(os.path.join(tmp, ".env"), "w") as f:
+                f.write("MY_SECRET=hello-from-env\n")
+            config_path = os.path.join(tmp, "config.json")
+            with open(config_path, "w") as f:
+                json.dump({"email": "${MY_SECRET}", "password": "x"}, f)
+            env = dict(os.environ)
+            env.pop("MY_SECRET", None)
+            result = subprocess.run(
+                [sys.executable, launcher, "--convert-config", config_path],
+                capture_output=True,
+                text=True, check=False,
+                cwd=tmp,
+                env=env,
+            )
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("hello-from-env", result.stdout)
+        self.assertNotIn("${MY_SECRET}", result.stdout)
+
     def test_help_and_completion_expose_no_preload(self):
         result = subprocess.run(
             [sys.executable, "ai-benchmark.py", "--help"],

@@ -11,6 +11,12 @@ ai-benchmark [options]            # installed console script
 python ai-benchmark.py [options]    # repository launcher
 ```
 
+At startup the CLI loads a `.env` file from the current working directory
+(via `python-dotenv`) so config `${VAR}` expansion and env-driven tools can
+read credentials without exporting them into the shell. A missing `.env` is
+ignored, and real environment variables take precedence over file values. See
+[Configuration Reference](configuration.md#dotenv-files).
+
 ## Arguments
 
 | Argument | Description |
