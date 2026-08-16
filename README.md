@@ -135,6 +135,27 @@ header and uses 1min.ai's request/response shape (no system message, no
 }
 ```
 
+### ChatPlayground.ai sources
+
+Set `api_protocol: "chatplayground"` to drive the ChatPlayground.ai web app
+with Playwright using a username/password (no API key). Install Chromium once
+with `uv run playwright install chromium`; run
+`python -m benchmark.chatplayground` to enumerate models and capture selector
+diagnostics. Answers are buffered (no TTFT/TPS), and browser work is serialized
+under one logged-in session.
+
+```json
+"ChatPlayground": {
+  "api_protocol": "chatplayground",
+  "base_url": "https://web.chatplayground.ai",
+  "email": "${CHATPLAYGROUND_EMAIL}",
+  "password": "${CHATPLAYGROUND_PASSWORD}",
+  "headless": true,
+  "model_thread_limit": 1,
+  "plugin_thread_limit": 1
+}
+```
+
 ## CLI Reference
 
 ```

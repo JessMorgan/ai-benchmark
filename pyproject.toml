@@ -27,6 +27,7 @@ dependencies = [
     "requests>=2.32.0",
     "fpdf2>=2.8.0",
     "pyyaml>=6.0.2",
+    "playwright>=1.62.0",
 ]
 
 [project.scripts]

@@ -119,11 +119,13 @@ def _api_protocol(cfg) -> str:
     pre-existing source. ``"1min"`` selects the 1min.ai native
     ``/api/chat-with-ai`` endpoint, which uses a different request body
     (``type``/``model``/``promptObject``) and a different response/SSE shape.
-    The choice is driven by the optional ``api_protocol`` source key; unknown
-    or missing values fall back to the OpenAI format.
+    ``"chatplayground"`` selects the Playwright-driven interactive-web
+    transport in :mod:`benchmark.chatplayground`. The choice is driven by the
+    optional ``api_protocol`` source key; unknown or missing values fall back
+    to the OpenAI format.
     """
-    if isinstance(cfg, dict) and cfg.get("api_protocol") == "1min":
-        return "1min"
+    if isinstance(cfg, dict) and cfg.get("api_protocol") in ("1min", "chatplayground"):
+        return cfg["api_protocol"]
     return "openai"
 
 
@@ -788,6 +790,21 @@ def stream_request(source_config, timeout, model, source, prompt, max_tokens=204
     tool_calls: list = []
     cfg = source_config.get(source) or {}
     protocol = _api_protocol(cfg)
+    if protocol == "chatplayground":
+        from . import chatplayground
+
+        text, error, _gen_time = chatplayground.request(
+            cfg, model, prompt, timeout=timeout, stop_event=stop_event,
+            system_prompt=system_prompt,
+        )
+        if log_path:
+            log_request_entry(
+                log_path,
+                "# ChatPlayground (browser) request",
+                text or "(empty response)",
+                log_label,
+            )
+        return StreamResult(text, "", None, time.time(), error, None, {}, [])
     if protocol == "1min":
         body = _build_1min_request_body(model, prompt, system_prompt=system_prompt)
     else:
@@ -947,6 +964,21 @@ def nonstream_request(source_config, timeout, model, source, prompt, max_tokens=
     tool_calls: list = []
     cfg = source_config.get(source) or {}
     protocol = _api_protocol(cfg)
+    if protocol == "chatplayground":
+        from . import chatplayground
+
+        text, error, gen_time = chatplayground.request(
+            cfg, model, prompt, timeout=timeout, stop_event=stop_event,
+            system_prompt=system_prompt,
+        )
+        if log_path:
+            log_request_entry(
+                log_path,
+                "# ChatPlayground (browser) request",
+                text or "(empty response)",
+                log_label,
+            )
+        return NonStreamResult(text, "", {}, gen_time, error, None)
     if protocol == "1min":
         body = _build_1min_request_body(model, prompt, system_prompt=system_prompt)
     else:

@@ -73,6 +73,61 @@ folded into the user prompt, and generation knobs (`token_levels`, temperature,
 HTTP 429 retry/backoff still applies. The OpenCode runner and `/v1/models`
 discovery are OpenAI-shaped and do not consult `api_protocol`.
 
+### ChatPlayground.ai Sources (Interactive Web)
+
+ChatPlayground.ai is a closed, JavaScript-rendered web app with no public API:
+it authenticates with a username/password and renders chat client-side. A
+source with `api_protocol: "chatplayground"` drives that UI with Playwright —
+log in once, select a model, submit the prompt, and read back the completed
+(buffered) answer.
+
+```yaml
+sources:
+  ChatPlayground:
+    api_protocol: "chatplayground"
+    base_url: https://web.chatplayground.ai
+    email: "${CHATPLAYGROUND_EMAIL}"
+    password: "${CHATPLAYGROUND_PASSWORD}"
+    headless: true
+    model_thread_limit: 1
+    plugin_thread_limit: 1
+```
+
+Prerequisites:
+
+- Install Playwright's Chromium once: `uv run playwright install chromium`.
+- Supply `email`/`password` via environment variables (any `${VAR}` value is
+  expanded by the config loader).
+- If the site blocks the headless browser, set `headless: false` to run headed.
+
+Behavior and limitations:
+
+- The answer is **buffered** — there is no per-token streaming, so
+  `{pid}_ttft`/`{pid}_tps` are not meaningful for these sources.
+- A supplied agent system prompt is folded into the user prompt (the chat UI
+  has no separate system field); `token_levels`, temperature, `seed`,
+  `drop_params`, and judge `request_params` are ignored.
+- Browser operations are serialized under a module lock and one logged-in
+  session is reused across plugin tasks, so keep `model_thread_limit` and
+  `plugin_thread_limit` at `1`.
+- CSS selectors are best-effort defaults (see `benchmark/chatplayground.py`)
+  and can be overridden per source via a `selectors` mapping:
+
+```yaml
+sources:
+  ChatPlayground:
+    api_protocol: "chatplayground"
+    email: "${CHATPLAYGROUND_EMAIL}"
+    password: "${CHATPLAYGROUND_PASSWORD}"
+    selectors:
+      prompt_input: "textarea#composer"
+      send_button: "button[data-testid=send]"
+```
+
+To enumerate the models exposed by the UI (and capture selector diagnostics),
+run `python -m benchmark.chatplayground` with the credentials in the
+environment; it prints a JSON probe including the discovered model names.
+
 ### Per-Source Model Concurrency
 
 `model_thread_limit` controls how many complete target pipelines may run at

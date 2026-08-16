@@ -901,6 +901,18 @@ def dump_default_config():
                 "preload": False,
                 "preload_timeout": PRELOAD_DEFAULT_TIMEOUT,
                 "opencode_timeout": int(OPENCODE_NO_OUTPUT_GRACE)
+            },
+            "ChatPlayground": {
+                "api_protocol": "chatplayground",
+                "base_url": "https://web.chatplayground.ai",
+                "email": "${CHATPLAYGROUND_EMAIL:you@example.com}",
+                "password": "${CHATPLAYGROUND_PASSWORD:your-password}",
+                "headless": True,
+                "plugin_thread_limit": 1,
+                "model_thread_limit": 1,
+                "preload": False,
+                "preload_timeout": PRELOAD_DEFAULT_TIMEOUT,
+                "opencode_timeout": int(OPENCODE_NO_OUTPUT_GRACE)
             }
         },
         "models": {
