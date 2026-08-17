@@ -11,9 +11,23 @@ from benchmark.cli import (
     SourceModelScheduler,
     _build_runner_queues,
     _configure_judge_source,
+    _resolve_judge_plugin_limit,
     _start_runner_pipeline,
 )
 from benchmark.core import resolve_model_thread_limit
+
+
+def test_resolve_judge_plugin_limit():
+    sources = {"Local": {"plugin_thread_limit": 2}, "Cloud": {}}
+    assert _resolve_judge_plugin_limit(sources, "Local") == 2
+    assert _resolve_judge_plugin_limit(sources, "Cloud") == 1
+    assert _resolve_judge_plugin_limit(sources, "Missing") == 1
+    with mock.patch.dict(sources, {"Zero": {"plugin_thread_limit": 0}}, clear=False):
+        assert _resolve_judge_plugin_limit(sources, "Zero") == 1
+    with mock.patch.dict(sources, {"Bad": {"plugin_thread_limit": "banana"}}, clear=False):
+        assert _resolve_judge_plugin_limit(sources, "Bad") == 1
+    with mock.patch.dict(sources, {"Str": {"plugin_thread_limit": "3"}}, clear=False):
+        assert _resolve_judge_plugin_limit(sources, "Str") == 3
 
 
 def test_model_thread_limit_resolution_and_strict_validation():
@@ -153,9 +167,9 @@ def test_judge_source_reservation_configures_one_then_full_pool():
 
     _configure_judge_source(limits, "Cloud", 3, True, pool)
     assert limits["Cloud"] == 2
-    assert pool.thread_count == 1
+    assert pool.model_slots == 1
     pool.expand_full()
-    assert pool.thread_count == 3
+    assert pool.model_slots == 3
     pool.stop(timeout=1)
 
 
@@ -175,11 +189,10 @@ def test_judge_pool_drains_all_jobs_before_stop():
         pool.enqueue(job)
     pool.stop(drain=True)
     assert sorted(processed) == list(range(8))
-    assert pool.queue.unfinished_tasks == 0
-    assert all(not thread.is_alive() for thread in pool._threads)
+    assert pool.thread_count == 0
 
 
-def test_judge_pool_rotates_judges_and_prioritizes_never_judged_cells():
+def test_judge_pool_runs_one_judge_to_completion_before_another():
     stop = threading.Event()
     processed = []
 
@@ -187,21 +200,91 @@ def test_judge_pool_rotates_judges_and_prioritizes_never_judged_cells():
         processed.append(job[0])
 
     pool = SourceJudgeWorkerPool("Cloud", 1, process, stop)
-    pool.start(1)
-    # Retry work is enqueued first, but fresh work must be selected first.
-    # Within each tier, judges rotate instead of one judge draining its whole
-    # backlog before another judge gets a turn.
+    # Retry work is enqueued first, but a judge always drains its fresh cells
+    # before its retries, and one judge runs to completion (never-judged cells
+    # then retries) before the next judge is loaded.
     for job in (
         ("a-retry-1", None, None, None, "judge-a", False),
-        ("b-retry-1", None, None, None, "judge-b", False),
         ("a-fresh", None, None, None, "judge-a", True),
+        ("b-retry-1", None, None, None, "judge-b", False),
         ("b-fresh", None, None, None, "judge-b", True),
     ):
         pool.enqueue(job)
+    pool.start(1)
     pool.stop(drain=True)
 
-    assert processed == ["a-fresh", "b-fresh", "a-retry-1", "b-retry-1"]
-    assert pool.queue.unfinished_tasks == 0
+    assert processed == ["a-fresh", "a-retry-1", "b-fresh", "b-retry-1"]
+    assert pool.thread_count == 0
+
+
+def test_judge_pool_runs_at_most_model_limit_judges_concurrently():
+    stop = threading.Event()
+    lock = threading.Lock()
+    active = 0
+    peak = 0
+    both_active = threading.Event()
+    release = threading.Event()
+
+    def process(job):
+        nonlocal active, peak
+        with lock:
+            active += 1
+            peak = max(peak, active)
+            if active == 2:
+                both_active.set()
+        release.wait(timeout=2)
+        with lock:
+            active -= 1
+
+    pool = SourceJudgeWorkerPool("Cloud", 2, process, stop)
+    for judge in ("judge-a", "judge-b", "judge-c"):
+        pool.enqueue((judge, None, None, None, judge, True))
+    pool.start(2)
+
+    assert both_active.wait(timeout=2)
+    with lock:
+        assert active == 2
+        assert peak == 2
+    release.set()
+    pool.stop(drain=True)
+    with lock:
+        assert peak == 2
+
+
+def test_judge_pool_plugin_limit_scores_cells_in_parallel():
+    stop = threading.Event()
+    lock = threading.Lock()
+    processed = []
+    active = 0
+    peak = 0
+    both_active = threading.Event()
+    release = threading.Event()
+
+    def process(job):
+        nonlocal active, peak
+        with lock:
+            active += 1
+            peak = max(peak, active)
+            processed.append(job[0])
+            if active == 2:
+                both_active.set()
+        release.wait(timeout=2)
+        with lock:
+            active -= 1
+
+    pool = SourceJudgeWorkerPool("Cloud", 1, process, stop, plugin_limit=2)
+    for cell in range(4):
+        pool.enqueue((cell, None, None, None, "judge-a", True))
+    pool.start(1)
+
+    assert both_active.wait(timeout=2)
+    with lock:
+        assert peak == 2
+    release.set()
+    pool.stop(drain=True)
+    with lock:
+        assert sorted(processed) == list(range(4))
+    assert pool.thread_count == 0
 
 
 def test_judge_pool_continues_after_unexpected_callback_exception():
@@ -214,14 +297,13 @@ def test_judge_pool_continues_after_unexpected_callback_exception():
         processed.append(job)
 
     pool = SourceJudgeWorkerPool("Cloud", 1, process, stop)
-    pool.start(1)
     for job in ("bad", "good-a", "good-b"):
         pool.enqueue(job)
+    pool.start(1)
     pool.stop(drain=True)
 
     assert processed == ["good-a", "good-b"]
-    assert pool.queue.unfinished_tasks == 0
-    assert all(not thread.is_alive() for thread in pool._threads)
+    assert pool.thread_count == 0
 
 
 def test_judge_pool_cancellation_discards_queued_work_and_joins():
@@ -235,14 +317,14 @@ def test_judge_pool_cancellation_discards_queued_work_and_joins():
         stop.wait(timeout=1)
 
     pool = SourceJudgeWorkerPool("Cloud", 1, process, stop)
-    pool.start(1)
     for job in range(5):
         pool.enqueue(job)
+    pool.start(1)
     assert started.wait(timeout=1)
     stop.set()
     pool.stop(timeout=2, drain=False)
-    assert all(not thread.is_alive() for thread in pool._threads)
-    assert pool.queue.unfinished_tasks == 0
+    assert pool.thread_count == 0
+    assert processed == [0]
 
 
 def test_judge_pool_expands_after_source_benchmark_completion():
@@ -289,9 +371,9 @@ def test_judge_pool_expands_after_source_benchmark_completion():
     benchmark_limit = full_limit - 1
     pool = SourceJudgeWorkerPool("Cloud", full_limit, process_judge, stop)
     pool.start(1)
-    assert pool.thread_count == 1
-    for job in range(3):
-        pool.enqueue(job)
+    assert pool.model_slots == 1
+    for judge in ("judge-0", "judge-1", "judge-2"):
+        pool.enqueue((judge, None, None, None, judge, True))
 
     benchmark = SourceModelScheduler(
         "Cloud", benchmark_limit, ["model-a", "model-b"], run_benchmark,
@@ -305,14 +387,14 @@ def test_judge_pool_expands_after_source_benchmark_completion():
     assert benchmark_both_active.wait(timeout=1)
     assert judge_started.wait(timeout=1)
     # The overlap phase uses two benchmark slots plus the one reserved judge
-    # slot, never exceeding the source's full limit of three.
+    # model, never exceeding the source's full limit of three.
     with lock:
         assert active_benchmarks == benchmark_limit
         assert peak_benchmarks == benchmark_limit
         assert active_judges == 1
         assert peak_judges == 1
         assert active_benchmarks + active_judges == full_limit
-    assert pool.thread_count == 1
+    assert pool.model_slots == 1
 
     benchmark_release.set()
     benchmark_thread.join(timeout=2)
@@ -323,7 +405,7 @@ def test_judge_pool_expands_after_source_benchmark_completion():
         assert peak_judges == full_limit
         assert active_benchmarks == 0
         assert active_judges == full_limit
-    assert pool.thread_count == full_limit
+    assert pool.model_slots == full_limit
     assert len(judge_calls) == 3
 
     judge_release.set()

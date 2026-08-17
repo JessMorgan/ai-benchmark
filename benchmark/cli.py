@@ -1464,11 +1464,29 @@ class SourceModelScheduler:
 
 
 
+def _resolve_judge_plugin_limit(source_config, source):
+    """Return the per-judge cell concurrency for ``source``.
+
+    Mirrors ``plugin_thread_limit``: how many cells one judge model scores at
+    once. Unlike the benchmark's per-target semantics, zero is not an
+    unlimited value here -- fanning out an unbounded number of concurrent
+    judge requests is a resource hazard, so a non-positive value serializes
+    to one cell per judge.
+    """
+    cfg = source_config.get(source)
+    value = cfg.get("plugin_thread_limit", 1) if isinstance(cfg, dict) else 1
+    try:
+        value = int(value)
+    except (TypeError, ValueError):
+        value = 1
+    return value if value > 0 else 1
+
+
 def _configure_judge_source(benchmark_limits, source, full_limit,
                             benchmark_active, pool):
     """Configure the judge reservation for one source.
 
-    During benchmark overlap, reserve one judge worker only when another
+    During benchmark overlap, reserve one judge model only when another
     source slot remains available. Sources with no benchmark work start their
     full judge pool immediately; completion callbacks later call
     ``pool.expand_full()`` for active sources.
@@ -1504,22 +1522,20 @@ class _CombinedStopEvent:
         return True
 
 
-class _FairJudgeQueue:
-    """A source-local judge queue with fair judge rotation and fresh priority.
+class _JudgeQueue:
+    """A single judge model's fresh-then-retry FIFO cell queue.
 
-    Jobs are kept in separate fresh and retry queues for each judge. Fresh
-    cells (with no previous vote) are always selected before retry cells, and
-    judges rotate round-robin within the selected tier. This prevents a judge
-    with a large failed-vote backlog from starving a judge with only a few
-    never-judged cells while retaining the source-wide concurrency limit.
+    Each judge owns exactly one queue so a source can run one judge to
+    completion before loading another judge (keeping a local model resident)
+    instead of round-robin swapping between judges every cell. Within a judge,
+    never-judged cells still precede retried cells, and both tiers are served
+    in arrival order.
     """
 
     def __init__(self):
         self._condition = threading.Condition()
-        self._fresh = {}
-        self._retry = {}
-        self._fresh_order = deque()
-        self._retry_order = deque()
+        self._fresh = deque()
+        self._retry = deque()
         self._unfinished_tasks = 0
         self._stop_tokens = 0
 
@@ -1529,11 +1545,11 @@ class _FairJudgeQueue:
         with self._condition:
             return self._unfinished_tasks
 
-    @staticmethod
-    def _job_key(job):
-        if isinstance(job, tuple) and len(job) > 4:
-            return job[4]
-        return None
+    @property
+    def pending(self):
+        """True while the judge still has unstarted cells queued."""
+        with self._condition:
+            return bool(self._fresh or self._retry)
 
     @staticmethod
     def _job_is_fresh(job):
@@ -1541,18 +1557,10 @@ class _FairJudgeQueue:
         # cell; failed/invalid prior attempts are retry work.
         return not isinstance(job, tuple) or len(job) <= 5 or bool(job[5])
 
-    @staticmethod
-    def _append_once(order, key):
-        if key not in order:
-            order.append(key)
-
     def put(self, job):
-        key = self._job_key(job)
-        fresh = self._job_is_fresh(job)
+        bucket = self._fresh if self._job_is_fresh(job) else self._retry
         with self._condition:
-            buckets = self._fresh if fresh else self._retry
-            buckets.setdefault(key, deque()).append(job)
-            self._append_once(self._fresh_order if fresh else self._retry_order, key)
+            bucket.append(job)
             self._unfinished_tasks += 1
             self._condition.notify()
 
@@ -1562,22 +1570,9 @@ class _FairJudgeQueue:
             while True:
                 if self._stop_tokens:
                     self._stop_tokens -= 1
-                    return _FAIR_QUEUE_STOP
-                order = self._fresh_order if self._fresh_order else self._retry_order
-                buckets = self._fresh if self._fresh_order else self._retry
-                if order:
-                    key = order.popleft()
-                    jobs = buckets[key]
-                    job = jobs.popleft()
-                    if jobs:
-                        order.append(key)
-                    else:
-                        del buckets[key]
-                        other = self._retry if buckets is self._fresh else self._fresh
-                        other_order = self._retry_order if buckets is self._fresh else self._fresh_order
-                        if key in other:
-                            self._append_once(other_order, key)
-                    return job
+                    return _JUDGE_QUEUE_STOP
+                if self._fresh or self._retry:
+                    return self._fresh.popleft() if self._fresh else self._retry.popleft()
                 if timeout is not None:
                     remaining = deadline - time.monotonic()
                     if remaining <= 0:
@@ -1602,12 +1597,9 @@ class _FairJudgeQueue:
     def cancel_pending(self):
         """Discard queued, not-yet-started jobs while preserving active jobs."""
         with self._condition:
-            pending = sum(len(jobs) for jobs in self._fresh.values())
-            pending += sum(len(jobs) for jobs in self._retry.values())
+            pending = len(self._fresh) + len(self._retry)
             self._fresh.clear()
             self._retry.clear()
-            self._fresh_order.clear()
-            self._retry_order.clear()
             self._unfinished_tasks -= pending
             self._condition.notify_all()
 
@@ -1617,47 +1609,133 @@ class _FairJudgeQueue:
             self._condition.notify_all()
 
 
-_FAIR_QUEUE_STOP = object()
+_JUDGE_QUEUE_STOP = object()
+_NO_JUDGE = object()
 
 
 class SourceJudgeWorkerPool:
-    """Run judge jobs with a source-local, dynamically expandable pool.
+    """Run judge jobs with per-source model and plugin concurrency.
 
-    The pool starts with the reserved judge capacity used while benchmark
-    targets are active. Once the source benchmark scheduler completes, callers
-    can expand it to ``limit`` so all source slots judge concurrently. Within
-    that pool, judge models rotate fairly and never-judged cells precede
-    retries.
+    ``model_limit`` bounds how many distinct judge models run concurrently for
+    the source; each active judge occupies exactly one model slot, mirroring
+    ``model_thread_limit``. ``plugin_limit`` bounds how many cells one judge
+    scores at once, mirroring ``plugin_thread_limit``. Judges are run to
+    completion in discovery order before another judge is activated, which
+    keeps a single local model resident instead of round-robin swapping
+    between judges.
     """
 
-    def __init__(self, source, limit, process_job, stop_event):
+    def __init__(self, source, model_limit, process_job, stop_event,
+                 plugin_limit=1):
         self.source = source
-        self.limit = max(1, int(limit))
+        self.model_limit = max(1, int(model_limit))
+        self.plugin_limit = max(1, int(plugin_limit))
         self.process_job = process_job
         self.stop_event = stop_event
-        self.queue = _FairJudgeQueue()
-        self._lock = threading.Lock()
-        self._threads = []
+        self._condition = threading.Condition()
+        self._queues = {}          # judge -> _JudgeQueue
+        self._order = []           # judge discovery order
+        self._active = {}          # judge -> judge-runner thread
+        self._active_limit = 0     # currently allowed concurrent judge models
+        self._stopped = False
 
     @property
     def thread_count(self):
-        """Return the number of workers started for this source."""
-        with self._lock:
-            return len(self._threads)
+        """Number of judge models currently running for this source."""
+        with self._condition:
+            return len(self._active)
+
+    @property
+    def model_slots(self):
+        """Currently allowed number of concurrent judge models (reservation)."""
+        with self._condition:
+            return self._active_limit
+
+    @staticmethod
+    def _job_key(job):
+        if isinstance(job, tuple) and len(job) > 4:
+            return job[4]
+        return None
+
+    def _queue_for(self, judge):
+        queue = self._queues.get(judge)
+        if queue is None:
+            queue = _JudgeQueue()
+            self._queues[judge] = queue
+            self._order.append(judge)
+        return queue
 
     def enqueue(self, job):
-        """Queue one judge job for this source."""
-        self.queue.put(job)
+        """Queue one judge job, keyed by its judge model."""
+        judge = self._job_key(job)
+        with self._condition:
+            self._queue_for(judge).put(job)
+            self._activate_locked()
 
-    def _worker(self):
+    def _next_pending_judge_locked(self):
+        for judge in self._order:
+            if judge in self._active:
+                continue
+            if self._queues[judge].unfinished_tasks > 0:
+                return judge
+        return _NO_JUDGE
+
+    def _activate_locked(self):
+        """Start judge runners for pending judges while model slots are free."""
+        while (not self._stopped and not self.stop_event.is_set()
+               and len(self._active) < self._active_limit):
+            judge = self._next_pending_judge_locked()
+            if judge is _NO_JUDGE:
+                break
+            thread = threading.Thread(
+                target=self._judge_runner,
+                args=(judge,),
+                name=f"judge-runner-{self.source}-{judge}",
+                daemon=True,
+            )
+            self._active[judge] = thread
+            thread.start()
+
+    def _judge_runner(self, judge):
+        """Run one judge over its queued cells until drained.
+
+        The judge holds a model slot while it still has cells, then tears down
+        its cell workers and frees the slot so the next judge (in discovery
+        order) can be loaded. Judge runners are daemonized so Ctrl+C cannot
+        leave a process permanently stuck behind a provider that ignores
+        cancellation; normal completion still drains and joins before exit.
+        """
+        queue = self._queues[judge]
+        workers = []
+        for index in range(self.plugin_limit):
+            thread = threading.Thread(
+                target=self._cell_worker,
+                args=(queue,),
+                name=f"judge-cell-{self.source}-{judge}-{index + 1}",
+                daemon=True,
+            )
+            thread.start()
+            workers.append(thread)
+        # Drain this judge's currently queued cells before yielding the slot.
+        while not self.stop_event.is_set() and queue.unfinished_tasks > 0:
+            time.sleep(0.05)
+        queue.request_stop(len(workers))
+        for thread in workers:
+            thread.join()
+        with self._condition:
+            self._active.pop(judge, None)
+            self._activate_locked()
+            self._condition.notify_all()
+
+    def _cell_worker(self, queue):
         while True:
             try:
-                job = self.queue.get(timeout=0.2)
+                job = queue.get(timeout=0.2)
             except queue.Empty:
                 if self.stop_event.is_set():
                     break
                 continue
-            if job is _FAIR_QUEUE_STOP:
+            if job is _JUDGE_QUEUE_STOP:
                 return
             try:
                 # On cancellation, discard queued work instead of starting
@@ -1680,52 +1758,48 @@ class SourceJudgeWorkerPool:
                         file=sys.stderr,
                     )
             finally:
-                self.queue.task_done()
+                queue.task_done()
 
     def start(self, count=1):
-        """Start workers up to ``count`` without exceeding the source limit."""
-        with self._lock:
-            target = min(self.limit, max(0, int(count)))
-            new_threads = []
-            for index in range(len(self._threads), target):
-                # Judge workers are daemonized so Ctrl+C cannot leave a
-                # process permanently stuck behind a provider that ignores
-                # cancellation. Normal completion still uses ``drain=True``
-                # and an unbounded join, so daemonization never abandons
-                # successful work on the normal path.
-                thread = threading.Thread(
-                    target=self._worker,
-                    name=f"judge-worker-{self.source}-{index + 1}",
-                    daemon=True,
-                )
-                self._threads.append(thread)
-                new_threads.append(thread)
-        for thread in new_threads:
-            thread.start()
+        """Allow up to ``count`` judge models to run concurrently."""
+        with self._condition:
+            self._active_limit = min(self.model_limit, max(0, int(count)))
+            self._activate_locked()
+            self._condition.notify_all()
 
     def expand_full(self):
-        """Release the benchmark reservation and use the full source pool."""
-        self.start(self.limit)
+        """Release the benchmark reservation and allow the full judge pool."""
+        self.start(self.model_limit)
 
     def drain(self):
         """Wait until every queued job has finished processing."""
-        self.queue.join()
+        with self._condition:
+            judge_queues = list(self._queues.values())
+        for judge_queue in judge_queues:
+            judge_queue.join()
+        with self._condition:
+            while self._active:
+                self._condition.wait(timeout=0.05)
 
     def stop(self, timeout=None, *, drain=False):
-        """Stop workers, optionally draining all queued jobs first.
+        """Stop judges, optionally draining all queued jobs first.
 
         Normal completion uses ``drain=True`` and an unbounded join. The
         cancellation path skips the drain so Ctrl+C can save resumable state
         without waiting on new work.
         """
         if drain:
-            self.queue.join()
+            self.drain()
         else:
-            self.queue.cancel_pending()
-        with self._lock:
-            threads = list(self._threads)
-        self.queue.request_stop(len(threads))
-        for thread in threads:
+            with self._condition:
+                queues = list(self._queues.values())
+            for queue in queues:
+                queue.cancel_pending()
+        with self._condition:
+            self._stopped = True
+            self._condition.notify_all()
+            active = list(self._active.values())
+        for thread in active:
             thread.join(timeout=timeout)
 
 
@@ -2555,8 +2629,12 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
 
         judge_input_dir = os.path.join(output_dir, "judge-inputs") if judge_models else None
         judge_sources = {name: targets[name]["source"] for name in judge_models}
-        judge_source_limits = {
+        judge_model_limits = {
             source: max(1, int(model_thread_limits.get(source, 1)))
+            for source in set(judge_sources.values())
+        }
+        judge_plugin_limits = {
+            source: _resolve_judge_plugin_limit(source_config, source)
             for source in set(judge_sources.values())
         }
         judge_pools = {}
@@ -2948,7 +3026,8 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
 
         judge_pools = {
             source: SourceJudgeWorkerPool(
-                source, judge_source_limits[source], process_judge_job, stop_event,
+                source, judge_model_limits[source], process_judge_job, stop_event,
+                plugin_limit=judge_plugin_limits[source],
             )
             for source in set(judge_sources.values())
         }
@@ -2969,12 +3048,12 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
                 pool.expand_full()
 
         def start_judge_if_async(benchmark_limits, benchmark_sources=None):
-            """Reserve one judge slot, then expand after source completion.
+            """Reserve one judge model slot, then expand after source completion.
 
-            While a source is benchmarking, one judge worker is allowed only
+            While a source is benchmarking, one judge model is allowed only
             when another slot remains available. Once that source drains, all
-            of its configured model slots become judge workers, including for a
-            single configured judge model.
+            of its configured model slots become judge models; each judge
+            model scores up to ``plugin_thread_limit`` cells concurrently.
 
             """
             if not judge_models:
@@ -2984,7 +3063,7 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
                 _configure_judge_source(
                     benchmark_limits,
                     source,
-                    judge_source_limits[source],
+                    judge_model_limits[source],
                     source in benchmark_sources,
                     pool,
                 )
@@ -3006,8 +3085,8 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
                 enqueue_judge(sidecar, item["target"], item["runner"], item["plugin"])
             for source, pool in judge_pools.items():
                 # A source with no active benchmark scheduler should still
-                # receive its full judge pool before the final drain.
-                pool.start(judge_source_limits[source])
+                # receive its full judge model pool before the final drain.
+                pool.start(judge_model_limits[source])
             # Normal completion must not exit until every queued judge job has
             # called task_done and every worker has terminated.
             stop_judge_workers(drain=True)

@@ -197,6 +197,15 @@ preserved, and in `--runner both` OpenCode plus HTTP for one target occupy one
 slot as an indivisible pipeline. Increasing both limits can create a much
 larger request burst, and parallel cold preloads can exhaust local VRAM, so
 keep AI Server/Gaming PC at `1` unless deliberately testing higher values.
+
+Semantic judging uses the same two knobs per source. `model_thread_limit`
+bounds how many distinct judge models run concurrently; each active judge
+occupies one model slot and runs to completion before another judge is
+loaded (keeping one local model resident instead of round-robin swapping).
+`plugin_thread_limit` bounds how many cells a single judge scores at once.
+For judging, a non-positive `plugin_thread_limit` serializes to one cell per
+judge rather than meaning "unlimited", since fanning out an unbounded number
+of concurrent judge requests is a resource hazard.
 The effective limits and observed `peak_active_models` are written to
 `run-info.json`. Response times from overlapping targets are not directly
 comparable with a serial run.

@@ -123,6 +123,9 @@ Output generators handle mixed numeric and string scores defensively to avoid er
 - Pipeline ordering: target `T` runs OpenCode then HTTP, with no overlap between runners on the source; the source advances to the next target afterward.
 - Plugin-level parallelism: controlled by per-source `plugin_thread_limit` (with a top-level fallback).
 - `ThreadPoolExecutor` runs plugins for a single model.
+- Judge concurrency mirrors the same two tiers per source: `model_thread_limit`
+  bounds distinct judge models (each run to completion in discovery order), and
+  `plugin_thread_limit` bounds cells scored per judge.
 
 ## Resume Behavior
 
