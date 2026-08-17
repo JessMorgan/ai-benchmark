@@ -119,12 +119,65 @@ class TestStreamGuards(unittest.TestCase):
         guards = _StreamGuards(max_content_tokens=100000, repetition_guard=False)
         self.assertIsNone(guards.check("B" * 5000, ""))
 
-    def test_repeats_detected_matches_post_hoc_semantics(self):
-        # 80-char tail appearing 3x total = repeating (mirrors core.is_repeating).
+    def _class_block(self, name, doc):
+        # ~800-char per-class scaffold with a shared __init__/cleanup tail,
+        # modeling the ornith-1.0-nas rate-limiter false positive: three
+        # implementations of the same API legitimately reuse structure.
+        return (
+            f"class {name}:\n"
+            f"    \"\"\"{doc} rate limiter.\"\"\"\n"
+            f"\n"
+            f"    def __init__(self, limit: int, window_seconds: float):\n"
+            f"        if limit <= 0:\n"
+            f"            raise ValueError('limit must be positive')\n"
+            f"        if window_seconds <= 0:\n"
+            f"            raise ValueError('window_seconds must be positive')\n"
+            f"        self._limit = limit\n"
+            f"        self._window_seconds = window_seconds\n"
+            f"        self._lock = threading.Lock()\n"
+            f"        self._clients = {{}}\n"
+            f"\n"
+            f"    def allow_request(self, client_id: str, now: float) -> bool:\n"
+            f"        with self._lock:\n"
+            f"            return len(self._clients) < self._limit\n"
+            f"\n"
+            f"    def cleanup(self, now: float) -> int:\n"
+            f"        with self._lock:\n"
+            f"            self._clients.clear()\n"
+            f"            return 0\n"
+            f"\n"
+        )
+
+    def test_repeats_detected_catches_dense_echo(self):
+        # 80-char tail appearing 3x with the previous repeat adjacent.
         self.assertTrue(_repeats_detected("B" * 300))
         self.assertFalse(_repeats_detected("B" * 150))
         distinct = " ".join(f"word{i}" for i in range(500))
         self.assertFalse(_repeats_detected(distinct))
+
+    def test_far_apart_structure_is_not_repetition(self):
+        # Three implementations of the same API are NOT a loop: the shared
+        # tail recurs ~800+ chars back, not adjacent to the stream end.
+        text = (
+            self._class_block("TokenBucket", "Token bucket")
+            + self._class_block("SlidingWindowLog", "Sliding window log")
+            + self._class_block("FixedWindow", "Fixed window")
+        )
+        self.assertGreater(len(text), 240)
+        self.assertFalse(_repeats_detected(text))
+
+    def test_adjacent_echo_is_repetition(self):
+        # The same sentence re-emitted back-to-back is an echo loop: the
+        # previous repeat ends immediately before the tail (period ~29).
+        unit = "rate-limiter-UNIT-0123456789 "
+        self.assertGreater(len(unit) * 9, 240)
+        self.assertTrue(_repeats_detected(unit * 9))
+
+    def test_ascii_diagram_borders_are_not_repetition(self):
+        # Architecture/wireframe diagrams legitimately repeat box borders.
+        diagram = "+-----------------+   +-----------------+\n" * 12
+        self.assertTrue(len(diagram) >= 240)
+        self.assertFalse(_repeats_detected(diagram))
 
 
 class TestStreamRequest(unittest.TestCase):

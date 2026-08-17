@@ -164,16 +164,22 @@ When considering a dependency:
 Benchmark task requests are aborted the moment they go pathological instead
 of burning the whole `max_tokens` budget on local hardware: `reasoning_content`
 over `max_thinking_tokens` (default 32768), final content over `max_content_tokens`
-(default 16384), or content/thinking repeating an 80-char tail ≥3x in the recent
-~4K-char window (`repetition_guard`, default on) abort the stream with a distinct
-error (`Content/Thinking budget exceeded (N tokens)`, `Repetition detected in
-content|thinking — stream aborted`). The partial text streamed before the abort
-is retained and scored; a budget abort is an error and never trips the
-thinking-truncation auto-escalation. Guards live in `http._StreamGuards`, are
-resolved per source via `core.resolve_stream_guards`, and are passed only into
-`_run_plugin_task`'s `stream_request`/`nonstream_request` calls — preload
-probes, judge requests, and the OpenCode runner are exempt (the kwargs default
-off).
+(default 16384), or content/thinking falling into a *dense echo loop*
+(`repetition_guard`, default on) abort the stream with a distinct error
+(`Content/Thinking budget exceeded (N tokens)`, `Repetition detected in
+content|thinking — stream aborted`). The repetition rule is deliberately more
+selective than the post-hoc `_repeating` flag (which tolerates false
+positives in a completed response): the newest 80-char block must appear ≥3x
+in the recent ~4K chars AND the previous repeat must end within ~256 chars of
+the stream tail, and blocks that are mostly typographic decoration (ASCII
+diagram borders) are ignored — legitimate recurring structure (three classes
+sharing an API scaffold) is bounded by the budgets instead. The partial text
+streamed before the abort is retained and scored; a `Content/Thinking budget
+exceeded` abort is an error and never trips the thinking-truncation
+auto-escalation. Guards live in `http._StreamGuards`, are resolved per source
+via `core.resolve_stream_guards`, and are passed only into `_run_plugin_task`'s
+`stream_request`/`nonstream_request` calls — preload probes, judge requests,
+and the OpenCode runner are exempt (the kwargs default off).
 
 ## Known gotchas (each is a recent fix; the regression test lives in `tests/`)
 

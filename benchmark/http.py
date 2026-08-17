@@ -698,13 +698,27 @@ def _render_tool_calls(tool_calls: list) -> str:
     return "\n".join(blocks)
 
 
-# Live-stream guard defaults. ``min_seq``/``repeats`` mirror the post-hoc
-# ``is_repeating`` detector in ``core.py`` (an 80-char tail block seen 3
-# times) so a stream that would be flagged ``repeating`` after completion is
-# aborted early instead of burning the model slot for minutes.
+# Live-stream repetition guard. An abort is a destructive act (the model
+# slot frees and the partial text is scored), so the live rule is deliberately
+# more selective than the post-hoc ``is_repeating`` flag in ``core.py``:
+#
+# * the repeated block must be found again *adjacent* to the stream tail
+#   (within ``REPETITION_GUARD_ADJACENCY`` chars) - a true echo loop re-emits
+#   its last phrase immediately, while legitimate repetition (three generated
+#   classes sharing an ``__init__(self, limit, window_seconds)`` scaffold, an
+#   ASCII diagram's repeated ``+---+`` borders) is interleaved with distinct
+#   content;
+# * ``_decorative_block`` skips repeats that are mostly typographic
+#   decoration (box-drawing borders, dashes, pipes) rather than words/code.
+#
+# Longer-period loops that pass both filters are still bounded by the
+# content/thinking token budgets, so the repetition guard only needs to
+# catch the dense self-echo cases.
 REPETITION_GUARD_MIN_SEQ = 80
 REPETITION_GUARD_REPEATS = 3
 REPETITION_GUARD_WINDOW = 4096  # chars of history searched per check
+REPETITION_GUARD_ADJACENCY = 256  # previous repeat must end within this many chars of the tail
+REPETITION_GUARD_DECORATION_RATIO = 0.35  # block with fewer alnum chars than this is typographic
 
 
 class _StreamGuards:
@@ -714,8 +728,11 @@ class _StreamGuards:
     ``max_thinking_tokens`` and final ``content`` at ``max_content_tokens``
     (both estimated as ``len(text) / 4``, matching ``count_tokens``). A
     per-stream repetition detector aborts content or thinking that repeats
-    an 80-char tail at least 3 times inside the recent history (the same
-    rule ``is_repeating`` applies after completion, applied live).
+    its tail block at least 3 times inside the recent history with the
+    previous repeat *adjacent* to the stream tail (see the module constants
+    above). The post-hoc ``is_repeating`` flag in ``core.py`` uses the
+    simpler 80-char x3 rule because it only marks a completed response;
+    aborting a live stream demands more evidence.
 
     ``check`` is called after every parsed SSE delta; it returns an error
     string once a budget or the repetition guard fires, and ``None``
@@ -748,19 +765,40 @@ class _StreamGuards:
         return None
 
 
-def _repeats_detected(text):
-    """Return whether ``text`` repeats its newest tail inside recent history.
+def _decorative_block(block):
+    """Return whether ``block`` is mostly typographic decoration.
 
-    Mirrors ``core.is_repeating`` semantics (an ``min_seq``-char tail
-    appearing ``repeats`` times) but bounds the search to the most recent
-    ``REPETITION_GUARD_WINDOW`` characters so an unbounded stream cannot
-    grow the per-check cost.
+    ASCII architecture/wireframe diagrams legitimately repeat box-drawing
+    borders, dashes and pipes; a repeated block that is mostly those
+    characters is a structural pattern, not a generation loop.
+    """
+    if not block:
+        return True
+    meaningful = sum(1 for ch in block if ch.isalnum())
+    return meaningful / len(block) < REPETITION_GUARD_DECORATION_RATIO
+
+
+def _repeats_detected(text):
+    """Return whether ``text`` is stuck in a dense echo loop.
+
+    The newest ``REPETITION_GUARD_MIN_SEQ``-char tail must appear
+    ``REPETITION_GUARD_REPEATS`` times total, the previous occurrence must
+    end within ``REPETITION_GUARD_ADJACENCY`` chars of the stream tail (a
+    genuine loop re-emits its last phrase immediately), and the block must
+    not be mostly typographic decoration. The search is bounded to the most
+    recent ``REPETITION_GUARD_WINDOW`` characters so an unbounded stream
+    cannot grow the per-check cost.
     """
     if len(text) < REPETITION_GUARD_MIN_SEQ * REPETITION_GUARD_REPEATS:
         return False
     tail = text[-REPETITION_GUARD_MIN_SEQ:]
+    if _decorative_block(tail):
+        return False
     history = text[-REPETITION_GUARD_MIN_SEQ - REPETITION_GUARD_WINDOW:-REPETITION_GUARD_MIN_SEQ]
-    return history.count(tail) >= REPETITION_GUARD_REPEATS - 1
+    if history.count(tail) < REPETITION_GUARD_REPEATS - 1:
+        return False
+    prev = history.rfind(tail)
+    return prev != -1 and (len(history) - prev) <= REPETITION_GUARD_ADJACENCY
 
 
 def _parse_sse_line(line: str, first_tok: float | None, text: str,

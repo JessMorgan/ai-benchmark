@@ -272,11 +272,18 @@ pathological, instead of letting it burn its entire `max_tokens` budget
 The watchdog splits the budget by stream: `reasoning_content` (thinking)
 and final `content` are tracked separately as the SSE deltas arrive, and
 the request is aborted as soon as either exceeds its token budget
-(`len(text) / 4`, the same estimator used for final token counts). A
-repetition guard additionally aborts a stream whose content or thinking
-repeats an 80-character tail block at least 3 times within the recent
-history — the same rule the post-hoc `_repeating` flag applies after
-completion, applied live so the slot frees immediately.
+(`len(text) / 4`, the same estimator used for final token counts).
+
+The repetition guard is deliberately more selective than the post-hoc
+`_repeating` flag: aborting a live stream is destructive (the slot frees,
+the partial text is scored), so it only fires on a *dense echo loop* — the
+newest 80-char block must appear at least 3 times in the recent ~4K
+chars AND the previous repeat must end within ~256 chars of the stream
+tail (a real loop re-emits its last phrase immediately). It also ignores
+blocks that are mostly typographic decoration (ASCII diagram borders).
+Legitimate recurring structure — three generated classes sharing an
+`__init__` scaffold, repeated `+---+` diagram borders — is left alone and
+is bounded instead by the split token budgets.
 
 ```yaml
 sources:
