@@ -22,6 +22,7 @@ which never imports Playwright itself.
 """
 
 import contextlib
+import faulthandler
 import json
 import sys
 import threading
@@ -268,6 +269,10 @@ def handle(msg) -> dict:
 
 def main() -> None:
     """Serve the JSON-lines request protocol until stdin closes."""
+    # Dump the Python stack on a native crash (Playwright/greenlet/Chromium
+    # segfault). The parent captures this worker's stderr and surfaces it in
+    # the per-request error, turning an opaque crash into a diagnosable one.
+    faulthandler.enable()
     try:
         for line in sys.stdin:
             line = line.strip()

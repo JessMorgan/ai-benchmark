@@ -984,5 +984,28 @@ class TestHandleTuiInput(unittest.TestCase):
             cli._handle_tui_input(window, 500, 0, 10, 5, 80, 34, 100), (10, 0))
 
 
+class TestEnableFaulthandler(unittest.TestCase):
+    def test_enable_and_register_sigusr1(self):
+        with mock.patch("benchmark.cli.faulthandler.enable") as enable, \
+                mock.patch("benchmark.cli.faulthandler.register") as register, \
+                mock.patch("benchmark.cli.signal.SIGUSR1", 30, create=True):
+            cli._enable_faulthandler()
+        enable.assert_called_once()
+        register.assert_called_once_with(30)
+
+    def test_skips_sigusr1_when_absent(self):
+        # A plain object with no SIGUSR1 attribute (e.g. Windows) must skip
+        # the register call without error.
+        class _NoSIGUSR1:
+            pass
+
+        with mock.patch("benchmark.cli.faulthandler.enable") as enable, \
+                mock.patch("benchmark.cli.faulthandler.register") as register, \
+                mock.patch("benchmark.cli.signal", new=_NoSIGUSR1()):
+            cli._enable_faulthandler()
+        enable.assert_called_once()
+        register.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()

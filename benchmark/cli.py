@@ -8,12 +8,14 @@ API keys can use ${VAR} or ${VAR:default} syntax for env-var expansion.
 """
 import argparse
 import curses
+import faulthandler
 import glob
 import json
 import os
 import queue
 import random
 import shutil
+import signal
 import subprocess
 import sys
 import threading
@@ -2061,7 +2063,24 @@ def _prompt_corrupt_state(recovery, scripted=False):
         print("Please enter c, r, or a.")
 
 
+def _enable_faulthandler() -> None:
+    """Dump a Python stack trace on fatal signals for crash diagnosis.
+
+    ``faulthandler.enable()`` installs handlers for SIGSEGV/SIGFPE/SIGABRT/
+    SIGBUS/SIGILL so a native crash (e.g. a Playwright/Chromium segfault in a
+    worker thread) prints the Python stack to stderr instead of a bare
+    "Segmentation fault". ``register(SIGUSR1)`` additionally lets an operator
+    force a live stack dump of a wedged run with ``kill -USR1 <pid>``.
+    """
+    faulthandler.enable()
+    if hasattr(signal, "SIGUSR1"):
+        faulthandler.register(signal.SIGUSR1)
+
+
 def main():  # pragma: no cover - live benchmark orchestrator (no unit tests)
+    # Dump Python stacks on fatal signals so a native crash or a wedged run is
+    # diagnosable instead of ending in a bare "Segmentation fault".
+    _enable_faulthandler()
     # Load a local .env file (if present) so ${VAR} config expansion and
     # env-driven tools (e.g. --chatplayground-config) can read credentials
     # without prefixing every command. Real environment variables take

@@ -177,6 +177,13 @@ Before committing any complete change:
    content, large `reasoning_content`, `finish_reason="length"`). The retry
    is capped at 131072 and only fires for HTTP streaming plugins. Regression
    in `tests/test_cli.py::TestThinkingAutoEscalation`.
+7. **`faulthandler` is enabled at CLI startup** (`_enable_faulthandler` in
+   `benchmark/cli.py`, called first thing in `main()`) and in the
+   ChatPlayground worker subprocess. A native crash (SIGSEGV/SIGABRT/…) now
+   prints the Python stack to stderr instead of a bare "Segmentation fault",
+   and `kill -USR1 <pid>` forces a live stack dump of a wedged run. The
+   worker's dump lands in the parent's captured stderr and is surfaced in the
+   per-request error. Tests in `tests/test_cli_coverage.py::TestEnableFaulthandler`.
 
 ## Freebuff skills
 
