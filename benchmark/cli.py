@@ -2289,7 +2289,12 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
                         state = BenchmarkState.load_state(
                             state_file, state_models, plugin_ids,
                             rerun_failed=not args.no_rerun_failed)
-                        state.set_journal_path(journal_path, truncate=True)
+                        # Preserve the existing journal rather than truncating
+                        # it: the append-only log may hold results newer than
+                        # the last state-file save, and a later crash whose
+                        # state file is corrupt must still be able to replay
+                        # pre-resume results from the journal.
+                        state.set_journal_path(journal_path)
                         # State may contain results from another runner; retain
                         # them because identity is carried per model/result.
                         resumed = True

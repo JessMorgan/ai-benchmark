@@ -1023,6 +1023,32 @@ class TestResultJournal(unittest.TestCase):
                 self.module.BenchmarkState.replay_journal(journal), []
             )
 
+    def test_resume_does_not_truncate_existing_journal(self):
+        # Regression: resuming (load_state + re-attach the journal without
+        # truncating) must preserve pre-resume results so a later crash can
+        # still replay them from the append-only journal.
+        with tempfile.TemporaryDirectory() as tmp:
+            journal = os.path.join(tmp, "results.journal.jsonl")
+            state_file = os.path.join(tmp, "benchmark_state.json")
+
+            # Session 1: complete a result (journaled) and save the state.
+            state = self._state(journal)
+            state.update("model-a", status="completed")
+            state.add_result({"model": "model-a", "status": "ok", "total_time": 1.0})
+            state.save_state(state_file)
+
+            # Session 2: resume, re-attach the journal without truncating,
+            # and complete another result.
+            resumed = self.module.BenchmarkState.load_state(
+                state_file, {"model-a": "Source1"}, ["fake"])
+            resumed.set_journal_path(journal)
+            resumed.add_result({"model": "model-a", "status": "ok", "total_time": 2.0})
+
+            self.assertEqual(
+                [r["model"] for r in self.module.BenchmarkState.replay_journal(journal)],
+                ["model-a", "model-a"],
+            )
+
 
 if __name__ == "__main__":
     unittest.main()
