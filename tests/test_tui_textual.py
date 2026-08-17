@@ -216,6 +216,81 @@ class TestBuildFrameLinesAdvanced(unittest.TestCase):
         self.assertIn("Judge judge-a", text)
         self.assertIn("Judging", text)
 
+    def test_live_judge_line_shows_progress_counts(self):
+        """An active judge's live line carries its succeeded/failed/total."""
+        snapshot = {
+            "model-a": {"status": "running", "source": "Local",
+                        "running_pids": ["rate-limiter"],
+                        "rate-limiter_start_ts": 0},
+        }
+        state = self._state(
+            snapshot,
+            judge_activities=[{"judge": "judge-a", "target": "model-a",
+                                "plugin": "rate-limiter", "elapsed": 3}],
+            judge_progress={"judge-a": {"completed": 7, "failed": 2,
+                                         "expected": 9}},
+        )
+        with mock.patch("benchmark.cli.get_active_request_count", return_value=1), \
+                mock.patch("benchmark.cli.get_429_stats", return_value={}):
+            text = _frame_text(_render_lines(state, num_sources=4))
+        self.assertIn("Judge judge-a 7\u27052\u274c9\u03a3", text)
+
+    def test_live_judge_line_without_progress_has_no_counts(self):
+        """A judge with no progress record shows only the activity cells."""
+        snapshot = {
+            "model-a": {"status": "running", "source": "Local",
+                        "running_pids": ["rate-limiter"],
+                        "rate-limiter_start_ts": 0},
+        }
+        state = self._state(
+            snapshot,
+            judge_activities=[{"judge": "judge-a", "target": "model-a",
+                                "plugin": "rate-limiter", "elapsed": 3}],
+        )
+        with mock.patch("benchmark.cli.get_active_request_count", return_value=1), \
+                mock.patch("benchmark.cli.get_429_stats", return_value={}):
+            text = _frame_text(_render_lines(state, num_sources=4))
+        self.assertIn("Judge judge-a", text)
+        self.assertNotIn("\u2705", text)
+
+    def test_many_judges_overflow_to_second_footer_line(self):
+        """A large judge roster wraps onto extra footer lines instead of
+        being truncated to the terminal width."""
+        snapshot = {
+            "model-a": {"status": "running", "source": "Local",
+                        "running_pids": ["rate-limiter"],
+                        "rate-limiter_start_ts": 0},
+        }
+        progress = {
+            f"judge-{i}": {"completed": i, "failed": 0, "expected": i + 1}
+            for i in range(12)
+        }
+        state = self._state(snapshot, judge_progress=progress)
+        with mock.patch("benchmark.cli.get_active_request_count", return_value=1), \
+                mock.patch("benchmark.cli.get_429_stats", return_value={}):
+            # Narrow terminal: the full judging line can't fit on one row.
+            lines = _render_lines(state, size=(40, 50), num_sources=4)
+        text = _frame_text(lines)
+        self.assertGreaterEqual(text.count("Judging"), 2)
+        self.assertIn("judge-11", text)
+        # Every judge part is visible (nothing truncated away).
+        for i in range(12):
+            self.assertIn(f"judge-{i}:", text)
+
+    def test_single_judge_fits_one_footer_line(self):
+        state = self._state(
+            {"model-a": {"status": "running", "source": "Local",
+                        "running_pids": ["rate-limiter"],
+                        "rate-limiter_start_ts": 0}},
+            judge_progress={"judge-a": {"completed": 1, "failed": 0,
+                                         "expected": 2}},
+        )
+        with mock.patch("benchmark.cli.get_active_request_count", return_value=1), \
+                mock.patch("benchmark.cli.get_429_stats", return_value={}):
+            lines = _render_lines(state, num_sources=4)
+        text = _frame_text(lines)
+        self.assertEqual(text.count("Judging"), 1)
+
     def test_429_sleeping_render(self):
         snapshot = {
             "model-a": {"status": "running", "source": "Local",

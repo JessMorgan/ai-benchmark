@@ -1063,6 +1063,7 @@ def _build_frame_lines(state, active_plugins, source_abbrevs, frozen_hdr,
     sleeping_model_count = len({(src, model) for (src, model, _pid) in sleeping_lookup})
     judge_activities = state.judge_activity_snapshot()
     active_judge_targets = {activity["target"] for activity in judge_activities}
+    judge_progress = state.judge_progress_snapshot()
 
     live_height = max(3, num_sources + 1)
     visible_rows = max(0, max_y - 9 - live_height)
@@ -1167,7 +1168,14 @@ def _build_frame_lines(state, active_plugins, source_abbrevs, frozen_hdr,
             f"[{activity['target']} {activity['plugin']} {activity['elapsed']}s]"
             for activity in activities
         )
-        live_lines.append((f" {_JUDGE_SCALES} Judge {judge} {cells}", None))
+        prog = judge_progress.get(judge) or {}
+        progress_str = ""
+        if prog:
+            progress_str = (
+                f" {prog.get('completed', 0)}\u2705{prog.get('failed', 0)}\u274c"
+                f"{prog.get('expected', 0)}\u03a3"
+            )
+        live_lines.append((f" {_JUDGE_SCALES} Judge {judge}{progress_str} {cells}", None))
     if sleeping_lookup:
         if len(live_lines) < live_height:
             live_lines.append(("429 Sleeping:", "bold"))
@@ -1197,7 +1205,6 @@ def _build_frame_lines(state, active_plugins, source_abbrevs, frozen_hdr,
         for name in preloading
         if name in snap
     ]
-    judge_progress = state.judge_progress_snapshot()
     judge_parts = [
         f"[{model}: {values.get('completed', 0)}\u2705{values.get('failed', 0)}\u274c{values.get('expected', 0)}\u03a3]"
         for model, values in judge_progress.items()
@@ -1220,9 +1227,41 @@ def _build_frame_lines(state, active_plugins, source_abbrevs, frozen_hdr,
             parts.append(f"{len(queuing)} queued")
         if judge_line:
             parts.append(judge_line)
-        lines.append(line(" " + "  |  ".join(parts)))
+        footer = " " + "  |  ".join(parts)
+        if _display_width(footer) <= max_x:
+            lines.append(line(footer))
+        else:
+            # A large judge roster overflows one footer line; split the
+            # judge progress onto its own wrapped line(s) so the details
+            # aren't truncated away.
+            base_parts = [p for p in parts if p != judge_line]
+            if base_parts:
+                lines.append(line(" " + "  |  ".join(base_parts)))
+            lines.extend(line(wrapped) for wrapped in _wrap_judge_parts(judge_parts, max_x))
 
     return lines
+
+
+def _wrap_judge_parts(judge_parts, max_width):
+    """Wrap ``[model: N\u2705M\u274cT\u03a3]`` judge parts onto footer lines.
+
+    Each line is prefixed `` Judging `` and holds as many parts as fit within
+    ``max_width`` display columns, so a large judge roster spills onto a
+    second (or third) footer line instead of being truncated away.
+    """
+    prefix = " Judging "
+    lines_out = []
+    current = ""
+    for part in judge_parts:
+        candidate = f"{current} {part}" if current else part
+        if _display_width(prefix + candidate) > max_width and current:
+            lines_out.append(prefix + current)
+            current = part
+        else:
+            current = candidate
+    if current:
+        lines_out.append(prefix + current)
+    return lines_out
 
 
 def _frame_lines_to_text(lines):
