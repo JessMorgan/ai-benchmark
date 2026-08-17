@@ -459,5 +459,41 @@ class TestEnableFaulthandler(unittest.TestCase):
         register.assert_not_called()
 
 
+class TestMarkPreloadFailed(unittest.TestCase):
+    def _state(self):
+        from benchmark.state import BenchmarkState
+        return BenchmarkState({"model-a": "Local"}, ["rate-limiter"])
+
+    def test_marks_failed_without_appending_result_row(self):
+        from benchmark.core import PreloadResult
+        state = self._state()
+        result = PreloadResult(success=False, elapsed=0.1, error="HTTP 400")
+        cli._mark_preload_failed(state, "model-a", result, "http", "http")
+        info = state.snapshot()["model-a"]
+        self.assertEqual(info["status"], "failed")
+        self.assertIn("preload failed: HTTP 400", info["error"])
+        # A preload failure must not leave a scoreless row in ``results``:
+        # it would mask later progress and re-run already-scored plugins.
+        self.assertEqual(state.latest_results(), [])
+
+    def test_completed_model_is_not_downgraded(self):
+        from benchmark.core import PreloadResult
+        state = self._state()
+        state.update("model-a", status="completed")
+        result = PreloadResult(success=False, elapsed=0.1, error="HTTP 400")
+        cli._mark_preload_failed(state, "model-a", result, "http", "http")
+        self.assertEqual(state.snapshot()["model-a"]["status"], "completed")
+
+    def test_empty_error_is_classified(self):
+        from benchmark.core import PreloadResult
+        state = self._state()
+        result = PreloadResult(success=False, elapsed=0.0, error=None)
+        cli._mark_preload_failed(state, "model-a", result, "http", "http")
+        self.assertEqual(
+            state.snapshot()["model-a"]["error"],
+            "preload failed: empty preload response",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

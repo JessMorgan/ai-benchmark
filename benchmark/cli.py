@@ -1312,6 +1312,43 @@ def _targets_for_runner(targets, state_models, runner):
     }
 
 
+def _mark_preload_failed(state, model_name, result, phase_runner, runner_mode):
+    """Record a failed warm-up in the model's live state only.
+
+    A preload failure means the model produced no per-plugin results, so it
+    must not append a row to ``state.results``. A scoreless ``error`` row would
+    become the model's latest result and mask later progress, causing a resumed
+    run to re-run already-successful plugins. The ``failed`` status in
+    ``model_info`` is authoritative for the TUI, queue builder, and resume
+    re-queue.
+    """
+    error = f"preload failed: {result.error or 'empty preload response'}"
+    if runner_mode == "both" and phase_runner == "opencode":
+        keys = [model_name, f"{model_name} [opencode]"]
+    elif phase_runner == "opencode":
+        keys = [f"{model_name} [opencode]"]
+    else:
+        keys = [model_name]
+    snapshot = state.snapshot()
+    for key in keys:
+        info = snapshot.get(key)
+        if info is None or info.get("status") == "completed":
+            continue
+        state.update(
+            key,
+            status="failed",
+            error=error,
+            last_error=error,
+            elapsed=0.0,
+            preloading=False,
+            preload_start_ts=0,
+            preload_status="failed",
+            preload_time=result.elapsed,
+            preload_error=result.error or "empty preload response",
+        )
+        state.log(key, error)
+
+
 def _build_runner_queues(targets, snapshot, runner_mode, source_config,
                          *, rerun_failed=True):
     """Build pending runner queues from the loaded state snapshot.
@@ -2395,54 +2432,6 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
                         preload_start_ts=now,
                     )
 
-        def _record_preload_failure(model_name, target_info, result, phase_runner):
-            """Record a failed warm-up for the pending runner leg(s)."""
-            error = f"preload failed: {result.error or 'empty preload response'}"
-            source = target_info["source"]
-            if runner_mode == "both" and phase_runner == "opencode":
-                keys = [model_name, f"{model_name} [opencode]"]
-            elif phase_runner == "opencode":
-                keys = [f"{model_name} [opencode]"]
-            else:
-                keys = [model_name]
-            snapshot = state.snapshot()
-            for key in keys:
-                info = snapshot.get(key)
-                if info is None or info.get("status") == "completed":
-                    continue
-                runner = "opencode" if key.endswith(" [opencode]") else "http"
-                state.add_result({
-                    "model": model_name,
-                    "state_key": key,
-                    "api_model": target_info["api_model"],
-                    "source": source,
-                    "runner": runner,
-                    "opencode_model": None,
-                    "is_agent": target_info["is_agent"],
-                    "system_prompt": target_info["system_prompt"],
-                    "status": "error",
-                    "stream_ok": False,
-                    "ttft": None,
-                    "total_time": 0.0,
-                    "error": error,
-                    "preload_time": result.elapsed,
-                    "preload_error": result.error or "empty preload response",
-                    "plugin_versions": plugin_versions,
-                })
-                state.update(
-                    key,
-                    status="failed",
-                    error=error,
-                    last_error=error,
-                    elapsed=0.0,
-                    preloading=False,
-                    preload_start_ts=0,
-                    preload_status="failed",
-                    preload_time=result.elapsed,
-                    preload_error=result.error or "empty preload response",
-                )
-                state.log(key, error)
-
         def _ensure_preloaded(model_name, target_info, phase_runner):
             """Warm a target once per source/model for this process."""
             if not _preload_is_enabled(target_info["source"]):
@@ -2520,7 +2509,7 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
                     else:
                         preload_failed.add(key)
                         run_info["preload"]["failed"] += 1
-                        _record_preload_failure(model_name, target_info, result, phase_runner)
+                        _mark_preload_failed(state, model_name, result, phase_runner, runner_mode)
                     return result.success
             except Exception as exc:  # noqa: BLE001 - release waiters with a deterministic failed preload
                 # Probe execution already returned, but bookkeeping can still
@@ -2547,7 +2536,7 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
                     except (KeyError, TypeError):
                         pass
                 try:
-                    _record_preload_failure(model_name, target_info, failure, phase_runner)
+                    _mark_preload_failed(state, model_name, failure, phase_runner, runner_mode)
                 except Exception as record_exc:  # noqa: BLE001 - preserve the original preload failure
                     print(
                         f"⚠️  Could not record preload failure for {model_name}: {record_exc}",
