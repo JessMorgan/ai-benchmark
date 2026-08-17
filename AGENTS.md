@@ -139,6 +139,26 @@ Before committing any complete change:
 ## Plugin updates
 1. **Update challenge-plugin versions when modified from what's in git.** This policy applies only to challenge plugins and their shared challenge-plugin code under `plugins/challenges/`; it does not apply to `plugins/__init__.py`, output plugins, documentation, or tests. Every internal or externally visible challenge-plugin code change requires a version bump. Non-scoring changes, such as behavior-preserving refactors or internal/API plumbing that cannot affect evaluation results, increment the revision (for example, `0.2.0` → `0.2.1`). A minor-version bump is reserved for changes that could affect scoring in any way, including prompt, rubric, scoring-code, validation, normalization, or execution changes (for example, `0.2.0` → `0.3.0`, resetting the revision). Complete rewrites or very major changes increment the major version (for example, `0.2.0` → `1.0.0`, resetting minor and revision). A bump is not required for every intermediate edit; record the largest applicable change from the version currently in git.
 
+## Dependency policy
+
+Prefer adding a well-maintained dependency over rolling your own, especially
+for complex problems and for areas where a hand-rolled implementation would
+only approximate the solution. The TUI's terminal-width math is the canonical
+example: the hand-rolled East Asian Width table approximated `wcwidth` and
+mis-counted keycap/VS16 emoji; swapping to the `wcwidth` package fixed the
+gaps and removed a fragile, hand-maintained Unicode table.
+
+When considering a dependency:
+
+- Verify it is actively maintained, has a compatible license, and fits the
+  problem (e.g. the small, pure-Python `wcwidth` over a heavier alternative).
+- Prefer small, focused libraries over pulling in a large framework for one
+  function.
+- Keep roll-your-own code only where a dependency genuinely doesn't cover the
+  need — e.g. the TUI's grapheme clustering for truncation/slicing, which
+  `wcwidth` doesn't provide — and where that code is already correct and
+  tested.
+
 ## Known gotchas (each is a recent fix; the regression test lives in `tests/`)
 
 1. **`on_retry` closure-scope block.** `def on_retry():` was once nested inside
