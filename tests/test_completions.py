@@ -22,30 +22,25 @@ class TestCompletionBranches(unittest.TestCase):
 
     def test_bash_registers_both_command_names(self):
         script = generate_shell_completion("bash", self.plugins)
-        self.assertIn("complete -F _ai_benchmark_complete ai-benchmark ai-benchmark.py", script)
+        self.assertIn("complete -F _shtab_ai_benchmark ai-benchmark", script)
+        self.assertIn("complete -F _shtab_ai_benchmark ai-benchmark.py", script)
 
-    def test_zsh_has_compdef_for_both_names_and_plugin_case(self):
+    def test_zsh_has_compdef_for_both_names_and_plugin_choices(self):
         script = generate_shell_completion("zsh", self.plugins)
         self.assertIn("#compdef ai-benchmark ai-benchmark.py", script)
-        self.assertIn("case \"$state\" in", script)
-        self.assertIn("_describe -t plugin-ids 'plugin IDs' plugin_ids", script)
+        self.assertIn("_shtab_ai_benchmark_options", script)
         for flag in (
             "--restart", "--config", "--runner", "--judge-spread-threshold",
             "--no-judge-spread", "--judge-deviation-threshold", "--no-judge-deviation",
         ):
             self.assertIn(flag, script)
 
-    def test_zsh_quotes_plugin_ids_with_special_chars(self):
-        plugin = type("P", (), {"id": "plugin with spaces"})()
-        script = generate_shell_completion("zsh", [plugin])
-        self.assertIn("'plugin with spaces'", script)
-
     def test_fish_emits_lines_for_both_command_names(self):
         script = generate_shell_completion("fish", self.plugins)
         lines = script.strip().splitlines()
         self.assertTrue(lines)
-        for line in lines:
-            self.assertTrue(line.startswith("complete -c "), line)
+        self.assertTrue(any(line.startswith("complete -c ai-benchmark ") for line in lines))
+        self.assertTrue(any(line.startswith("complete -c ai-benchmark.py ") for line in lines))
         # Every flag appears once per registered command name.
         self.assertEqual(
             sum(1 for line in lines if "-l restart" in line),
@@ -74,7 +69,7 @@ class TestShellCompletions(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0)
         output = result.stdout
-        self.assertIn("_ai_benchmark_complete", output)
+        self.assertIn("_shtab_ai_benchmark", output)
         self.assertIn("--plugins-whitelist", output)
         self.assertIn("--plugins-blacklist", output)
         self.assertIn("--generate-shell-completion", output)

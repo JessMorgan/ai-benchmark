@@ -17,7 +17,7 @@ class ErrorRecoveryPlugin(BenchmarkTaskPlugin):
 
     @property
     def version(self):
-        return "1.1.0"
+        return "1.2.0"
 
     @property
     def name(self):
@@ -75,14 +75,30 @@ class ErrorRecoveryPlugin(BenchmarkTaskPlugin):
             negative_findings=[{"finding": f"missing required definition: {name}"} for name in sorted(required - present)],
         )
 
-        signatures = [
-            r"class\s+AllProvidersFailedError\s*\(",
-            r"class\s+WeatherClient\s*[:(]",
-            r"async\s+def\s+fetch\s*\(",
-            r"async\s+def\s+get_weather_resilient\s*\(\s*city\s*:\s*str\s*,\s*client\s*:\s*WeatherClient",
-        ]
-        hits = sum(bool(re.search(pattern, text)) for pattern in signatures)
-        rubric.add_criterion("Typed injectable signatures", 2.0, 2.0 * hits / len(signatures))
+        signature_hits = 0
+        if tree is not None:
+            async_defs = {
+                node.name: node
+                for node in ast.walk(tree)
+                if isinstance(node, ast.AsyncFunctionDef)
+            }
+            gr = async_defs.get("get_weather_resilient")
+            gr_sig = bool(
+                gr is not None
+                and [arg.arg for arg in gr.args.args] == ["city", "client"]
+                and all(
+                    isinstance(arg.annotation, ast.Name)
+                    and arg.annotation.id == expected
+                    for arg, expected in zip(gr.args.args, ("str", "WeatherClient"))
+                )
+            )
+            signature_hits = sum([
+                "AllProvidersFailedError" in classes,
+                "WeatherClient" in classes,
+                "fetch" in async_defs,
+                gr_sig,
+            ])
+        rubric.add_criterion("Typed injectable signatures", 2.0, 2.0 * signature_hits / 4.0)
 
         concepts = {
             "concurrent provider calls": r"asyncio\.(?:gather|create_task|as_completed)|TaskGroup",

@@ -10,7 +10,6 @@ lives in ``benchmark.chatplayground_worker`` and is tested separately in
 
 import os
 import queue
-import signal
 import subprocess
 import sys
 import tempfile
@@ -386,18 +385,17 @@ class TestWorkerInternals(unittest.TestCase):
         proc = mock.MagicMock()
         proc.poll.return_value = None
         proc.wait.side_effect = subprocess.TimeoutExpired("p", 1)
-        # First killpg (SIGTERM) raises ProcessLookupError -> terminate() fallback;
-        # second (SIGKILL) succeeds -> the timeout escalation is exercised.
-        with mock.patch(
-            "os.killpg",
-            side_effect=[ProcessLookupError, None],
-        ) as killpg:
+        # psutil walks the whole process tree: children and the parent are
+        # terminated first, then all are killed when the graceful wait times out.
+        child = mock.MagicMock()
+        worker = mock.MagicMock()
+        worker.children.return_value = [child]
+        with mock.patch("psutil.Process", return_value=worker):
             cp._terminate(proc)
-        proc.terminate.assert_called()
-        killpg.assert_has_calls([
-            mock.call(proc.pid, signal.SIGTERM),
-            mock.call(proc.pid, signal.SIGKILL),
-        ])
+        child.terminate.assert_called_once()
+        worker.terminate.assert_called_once()
+        child.kill.assert_called_once()
+        worker.kill.assert_called_once()
 
     def test_ensure_worker_raises_on_spawn_failure(self):
         with (

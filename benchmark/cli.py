@@ -6,7 +6,6 @@ Supports arbitrary task plugins, versioned results, and plugin selection.
 Configuration: edit benchmark-config.json (or pass --config <path>).
 API keys can use ${VAR} or ${VAR:default} syntax for env-var expansion.
 """
-import argparse
 import curses
 import faulthandler
 import glob
@@ -28,7 +27,7 @@ from datetime import datetime, timezone
 
 from wcwidth import wcswidth, wcwidth
 
-from benchmark.completions import generate_shell_completion
+from benchmark.completions import build_parser, generate_shell_completion
 from benchmark.core import (
     JUDGE_DEFAULT_MAX_TOKENS,
     JUDGE_PROMPT_VERSION,
@@ -75,8 +74,6 @@ from benchmark.state import apply_state_recovery, prepare_state_recovery
 from plugins import discover_plugins, format_plugin_list
 
 _CORRUPTED_STATE_ABORT = "abort"
-
-DEFAULT_CONFIG_PATH = "benchmark-config.json"
 
 
 def _clear_restart_artifacts(state_file, output_dir):
@@ -2100,111 +2097,7 @@ def main():  # pragma: no cover - live benchmark orchestrator (no unit tests)
     sys.stderr.write('\033[2J\033[H')
     sys.stderr.flush()
 
-    parser = argparse.ArgumentParser(
-        description="AI Model Benchmark — Run plugin-based benchmarks across multiple API sources.",
-        epilog="Challenge plugins are loaded from plugins/challenges/ and report plugins from plugins/outputs/.\n\n"
-               "Examples:\n"
-               "  python ai-benchmark.py --restart\n"
-               "  python ai-benchmark.py --config my-config.json\n"
-               "  python ai-benchmark.py --out /tmp/bench-run --timeout 300\n"
-               "  python ai-benchmark.py --plugins-whitelist rate-limiter\n"
-               "  python ai-benchmark.py --dump-default-config --base-url http://localhost:11434 > config.json\n"
-               "  python ai-benchmark.py --dump-default-config > benchmark-config.json\n\n"
-               "Shell completions:\n"
-               "  eval \"$(python ai-benchmark.py --generate-shell-completion bash)\"\n"
-               "  python ai-benchmark.py --generate-shell-completion zsh > ~/.zsh/completions/_ai-benchmark.py\n"
-               "  python ai-benchmark.py --generate-shell-completion fish > ~/.config/fish/completions/ai-benchmark.py.fish",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        add_help=False,
-    )
-
-    general = parser.add_argument_group('General')
-    general.add_argument('-h', '--help', action='help',
-                         help='Show this help message and exit')
-    general.add_argument('--restart', action='store_true',
-                         help='Restart the run from scratch, discarding prior results')
-    general.add_argument('--scripted', action='store_true',
-                         help='Non-interactive mode: never prompt for input; default to continuing runs')
-    general.add_argument('--seed', type=int, default=None,
-                         help='Fixed random seed for all API requests (default: random)')
-
-    config_group = parser.add_argument_group('Benchmark configuration')
-    config_group.add_argument('--config', default=DEFAULT_CONFIG_PATH,
-                              help=f'Config file path (default: {DEFAULT_CONFIG_PATH})')
-    config_group.add_argument('--out', default=None,
-                              help='Override output directory from config')
-    config_group.add_argument('--timeout', type=int, default=None,
-                              help='Override request timeout in seconds from config')
-    config_group.add_argument('--token-levels', type=int, nargs='+', default=None,
-                              help='Override token levels (e.g. --token-levels 4096 8192 16384)')
-    config_group.add_argument('--temperature', type=float, default=None,
-                              help='Default temperature for all plugins (overrides config; individual --plugin-temperature takes priority)')
-    config_group.add_argument('--plugin-temperature', type=str, nargs='+', default=None,
-                              help='Per-plugin temperatures as id=value (e.g. --plugin-temperature rate-limiter=0.2 moe-dense=0.7)')
-    config_group.add_argument('--plugin-thread-limit', type=int, default=None,
-                              help='Max threads per model for plugin execution. 0 means one thread per plugin (default: 1)')
-    config_group.add_argument('--plugins-whitelist', type=str, nargs='+', default=None,
-                              help='Run only these plugins (e.g. --plugins-whitelist rate-limiter moe-dense)')
-    config_group.add_argument('--plugins-blacklist', type=str, nargs='+', default=None,
-                              help='Run all plugins except these (e.g. --plugins-blacklist moe-dense)')
-    config_group.add_argument('--no-rerun-failed', action='store_true',
-                              help='Do not re-run models that failed in a previous session')
-
-    execution_group = parser.add_argument_group('Execution')
-    execution_group.add_argument('--runner', choices=['http', 'opencode', 'both'], default='http',
-                                 help='Execution runner: http (default), opencode, or both (per-target OpenCode-to-HTTP pipeline)')
-    execution_group.add_argument('--no-install-opencode', action='store_true',
-                                 help='Do not auto-download OpenCode into .tools/opencode/ when it is missing or too old; fail with an error instead')
-    execution_group.add_argument('--no-preload', action='store_true',
-                                 help='Disable per-source model pre-loading for this run')
-    retry_group = execution_group.add_mutually_exclusive_group()
-    retry_group.add_argument('--retry-on-429', action='store_true', default=True,
-                             help='Retry HTTP 429 responses with exponential backoff for any source '
-                                  'that did not set its own max_429_retries (default: enabled). Each '
-                                  'rate-limited request can sleep up to (max_429_retries x max_backoff_seconds) '
-                                  'before failing. Use --no-retry-on-429 if you want the legacy fail-fast '
-                                  'behaviour back.')
-    retry_group.add_argument('--no-retry-on-429', action='store_false',
-                             help='Disable HTTP 429 retries globally. Overrides per-source max_429_retries '
-                                  'only when the source did not set its own; explicit per-source values '
-                                  'are preserved.')
-
-    tools_group = parser.add_argument_group('Tools')
-    tools_group.add_argument('--list-plugins', action='store_true',
-                             help='List discovered challenge plugins (from plugins/challenges/) with their IDs, names, and versions, then exit')
-    tools_group.add_argument('--generate-shell-completion', type=str, default=None,
-                             choices=['bash', 'zsh', 'fish'],
-                             help='Generate shell completion script for the specified shell and exit')
-    tools_group.add_argument('--dump-default-config', action='store_true',
-                             help='Print a default config file to stdout and exit')
-    tools_group.add_argument('--convert-config', type=str, default=None,
-                             help='Convert a YAML config to JSON or a JSON config to YAML and print to stdout')
-    tools_group.add_argument('--base-url', default=None,
-                             help='Base URL for model discovery via /v1/models API (used with --dump-default-config)')
-    tools_group.add_argument('--api-key', default=None,
-                             help='API key for model discovery (used with --dump-default-config --base-url)')
-    tools_group.add_argument('--chatplayground-config', action='store_true',
-                             help='Enumerate ChatPlayground.ai models from the web UI and print a ready-to-run config to stdout (uses CHATPLAYGROUND_EMAIL/PASSWORD env vars)')
-
-    output_group = parser.add_argument_group('Output')
-    output_group.add_argument('--save-responses', action='store_true',
-                              help='Save each model\'s plugin response text to <output_dir>/responses/')
-
-    judge_group = parser.add_argument_group('Judge analysis')
-    judge_group.add_argument('--judge-models', nargs='+', default=None, metavar='MODEL',
-                             help='Judge benchmark responses with one or more configured models and combine their results into a confidence-weighted consensus')
-    judge_group.add_argument('--build-judge-queue', type=str, default=None, metavar='STATE_FILE',
-                             help='Build a ranked judge-disagreement queue JSON from a benchmark_state.json and exit')
-    judge_group.add_argument('--judge-queue-output', type=str, default=None, metavar='PATH',
-                             help='Output path for --build-judge-queue (default: beside STATE_FILE)')
-    judge_group.add_argument('--judge-spread-threshold', type=float, default=30.0, metavar='POINTS',
-                             help='Include queue cells when judge spread reaches POINTS (default: 30; use --no-judge-spread to disable)')
-    judge_group.add_argument('--no-judge-spread', action='store_true',
-                             help='Disable the judge-spread queue criterion')
-    judge_group.add_argument('--judge-deviation-threshold', type=float, default=40.0, metavar='POINTS',
-                             help='Include queue cells when consensus differs from deterministic score by POINTS (default: 40; use --no-judge-deviation to disable)')
-    judge_group.add_argument('--no-judge-deviation', action='store_true',
-                             help='Disable the consensus-deviation queue criterion')
+    parser = build_parser()
     args = parser.parse_args()
 
     if args.build_judge_queue:
@@ -2313,6 +2206,9 @@ def main():  # pragma: no cover - live benchmark orchestrator (no unit tests)
     if args.out:
         output_dir = args.out
     state_file = os.path.join(output_dir, "benchmark_state.json")
+    # Append-only result journal: every completed result is appended here so a
+    # crash that truncates benchmark_state.json can still replay the results.
+    journal_path = os.path.join(output_dir, "results.journal.jsonl")
 
     # Keep one state identity per (configured target, runner). HTTP retains
     # the historical target key; OpenCode gets a stable suffix so `both`
@@ -2499,10 +2395,25 @@ def main():  # pragma: no cover - live benchmark orchestrator (no unit tests)
                     if choice == "restart":
                         _clear_restart_artifacts(state_file, output_dir)
                         state = BenchmarkState(state_models, plugin_ids, runner=runner_mode)
+                        state.set_journal_path(journal_path, truncate=True)
                         fresh_state = True
                     elif choice == "continue":
+                        # The result journal is authoritative for completed
+                        # results: replay it into the recovery candidate so a
+                        # crash loses at most the in-flight result, even when
+                        # the byte-scanner cannot recover every row.
+                        journal_results = BenchmarkState.replay_journal(journal_path)
+                        if journal_results:
+                            recovery["data"]["results"] = journal_results
+                            recovery["candidate_bytes"] = None
                         backup = apply_state_recovery(state_file, recovery)
                         saved_state = recovery["data"]
+                        if journal_results:
+                            print(
+                                f"   Recovered {len(journal_results)} result(s) "
+                                "from the result journal.",
+                                file=sys.stderr,
+                            )
                         if recovery.get("kind") == "known" and recovery.get("lost_results") == 0:
                             print(
                                 f"⚠️  Repaired corrupted state file; backup saved as {backup}.",
@@ -2534,6 +2445,7 @@ def main():  # pragma: no cover - live benchmark orchestrator (no unit tests)
                         if choice == "restart":
                             _clear_restart_artifacts(state_file, output_dir)
                             state = BenchmarkState(state_models, plugin_ids, runner=runner_mode)
+                            state.set_journal_path(journal_path, truncate=True)
                             fresh_state = True
                         elif choice != "continue":
                             sys.exit(0)
@@ -2554,6 +2466,7 @@ def main():  # pragma: no cover - live benchmark orchestrator (no unit tests)
                         state = BenchmarkState.load_state(
                             state_file, state_models, plugin_ids,
                             rerun_failed=not args.no_rerun_failed)
+                        state.set_journal_path(journal_path, truncate=True)
                         # State may contain results from another runner; retain
                         # them because identity is carried per model/result.
                         resumed = True
@@ -2587,6 +2500,7 @@ def main():  # pragma: no cover - live benchmark orchestrator (no unit tests)
                 sys.exit(1)
         else:
             state = BenchmarkState(state_models, plugin_ids, runner=runner_mode)
+            state.set_journal_path(journal_path, truncate=True)
 
         # The active CLI judge configuration is authoritative on resume; do
         # not let a prior run's judge set drive stale row markers.

@@ -342,6 +342,8 @@ class BenchmarkState:
         self._judge_progress = {}
         self._judge_activity = {}
         self._next_judge_activity_id = 0
+        # Optional append-only result journal (see ``set_journal_path``).
+        self._journal_path = None
         for name, info in models.items():
             if isinstance(info, dict):
                 source = info.get("source", "Default")
@@ -678,6 +680,59 @@ class BenchmarkState:
                 else:
                     result.setdefault(key, value)
             self.results.append(result)
+            self._journal_append(result)
+
+    def set_journal_path(self, path, truncate=False):
+        """Enable append-only result journaling to ``path``.
+
+        Every completed result is appended as one JSON line, so a crash that
+        truncates ``benchmark_state.json`` can still replay the completed
+        results. ``truncate`` starts a fresh journal (safe once the main state
+        file has been loaded successfully); it must be False when the state
+        file is corrupt and the journal is needed for recovery.
+        """
+        self._journal_path = path
+        if truncate and path:
+            try:
+                with open(path, "w", encoding="utf-8") as handle:
+                    handle.write("")
+            except OSError:
+                pass
+
+    def _journal_append(self, result):
+        """Best-effort append of one completed result to the journal."""
+        if not self._journal_path:
+            return
+        try:
+            with open(self._journal_path, "a", encoding="utf-8") as handle:
+                handle.write(json.dumps(result, default=str) + "\n")
+                handle.flush()
+        except OSError:
+            pass
+
+    @staticmethod
+    def replay_journal(path):
+        """Replay an append-only result journal into a list of results.
+
+        Returns ``[]`` when the journal is missing or unreadable. A partial
+        trailing line (crash mid-write) is tolerated and dropped.
+        """
+        if not path or not os.path.exists(path):
+            return []
+        results = []
+        try:
+            with open(path, encoding="utf-8") as handle:
+                for line in handle:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        results.append(json.loads(line))
+                    except json.JSONDecodeError:
+                        continue
+        except OSError:
+            return []
+        return results
 
     def set_judge_progress(self, progress):
         """Replace live per-judge progress shown by the TUI footer."""

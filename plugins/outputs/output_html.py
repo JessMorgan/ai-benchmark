@@ -1,6 +1,9 @@
 import html as html_lib
 import os
 from datetime import datetime, timezone
+from pathlib import Path
+
+import jinja2
 
 from benchmark.outputs import (
     _numeric_score,
@@ -10,6 +13,17 @@ from benchmark.outputs import (
     sanitize_filename,
 )
 from benchmark.plugin import BenchmarkOutputPlugin
+
+# The document skeleton (head, CSS, page structure) lives in a Jinja2
+# template; the data-driven cells are pre-built in Python and passed in
+# already escaped, so autoescape is off to avoid double-escaping.
+_TEMPLATE_DIR = Path(__file__).parent / "templates"
+_ENV = jinja2.Environment(
+    loader=jinja2.FileSystemLoader(str(_TEMPLATE_DIR)),
+    autoescape=False,
+    trim_blocks=True,
+    lstrip_blocks=True,
+)
 
 
 class HTMLOutputPlugin(BenchmarkOutputPlugin):
@@ -33,7 +47,7 @@ class HTMLOutputPlugin(BenchmarkOutputPlugin):
             or any(key.endswith(("_judge_score", "_judge_error")) for key in r)
             for r in results
         )
-        rows = ""
+        rows = []
         for r in results:
             cls = "ok" if r["status"] == "ok" else "fail"
             tot = _plugin_total_score(r, active_plugins)
@@ -56,8 +70,8 @@ class HTMLOutputPlugin(BenchmarkOutputPlugin):
                 judge_score = r.get(f"{p.id}_judge_score", "-")
                 judge_confidence = r.get(f"{p.id}_judge_confidence", "-")
                 judge_error = r.get(f"{p.id}_judge_error", "")
-                cells += (f'<td>{r.get(f"{p.id}_response_time","-")}</td>'
-                          f'<td>{r.get(f"{p.id}_tps","-")}</td>'
+                cells += (f'<td>{r.get(f"{p.id}_response_time", "-")}</td>'
+                          f'<td>{r.get(f"{p.id}_tps", "-")}</td>'
                           f'<td>{thinking}</td>'
                           f'<td>{content}</td>'
                           f'<td><strong>{total}</strong></td>'
@@ -77,26 +91,22 @@ class HTMLOutputPlugin(BenchmarkOutputPlugin):
             else:
                 err = html_lib.escape(str(r.get('error') or '?'))[:50]
                 cells += f'<td class="fail-badge" title="{err}">❌ {err}</td>'
-            rows += f'<tr class="{cls}">{cells}</tr>\n'
+            rows.append((cls, cells))
 
-        def lb_ttft():
-            out = ""
-            for i, r in enumerate(sorted(ok, key=lambda x: (x['ttft'] if isinstance(x['ttft'], (int, float)) else 999))[:10], 1):
-                out += f'<tr><td>{i}</td><td>{r["model"]}</td><td>{r["ttft"]}s</td></tr>\n'
-            return out
+        ttft_rows = []
+        for i, r in enumerate(
+            sorted(ok, key=lambda x: (x['ttft'] if isinstance(x['ttft'], (int, float)) else 999))[:10], 1
+        ):
+            ttft_rows.append((i, r["model"], r["ttft"]))
 
-        leaderboard_html = ""
+        leaderboards = []
         for p in active_plugins:
-            def lb_for_plugin(plugin):
-                out = ""
-                for i, r in enumerate(sorted(ok, key=lambda x: _numeric_score(x, plugin.id), reverse=True)[:10], 1):
-                    out += f'<tr><td>{i}</td><td>{r["model"]}</td><td><strong>{r.get(f"{plugin.id}_score", "-")}/100</strong></td></tr>\n'
-                return out
-            leaderboard_html += f"""<div class="leaderboard">
-<h3>🧠 Best {p.name}</h3>
-<table><tr><th>#</th><th>Model</th><th>Score</th></tr>
-{lb_for_plugin(p)}
-</table></div>"""
+            lb_rows = []
+            for i, r in enumerate(
+                sorted(ok, key=lambda x: _numeric_score(x, p.id), reverse=True)[:10], 1
+            ):
+                lb_rows.append((i, r["model"], r.get(f"{p.id}_score", "-")))
+            leaderboards.append((p.name, lb_rows))
 
         rubric_html = ""
         has_rubric = any(isinstance(r.get(f"{p.id}_rubric"), list) and r.get(f"{p.id}_rubric") for p in active_plugins for r in results)
@@ -128,47 +138,28 @@ class HTMLOutputPlugin(BenchmarkOutputPlugin):
         header_cells += "<th>Overall Score (0–100)</th><th>Scored Plugins</th><th>Time</th><th>Mode</th><th>Status</th>"
 
         seed_html = f"<br><strong>Seed:</strong> {session_seed}" if session_seed is not None else ""
-        content = f"""<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<title>AI Benchmark</title>
-<style>
-body {{ font-family: -apple-system,'Segoe UI',sans-serif; max-width: 1200px; margin:20px auto; padding:0 20px; background:#0d1117; color:#c9d1d9; }}
-h1,h2,h3 {{ color:#58a6ff; }}
-table {{ border-collapse:collapse; width:100%; margin:16px 0; font-size:13px; }}
-th,td {{ padding:6px 10px; text-align:left; border-bottom:1px solid #30363d; }}
-th {{ background:#161b22; color:#8b949e; font-weight:600; }}
-tr.ok:hover {{ background:#1c2128; }}
-tr.fail {{ color:#8b949e; }}
-.ok-badge {{ color:#3fb950; }}
-.fail-badge {{ color:#f85149; }}
-.leaderboard {{ display:inline-block; vertical-align:top; margin-right:30px; }}
-.leaderboard table {{ width:auto; min-width:300px; }}
-.subtitle {{ color:#8b949e; font-size:0.9em; }}
-.empty-reason {{ font-size:0.85em; color:#8b949e; max-width:120px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }}
-</style>
-</head>
-<body>
-<h1>AI Benchmark</h1>
-<p class="subtitle">Tasks: {', '.join(p.name for p in active_plugins)}</p>
-<p><strong>Date:</strong> {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} | <strong>Total:</strong> {len(results)} | <strong>Successful:</strong> {len(ok)} | <strong>Failed:</strong> {len(results)-len(ok)}{seed_html}</p>
+        judges_line = html_lib.escape(
+            ', '.join(next((r.get('judge_models') for r in results if r.get('judge_models')), [])
+                      or ([next((r.get('judge_model') for r in results if r.get('judge_model')), '')]
+                          if any(r.get('judge_model') for r in results) else [])) or '—'
+        )
+        judge_status = html_lib.escape(str(next((r.get('judge_status') for r in results if r.get('judge_status')), '—')))
 
-<h2>🏆 Leaderboards</h2>
-<div class="leaderboard">
-<h3>⚡ Fastest Cold Load</h3>
-<table><tr><th>#</th><th>Model</th><th>TTFT</th></tr>
-{lb_ttft()}
-</table></div>
-{leaderboard_html}        <h2>📊 Complete Results</h2>
-<p class="subtitle">Judges: {html_lib.escape(', '.join(next((r.get('judge_models') for r in results if r.get('judge_models')), []) or ([next((r.get('judge_model') for r in results if r.get('judge_model')), '')] if any(r.get('judge_model') for r in results) else [])) or '—')} | Status: {html_lib.escape(str(next((r.get('judge_status') for r in results if r.get('judge_status')), '—')))}</p>
-<table>
-<tr>{header_cells}</tr>
-{rows}
-</table>
-{rubric_html}
-</body>
-</html>"""
+        content = _ENV.get_template("results.html.j2").render(
+            task_names=", ".join(p.name for p in active_plugins),
+            now=datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S'),
+            total=len(results),
+            ok_count=len(ok),
+            failed_count=len(results) - len(ok),
+            seed_html=seed_html,
+            ttft_rows=ttft_rows,
+            leaderboards=leaderboards,
+            judges_line=judges_line,
+            judge_status=judge_status,
+            header_cells=header_cells,
+            rows=rows,
+            rubric_html=rubric_html,
+        )
 
         if output_dir:
             path = os.path.join(output_dir, "results.html")

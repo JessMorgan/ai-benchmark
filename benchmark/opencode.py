@@ -10,12 +10,12 @@ requiring a manual install; see :func:`resolve_opencode_binary`.
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import platform
 import re
 import shutil
-import signal
 import subprocess
 import tarfile
 import tempfile
@@ -28,6 +28,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
+
+import psutil
 
 OPENCODE_BINARY = "opencode"
 
@@ -796,29 +798,29 @@ def _extract_final_text(stdout: bytes) -> OpenCodeExtract:
 
 
 def _terminate_process(process: subprocess.Popen[bytes]) -> None:
-    """Terminate OpenCode and its process group where supported."""
+    """Terminate OpenCode and its whole process tree (robust, psutil).
+
+    ``psutil`` walks the full descendant tree, so a child that escaped the
+    process group (e.g. a grandchild that called ``setsid``) is still killed
+    instead of being reparented to init and left running. Children are
+    terminated before the parent so a looping child cannot outlive it.
+    """
     if process.poll() is not None:
         return
     try:
-        if os.name == "posix":
-            os.killpg(process.pid, signal.SIGTERM)
-        else:
-            process.terminate()
-    except (OSError, ProcessLookupError):
-        try:
-            process.terminate()
-        except OSError:
-            pass
+        proc = psutil.Process(process.pid)
+    except psutil.NoSuchProcess:
+        return
+    procs = [proc] + proc.children(recursive=True)
+    for p in reversed(procs):
+        with contextlib.suppress(psutil.NoSuchProcess, psutil.AccessDenied):
+            p.terminate()
     try:
         process.wait(timeout=1)
     except subprocess.TimeoutExpired:
-        try:
-            if os.name == "posix":
-                os.killpg(process.pid, signal.SIGKILL)
-            else:
-                process.kill()
-        except (OSError, ProcessLookupError):
-            pass
+        for p in reversed(procs):
+            with contextlib.suppress(psutil.NoSuchProcess, psutil.AccessDenied):
+                p.kill()
 
 
 class _StreamGuard:

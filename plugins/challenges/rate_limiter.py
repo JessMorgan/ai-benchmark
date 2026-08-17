@@ -17,7 +17,7 @@ class RateLimiterPlugin(BenchmarkTaskPlugin):
 
     @property
     def version(self):
-        return "1.0.0"
+        return "1.1.0"
 
     @property
     def name(self):
@@ -53,6 +53,14 @@ class RateLimiterPlugin(BenchmarkTaskPlugin):
     def _classes(tree: ast.AST | None) -> set[str]:
         return {node.name for node in ast.walk(tree) if isinstance(node, ast.ClassDef)} if tree else set()
 
+    @staticmethod
+    def _inherits(node: ast.ClassDef, base_name: str) -> bool:
+        """Return whether a class inherits the named base class directly."""
+        return any(
+            isinstance(base, ast.Name) and base.id == base_name
+            for base in node.bases
+        )
+
     def evaluate(self, response_text):
         rubric = Rubric(self.max_score)
         if not response_text or not response_text.strip():
@@ -69,17 +77,29 @@ class RateLimiterPlugin(BenchmarkTaskPlugin):
             negative_findings=[{"finding": f"missing strategy: {name}"} for name in sorted(required - present)],
         )
 
-        method_hits = sum(bool(re.search(rf"def\s+{method}\s*\(", text)) for method in (
-            "allow_request", "get_usage_stats", "cleanup",
-        ))
+        methods = {
+            node.name
+            for node in ast.walk(validation.value)
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        } if validation.valid else set()
+        method_hits = sum(
+            method in methods
+            for method in ("allow_request", "get_usage_stats", "cleanup")
+        )
         rubric.add_criterion("Shared method contract", 1.0, 1.0 * method_hits / 3.0)
 
-        base_match = re.search(r"(?ms)^class\s+_Base\b.*?(?=^class\s+|\Z)", text)
-        base_text = base_match.group(0) if base_match else ""
+        class_nodes = {
+            node.name: node
+            for node in ast.walk(validation.value)
+            if isinstance(node, ast.ClassDef)
+        } if validation.valid else {}
+        base_text = ast.unparse(class_nodes["_Base"]) if "_Base" in class_nodes else ""
         for name in ("TokenBucket", "SlidingWindowLog", "FixedWindow"):
-            class_match = re.search(rf"(?ms)^class\s+{name}\b.*?(?=^class\s+|\Z)", text)
-            class_text = class_match.group(0) if class_match else ""
-            strategy_text = class_text + (base_text if "_Base" in class_text else "")
+            node = class_nodes.get(name)
+            class_text = ast.unparse(node) if node is not None else ""
+            strategy_text = class_text + (
+                base_text if node is not None and self._inherits(node, "_Base") else ""
+            )
             points = 1.0 if name in present else 0.0
             if name == "TokenBucket":
                 points += 1.0 if re.search(r"refill|token|capacity", strategy_text, re.IGNORECASE) else 0.0
@@ -101,7 +121,10 @@ class RateLimiterPlugin(BenchmarkTaskPlugin):
         rubric.add_criterion("Types and documentation", 1.0, min(1.0, float(quality_hits) / 2.0))
 
         stubs = stub_definitions(validation.value, required) if validation.valid else []
-        stubs = [name for name in stubs if not re.search(rf"class\s+{name}\s*\(\s*_Base\s*\)", text)]
+        stubs = [
+            name for name in stubs
+            if name not in class_nodes or not self._inherits(class_nodes[name], "_Base")
+        ]
         if stubs:
             for criterion in ("TokenBucket", "SlidingWindowLog", "FixedWindow"):
                 if criterion in stubs:

@@ -31,11 +31,12 @@ import contextlib
 import json
 import os
 import queue
-import signal
 import subprocess
 import sys
 import threading
 import time
+
+import psutil
 
 DEFAULT_BASE_URL = "https://web.chatplayground.ai"
 
@@ -149,27 +150,23 @@ def _stderr_loop(proc, chunks) -> None:
 
 
 def _terminate(proc) -> None:
-    """Terminate the worker and its process group where supported."""
+    """Terminate the worker and its whole process tree (robust, psutil)."""
     if proc.poll() is not None:
         return
     try:
-        if os.name == "posix":
-            os.killpg(proc.pid, signal.SIGTERM)
-        else:
-            proc.terminate()
-    except (OSError, ProcessLookupError):
-        with contextlib.suppress(Exception):
-            proc.terminate()
+        worker = psutil.Process(proc.pid)
+    except psutil.NoSuchProcess:
+        return
+    procs = [worker] + worker.children(recursive=True)
+    for p in reversed(procs):
+        with contextlib.suppress(psutil.NoSuchProcess, psutil.AccessDenied):
+            p.terminate()
     try:
         proc.wait(timeout=1)
     except subprocess.TimeoutExpired:
-        try:
-            if os.name == "posix":
-                os.killpg(proc.pid, signal.SIGKILL)
-            else:
-                proc.kill()
-        except (OSError, ProcessLookupError):
-            pass
+        for p in reversed(procs):
+            with contextlib.suppress(psutil.NoSuchProcess, psutil.AccessDenied):
+                p.kill()
 
 
 def _teardown_worker() -> None:

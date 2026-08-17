@@ -16,6 +16,8 @@ import zipfile
 from pathlib import Path
 from unittest import mock
 
+import psutil
+
 from benchmark.opencode import (
     _cpu_has_avx2,
     _darwin_avx2,
@@ -440,38 +442,42 @@ class TestTerminateProcess(unittest.TestCase):
         _terminate_process(process)
         process.terminate.assert_not_called()
 
-    def test_posix_killpg_then_wait(self):
+    def test_terminates_tree_then_waits(self):
         process = mock.Mock()
         process.poll.return_value = None
         process.pid = 1234
-        with mock.patch("os.name", "posix"), \
-                mock.patch("os.killpg") as killpg, \
-                mock.patch("benchmark.opencode.signal.SIGTERM", 15):
+        child = mock.Mock()
+        proc = mock.Mock()
+        proc.children.return_value = [child]
+        with mock.patch("benchmark.opencode.psutil.Process", return_value=proc):
             _terminate_process(process)
-        killpg.assert_called_once()
-        process.wait.assert_called_once()
+        proc.terminate.assert_called_once()
+        child.terminate.assert_called_once()
+        process.wait.assert_called_once_with(timeout=1)
 
-    def test_killpg_error_falls_back_to_terminate(self):
+    def test_no_such_process_returns(self):
         process = mock.Mock()
         process.poll.return_value = None
         process.pid = 1234
-        with mock.patch("os.name", "posix"), \
-                mock.patch("os.killpg", side_effect=OSError), \
-                mock.patch("benchmark.opencode.signal.SIGTERM", 15):
+        with mock.patch(
+            "benchmark.opencode.psutil.Process",
+            side_effect=psutil.NoSuchProcess(1234),
+        ):
             _terminate_process(process)
-        process.terminate.assert_called_once()
+        process.wait.assert_not_called()
 
-    def test_wait_timeout_then_sigkill(self):
+    def test_wait_timeout_then_kill(self):
         process = mock.Mock()
         process.poll.return_value = None
         process.pid = 1234
         process.wait.side_effect = subprocess.TimeoutExpired("x", 1)
-        with mock.patch("os.name", "posix"), \
-                mock.patch("os.killpg") as killpg, \
-                mock.patch("benchmark.opencode.signal.SIGTERM", 15), \
-                mock.patch("benchmark.opencode.signal.SIGKILL", 9):
+        child = mock.Mock()
+        proc = mock.Mock()
+        proc.children.return_value = [child]
+        with mock.patch("benchmark.opencode.psutil.Process", return_value=proc):
             _terminate_process(process)
-        self.assertEqual(killpg.call_count, 2)
+        proc.kill.assert_called_once()
+        child.kill.assert_called_once()
 
 
 class TestStreamGuard(unittest.TestCase):

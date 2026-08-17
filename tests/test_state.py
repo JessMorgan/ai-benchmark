@@ -950,5 +950,79 @@ class TestStateCoverage(unittest.TestCase):
             self.assertNotIn("old-model", loaded.snapshot())
 
 
+class TestResultJournal(unittest.TestCase):
+    """Append-only result journaling for crash-safe state recovery."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.module = load_benchmark_module()
+
+    def _state(self, journal_path=None):
+        state = self.module.BenchmarkState({"model-a": "Source1"}, ["fake"])
+        if journal_path:
+            state.set_journal_path(journal_path)
+        return state
+
+    def test_add_result_appends_one_json_line_per_result(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            journal = os.path.join(tmp, "results.journal.jsonl")
+            state = self._state(journal)
+            state.add_result({"model": "model-a", "status": "ok", "total_time": 1.0})
+            state.add_result({"model": "model-b", "status": "error", "total_time": 2.0})
+            with open(journal, encoding="utf-8") as handle:
+                lines = handle.read().strip().splitlines()
+            self.assertEqual(len(lines), 2)
+            self.assertEqual(json.loads(lines[0])["model"], "model-a")
+            self.assertEqual(json.loads(lines[1])["status"], "error")
+
+    def test_add_result_noop_without_journal_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            journal = os.path.join(tmp, "results.journal.jsonl")
+            state = self._state()
+            state.add_result({"model": "model-a", "status": "ok"})
+            self.assertFalse(os.path.exists(journal))
+
+    def test_replay_journal_returns_results(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            journal = os.path.join(tmp, "results.journal.jsonl")
+            state = self._state(journal)
+            state.add_result({"model": "model-a", "status": "ok"})
+            state.add_result({"model": "model-b", "status": "error"})
+            self.assertEqual(
+                [r["model"] for r in self.module.BenchmarkState.replay_journal(journal)],
+                ["model-a", "model-b"],
+            )
+
+    def test_replay_journal_tolerates_partial_trailing_line(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            journal = os.path.join(tmp, "results.journal.jsonl")
+            with open(journal, "w", encoding="utf-8") as handle:
+                handle.write(json.dumps({"model": "ok"}) + "\n")
+                handle.write('{"model": "partial"')  # crash mid-write
+            results = self.module.BenchmarkState.replay_journal(journal)
+            self.assertEqual([r["model"] for r in results], ["ok"])
+
+    def test_replay_journal_missing_file_returns_empty(self):
+        self.assertEqual(
+            self.module.BenchmarkState.replay_journal("/nonexistent/journal.jsonl"), []
+        )
+
+    def test_journal_write_failure_is_best_effort(self):
+        state = self._state("/nonexistent-dir/journal.jsonl")
+        # Must not raise: journaling is best-effort and never fails a result.
+        state.add_result({"model": "model-a", "status": "ok"})
+        self.assertEqual(len(state.results), 1)
+
+    def test_set_journal_path_truncates_when_requested(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            journal = os.path.join(tmp, "results.journal.jsonl")
+            state = self._state(journal)
+            state.add_result({"model": "model-a", "status": "ok"})
+            state.set_journal_path(journal, truncate=True)
+            self.assertEqual(
+                self.module.BenchmarkState.replay_journal(journal), []
+            )
+
+
 if __name__ == "__main__":
     unittest.main()

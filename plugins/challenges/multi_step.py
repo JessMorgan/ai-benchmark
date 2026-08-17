@@ -18,7 +18,7 @@ class MultiStepPlugin(BenchmarkTaskPlugin):
 
     @property
     def version(self):
-        return "1.0.0"
+        return "1.1.0"
 
     @property
     def name(self):
@@ -55,6 +55,21 @@ class MultiStepPlugin(BenchmarkTaskPlugin):
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
         }
 
+    @staticmethod
+    def _signature_matches(node, args, returns):
+        """Check a FunctionDef's positional argument names/types and return type.
+
+        Uses the parsed AST instead of regex, so formatting (spaces, newlines)
+        cannot defeat the signature contract.
+        """
+        actual = node.args.args
+        if [arg.arg for arg in actual] != [name for name, _ in args]:
+            return False
+        for arg, (_, expected_type) in zip(actual, args):
+            if not isinstance(arg.annotation, ast.Name) or arg.annotation.id != expected_type:
+                return False
+        return isinstance(node.returns, ast.Name) and node.returns.id == returns
+
     def evaluate(self, response_text):
         if not response_text or not response_text.strip():
             return EvaluationResult(0.0, [])
@@ -77,15 +92,27 @@ class MultiStepPlugin(BenchmarkTaskPlugin):
             ),
         )
 
-        signatures = {
-            "greet_user": re.compile(r"def\s+greet_user\s*\(\s*name\s*:\s*str\s*\)\s*->\s*str"),
-            "validate_name": re.compile(r"def\s+validate_name\s*\(\s*name\s*:\s*str\s*\)\s*->\s*bool"),
-            "format_greeting": re.compile(r"def\s+format_greeting\s*\(\s*greeting\s*:\s*str\s*,\s*times\s*:\s*int\s*\)\s*->\s*str"),
+        expected_signatures = {
+            "greet_user": ((("name", "str"),), "str"),
+            "validate_name": ((("name", "str"),), "bool"),
+            "format_greeting": ((("greeting", "str"), ("times", "int")), "str"),
         }
-        signature_hits = sum(bool(pattern.search(text)) for pattern in signatures.values())
+        signature_hits = 0
+        signature_evidence = []
+        if tree is not None:
+            for name, (args, returns) in expected_signatures.items():
+                matching = [
+                    node for node in ast.walk(tree)
+                    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                    and node.name == name
+                    and self._signature_matches(node, args, returns)
+                ]
+                if matching:
+                    signature_hits += 1
+                    signature_evidence.append({"kind": "signature", "name": name})
         rubric.add_criterion(
             "Typed signatures", 1.0, 1.0 * signature_hits / 3.0,
-            evidence=[{"kind": "signature", "name": name} for name, pattern in signatures.items() if pattern.search(text)],
+            evidence=signature_evidence,
         )
 
         summary = re.fullmatch(
