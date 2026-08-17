@@ -7,7 +7,6 @@ Configuration: edit benchmark-config.json (or pass --config <path>).
 API keys can use ${VAR} or ${VAR:default} syntax for env-var expansion.
 """
 import contextlib
-import curses
 import faulthandler
 import glob
 import json
@@ -243,7 +242,7 @@ def _char_display_width(char):
     ``wcwidth`` classifies as one column but that many emoji-capable
     terminals render as two (e.g. ``⚠``); those are over-counted below.
 
-    Under-counting one of those characters lets ``curses`` write past the
+    Under-counting one of those characters lets the TUI write past the
     right edge, where the terminal may wrap it onto the next row. That wrap
     is the source of the apparent prepended/stale characters. Over-counting
     is intentional: clipping a row one column early is harmless; allowing a
@@ -391,76 +390,6 @@ def _slice_display_width(text, start, max_width):
     return "".join(result)
 
 
-def _tui_dimensions_changed(stdscr, dimensions, previous_dimensions):
-    """Erase the virtual screen once after a terminal resize.
-
-    A terminal can physically reflow old lines when it becomes narrower,
-    while curses still has the old virtual contents. Clearing on the first
-    frame at the new dimensions re-synchronizes both representations before
-    the normal per-row redraw starts.
-    """
-    if dimensions == previous_dimensions:
-        return previous_dimensions
-    try:
-        stdscr.erase()
-    except curses.error:
-        # The next frame will retry after curses finishes processing SIGWINCH.
-        return previous_dimensions
-    return dimensions
-
-
-def _wr(stdscr, max_x, max_y, y, x, text, attr=0):
-    """Clear and safely write one bounded terminal row.
-
-    Keep one column unused at the right edge. Writing exactly through the
-    lower/right boundary can trigger curses' automatic wrap (or a
-    ``curses.error`` after a partial write), which leaves the virtual and
-    physical screens out of sync and produces leading characters on the next
-    frame. Do not retry a failed write at the current cursor position: a
-    failed boundary write may already have advanced that cursor.
-    """
-    _wr_segments(stdscr, max_x, max_y, y, x, [(text, attr)])
-
-
-def _wr_segments(stdscr, max_x, max_y, y, x, segments):
-    """Clear and safely write one row made of attributed text segments.
-
-    Segments are clipped as one display-width-bounded row, allowing the
-    footer to color a stopped judge name without disturbing its layout.
-    """
-    if not (0 <= y < max_y and 0 <= x < max_x):
-        return
-    available = max_x - x - 1
-    clipped = []
-    used = 0
-    for text, attr in segments:
-        safe_text = _truncate_display_width(text, available - used)
-        if safe_text:
-            clipped.append((safe_text, attr))
-            used += _display_width(safe_text)
-        if used >= available:
-            break
-    # Coalesce adjacent segments with the same attribute. Besides reducing
-    # terminal writes, this keeps ordinary (all-default-color) footer rows as
-    # one write while stopped rows still split only around the red name.
-    merged = []
-    for text, attr in clipped:
-        if merged and merged[-1][1] == attr:
-            merged[-1] = (merged[-1][0] + text, attr)
-        else:
-            merged.append((text, attr))
-    try:
-        stdscr.move(y, x)
-        stdscr.clrtoeol()
-        cursor_x = x
-        for text, attr in merged:
-            stdscr.addstr(y, cursor_x, text, attr)
-            cursor_x += _display_width(text)
-    except curses.error:
-        # Window too small or resized since getmaxyx(); skip this frame.
-        pass
-
-
 def _active_source_target_counts(snap):
     """Count active target pipelines once per source, across runner states."""
     active = {}
@@ -479,7 +408,7 @@ def _active_source_target_counts(snap):
 
 
 def _fallback_tui_loop(state, stop_event, session_seed=None, model_thread_limits=None):
-    """Fallback terminal UI when curses is unavailable."""
+    """Fallback terminal UI for non-interactive terminals (no Rich TUI)."""
     while not stop_event.is_set():
         snap = state.snapshot()
         active = sum(
@@ -526,101 +455,9 @@ def _fallback_tui_loop(state, stop_event, session_seed=None, model_thread_limits
     print()
 
 
-def _handle_tui_input(stdscr, scroll_y, scroll_x, max_row_offset, visible_rows, max_x, frozen_width, plugin_hdr_len):
-    """Handle keyboard navigation and return updated scroll offsets."""
-    try:
-        key = stdscr.getch()
-    except Exception:  # noqa: BLE001 - getch() can raise on resize or stdin interruption
-        # getch() can raise on terminal resize or when stdin is interrupted.
-        key = -1
-    if key == curses.KEY_UP:
-        scroll_y = max(0, scroll_y - 1)
-    elif key == curses.KEY_DOWN:
-        scroll_y = min(max_row_offset, scroll_y + 1)
-    elif key == curses.KEY_PPAGE:
-        scroll_y = max(0, scroll_y - visible_rows)
-    elif key == ord(' ') or key == curses.KEY_NPAGE:
-        scroll_y = min(max_row_offset, scroll_y + visible_rows)
-    elif key == curses.KEY_HOME:
-        scroll_y = 0
-    elif key == curses.KEY_END:
-        scroll_y = max_row_offset
-    elif key == curses.KEY_LEFT:
-        scroll_x = max(0, scroll_x - 8)
-    elif key == curses.KEY_RIGHT:
-        visible_width = max(0, max_x - frozen_width - 1)
-        scroll_x = min(
-            max(0, plugin_hdr_len - visible_width),
-            scroll_x + 8,
-        )
-    scroll_y = max(0, min(max_row_offset, scroll_y))
-    return scroll_y, scroll_x
-
-
-def _render_header_and_summary(stdscr, max_x, max_y, snap, done, total, running, queued, pending,
-                                scroll_y, visible_rows, total_models, session_seed,
-                                http_threads, sleeping_model_count,
-                                model_thread_limits=None):
-    """Render the top header and summary statistics.
-
-    ``http_threads`` is the count of in-flight HTTP responses (the wall-clock
-    \"parallelism ceiling\" the network is asked to carry).    ``sleeping_model_count`` is the number of unique ``(source, model)`` pairs
-    currently paused in a 429 backoff window \u2014 seeing this rise is how an
-    operator notices that the benchmark is rate-limited rather than making
-    progress.
-    """
-    from datetime import datetime, timezone
-    ts = datetime.now(timezone.utc).astimezone().strftime('%H:%M:%S')
-    seed_info = f"Seed: {session_seed}  |  " if session_seed is not None else ""
-    hdr = f"AI Benchmark \u2014 Parallel  |  {seed_info}{ts}"
-    # Always draw through _wr, even when the terminal is narrower than the
-    # complete message. Skipping the write leaves the previous wider frame
-    # physically visible after a narrow/mobile resize.
-    _wr(stdscr, max_x, max_y, 0, 0, hdr, curses.A_BOLD)
-
-    failed_count = sum(1 for s in snap.values() if s["status"] == "failed")
-    err_indicator = f"  |  \u26a0 {failed_count} failed" if failed_count else ""
-    source_active = _active_source_target_counts(snap)
-    slot_text = ""
-    if model_thread_limits:
-        slot_text = "  |  " + ", ".join(
-            f"{source}: models {source_active.get(source, 0)}/{limit}"
-            for source, limit in model_thread_limits.items()
-        )
-    summary = (f"Total: {total}  |  "
-               f"Done: {done}  |  "
-               f"Active: {len(running)}  |  "
-               f"Queued: {len(queued + pending)}"
-               f"  |  HTTP: {http_threads}"
-               f"  |  429\u23f8 {sleeping_model_count}"
-               f"{err_indicator}"
-               f"  |  \u2191\u2193 rows {scroll_y + 1}-{min(total_models, scroll_y + visible_rows)}/{total_models}"
-               f"  |  \u2190\u2192 cols"
-               f"{slot_text}")
-    if max_y > 1:
-        # _wr performs display-column clipping and clears the remainder.
-        _wr(stdscr, max_x, max_y, 1, 0, summary)
-
-    if max_y > 2:
-        _wr(stdscr, max_x, max_y, 2, 0, "\u2500" * min(max_x, 80))
-
-
-def _render_table_headings(stdscr, max_x, max_y, scroll_x, frozen_cols, plugin_cols, frozen_width):
-    """Render the frozen and plugin column headings."""
-    frozen_hdr = " ".join(f"{h:>{w}}" for h, w in frozen_cols)
-    plugin_hdr_parts = [f"{h:>{w}}" for h, w in plugin_cols]
-    plugin_hdr = " ".join(plugin_hdr_parts)
-    if max_y > 3:
-        visible_plugin_hdr = _slice_display_width(
-            plugin_hdr, scroll_x, max(0, max_x - frozen_width - 1)
-        )
-        _wr(stdscr, max_x, max_y, 3, 0, frozen_hdr + " " + visible_plugin_hdr, curses.A_UNDERLINE)
-    return plugin_hdr
-
-
 # Display width of the frozen table prefix, including the separator before
 # the horizontally scrollable plugin columns. Keep this shared by the row
-# formatter and the curses layout calculations.
+# formatter and the row layout calculations.
 # The model-number column reserves the judge marker's display width so a
 # scales/checkmark marker cannot shift source, model, or status columns.
 MODEL_NUMBER_COLUMN_WIDTH = 5
@@ -1009,61 +846,6 @@ def _format_model_row(name, s, display_idx, active_plugins, source_abbrevs,
     return frozen, plugin_str
 
 
-def _render_model_rows(stdscr, max_x, max_y, snap_items, active_plugins, source_abbrevs,
-                       scroll_y, scroll_x, visible_rows, frozen_width, model_top,
-                       sleeping_lookup, active_judge_targets=None):
-    """Render the scrollable model status table.
-
-    ``sleeping_lookup`` maps ``(source_name, api_model, pid) -> sleep info``
-    (with ``wake_ts``, ``attempts``, ``max_attempts``) so per-plugin 429
-    backoff state can be folded into each plugin cell via the
-    ``[429 sleeping Xs]`` bracket status. Plugins whose key is absent
-    render normally without the indicator.
-    """
-    total_models = len(snap_items)
-    for row_idx in range(visible_rows):
-        abs_idx = scroll_y + row_idx
-        if abs_idx >= total_models:
-            break
-        name, s = snap_items[abs_idx]
-        display_idx = abs_idx + 1
-        frozen, plugin_str = _format_model_row(
-            name, s, display_idx, active_plugins, source_abbrevs,
-            sleeping_lookup=sleeping_lookup,
-            active_judge_targets=active_judge_targets,
-        )
-        visible_plugin = _slice_display_width(
-            plugin_str, scroll_x, max(0, max_x - frozen_width - 1)
-        )
-        line = frozen + " " + visible_plugin
-
-        attr = 0
-        sv = s["status"]
-        if sv == "completed":
-            try:
-                attr = curses.color_pair(1)
-            except Exception:  # noqa: BLE001, S110 - color_pair() fails when colors are unavailable
-                pass
-        elif sv == "failed":
-            try:
-                attr = curses.color_pair(3)
-            except Exception:  # noqa: BLE001, S110 - color_pair() fails when colors are unavailable
-                pass
-        elif sv == "running" or s.get("running_pids"):
-            try:
-                attr = curses.color_pair(2)
-            except Exception:  # noqa: BLE001, S110 - color_pair() fails when colors are unavailable
-                pass
-        _wr(stdscr, max_x, max_y, model_top + row_idx, 0, line, attr)
-
-    for r in range(model_top + min(visible_rows, max(0, total_models - scroll_y)), model_top + visible_rows):
-        try:
-            stdscr.move(r, 0)
-            stdscr.clrtoeol()
-        except Exception:  # noqa: BLE001, S110 - window may resize between getmaxyx() and paint
-            pass
-
-
 def _pad_display_width(text, target_width):
     """Right-pad ``text`` to a terminal-column width."""
     return text + " " * max(0, target_width - _display_width(text))
@@ -1163,206 +945,11 @@ def _build_live_indicators(s, active_plugins, *, now=None):
     return " ".join(parts)
 
 
-def _render_live_activity(stdscr, max_x, max_y, snap, source_abbrevs, live_models,
-                          live_top, live_height, log_top, active_plugins, sleeping_lookup,
-                          preloading_models=None, judge_activities=None):
-    """Render running models + 429-sleeping plugins in the live area.
-
-    ``sleeping_lookup`` maps ``(source, api_model, pid)`` to sleep info so
-    the live footer can show each 429-backoff plugin individually. Layout
-    (rows counted from ``live_top`` upward):
-
-      0      ``Live:``  (header)
-      1..    one row per running model
-      ?      ``429 Sleeping:``  (optional header)
-      ?..    one row per ``(source, model, pid)`` currently in a 429 backoff sleep
-
-    The streaming/waiting indicator (``(stream)`` / ``(wait)``) is shown for
-    any running plugin that supports streaming \u2014 for non-streaming plugins,
-    the indicator is omitted so we never lie about a transport detail we
-    cannot observe.
-    """
-    live_row = live_top
-    _wr(stdscr, max_x, max_y, live_row, 0, "Live:", curses.A_BOLD)
-    live_row += 1
-
-    # Live models are rendered with their per-plugin indicators; any plugin
-    # currently in 429 backoff is also listed separately below so the operator
-    # sees both the model's active thread state and the per-plugin backoff
-    # countdown.
-    for nm, s in ((nm, snap.get(nm) or {}) for nm in live_models):
-        if live_row >= log_top:
-            break
-        src_ab = _source_abbr(source_abbrevs, s.get("source"))
-        err = s.get("last_error", "")
-        msg = f" \U0001f537 [{src_ab}] {nm[:36]}"
-        # Per-plugin live indicators. Each bracket includes the elapsed
-        # seconds since *that plugin's* dispatch, so the footer never
-        # inherits the elapsed time of an earlier plugin. Monotonic
-        # timestamps from ``BenchmarkState.start_plugin_run`` keep the
-        # counters correct even if the system clock jumps.
-        indicators = _build_live_indicators(s, active_plugins)
-        if indicators:
-            msg += "  " + indicators
-        if err:
-            msg += f"  {err}"
-        _wr(stdscr, max_x, max_y, live_row, 0, msg)
-        live_row += 1
-
-    for nm in (preloading_models or []):
-        if live_row >= log_top:
-            break
-        s = snap.get(nm) or {}
-        src_ab = _source_abbr(source_abbrevs, s.get("source"))
-        elapsed = int(max(0, time.monotonic() - (s.get("preload_start_ts") or time.monotonic())))
-        _wr(stdscr, max_x, max_y, live_row, 0,
-            f" 🔄 [{src_ab}] Preloading model {nm[:36]} {elapsed}s")
-        live_row += 1
-
-    # Group concurrent judge cells by judge model so one judge occupying
-    # several source-local workers remains one readable live row, just like
-    # a model row lists all of its concurrent plugin indicators. Judge
-    # responses are buffered/non-streaming, so token counts are not a live
-    # measurement and are intentionally omitted here.
-    judge_groups = {}
-    for activity in (judge_activities or []):
-        judge_groups.setdefault(activity["judge"], []).append(activity)
-    for judge, activities in judge_groups.items():
-        if live_row >= log_top:
-            break
-        cells = " ".join(
-            f"[{activity['target']} {activity['plugin']} {activity['elapsed']}s]"
-            for activity in activities
-        )
-        _wr(
-            stdscr, max_x, max_y, live_row, 0,
-            f" {_JUDGE_SCALES} Judge {judge} {cells}",
-        )
-        live_row += 1
-
-    if sleeping_lookup and live_row + 1 < log_top:
-        _wr(stdscr, max_x, max_y, live_row, 0, "429 Sleeping:", curses.A_BOLD)
-        live_row += 1
-        for (src_name, api_model, pid), info in sleeping_lookup.items():
-            if live_row >= log_top:
-                break
-            src_ab = _source_abbr(source_abbrevs, src_name)
-            wake_ts = info["wake_ts"]
-            remaining = max(0, round(wake_ts - time.time()))
-            msg = (f" \U0001f4a4 [{src_ab}] {api_model[:36]} ({pid}) "
-                   f"[429 {info['attempts']}/{info['max_attempts']} {remaining}s]")
-            _wr(stdscr, max_x, max_y, live_row, 0, msg)
-            live_row += 1
-
-    for r in range(live_row, log_top):
-        try:
-            stdscr.move(r, 0)
-            stdscr.clrtoeol()
-        except Exception:  # noqa: BLE001, S110 - window may resize between getmaxyx() and paint
-            pass
-
-
-def _render_recent_errors(stdscr, max_x, max_y, state, log_top, footer_line):
-    """Render the recent errors section."""
-    from datetime import datetime, timezone
-    log_row = log_top
-    recent_errors = state.recent_log(2)
-    if recent_errors:
-        _wr(stdscr, max_x, max_y, log_row, 0, "Errors:", curses.A_BOLD)
-        log_row += 1
-        for ts_entry, model_entry, msg_entry in recent_errors:
-            if log_row >= footer_line:
-                break
-            t_str = datetime.fromtimestamp(ts_entry, tz=timezone.utc).astimezone().strftime('%H:%M:%S')
-            err_msg = f"  {t_str} [{model_entry[:20]}]: {msg_entry}"
-            _wr(stdscr, max_x, max_y, log_row, 0, err_msg, curses.color_pair(3))
-            log_row += 1
-    for r in range(log_row, footer_line):
-        try:
-            stdscr.move(r, 0)
-            stdscr.clrtoeol()
-        except Exception:  # noqa: BLE001, S110 - window may resize between getmaxyx() and paint
-            pass
-
-
-def _render_footer(stdscr, max_x, max_y, live_models, queuing, footer_line,
-                   preloading_models=None, preloading_details=None,
-                   judge_progress=None):
-    """Render the bottom status line, including active preload probes.
-
-    ``preloading_details`` is an optional sequence of ``(name, seconds)``
-    pairs. Keeping it separate from ``preloading_models`` preserves the
-    small helper API used by older callers while allowing the curses footer
-    to show the requested ``Preloading model Ns`` status instead of only a
-    count.
-    """
-    preloading_models = preloading_models or []
-    preloading_details = preloading_details or []
-    judge_progress = judge_progress or {}
-    judge_parts = []
-    for model, values in judge_progress.items():
-        completed = values.get("completed", 0)
-        failed = values.get("failed", 0)
-        expected = values.get("expected", 0)
-        judge_parts.append(f"[{model}: {completed}✅{failed}❌{expected}Σ]")
-
-    judge_segments = []
-    try:
-        red_attr = curses.color_pair(3)
-    except curses.error:
-        red_attr = 0
-    for index, (model, values) in enumerate(judge_progress.items()):
-        completed = values.get("completed", 0)
-        failed = values.get("failed", 0)
-        expected = values.get("expected", 0)
-        if index:
-            judge_segments.append((" ", 0))
-        judge_segments.append(("[", 0))
-        judge_segments.append((model, red_attr if values.get("stopped") else 0))
-        judge_segments.append((f": {completed}✅{failed}❌{expected}Σ]", 0))
-
-    judge_line = f"Judging {' '.join(judge_parts)}" if judge_parts else ""
-    if not live_models and not queuing and not preloading_models and not judge_line:
-        _wr_segments(
-            stdscr, max_x, max_y, footer_line, 0,
-            [(" All models complete — generating outputs...", 0)],
-        )
-        return
-
-    parts = []
-    if live_models:
-        parts.append(f"{len(live_models)} active")
-    if preloading_details:
-        parts.extend(
-            f"Preloading {name[:30]} {seconds:.0f}s"
-            for name, seconds in preloading_details
-        )
-    elif preloading_models:
-        parts.append(f"{len(preloading_models)} preloading")
-    if queuing:
-        parts.append(f"{len(queuing)} queued")
-
-    if judge_line:
-        prefix = "  |  ".join(parts)
-        segments = [(" ", 0)]
-        if prefix:
-            segments.append((prefix + "  |  ", 0))
-        segments.append(("Judging ", 0))
-        segments.extend(judge_segments)
-        _wr_segments(stdscr, max_x, max_y, footer_line, 0, segments)
-    else:
-        _wr_segments(
-            stdscr, max_x, max_y, footer_line, 0,
-            [(" " + "  |  ".join(parts), 0)],
-        )
-
-
 # ---------------------------------------------------------------------------
 # Rich live TUI (primary renderer). Rich re-renders the whole frame on every
 # tick, eliminating the incremental curses writes whose boundary conditions
-# (resize, emoji width) could leave stale characters on screen. The curses
-# implementation below remains as the fallback for non-interactive terminals
-# and is removed once the Textual migration lands.
+# (resize, emoji width) could leave stale characters on screen. Non-
+# interactive terminals fall back to the plain-text loop above.
 # ---------------------------------------------------------------------------
 
 _RICH_ESCAPE_ACTIONS = {
@@ -1702,188 +1289,19 @@ def _rich_tui_enabled():
 
 def tui_main(state, stop_event, num_sources, active_plugins, session_seed=None,
              model_thread_limits=None):
-    """Run the live TUI: Rich on interactive terminals, curses as fallback."""
+    """Run the live TUI: Rich on interactive terminals, plain text otherwise."""
     if _rich_tui_enabled():
         try:
             _tui_main_rich(state, stop_event, num_sources, active_plugins,
                            session_seed, model_thread_limits)
             return
-        except Exception:  # noqa: BLE001 - a Rich failure must fall back to curses
+        except Exception:  # noqa: BLE001 - a Rich failure must fall back to plain text
             try:
                 with open("tui_render_errors.log", "a", encoding="utf-8") as handle:
                     traceback.print_exc(file=handle)
             except Exception:  # noqa: BLE001, S110 - logging must not crash the TUI thread
                 pass
-    _tui_main_curses(state, stop_event, num_sources, active_plugins,
-                     session_seed, model_thread_limits)
-
-
-def _tui_main_curses(state, stop_event, num_sources, active_plugins, session_seed=None,
-             model_thread_limits=None):
-    """Run ncurses TUI in a daemon thread. Updates every 200ms (fallback)."""
-    try:
-        stdscr = curses.initscr()
-        curses.noecho()
-        curses.cbreak()
-        curses.curs_set(0)
-        stdscr.nodelay(1)
-        stdscr.keypad(True)
-        if curses.has_colors():
-            curses.start_color()
-            curses.use_default_colors()
-            curses.init_pair(1, curses.COLOR_GREEN, -1)
-            curses.init_pair(2, curses.COLOR_YELLOW, -1)
-            curses.init_pair(3, curses.COLOR_RED, -1)
-    except Exception:  # noqa: BLE001 - any curses init failure falls back to a plain loop
-        _fallback_tui_loop(state, stop_event, session_seed, model_thread_limits)
-        return
-
-    try:
-        LIVE_HEIGHT = max(3, num_sources + 1)
-        scroll_y = 0
-        scroll_x = 0
-
-        src_snap = {s["source"] for s in state.snapshot().values()}
-        source_abbrevs = _unique_source_abbrevs(src_snap)
-
-        frozen_cols = [("#", MODEL_NUMBER_COLUMN_WIDTH), ("S", 4), ("Model", 18), ("St", 4)]
-        frozen_width = FROZEN_VIEW_WIDTH
-
-        plugin_cols = []
-        for p in active_plugins:
-            # Each plugin gets 4 sub-headers (Sc/Tok/Tm/TPS). The
-            # previous per-plugin streaming-glyph column (``St``) was
-            # deleted as redundant: the merged bracket status block
-            # already conveys in-flight state, and post-flight the
-            # plugin isn't streaming anymore, so the glyph was always
-            # ``-`` (see the ``PLUGIN_BLOCK_WIDTH`` block comment).
-            plugin_cols.extend([
-                (f"{p.id[:3]}Sc", SCORE_COLUMN_WIDTH),
-                (f"{p.id[:3]}Tok", 6),
-                (f"{p.id[:3]}Tm", 6),
-                (f"{p.id[:3]}TPS", 6),
-            ])
-
-        _last_tui_error_ts = 0.0
-        previous_dimensions = None
-        while not stop_event.is_set():
-            try:
-                max_y, max_x = stdscr.getmaxyx()
-                dimensions = (max_y, max_x)
-                if dimensions != previous_dimensions:
-                    previous_dimensions = _tui_dimensions_changed(
-                        stdscr, dimensions, previous_dimensions
-                    )
-                snap = state.snapshot()
-                snap_items = list(snap.items())
-                done = state.completed
-                total = state.total
-                # In-flight models are identified by a non-empty ``running_pids`` list
-                # (the canonical source-of-truth populated by
-                # ``BenchmarkState.start_plugin_run``). The previous
-                # ``s["status"].startswith("running_")`` check relied on a
-                # legacy pid-suffix status string that the runtime no longer
-                # writes (see commit message); reading the list directly is
-                # robust to parallel plugin threads and to status mutations
-                # from outer callers (e.g. ``status="completed"`` set after
-                # the last plugin finishes).
-                running = [n for n, s in snap.items() if s.get("running_pids")]
-                preloading = [n for n, s in snap.items() if s.get("preloading")]
-                queued = [n for n, s in snap.items() if s["status"] == "queued" and not s.get("preloading")]
-                pending = [n for n, s in snap.items() if s["status"] == "pending" and not s.get("preloading")]
-
-                FOOTER_LINE = max_y - 1
-                MAX_LOG_ROWS = 3
-                LOG_TOP = FOOTER_LINE - MAX_LOG_ROWS
-                LIVE_TOP = LOG_TOP - LIVE_HEIGHT
-                MODEL_BOTTOM = LIVE_TOP - 1
-                MODEL_TOP = 4
-                VISIBLE_ROWS = max(0, MODEL_BOTTOM - MODEL_TOP)
-
-                http_threads = get_active_request_count()
-                backoff_429 = get_429_stats()
-                # Per-plugin 429 lookup keyed by ``(source, api_model, pid)``
-                # so each plugin cell can fold its own backoff countdown
-                # into the model row. Plugins whose key is absent render
-                # normally without the indicator.
-                sleeping_lookup = _build_sleeping_lookup(backoff_429)
-                sleeping_model_count = len({(src, model) for (src, model, _pid) in sleeping_lookup})
-
-                _render_header_and_summary(
-                    stdscr, max_x, max_y, snap, done, total, running, queued, pending,
-                    scroll_y, VISIBLE_ROWS, len(snap), session_seed,
-                    http_threads, sleeping_model_count, model_thread_limits
-                )
-
-                plugin_hdr = _render_table_headings(
-                    stdscr, max_x, max_y, scroll_x, frozen_cols, plugin_cols, frozen_width
-                )
-
-                max_row_offset = max(0, len(snap_items) - VISIBLE_ROWS)
-                scroll_y, scroll_x = _handle_tui_input(
-                    stdscr, scroll_y, scroll_x, max_row_offset, VISIBLE_ROWS, max_x,
-                    frozen_width, _display_width(plugin_hdr)
-                )
-
-                judge_activities = state.judge_activity_snapshot()
-                active_judge_targets = {
-                    activity["target"] for activity in judge_activities
-                }
-                _render_model_rows(
-                    stdscr, max_x, max_y, snap_items, active_plugins, source_abbrevs,
-                    scroll_y, scroll_x, VISIBLE_ROWS, frozen_width, MODEL_TOP,
-                    sleeping_lookup, active_judge_targets,
-                )
-
-                if MODEL_BOTTOM >= 0:
-                    _wr(stdscr, max_x, max_y, MODEL_BOTTOM, 0, "\u2500" * min(max_x, 60))
-
-                _render_live_activity(
-                    stdscr, max_x, max_y, snap, source_abbrevs, running,
-                    LIVE_TOP, LIVE_HEIGHT, LOG_TOP, active_plugins, sleeping_lookup,
-                    preloading_models=preloading,
-                    judge_activities=judge_activities,
-                )
-
-                _render_recent_errors(stdscr, max_x, max_y, state, LOG_TOP, FOOTER_LINE)
-
-                queuing = queued + pending
-                preload_details = [
-                    (
-                        name,
-                        max(0.0, time.monotonic() - (snap[name].get("preload_start_ts") or time.monotonic())),
-                    )
-                    for name in preloading
-                    if name in snap
-                ]
-                _render_footer(
-                    stdscr, max_x, max_y, running, queuing, FOOTER_LINE,
-                    preloading_models=preloading,
-                    preloading_details=preload_details,
-                    judge_progress=state.judge_progress_snapshot(),
-                )
-
-                stdscr.refresh()
-            except Exception:  # noqa: BLE001 - a render error must not kill the TUI thread
-                # Log to a file so the screen isn't corrupted and the benchmark
-                # workers can keep running. Throttle to avoid a runaway log.
-                now = time.time()
-                if now - _last_tui_error_ts > 5.0:
-                    _last_tui_error_ts = now
-                    try:
-                        with open("tui_render_errors.log", "a", encoding="utf-8") as f:
-                            traceback.print_exc(file=f)
-                    except Exception:  # noqa: BLE001, S110 - logging a render error must not crash the TUI thread
-                        pass
-            time.sleep(0.2)
-
-    finally:
-        curses.echo()
-        curses.nocbreak()
-        try:
-            curses.endwin()
-        except Exception:  # noqa: BLE001, S110 - endwin() can fail on a broken terminal
-            pass
+    _fallback_tui_loop(state, stop_event, session_seed, model_thread_limits)
 
 
 def _targets_for_runner(targets, state_models, runner):
@@ -2903,7 +2321,7 @@ def main():  # pragma: no cover - live benchmark orchestrator (no unit tests)
         stop_event = threading.Event()
 
         # Run the TUI as a daemon so the process can exit promptly on Ctrl+C.
-        # Without this, a stuck curses/fallback UI thread would block interpreter
+        # Without this, a stuck TUI thread would block interpreter
         # shutdown, forcing the user to press Ctrl+C a second time.
         tui_thread = threading.Thread(
             target=tui_main,

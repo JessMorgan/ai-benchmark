@@ -23,58 +23,8 @@ sys.modules["_ai_benchmark_module"] = ai_benchmark
 _spec.loader.exec_module(ai_benchmark)
 
 
-class _FakeWindow:
-    """Small single-row curses stand-in for testing ``_wr``."""
-
-    def __init__(self, width):
-        self.width = width
-        self.line = [" "] * width
-        self.calls = []
-
-    def move(self, y, x):
-        self.calls.append(("move", y, x))
-
-    def clrtoeol(self):
-        self.calls.append(("clrtoeol",))
-        self.line = [" "] * self.width
-
-    def erase(self):
-        self.calls.append(("erase",))
-        self.line = [" "] * self.width
-
-    def addstr(self, y, x, text, attr=0):
-        self.calls.append(("addstr", y, x, text, attr))
-        for char in text:
-            if x >= self.width:
-                break
-            self.line[x] = char
-            x += 2 if ai_benchmark._char_display_width(char) == 2 else 1
-
-
-class TestTuiWriteHelper(unittest.TestCase):
-    """Regression tests for stale characters and terminal-edge writes."""
-
-    def test_shorter_next_frame_cannot_leave_leading_or_trailing_characters(self):
-        window = _FakeWindow(12)
-
-        ai_benchmark._wr(window, 12, 1, 0, 0, "038s")
-        ai_benchmark._wr(window, 12, 1, 0, 0, "38s")
-
-        self.assertEqual("".join(window.line[:3]), "38s")
-        self.assertEqual("".join(window.line[3:]), " " * 9)
-        self.assertEqual(
-            [call[0] for call in window.calls],
-            ["move", "clrtoeol", "addstr", "move", "clrtoeol", "addstr"],
-        )
-
-    def test_wide_unicode_is_clipped_by_terminal_columns(self):
-        window = _FakeWindow(8)
-
-        ai_benchmark._wr(window, 8, 1, 0, 0, "🔄123456")
-
-        addstr = next(call for call in window.calls if call[0] == "addstr")
-        self.assertEqual(addstr[3], "🔄12345")
-        self.assertLessEqual(ai_benchmark._display_width(addstr[3]), 7)
+class TestDisplayWidthHelpers(unittest.TestCase):
+    """Pure terminal-width and grapheme helper regression tests."""
 
     def test_emoji_symbols_are_reserved_two_columns(self):
         self.assertEqual(ai_benchmark._char_display_width("⚠"), 2)
@@ -105,49 +55,6 @@ class TestTuiWriteHelper(unittest.TestCase):
         plugin_hdr = "A👨‍👩‍👧‍👦B"
         self.assertEqual(ai_benchmark._display_width(plugin_hdr), 4)
 
-    def test_resize_erases_virtual_screen_once_per_dimension_change(self):
-        window = _FakeWindow(12)
-
-        previous = ai_benchmark._tui_dimensions_changed(window, (20, 24), None)
-        self.assertEqual(previous, (20, 24))
-        self.assertEqual(window.calls.count(("erase",)), 1)
-
-        class FailingEraseWindow(_FakeWindow):
-            def erase(self):
-                self.calls.append(("erase",))
-                raise ai_benchmark.curses.error("resize pending")
-
-        failing = FailingEraseWindow(12)
-        failed_previous = ai_benchmark._tui_dimensions_changed(
-            failing, (20, 24), None
-        )
-        self.assertIsNone(failed_previous)
-        self.assertEqual(failing.calls.count(("erase",)), 1)
-
-        previous = ai_benchmark._tui_dimensions_changed(window, (20, 24), previous)
-        self.assertEqual(previous, (20, 24))
-        self.assertEqual(window.calls.count(("erase",)), 1)
-
-        previous = ai_benchmark._tui_dimensions_changed(window, (24, 20), previous)
-        self.assertEqual(previous, (24, 20))
-        self.assertEqual(window.calls.count(("erase",)), 2)
-
-    def test_narrow_header_and_summary_are_still_cleared_and_redrawn(self):
-        window = _FakeWindow(12)
-        snap = {"model": {"status": "pending"}}
-
-        ai_benchmark._render_header_and_summary(
-            window, 12, 3, snap, 0, 1, [], ["model"], [],
-            0, 0, 1, None, 0, 0,
-        )
-
-        rows = [call[1] for call in window.calls if call[0] == "addstr"]
-        self.assertIn(0, rows)
-        self.assertIn(1, rows)
-        self.assertGreaterEqual(
-            sum(call[0] == "clrtoeol" for call in window.calls), 3
-        )
-
     def test_zwj_emoji_is_kept_as_one_cluster_when_clipped(self):
         """Clipping must not leave a dangling ZWJ or variation selector."""
         family = "👨‍👩‍👧‍👦"
@@ -164,50 +71,6 @@ class TestTuiWriteHelper(unittest.TestCase):
         self.assertEqual(ai_benchmark._truncate_display_width(text, 1), "é")
         self.assertEqual(ai_benchmark._truncate_display_width(text, 2), "é")
         self.assertEqual(ai_benchmark._truncate_display_width(text, 3), "é👍🏽")
-
-    def test_control_characters_are_removed_before_curses_write(self):
-        """Model text cannot inject a cursor-moving terminal control."""
-        window = _FakeWindow(40)
-
-        ai_benchmark._wr(window, 40, 1, 0, 0, "ok\u001b[2J\u001b[H done")
-
-        addstr = next(call for call in window.calls if call[0] == "addstr")
-        self.assertEqual(addstr[3], "ok[2J[H done")
-        self.assertNotIn("\u001b", addstr[3])
-
-    def test_boundary_write_is_not_retried_after_curses_error(self):
-        class ErrorWindow(_FakeWindow):
-            def addstr(self, *args):
-                self.calls.append(("addstr", args))
-                raise ai_benchmark.curses.error("edge")
-
-        window = ErrorWindow(8)
-        ai_benchmark._wr(window, 8, 1, 0, 0, "1234567")
-
-        self.assertEqual(len([call for call in window.calls if call[0] == "addstr"]), 1)
-
-    def test_footer_redraw_clears_a_longer_previous_message(self):
-        window = _FakeWindow(60)
-
-        ai_benchmark._render_footer(window, 60, 1, [], [], 0)
-        ai_benchmark._render_footer(window, 60, 1, ["model"], [], 0)
-
-        rendered = "".join(window.line)
-        self.assertTrue(rendered.startswith(" 1 active"))
-        self.assertNotIn("All models complete", rendered)
-        self.assertEqual(rendered.rstrip(), " 1 active")
-
-    def test_footer_shows_preloading_model_and_elapsed_seconds(self):
-        window = _FakeWindow(80)
-
-        ai_benchmark._render_footer(
-            window, 80, 1, [], ["model"], 0,
-            preloading_models=["model"],
-            preloading_details=[("model", 8.0)],
-        )
-
-        rendered = "".join(window.line)
-        self.assertIn("Preloading model 8s", rendered)
 
 
 class TestPluginCellBlock(unittest.TestCase):

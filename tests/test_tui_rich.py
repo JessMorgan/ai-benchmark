@@ -161,30 +161,30 @@ class TestRichTuiDispatch(unittest.TestCase):
         stop.set()
         with mock.patch.dict(os.environ, {"AI_BENCHMARK_FORCE_RICH": "1"}), \
                 mock.patch("benchmark.cli._tui_main_rich") as rich, \
-                mock.patch("benchmark.cli._tui_main_curses") as curses:
+                mock.patch("benchmark.cli._fallback_tui_loop") as fallback:
             cli.tui_main(self._state(), stop, 1, [_plugin()])
         rich.assert_called_once()
-        curses.assert_not_called()
+        fallback.assert_not_called()
 
-    def test_default_dispatches_to_curses(self):
+    def test_default_dispatches_to_fallback(self):
         stop = threading.Event()
         stop.set()
         with mock.patch("benchmark.cli._rich_tui_enabled", return_value=False), \
                 mock.patch("benchmark.cli._tui_main_rich") as rich, \
-                mock.patch("benchmark.cli._tui_main_curses") as curses:
+                mock.patch("benchmark.cli._fallback_tui_loop") as fallback:
             cli.tui_main(self._state(), stop, 1, [_plugin()])
         rich.assert_not_called()
-        curses.assert_called_once()
+        fallback.assert_called_once()
 
-    def test_rich_failure_falls_back_to_curses(self):
+    def test_rich_failure_falls_back_to_fallback(self):
         stop = threading.Event()
         stop.set()
         with mock.patch("benchmark.cli._rich_tui_enabled", return_value=True), \
                 mock.patch("benchmark.cli._tui_main_rich",
                            side_effect=RuntimeError("boom")), \
-                mock.patch("benchmark.cli._tui_main_curses") as curses:
+                mock.patch("benchmark.cli._fallback_tui_loop") as fallback:
             cli.tui_main(self._state(), stop, 1, [_plugin()])
-        curses.assert_called_once()
+        fallback.assert_called_once()
 
 
 class TestBuildRichFrameAdvanced(unittest.TestCase):
