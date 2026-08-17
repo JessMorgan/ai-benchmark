@@ -698,6 +698,71 @@ def _render_tool_calls(tool_calls: list) -> str:
     return "\n".join(blocks)
 
 
+# Live-stream guard defaults. ``min_seq``/``repeats`` mirror the post-hoc
+# ``is_repeating`` detector in ``core.py`` (an 80-char tail block seen 3
+# times) so a stream that would be flagged ``repeating`` after completion is
+# aborted early instead of burning the model slot for minutes.
+REPETITION_GUARD_MIN_SEQ = 80
+REPETITION_GUARD_REPEATS = 3
+REPETITION_GUARD_WINDOW = 4096  # chars of history searched per check
+
+
+class _StreamGuards:
+    """Abort a live stream that exceeds its budgets or falls into a loop.
+
+    Two budgets split by stream: ``reasoning_content`` is capped at
+    ``max_thinking_tokens`` and final ``content`` at ``max_content_tokens``
+    (both estimated as ``len(text) / 4``, matching ``count_tokens``). A
+    per-stream repetition detector aborts content or thinking that repeats
+    an 80-char tail at least 3 times inside the recent history (the same
+    rule ``is_repeating`` applies after completion, applied live).
+
+    ``check`` is called after every parsed SSE delta; it returns an error
+    string once a budget or the repetition guard fires, and ``None``
+    otherwise. Checking is skipped when a stream has not grown since the
+    last call, so an idle/heartbeat stream costs nothing.
+    """
+
+    def __init__(self, max_content_tokens=None, max_thinking_tokens=None,
+                 repetition_guard=False):
+        self.max_content_tokens = max_content_tokens or 0
+        self.max_thinking_tokens = max_thinking_tokens or 0
+        self.repetition_guard = repetition_guard
+        self._checked_content_len = 0
+        self._checked_think_len = 0
+
+    def check(self, text, think_text):
+        """Return an abort error message, or ``None`` when the stream is fine."""
+        if len(text) > self._checked_content_len:
+            self._checked_content_len = len(text)
+            if self.max_content_tokens and len(text) / 4 > self.max_content_tokens:
+                return f"Content budget exceeded ({int(len(text) / 4)} tokens)"
+            if self.repetition_guard and _repeats_detected(text):
+                return "Repetition detected in content — stream aborted"
+        if len(think_text) > self._checked_think_len:
+            self._checked_think_len = len(think_text)
+            if self.max_thinking_tokens and len(think_text) / 4 > self.max_thinking_tokens:
+                return f"Thinking budget exceeded ({int(len(think_text) / 4)} tokens)"
+            if self.repetition_guard and _repeats_detected(think_text):
+                return "Repetition detected in thinking — stream aborted"
+        return None
+
+
+def _repeats_detected(text):
+    """Return whether ``text`` repeats its newest tail inside recent history.
+
+    Mirrors ``core.is_repeating`` semantics (an ``min_seq``-char tail
+    appearing ``repeats`` times) but bounds the search to the most recent
+    ``REPETITION_GUARD_WINDOW`` characters so an unbounded stream cannot
+    grow the per-check cost.
+    """
+    if len(text) < REPETITION_GUARD_MIN_SEQ * REPETITION_GUARD_REPEATS:
+        return False
+    tail = text[-REPETITION_GUARD_MIN_SEQ:]
+    history = text[-REPETITION_GUARD_MIN_SEQ - REPETITION_GUARD_WINDOW:-REPETITION_GUARD_MIN_SEQ]
+    return history.count(tail) >= REPETITION_GUARD_REPEATS - 1
+
+
 def _parse_sse_line(line: str, first_tok: float | None, text: str,
                     think_text: str, finish_reason: str | None,
                     usage: dict[str, Any],
@@ -764,11 +829,13 @@ def stream_request(source_config, timeout, model, source, prompt, max_tokens=204
                    on_chunk: Callable[[str], None] | None = None,
                    on_think_chunk: Callable[[str], None] | None = None,
                    pid: str | None = None,
-                   on_retry: Callable[[], None] | None = None) -> StreamResult:
+                   on_retry: Callable[[], None] | None = None,
+                   max_content_tokens=None, max_thinking_tokens=None,
+                   repetition_guard=False) -> StreamResult:
     """Make a streaming chat-completion request and return parsed results.
 
-    Returns a :class:`StreamResult` with named fields for the assembled text,
-    timing, finish reason, usage, and any transport error.
+    Returns a :class:`StreamResult` with parsed fields for the assembled
+    text, timing, finish reason, usage, and any transport error.
     ``think_text`` contains any reasoning/thinking content emitted by
     thinking-capable models (conversational ``reasoning_content`` field from
     SSE deltas). For standard models it is an empty string.
@@ -779,6 +846,13 @@ def stream_request(source_config, timeout, model, source, prompt, max_tokens=204
     waiting for the full response. Exceptions raised by ``on_chunk`` are
     swallowed so a buggy observer cannot abort the stream read -- the TUI
     is a display concern, not a correctness concern.
+
+    ``max_content_tokens`` / ``max_thinking_tokens`` / ``repetition_guard``
+    enable the live ``_StreamGuards`` watchdog: the stream is aborted
+    (returning an error with whatever text accumulated) the moment final
+    content or reasoning exceeds its budget, or the content/thinking repeats
+    itself. Defaults are off so preload/judge/utility callers are
+    unaffected; the benchmark task path opts in with per-source config.
     """
     start = time.time()
     first_tok = None
@@ -788,6 +862,7 @@ def stream_request(source_config, timeout, model, source, prompt, max_tokens=204
     finish_reason = None
     usage: dict[str, Any] = {}
     tool_calls: list = []
+    guards = _StreamGuards(max_content_tokens, max_thinking_tokens, repetition_guard)
     cfg = source_config.get(source) or {}
     protocol = _api_protocol(cfg)
     if protocol == "chatplayground":
@@ -845,6 +920,10 @@ def stream_request(source_config, timeout, model, source, prompt, max_tokens=204
                         if on_chunk is not None:
                             with contextlib.suppress(Exception):
                                 on_chunk(chunk)
+                        guard_error = guards.check(text, "")
+                        if guard_error:
+                            error = guard_error
+                            break
             error = _check_total_timeout(start, timeout, error, finish_reason)
             _log_response(log_path, request.curl_cmd, text, log_label)
             return StreamResult(text, think_text, first_tok, time.time(),
@@ -911,6 +990,10 @@ def stream_request(source_config, timeout, model, source, prompt, max_tokens=204
                 with contextlib.suppress(Exception):
                     # A buggy observer must not abort the stream read.
                     on_think_chunk(think_delta)
+            guard_error = guards.check(text, think_text)
+            if guard_error:
+                error = guard_error
+                break
         error = _check_total_timeout(start, timeout, error, finish_reason)
         # Render any captured native tool calls into the final text so the
         # tool-calling plugin can score them (they arrive in ``tool_calls``
@@ -946,7 +1029,9 @@ def nonstream_request(source_config, timeout, model, source, prompt, max_tokens=
                       drop_params=None, stop_event=None, system_prompt=None,
                       request_params=None,
                       pid: str | None = None,
-                      on_retry: Callable[[], None] | None = None) -> NonStreamResult:
+                      on_retry: Callable[[], None] | None = None,
+                      max_content_tokens=None, max_thinking_tokens=None,
+                      repetition_guard=False) -> NonStreamResult:
     """Make a non-streaming chat-completion request and return parsed results.
 
     Returns a :class:`NonStreamResult` with named fields for response text,
@@ -954,6 +1039,13 @@ def nonstream_request(source_config, timeout, model, source, prompt, max_tokens=
     ``think_text`` contains any reasoning/thinking content from the API
     response (``message.reasoning_content`` field). For standard models it
     is an empty string.
+
+    ``max_content_tokens`` / ``max_thinking_tokens`` / ``repetition_guard``
+    enable the ``_StreamGuards`` watchdog on the completed response: a
+    response that already exceeded its content/thinking budget or repeats
+    itself is returned as an error instead of a completed result. Defaults
+    are off so preload/judge/utility callers are unaffected; the benchmark
+    task path opts in with per-source config.
     """
     start = time.time()
     error = None
@@ -962,6 +1054,7 @@ def nonstream_request(source_config, timeout, model, source, prompt, max_tokens=
     usage: dict[str, Any] = {}
     finish_reason = None
     tool_calls: list = []
+    guards = _StreamGuards(max_content_tokens, max_thinking_tokens, repetition_guard)
     cfg = source_config.get(source) or {}
     protocol = _api_protocol(cfg)
     if protocol == "chatplayground":
@@ -1030,6 +1123,9 @@ def nonstream_request(source_config, timeout, model, source, prompt, max_tokens=
             except (json.JSONDecodeError, KeyError, IndexError, TypeError) as exc:
                 error = f"Invalid completion response: {type(exc).__name__}: {exc}"
                 tool_calls = []
+        guard_error = guards.check(text, think_text)
+        if not error and guard_error:
+            error = guard_error
         _log_response(log_path, request.curl_cmd, raw_resp_text, log_label)
     error = _check_total_timeout(start, timeout, error, finish_reason)
     return NonStreamResult(text, think_text, usage, time.time() - start,

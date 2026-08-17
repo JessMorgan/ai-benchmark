@@ -99,6 +99,47 @@ def resolve_model_thread_limit(source_config, source, top_level=1):
     return value
 
 
+# Per-response token budgets for the live stream watchdog (``http._StreamGuards``).
+# ``reasoning_content`` is capped separately from final content so a thinking
+# loop cannot burn the whole ``max_tokens`` allowance before a single content
+# token lands, and a content loop cannot drag on for the full 30-60 min a
+# 65k-token budget allows on local hardware. The defaults match the
+# operator's chosen split: up to 32k thinking tokens, then up to 16k content
+# tokens. Per-source ``max_thinking_tokens`` / ``max_content_tokens`` config
+# keys override; ``repetition_guard`` (default on) aborts a stream whose
+# content or thinking repeats itself.
+DEFAULT_MAX_THINKING_TOKENS = 32768
+DEFAULT_MAX_CONTENT_TOKENS = 16384
+
+
+def resolve_stream_guards(source_config, source):
+    """Return ``(max_content_tokens, max_thinking_tokens, repetition_guard)``.
+
+    Reads the per-source ``max_content_tokens``, ``max_thinking_tokens`` and
+    ``repetition_guard`` keys, falling back to the defaults above. Invalid
+    (non-positive / non-int) token values fall back to the default; the
+    repetition guard defaults to enabled since its rule (an 80-char block
+    repeated 3x) already marks completed responses as ``repeating``.
+    """
+    cfg = source_config.get(source)
+    if not isinstance(cfg, dict):
+        return (DEFAULT_MAX_CONTENT_TOKENS, DEFAULT_MAX_THINKING_TOKENS, True)
+
+    def _tokens(key, default):
+        value = cfg.get(key, default)
+        try:
+            value = int(value)
+        except (TypeError, ValueError):
+            return default
+        return value if value > 0 else default
+
+    return (
+        _tokens("max_content_tokens", DEFAULT_MAX_CONTENT_TOKENS),
+        _tokens("max_thinking_tokens", DEFAULT_MAX_THINKING_TOKENS),
+        bool(cfg.get("repetition_guard", True)),
+    )
+
+
 def preload_model(source_config, source, api_model, timeout,
                   session_seed=0, stop_event=None, drop_params=None,
                   log_path=None) -> PreloadResult:
@@ -876,7 +917,13 @@ def dump_default_config():
                 "model_thread_limit": 1,
                 "preload": False,
                 "preload_timeout": PRELOAD_DEFAULT_TIMEOUT,
-                "opencode_timeout": int(OPENCODE_NO_OUTPUT_GRACE)
+                "opencode_timeout": int(OPENCODE_NO_OUTPUT_GRACE),
+                # Live stream watchdog: abort requests whose reasoning or
+                # final content exceed these budgets, or whose content/
+                # thinking starts repeating itself.
+                "max_thinking_tokens": DEFAULT_MAX_THINKING_TOKENS,
+                "max_content_tokens": DEFAULT_MAX_CONTENT_TOKENS,
+                "repetition_guard": True
             },
             "Local Server 2": {
                 "api_url": "http://other.server:11434/chat/completions",
@@ -888,7 +935,13 @@ def dump_default_config():
                 "model_thread_limit": 1,
                 "preload": False,
                 "preload_timeout": PRELOAD_DEFAULT_TIMEOUT,
-                "opencode_timeout": int(OPENCODE_NO_OUTPUT_GRACE)
+                "opencode_timeout": int(OPENCODE_NO_OUTPUT_GRACE),
+                # Live stream watchdog: abort requests whose reasoning or
+                # final content exceed these budgets, or whose content/
+                # thinking starts repeating itself.
+                "max_thinking_tokens": DEFAULT_MAX_THINKING_TOKENS,
+                "max_content_tokens": DEFAULT_MAX_CONTENT_TOKENS,
+                "repetition_guard": True
             },
             "Remote Provider 1": {
                 "api_url": "http://remote.provider:11434/chat/completions",
@@ -900,7 +953,13 @@ def dump_default_config():
                 "model_thread_limit": 1,
                 "preload": False,
                 "preload_timeout": PRELOAD_DEFAULT_TIMEOUT,
-                "opencode_timeout": int(OPENCODE_NO_OUTPUT_GRACE)
+                "opencode_timeout": int(OPENCODE_NO_OUTPUT_GRACE),
+                # Live stream watchdog: abort requests whose reasoning or
+                # final content exceed these budgets, or whose content/
+                # thinking starts repeating itself.
+                "max_thinking_tokens": DEFAULT_MAX_THINKING_TOKENS,
+                "max_content_tokens": DEFAULT_MAX_CONTENT_TOKENS,
+                "repetition_guard": True
             },
             "1min.ai": {
                 "api_protocol": "1min",
@@ -913,7 +972,13 @@ def dump_default_config():
                 "model_thread_limit": 1,
                 "preload": False,
                 "preload_timeout": PRELOAD_DEFAULT_TIMEOUT,
-                "opencode_timeout": int(OPENCODE_NO_OUTPUT_GRACE)
+                "opencode_timeout": int(OPENCODE_NO_OUTPUT_GRACE),
+                # Live stream watchdog: abort requests whose reasoning or
+                # final content exceed these budgets, or whose content/
+                # thinking starts repeating itself.
+                "max_thinking_tokens": DEFAULT_MAX_THINKING_TOKENS,
+                "max_content_tokens": DEFAULT_MAX_CONTENT_TOKENS,
+                "repetition_guard": True
             },
             "ChatPlayground": {
                 "api_protocol": "chatplayground",
@@ -993,6 +1058,16 @@ def _run_plugin_task(target_name, api_model, source, plugin, source_config, time
         return PluginTaskResult(None, f"Unknown source '{source}' — not in SOURCE_CONFIG")
     if runner not in ("http", "opencode"):
         return PluginTaskResult(None, f"Unknown runner {runner!r}")
+
+    # Per-source stream watchdog budgets: abort an HTTP request the moment
+    # reasoning or content exceeds its split token budget, or when content/
+    # thinking starts repeating itself (a 30-60 min runaway on local
+    # hardware otherwise). The OpenCode subprocess runner is not covered:
+    # it cannot abort a live stream, and has its own timeouts.
+    guard_values = resolve_stream_guards(source_config, source)
+    max_content_tokens = guard_values[0]
+    max_thinking_tokens = guard_values[1]
+    repetition_guard = guard_values[2]
 
     if stop_event and stop_event.is_set():
         return PluginTaskResult(None, "Cancelled")
@@ -1171,7 +1246,10 @@ def _run_plugin_task(target_name, api_model, source, plugin, source_config, time
                 session_seed=session_seed, temperature=temperature,
                 drop_params=drop_params, stop_event=stop_event,
                 system_prompt=system_prompt,
-                on_chunk=on_chunk, on_think_chunk=on_think_chunk, pid=pid, on_retry=on_retry)
+                on_chunk=on_chunk, on_think_chunk=on_think_chunk, pid=pid, on_retry=on_retry,
+                max_content_tokens=max_content_tokens,
+                max_thinking_tokens=max_thinking_tokens,
+                repetition_guard=repetition_guard)
             text = stream_result.text
             think_text = stream_result.think_text
             first_tok = stream_result.first_tok
@@ -1211,7 +1289,10 @@ def _run_plugin_task(target_name, api_model, source, plugin, source_config, time
                         log_label=f"{plugin.name} (Non-Streaming, attempt {attempt + 1})",
                         session_seed=session_seed, temperature=temperature,
                         drop_params=drop_params, stop_event=stop_event,
-                        system_prompt=system_prompt, pid=pid, on_retry=on_retry)
+                        system_prompt=system_prompt, pid=pid, on_retry=on_retry,
+                        max_content_tokens=max_content_tokens,
+                        max_thinking_tokens=max_thinking_tokens,
+                        repetition_guard=repetition_guard)
                     text = nonstream_result.text
                     think_text = nonstream_result.think_text
                     ns_time = nonstream_result.gen_time
@@ -1237,7 +1318,10 @@ def _run_plugin_task(target_name, api_model, source, plugin, source_config, time
                 log_label=f"{plugin.name} (attempt {attempt + 1})",
                 session_seed=session_seed, temperature=temperature,
                 drop_params=drop_params, stop_event=stop_event,
-                system_prompt=system_prompt, pid=pid, on_retry=on_retry)
+                system_prompt=system_prompt, pid=pid, on_retry=on_retry,
+                max_content_tokens=max_content_tokens,
+                max_thinking_tokens=max_thinking_tokens,
+                repetition_guard=repetition_guard)
             text = nonstream_result.text
             think_text = nonstream_result.think_text
             gen_time = nonstream_result.gen_time
@@ -1318,7 +1402,10 @@ def _run_plugin_task(target_name, api_model, source, plugin, source_config, time
                 session_seed=session_seed, temperature=temperature,
                 drop_params=drop_params, stop_event=stop_event,
                 system_prompt=system_prompt,
-                on_chunk=on_chunk, on_think_chunk=on_think_chunk, pid=pid, on_retry=on_retry)
+                on_chunk=on_chunk, on_think_chunk=on_think_chunk, pid=pid, on_retry=on_retry,
+                max_content_tokens=max_content_tokens,
+                max_thinking_tokens=max_thinking_tokens,
+                repetition_guard=repetition_guard)
             text = stream_result.text
             think_text = stream_result.think_text
             first_tok = stream_result.first_tok

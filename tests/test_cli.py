@@ -773,7 +773,9 @@ class TestDropParams(unittest.TestCase):
         def fake_stream_request(source_config, timeout, model, source, prompt, max_tokens=2048,
                                 log_path=None, log_label=None, session_seed=0, temperature=None,
                                 drop_params=None, stop_event=None, system_prompt=None,
-                                on_chunk=None, on_think_chunk=None, pid=None, on_retry=None):
+                                on_chunk=None, on_think_chunk=None, pid=None, on_retry=None,
+                                max_content_tokens=None, max_thinking_tokens=None,
+                                repetition_guard=False):
             # Simulate two SSE deltas; the closure should fire once per delta.
             # ``on_think_chunk`` is the parallel reasoning-content
             # callback added to make the live TUI's per-plugin

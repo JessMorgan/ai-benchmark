@@ -263,6 +263,41 @@ sources:
 
 Defaults are **opt-out**: every source retries up to twice by default. To restore the previous fail-fast behaviour, set `max_429_retries: 0` per source or pass `--no-retry-on-429` globally. Explicit per-source `max_429_retries` values are preserved by the global toggle. When a 429 is returned, the runner sleeps `max(Retry-After, backoff_seconds * backoff_factor ** attempt)` bounded by `max_backoff_seconds`, with ±20 % jitter applied only when `Retry-After` is absent. Each retry is logged to that model's `logs/<model>.log` and `stop_event` cancels the sleep immediately, so Ctrl+C still terminates the runner quickly. During a model's run, two consecutive plugin tests that exhaust their 429 retries trip a model-local circuit breaker: the remaining plugin tests are cancelled, and the model is recorded as failed with the circuit-breaker reason. A successful or non-429 test resets that consecutive count; one isolated 429 does not cancel the model. With parallel plugin workers, already-running requests may finish or observe cancellation, but queued work is prevented from issuing another request once the breaker trips.
 
+### Live Stream Watchdog
+
+Per-source live-stream guardrails abort a request the moment it becomes
+pathological, instead of letting it burn its entire `max_tokens` budget
+(and the source's model slot) over 30-60 minutes on local hardware.
+
+The watchdog splits the budget by stream: `reasoning_content` (thinking)
+and final `content` are tracked separately as the SSE deltas arrive, and
+the request is aborted as soon as either exceeds its token budget
+(`len(text) / 4`, the same estimator used for final token counts). A
+repetition guard additionally aborts a stream whose content or thinking
+repeats an 80-character tail block at least 3 times within the recent
+history — the same rule the post-hoc `_repeating` flag applies after
+completion, applied live so the slot frees immediately.
+
+```yaml
+sources:
+  AI Server:
+    api_url: ...
+    headers: ...
+    max_thinking_tokens: 32768    # reasoning_content cap (default 32768)
+    max_content_tokens: 16384     # final-content cap (default 16384)
+    repetition_guard: true        # abort on repetition loops (default true)
+```
+
+An aborted request is recorded as an error on the plugin cell with the
+reason in the stream error / `meta.json` (`Content budget exceeded (N
+tokens)`, `Thinking budget exceeded (N tokens)`, or `Repetition detected
+in content|thinking — stream aborted`); any text streamed before the abort
+is retained for scoring and diagnosis. Budget-aborted attempts never trip
+the thinking-truncation auto-escalation (the abort is an error, not a
+`thinking-truncation` classification). The watchdog applies to the HTTP
+benchmark task path only — preload probes, judge requests, and the
+OpenCode subprocess runner are unaffected.
+
 ### Environment Variable Expansion
 
 Any string value in the config supports `${VAR}` and `${VAR:default}` syntax

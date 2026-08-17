@@ -28,6 +28,7 @@ from benchmark.core import (
     preload_model,
     resolve_model_sources,
     resolve_preload_timeout,
+    resolve_stream_guards,
     resolve_targets,
     run_model,
 )
@@ -225,6 +226,23 @@ class TestPreload(unittest.TestCase):
         self.assertEqual(resolve_preload_timeout(cfg, "missing"), 300)
         self.assertEqual(resolve_preload_timeout({}, "S", default=7), 7)
 
+    def test_resolve_stream_guards_defaults(self):
+        content, thinking, guard = resolve_stream_guards({}, "missing")
+        self.assertEqual(content, 16384)
+        self.assertEqual(thinking, 32768)
+        self.assertTrue(guard)
+
+    def test_resolve_stream_guards_configured_values(self):
+        cfg = {"S": {"max_content_tokens": 4096, "max_thinking_tokens": 8192,
+                     "repetition_guard": False}}
+        self.assertEqual(resolve_stream_guards(cfg, "S"), (4096, 8192, False))
+
+    def test_resolve_stream_guards_ignores_invalid_tokens(self):
+        cfg = {"S": {"max_content_tokens": "nope", "max_thinking_tokens": -5}}
+        content, thinking, _ = resolve_stream_guards(cfg, "S")
+        self.assertEqual(content, 16384)
+        self.assertEqual(thinking, 32768)
+
 
 class TestDumpDefaultConfig(unittest.TestCase):
     def test_dump_default_config_prints_valid_json(self):
@@ -292,6 +310,27 @@ class TestRunPluginTaskGuards(unittest.TestCase):
         )
         self.assertIsNotNone(result.error)
         self.assertIn("OpenCode runner is missing", result.error)
+
+    def test_run_plugin_task_passes_stream_guards_to_http(self):
+        """Per-source watchdog budgets reach the streaming request layer."""
+        captured = {}
+
+        def fake_stream(*args, **kwargs):
+            captured.update(kwargs)
+            return StreamResult("hello", "", None, 0.1, None, "stop", {})
+
+        source_config = {"S": {"api_url": "http://x", "headers": {},
+                               "max_content_tokens": 1024,
+                               "max_thinking_tokens": 2048,
+                               "repetition_guard": False}}
+        with mock.patch("benchmark.core.stream_request", side_effect=fake_stream):
+            _run_plugin_task(
+                "m", "model", "S", _FakePlugin(), source_config, 1, [100],
+                0, None, {}, self._state(),
+            )
+        self.assertEqual(captured["max_content_tokens"], 1024)
+        self.assertEqual(captured["max_thinking_tokens"], 2048)
+        self.assertFalse(captured["repetition_guard"])
 
 
 class TestRunModelGuards(unittest.TestCase):

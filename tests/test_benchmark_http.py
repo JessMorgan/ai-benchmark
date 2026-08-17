@@ -12,6 +12,8 @@ from unittest import mock
 
 from benchmark.http import (
     PostRequestResult,
+    _repeats_detected,
+    _StreamGuards,
     build_curl_cmd,
     fetch_models_v1,
     get_429_stats,
@@ -65,6 +67,64 @@ class TestBuildCurlCmd(unittest.TestCase):
         )
         payload = shlex.split(command)[shlex.split(command).index("-d") + 1]
         self.assertEqual(json.loads(payload), request_body)
+
+
+class TestStreamGuards(unittest.TestCase):
+    """Unit tests for the live-stream watchdog (budgets + repetition)."""
+
+    def test_content_budget_exceeded(self):
+        guards = _StreamGuards(max_content_tokens=10)
+        err = guards.check("x" * 100, "")
+        self.assertIn("Content budget exceeded", err)
+
+    def test_thinking_budget_exceeded(self):
+        guards = _StreamGuards(max_thinking_tokens=10)
+        err = guards.check("", "r" * 100)
+        self.assertIn("Thinking budget exceeded", err)
+
+    def test_content_under_budget_passes(self):
+        guards = _StreamGuards(max_content_tokens=10)
+        self.assertIsNone(guards.check("x" * 20, ""))  # 5 tokens <= 10
+
+    def test_normal_answer_passes_repetition_check(self):
+        guards = _StreamGuards(max_content_tokens=100000,
+                               max_thinking_tokens=100000, repetition_guard=True)
+        text = " ".join(f"word{i}" for _ in range(3) for i in range(500))
+        thinking = " ".join(f"reason{i}" for i in range(2000))
+        self.assertIsNone(guards.check(text, thinking))
+
+    def test_content_repetition_aborts(self):
+        guards = _StreamGuards(max_content_tokens=100000, repetition_guard=True)
+        err = guards.check("B" * 300, "")
+        self.assertIn("Repetition detected", err)
+        self.assertIn("content", err)
+
+    def test_thinking_repetition_aborts(self):
+        guards = _StreamGuards(max_content_tokens=100000, repetition_guard=True)
+        err = guards.check("", "corto" * 120)
+        self.assertIn("Repetition detected", err)
+        self.assertIn("thinking", err)
+
+    def test_repetition_only_fires_after_enough_repeats(self):
+        guards = _StreamGuards(max_content_tokens=100000, repetition_guard=True)
+        # Two identical 80-char blocks are not yet a loop (needs 3).
+        self.assertIsNone(guards.check("B" * 160, ""))
+        self.assertIsNotNone(guards.check("B" * 300, ""))
+
+    def test_guards_off_by_default(self):
+        guards = _StreamGuards()
+        self.assertIsNone(guards.check("B" * 5000, "B" * 5000))
+
+    def test_repetition_ignored_when_disabled(self):
+        guards = _StreamGuards(max_content_tokens=100000, repetition_guard=False)
+        self.assertIsNone(guards.check("B" * 5000, ""))
+
+    def test_repeats_detected_matches_post_hoc_semantics(self):
+        # 80-char tail appearing 3x total = repeating (mirrors core.is_repeating).
+        self.assertTrue(_repeats_detected("B" * 300))
+        self.assertFalse(_repeats_detected("B" * 150))
+        distinct = " ".join(f"word{i}" for i in range(500))
+        self.assertFalse(_repeats_detected(distinct))
 
 
 class TestStreamRequest(unittest.TestCase):
@@ -384,6 +444,64 @@ class TestStreamRequest(unittest.TestCase):
         self.assertEqual(result.text, "Hello")
         self.assertEqual(result.tool_calls, [])
 
+    def _stream_request(self, lines, **kwargs):
+        fake_response = mock.MagicMock()
+        fake_response.status_code = 200
+        fake_response.__enter__ = lambda self_: self_
+        fake_response.__exit__ = lambda self_, *a: None
+        fake_response.iter_lines = mock.MagicMock(return_value=iter(lines))
+
+        @contextlib.contextmanager
+        def fake_ctx(*a, **kw):
+            yield PostRequestResult(fake_response, None, None)
+
+        with mock.patch("benchmark.http._post_request_context", fake_ctx):
+            return stream_request(
+                {"src": {"api_url": "http://x", "headers": {}}},
+                10, "m", "src", "p", 100, **kwargs,
+            )
+
+    def _sse(self, payload):
+        return "data: " + json.dumps(payload)
+
+    def test_stream_request_aborts_on_content_budget(self):
+        result = self._stream_request(
+            [self._sse({"choices": [{"delta": {"content": "a" * 50}}]}),
+             self._sse({"choices": [{"delta": {"content": "b" * 100}}]}),
+             "data: [DONE]"],
+            max_content_tokens=10,
+        )
+        self.assertIn("Content budget exceeded", result.error)
+        # Partial streamed text is retained for scoring/diagnosis.
+        self.assertEqual(result.text, "a" * 50)
+
+    def test_stream_request_keeps_stream_when_guard_off(self):
+        result = self._stream_request(
+            [self._sse({"choices": [{"delta": {"content": "a" * 50}}]}),
+             self._sse({"choices": [{"delta": {"content": "b" * 100}}]}),
+             "data: [DONE]"],
+        )
+        self.assertIsNone(result.error)
+        self.assertEqual(result.text, "a" * 50 + "b" * 100)
+
+    def test_stream_request_aborts_on_thinking_budget(self):
+        result = self._stream_request(
+            [self._sse({"choices": [{"delta": {"reasoning_content": "r" * 200}}]}),
+             "data: [DONE]"],
+            max_thinking_tokens=10,
+        )
+        self.assertIn("Thinking budget exceeded", result.error)
+
+    def test_stream_request_aborts_on_repetition(self):
+        result = self._stream_request(
+            [self._sse({"choices": [{"delta": {"content": "B" * 100}}]}) for _ in range(3)]
+            + ["data: [DONE]"],
+            max_content_tokens=100000,
+            repetition_guard=True,
+        )
+        self.assertIn("Repetition detected", result.error)
+        self.assertEqual(result.text, "B" * 300)
+
     def test_stream_request_respects_stop_event(self):
         """stream_request returns 'Cancelled' when stop_event is set mid-stream."""
         source_config = {"Local": {"api_url": "http://localhost/chat/completions", "headers": {}}}
@@ -492,6 +610,57 @@ class TestNonstreamRequest(unittest.TestCase):
         self.assertIn('"name": "search_flights"', result.text)
         self.assertEqual(len(result.tool_calls), 1)
         self.assertEqual(result.tool_calls[0]["function"]["name"], "search_flights")
+
+    def _nonstream_result(self, body, **kwargs):
+        source_config = {"Local": {"api_url": "http://localhost/chat/completions", "headers": {}}}
+
+        class MockResponse:
+            status_code = 200
+
+            def iter_content(self, chunk_size=8192):
+                yield body.encode("utf-8")
+
+            def close(self):
+                pass
+
+        with mock.patch("requests.post", return_value=MockResponse()):
+            return nonstream_request(
+                source_config, timeout=5, model="m", source="Local",
+                prompt="hi", max_tokens=10, **kwargs,
+            )
+
+    def test_nonstream_request_rejects_over_budget_content(self):
+        body = json.dumps({
+            "choices": [{"message": {"content": "x" * 500}, "finish_reason": "stop"}],
+        })
+        result = self._nonstream_result(body, max_content_tokens=10)
+        self.assertIn("Content budget exceeded", result.error)
+
+    def test_nonstream_request_rejects_over_budget_thinking(self):
+        body = json.dumps({
+            "choices": [{
+                "message": {"content": "ok", "reasoning_content": "r" * 500},
+                "finish_reason": "stop",
+            }],
+        })
+        result = self._nonstream_result(body, max_thinking_tokens=10)
+        self.assertIn("Thinking budget exceeded", result.error)
+
+    def test_nonstream_request_rejects_repetition(self):
+        body = json.dumps({
+            "choices": [{"message": {"content": "B" * 5000}, "finish_reason": "stop"}],
+        })
+        result = self._nonstream_result(
+            body, max_content_tokens=100000, repetition_guard=True)
+        self.assertIn("Repetition detected", result.error)
+
+    def test_nonstream_request_no_guard_by_default(self):
+        body = json.dumps({
+            "choices": [{"message": {"content": "B" * 5000}, "finish_reason": "stop"}],
+        })
+        result = self._nonstream_result(body)
+        self.assertIsNone(result.error)
+        self.assertEqual(result.text, "B" * 5000)
 
     def test_nonstream_request_respects_stop_event(self):
         """nonstream_request returns 'Cancelled' when stop_event is set mid-read."""

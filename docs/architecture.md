@@ -104,6 +104,14 @@ Both request functions:
 4. Log the curl command and response.
 5. Return text, timing, and usage info.
 
+The HTTP task path also passes per-source live-stream guards (`http._StreamGuards`,
+resolved via `core.resolve_stream_guards`) into both request functions. On every
+SSE delta the guards compare `reasoning_content` and `content` against their
+split token budgets (`max_thinking_tokens` / `max_content_tokens`) and run a
+repetition check on both streams; the first violation aborts the request with a
+distinct error, retaining the text streamed so far for scoring. Guards apply to
+benchmark task requests only - preload probes, judges, and OpenCode are exempt.
+
 ## Plugin Scoring
 
 Each plugin's `evaluate()` method receives the raw response text and returns an `EvaluationResult` containing a native task-scale score, rubric criteria, and diagnostics. Plugins may use regex checks, typed parsers, and isolated execution validators; the shared `Rubric` helper records evidence and bounded penalties. The benchmark core normalizes the native score exactly once to the public 0–100 percentage schema and serializes rubric entries as `points`/`total`. `score()` remains the native offline-evaluation convenience method and delegates to `evaluate()` for the built-in challenge plugins.
