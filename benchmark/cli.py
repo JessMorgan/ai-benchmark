@@ -476,9 +476,10 @@ FROZEN_VIEW_WIDTH = 35
 # (``<id>St`` width 5) was deleted as redundant: the merged status block
 # already conveys in-flight state, and post-flight the plugin isn't
 # streaming anymore, so the glyph was always ``-``.
-# The score column is nine display columns wide. Judge markers include
-# explicit spaces around the emoji/count (for example ``63 ⚖️ 2``), so the
-# marker cannot visually merge with either the score or the token column.
+# The score column is nine display columns wide. Judge markers keep a
+# leading space from the score and put the count directly after the emoji
+# (for example ``63 ⚖️2``), so the marker cannot visually merge with either
+# the score or the token column.
 SCORE_COLUMN_WIDTH = 9
 PLUGIN_BLOCK_WIDTH = 30
 
@@ -576,12 +577,11 @@ def _judge_score_marker(pid, state):
 
     A numeric benchmark score is judgeable even before its first judge has
     returned, but no marker is shown until a judge has completed. Partial
-    judging is rendered as `` ⚖️ 1`` or `` ⚖️ 2`` and full completion as
-    `` ✅``. Explicit spaces make the marker boundary readable even on
-    terminals that render the scales emoji at a different width than the
-    TUI's conservative calculation. Completion is derived from the
-    current configured judge set and recorded votes, not a stale aggregate
-    flag.
+    judging is rendered as `` ⚖️1`` or `` ⚖️2`` and full completion as
+    `` ✅``; the judge count and the ``❌`` failure count follow their emoji
+    with no intervening space, while the leading space keeps the marker
+    separate from the score. Completion is derived from the current
+    configured judge set and recorded votes, not a stale aggregate flag.
     """
     configured = _judge_models(state)
     if not configured:
@@ -591,12 +591,12 @@ def _judge_score_marker(pid, state):
     if configured.issubset(judged_models):
         return " ✅"
     if judged_models:
-        marker = f" {_JUDGE_SCALES} {len(judged_models)}"
+        marker = f" {_JUDGE_SCALES}{len(judged_models)}"
         if failed_count:
-            marker += f" ❌ {failed_count}"
+            marker += f" ❌{failed_count}"
         return marker
     if failed_count:
-        return f" ❌ {failed_count}"
+        return f" ❌{failed_count}"
     return ""
 
 
@@ -636,9 +636,11 @@ def _plugin_cell_block(pid, s, p, sleeping_lookup=None):
     be dropped into ``plugin_str`` in place of the existing results layout.
     The standard table has four sub-headers per plugin (``RateSc RateTok
     RateTm RateTPS``), and the 30-column cell block matches that geometry.
-    Explicit spaces around partial/full judge markers keep the judge count
-    visibly separate from the token field even when a terminal renders
-    Unicode symbols with a different width than the TUI calculates.
+    A leading space separates partial/full judge markers from the score,
+    and the judge count follows its emoji directly (no intervening space)
+    so the marker stays visibly separate from the token field even when a
+    terminal renders Unicode symbols with a different width than the TUI
+    calculates.
 
     When the plugin is in flight (``pid in running_pids``) OR
     the model is currently in a 429 backoff sleep, the block collapses

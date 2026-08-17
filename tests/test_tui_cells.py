@@ -324,9 +324,9 @@ class TestPluginCellBlock(unittest.TestCase):
         }
         block = ai_benchmark._plugin_cell_block(
             "rate-limiter", s, self.p_streaming, None)
-        self.assertIn("95 ⚖️ 1", block)
+        self.assertIn("95 ⚖️1", block)
         self.assertEqual(ai_benchmark._display_width(block), ai_benchmark.PLUGIN_BLOCK_WIDTH)
-        marker_end = block.index("95 ⚖️ 1") + len("95 ⚖️ 1")
+        marker_end = block.index("95 ⚖️1") + len("95 ⚖️1")
         self.assertEqual(block[marker_end], " ")
 
     def test_no_judge_marker_before_any_vote(self):
@@ -360,7 +360,7 @@ class TestPluginCellBlock(unittest.TestCase):
         }
         block = ai_benchmark._plugin_cell_block(
             "rate-limiter", s, self.p_streaming, None)
-        self.assertIn("95 ⚖️ 1 ❌ 1", block)
+        self.assertIn("95 ⚖️1 ❌1", block)
 
     def test_duplicate_failed_votes_count_once(self):
         s = {
@@ -374,8 +374,8 @@ class TestPluginCellBlock(unittest.TestCase):
         }
         block = ai_benchmark._plugin_cell_block(
             "rate-limiter", s, self.p_streaming, None)
-        self.assertIn("95 ❌ 1", block)
-        self.assertNotIn("❌ 2", block)
+        self.assertIn("95 ❌1", block)
+        self.assertNotIn("❌2", block)
 
     def test_failed_judges_do_not_count_as_completed(self):
         s = {
@@ -395,7 +395,7 @@ class TestPluginCellBlock(unittest.TestCase):
         }
         block = ai_benchmark._plugin_cell_block(
             "rate-limiter", s, self.p_streaming, None)
-        self.assertIn("95 ❌ 2", block)
+        self.assertIn("95 ❌2", block)
         self.assertNotIn("✅", block)
 
     def test_two_judges_show_two_marker(self):
@@ -410,7 +410,7 @@ class TestPluginCellBlock(unittest.TestCase):
         }
         block = ai_benchmark._plugin_cell_block(
             "rate-limiter", s, self.p_streaming, None)
-        self.assertIn("95 ⚖️ 2", block)
+        self.assertIn("95 ⚖️2", block)
         self.assertEqual(ai_benchmark._display_width(block), ai_benchmark.PLUGIN_BLOCK_WIDTH)
 
     def test_judge_marker_cannot_be_confused_with_token_value(self):
@@ -433,8 +433,8 @@ class TestPluginCellBlock(unittest.TestCase):
         }
         block = ai_benchmark._plugin_cell_block(
             "rate-limiter", s, self.p_streaming, None)
-        self.assertEqual(block.split(), ["87", "⚖️", "2", "0", "2.0", "0.0"])
-        self.assertEqual(block, "  87 ⚖️ 2      0    2.0    0.0")
+        self.assertEqual(block.split(), ["87", "⚖️2", "0", "2.0", "0.0"])
+        self.assertEqual(block, "   87 ⚖️2      0    2.0    0.0")
         self.assertNotIn("⚖️0", block)
         self.assertEqual(ai_benchmark._display_width(block), ai_benchmark.PLUGIN_BLOCK_WIDTH)
 

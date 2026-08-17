@@ -200,7 +200,7 @@ class TestFormatModelRow(unittest.TestCase):
             "model-a", state, 7, [plugin], {"Local": "LC"},
             active_judge_targets={"model-a"})
         self.assertIn("7⚖️", frozen)
-        self.assertIn("80 ⚖️ 1", plugin_str)
+        self.assertIn("80 ⚖️1", plugin_str)
         self.assertEqual(cli._display_width(plugin_str), cli.PLUGIN_BLOCK_WIDTH)
 
     def test_historical_votes_without_active_judging_have_no_row_marker(self):
