@@ -82,6 +82,18 @@ class TestTuiWriteHelper(unittest.TestCase):
         self.assertEqual(ai_benchmark._char_display_width("↕"), 1)
         self.assertEqual(ai_benchmark._char_display_width("─"), 1)
 
+    def test_keycap_and_variation_selector_emoji_are_two_columns(self):
+        """Keycap and VS16 emoji collapse to one two-column glyph (wcwidth)."""
+        self.assertEqual(ai_benchmark._display_width("1️⃣"), 2)
+        self.assertEqual(ai_benchmark._cluster_display_width("1️⃣"), 2)
+        self.assertEqual(ai_benchmark._display_width("©️"), 2)
+        self.assertEqual(ai_benchmark._display_width("❤️"), 2)
+
+    def test_keycap_does_not_overflow_truncation_budget(self):
+        """A keycap must be clipped as a two-column unit, not overflow."""
+        self.assertEqual(ai_benchmark._truncate_display_width("1️⃣B", 2), "1️⃣")
+        self.assertEqual(ai_benchmark._truncate_display_width("©️X", 2), "©️")
+
     def test_horizontal_slice_uses_display_columns_and_keeps_clusters(self):
         text = "A👨‍👩‍👧‍👦BＣD"
 

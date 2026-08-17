@@ -26,6 +26,8 @@ from collections import deque
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from datetime import datetime, timezone
 
+from wcwidth import wcswidth, wcwidth
+
 from benchmark.completions import generate_shell_completion
 from benchmark.core import (
     JUDGE_DEFAULT_MAX_TOKENS,
@@ -237,24 +239,23 @@ def _inject_429_stats(run_info):
 def _char_display_width(char):
     """Return a conservative terminal-column width for one character.
 
-    Terminals do not agree on the width of Unicode characters with East
-    Asian Width ``A`` (ambiguous), and many emoji-capable terminals render
-    symbols such as ``⚠`` as two columns even though Unicode classifies them
-    as neutral. Under-counting one of those characters lets ``curses`` write
-    past the right edge, where the terminal may wrap it onto the next row.
-    That wrap is the source of the apparent prepended/stale characters.
+    Width comes from the ``wcwidth`` package, which encodes the width table
+    terminal emulators have converged on (East Asian Width plus emoji
+    presentation). Terminals still disagree on a few symbol code points that
+    ``wcwidth`` classifies as one column but that many emoji-capable
+    terminals render as two (e.g. ``⚠``); those are over-counted below.
 
-    Over-counting ambiguous symbols is intentional: clipping a row one
-    column early is harmless; allowing a row to wrap corrupts every row
-    below it. ASCII remains one column wide.
+    Under-counting one of those characters lets ``curses`` write past the
+    right edge, where the terminal may wrap it onto the next row. That wrap
+    is the source of the apparent prepended/stale characters. Over-counting
+    is intentional: clipping a row one column early is harmless; allowing a
+    row to wrap corrupts every row below it. ASCII remains one column wide.
     """
-    if char in "\r\n" or unicodedata.combining(char):
+    if char in "\r\n" or unicodedata.category(char) in {"Cc", "Cf"}:
         return 0
-    if unicodedata.category(char) in {"Cc", "Cf"}:
-        return 0
-    east_asian_width = unicodedata.east_asian_width(char)
-    if east_asian_width in ("W", "F"):
-        return 2
+    width = wcwidth(char)
+    if width >= 2:
+        return width
     # Emoji/symbol code points in these ranges are commonly rendered in an
     # emoji presentation with two columns. Do not classify every ambiguous
     # character as wide: arrows and box-drawing glyphs are normally one
@@ -264,7 +265,7 @@ def _char_display_width(char):
     if (0x2600 <= codepoint <= 0x27BF
             or 0x1F000 <= codepoint <= 0x1FAFF):
         return 2
-    return 1
+    return max(width, 0)
 
 
 def _is_grapheme_extension(char):
@@ -322,18 +323,23 @@ def _grapheme_clusters(text):
 
 
 def _cluster_display_width(cluster):
-    """Return a conservative terminal width for one grapheme cluster."""
-    if "\u200d" in cluster or (
-        sum(0x1F1E6 <= ord(char) <= 0x1F1FF for char in cluster) == 2
-    ):
-        # Joined emoji and flag pairs are rendered as one pictograph by
-        # terminals even though they contain several Unicode code points.
+    """Return a conservative terminal width for one grapheme cluster.
+
+    ``wcswidth`` measures a whole cluster at once, so joined emoji (ZWJ),
+    keycaps, flags, and variation-selector emoji collapse to their single
+    rendered-glyph width instead of summing their code points. The
+    conservative over-count for ``⚠``-style symbols is applied on top.
+    """
+    width = wcswidth(cluster)
+    if width >= 2:
+        return width
+    if any(_char_display_width(char) >= 2 for char in cluster):
         return 2
-    return max((_char_display_width(char) for char in cluster), default=0)
+    return max(width, 0)
 
 
 def _display_width(text):
-    """Return the terminal-column width of ``text`` without extra deps.
+    """Return the terminal-column width of ``text``.
 
     Width is calculated per approximate grapheme cluster rather than per
     Python code point. This keeps joined emoji, flags, skin-tone modifiers,
