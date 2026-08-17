@@ -324,9 +324,12 @@ class TestPluginCellBlock(unittest.TestCase):
         }
         block = ai_benchmark._plugin_cell_block(
             "rate-limiter", s, self.p_streaming, None)
-        self.assertIn("95 ⚖️1", block)
+        self.assertIn("95⚖️1", block)
         self.assertEqual(ai_benchmark._display_width(block), ai_benchmark.PLUGIN_BLOCK_WIDTH)
-        marker_end = block.index("95 ⚖️1") + len("95 ⚖️1")
+        # The marker is glued right after the score digits with no spaces.
+        marker_start = block.index("95⚖️1")
+        self.assertEqual(block[marker_start:marker_start + len("95⚖️1")], "95⚖️1")
+        marker_end = marker_start + len("95⚖️1")
         self.assertEqual(block[marker_end], " ")
 
     def test_no_judge_marker_before_any_vote(self):
@@ -360,7 +363,7 @@ class TestPluginCellBlock(unittest.TestCase):
         }
         block = ai_benchmark._plugin_cell_block(
             "rate-limiter", s, self.p_streaming, None)
-        self.assertIn("95 ⚖️1 ❌1", block)
+        self.assertIn("95⚖️1❌1", block)
 
     def test_duplicate_failed_votes_count_once(self):
         s = {
@@ -374,7 +377,7 @@ class TestPluginCellBlock(unittest.TestCase):
         }
         block = ai_benchmark._plugin_cell_block(
             "rate-limiter", s, self.p_streaming, None)
-        self.assertIn("95 ❌1", block)
+        self.assertIn("95❌1", block)
         self.assertNotIn("❌2", block)
 
     def test_failed_judges_do_not_count_as_completed(self):
@@ -395,7 +398,7 @@ class TestPluginCellBlock(unittest.TestCase):
         }
         block = ai_benchmark._plugin_cell_block(
             "rate-limiter", s, self.p_streaming, None)
-        self.assertIn("95 ❌2", block)
+        self.assertIn("95❌2", block)
         self.assertNotIn("✅", block)
 
     def test_two_judges_show_two_marker(self):
@@ -410,7 +413,7 @@ class TestPluginCellBlock(unittest.TestCase):
         }
         block = ai_benchmark._plugin_cell_block(
             "rate-limiter", s, self.p_streaming, None)
-        self.assertIn("95 ⚖️2", block)
+        self.assertIn("95⚖️2", block)
         self.assertEqual(ai_benchmark._display_width(block), ai_benchmark.PLUGIN_BLOCK_WIDTH)
 
     def test_judge_marker_cannot_be_confused_with_token_value(self):
@@ -433,10 +436,55 @@ class TestPluginCellBlock(unittest.TestCase):
         }
         block = ai_benchmark._plugin_cell_block(
             "rate-limiter", s, self.p_streaming, None)
-        self.assertEqual(block.split(), ["87", "⚖️2", "0", "2.0", "0.0"])
-        self.assertEqual(block, "   87 ⚖️2      0    2.0    0.0")
+        self.assertEqual(block.split(), ["87⚖️2", "0", "2.0", "0.0"])
+        self.assertEqual(block, "    87⚖️2      0    2.0    0.0")
         self.assertNotIn("⚖️0", block)
         self.assertEqual(ai_benchmark._display_width(block), ai_benchmark.PLUGIN_BLOCK_WIDTH)
+
+    def test_judge_slots_align_like_emojis_across_rows(self):
+        """Per-column slot widths make the scales markers and the red-x
+        markers start at the same display column in every row.
+
+        A row whose judging produced only failures still reserves the
+        scales slot (spaces), so its ``❌N`` lines up with rows that have
+        both markers; a row without a failure segment keeps the same total
+        width so the token column stays aligned.
+        """
+        def row(votes_list, score=95):
+            return {
+                "running_pids": [],
+                "rate-limiter_score": score,
+                "judge_models": ["judge-a", "judge-b", "judge-c"],
+                "rate-limiter_judge_votes": votes_list,
+                "rate-limiter_total_tokens": 120,
+                "rate-limiter_response_time": 0.4,
+                "rate-limiter_tps": 300.0,
+            }
+
+        ok_vote = {"model": "judge-a", "score": 90, "confidence": "high", "rationale": "valid"}
+        fail_vote = {"model": "judge-b", "score": None, "confidence": None,
+                     "rationale": None, "error": "HTTP 429"}
+        rows = [
+            row([ok_vote, fail_vote]),                    # both markers
+            row([fail_vote, {"model": "judge-c", "score": None,
+                             "error": "timeout"}], score=80),  # fail-only
+            row([], score=70),                            # no judging yet
+        ]
+        slots = ai_benchmark._plugin_judge_alignment(rows, "rate-limiter")
+        self.assertEqual(slots, (2, 3, 3))
+        blocks = [
+            ai_benchmark._plugin_cell_block("rate-limiter", row, self.p_streaming, None, slots)
+            for row in rows
+        ]
+        # The red-x markers of the two judged rows start at the SAME column.
+        x_cols = [b.index("❌") for b in blocks[:2]]
+        self.assertEqual(x_cols[0], x_cols[1])
+        # The scales marker starts at the same column in its row too.
+        self.assertIn("95⚖️1", blocks[0])
+        self.assertIn("80   ❌", blocks[1])
+        # Every block keeps the fixed 30-column geometry.
+        for block in blocks:
+            self.assertEqual(ai_benchmark._display_width(block), ai_benchmark.PLUGIN_BLOCK_WIDTH)
 
     def test_completed_three_judges_show_checkmark(self):
         s = {
@@ -451,7 +499,7 @@ class TestPluginCellBlock(unittest.TestCase):
         }
         block = ai_benchmark._plugin_cell_block(
             "rate-limiter", s, self.p_streaming, None)
-        self.assertIn("95 ✅", block)
+        self.assertIn("95✅", block)
         self.assertNotIn("⚖️", block)
         self.assertEqual(ai_benchmark._display_width(block), ai_benchmark.PLUGIN_BLOCK_WIDTH)
 
@@ -471,7 +519,7 @@ class TestPluginCellBlock(unittest.TestCase):
         }
         block = ai_benchmark._plugin_cell_block(
             "rate-limiter", s, self.p_streaming, None)
-        self.assertIn("95 ✅", block)
+        self.assertIn("95✅", block)
         self.assertEqual(ai_benchmark._display_width(block), ai_benchmark.PLUGIN_BLOCK_WIDTH)
 
     def test_completed_plugin_shows_numeric_results(self):

@@ -336,6 +336,26 @@ class TestFrameRowWidget(unittest.TestCase):
         row.update_line("hi", "bold", 5)
         self.assertEqual(row.render().plain, "hi   ")
 
+    def test_wide_emoji_keeps_count_adjacent(self):
+        """The wide scales emoji must not gain a space before its count.
+
+        Regression: the per-cell repainter splits wide glyphs into an atom
+        plus an empty continuation cell; joining that empty cell with a
+        literal space rendered ``95⚖️1`` as ``95⚖️ 1`` on every repaint.
+        """
+        row = cli._FrameRow()
+        row.update_line("95⚖️1❌3", None, 11)
+        self.assertEqual(row.render().plain, "95⚖️1❌3   ")
+        self.assertNotIn("⚖️ ", row.render().plain)
+        self.assertNotIn("❌ ", row.render().plain)
+
+    def test_wide_emoji_change_differs_only_real_cells(self):
+        """Replacing a judge count keeps the wide-emoji atom + continuation
+        cell in the diff machinery but never introduces a literal space."""
+        row = cli._FrameRow()
+        row.update_line("95⚖️1", None, 10)
+        self.assertTrue(row.update_line("95⚖️2", None, 10))
+        self.assertEqual(row.render().plain, "95⚖️2     ")
 
 class TestBenchmarkTUIAppRows(unittest.IsolatedAsyncioTestCase):
     """End-to-end: the app mounts one row widget per frame line."""

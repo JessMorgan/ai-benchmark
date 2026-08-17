@@ -573,32 +573,70 @@ def _judge_failed_count(pid, state):
     })
 
 
-def _judge_score_marker(pid, state):
-    """Return the compact judge status marker for one plugin score.
+def _judge_marker_parts(pid, state):
+    """Return the compact ``(scale, fail)`` judge-marker segments.
 
-    A numeric benchmark score is judgeable even before its first judge has
-    returned, but no marker is shown until a judge has completed. Partial
-    judging is rendered as `` ⚖️1`` or `` ⚖️2`` and full completion as
-    `` ✅``; the judge count and the ``❌`` failure count follow their emoji
-    with no intervening space, while the leading space keeps the marker
-    separate from the score. Completion is derived from the current
-    configured judge set and recorded votes, not a stale aggregate flag.
+    No leading or inter-segment spaces are included: the segments are glued
+    directly to the score digits (``95⚖️1❌2``) so the score column stays
+    tight. ``scale`` is the scales emoji plus the successful-judge count
+    (``⚖️1``) for partial judging, ``✅`` for full completion, or ``""``;
+    ``fail`` is the red-x plus the failed-judge count (``❌2``) or ``""``.
+    Completion is derived from the current configured judge set and recorded
+    votes, not a stale aggregate flag.
     """
     configured = _judge_models(state)
     if not configured:
-        return ""
+        return "", ""
     judged_models = _judge_votes(state, pid)
     failed_count = _judge_failed_count(pid, state)
     if configured.issubset(judged_models):
-        return " ✅"
-    if judged_models:
-        marker = f" {_JUDGE_SCALES}{len(judged_models)}"
-        if failed_count:
-            marker += f" ❌{failed_count}"
-        return marker
-    if failed_count:
-        return f" ❌{failed_count}"
-    return ""
+        return "✅", ""
+    scale = f"{_JUDGE_SCALES}{len(judged_models)}" if judged_models else ""
+    fail = f"❌{failed_count}" if failed_count else ""
+    return scale, fail
+
+
+def _judge_score_marker(pid, state):
+    """Return the space-free compact judge status for one plugin score.
+
+    Partial judging is rendered as ``⚖️1`` / ``⚖️2``, full completion as
+    ``✅``, failures as ``❌2``, and combinations as ``⚖️1❌3`` -- all with
+    no spaces, so the marker clings to the score digits and cannot merge
+    with either the score or the token column. Callers that need to line
+    up like emojis across rows should use :func:`_judge_marker_parts` and
+    the per-column slot widths from :func:`_plugin_judge_alignment`.
+    """
+    scale, fail = _judge_marker_parts(pid, state)
+    return scale + fail
+
+
+def _plugin_judge_alignment(snap_rows, pid):
+    """Return per-column marker slot widths for one plugin, or ``None``.
+
+    Scans every model row in the snapshot to find the widest score digits
+    (``score_w``), the widest scale segment (``scale_w``, includes ``✅``),
+    and the widest fail segment (``fail_w``) for ``pid``. When any marker
+    exists and ``score_w + scale_w + fail_w`` fits the 9-column score
+    budget, the caller renders every row in that column with these fixed
+    slot widths so like-emojis (the scales markers, then the red-x
+    markers) line up evenly across rows; ``None`` means the column has no
+    judging data (or the slots would overflow the budget, in which case
+    the compact no-space layout is kept instead).
+    """
+    score_w = scale_w = fail_w = 0
+    for s in snap_rows:
+        score = s.get(f"{pid}_score")
+        if not (isinstance(score, (int, float)) and not isinstance(score, bool)):
+            continue
+        score_w = max(score_w, len(f"{score:.0f}"))
+        scale, fail = _judge_marker_parts(pid, s)
+        scale_w = max(scale_w, _display_width(scale) if scale else 0)
+        fail_w = max(fail_w, _display_width(fail) if fail else 0)
+    if scale_w == 0 and fail_w == 0:
+        return None
+    if score_w + scale_w + fail_w > SCORE_COLUMN_WIDTH:
+        return None
+    return score_w, scale_w, fail_w
 
 
 def _model_judge_marker(state, active_plugins=None, active_judge_targets=None,
@@ -630,18 +668,20 @@ def _model_judge_marker(state, active_plugins=None, active_judge_targets=None,
     return ""
 
 
-def _plugin_cell_block(pid, s, p, sleeping_lookup=None):
+def _plugin_cell_block(pid, s, p, sleeping_lookup=None, judge_slots=None):
     """Render a single per-model cell block for one plugin.
 
     The block is always ``PLUGIN_BLOCK_WIDTH`` display columns wide so it can
     be dropped into ``plugin_str`` in place of the existing results layout.
     The standard table has four sub-headers per plugin (``RateSc RateTok
     RateTm RateTPS``), and the 30-column cell block matches that geometry.
-    A leading space separates partial/full judge markers from the score,
-    and the judge count follows its emoji directly (no intervening space)
-    so the marker stays visibly separate from the token field even when a
-    terminal renders Unicode symbols with a different width than the TUI
-    calculates.
+    Judge markers are rendered with no spaces at all (the score digits
+    directly abut ``⚖️N``/``❌N``, e.g. ``95⚖️1❌2``) so the score column
+    stays tight; when ``judge_slots`` is supplied (see
+    :func:`_plugin_judge_alignment`), like-emojis line up across rows in
+    the same plugin column because every cell uses the same fixed segment
+    widths for the score, scales/checkmark, and red-x parts.
+
 
     When the plugin is in flight (``pid in running_pids``) OR
     the model is currently in a 429 backoff sleep, the block collapses
@@ -783,8 +823,23 @@ def _plugin_cell_block(pid, s, p, sleeping_lookup=None):
     # that predate the thinking/content split.
     score = s.get(f"{pid}_score")
     if isinstance(score, (int, float)) and not isinstance(score, bool):
-        marker = _judge_score_marker(pid, s)
-        sc = f"{score:.0f}{marker}"
+        scale, fail = _judge_marker_parts(pid, s)
+        if judge_slots is not None:
+            # Per-column fixed slots so like-emojis line up across rows:
+            # the score is right-justified, the scales/checkmark segment
+            # occupies ``scale_w`` columns, and the red-x segment occupies
+            # ``fail_w`` columns. Missing segments are padded with spaces
+            # (e.g. ``95⚖️1❌3`` next to ``100   ❌3``), so every row in the
+            # column puts the same emoji at the same column. No spaces are
+            # emitted between the score digits and the markers.
+            score_w, scale_w, fail_w = judge_slots
+            sc = f"{score:>{score_w}.0f}"
+            if scale_w:
+                sc += (scale if scale else "").ljust(scale_w)
+            if fail_w:
+                sc += (fail if fail else "").ljust(fail_w)
+        else:
+            sc = f"{score:.0f}{scale}{fail}"
     else:
         sc = _fmt_value(score, ".0f")
     total_tokens = s.get(f"{pid}_total_tokens")
@@ -800,7 +855,8 @@ def _plugin_cell_block(pid, s, p, sleeping_lookup=None):
 
 
 def _format_model_row(name, s, display_idx, active_plugins, source_abbrevs,
-                      sleeping_lookup=None, active_judge_targets=None):
+                      sleeping_lookup=None, active_judge_targets=None,
+                      judge_slots=None):
     """Format a single model row into frozen and plugin strings.
 
     ``sleeping_lookup`` maps ``(source, api_model, pid)`` to sleep info
@@ -808,6 +864,13 @@ def _format_model_row(name, s, display_idx, active_plugins, source_abbrevs,
     cell can render its own per-plugin ``[429 sleeping Xs]`` bracket.
     Only the plugin that is actually in backoff is shown as sleeping;
     completed plugins keep their numeric results.
+
+    ``judge_slots`` is a mapping ``{pid: (score_w, scale_w, fail_w)}``
+    produced by :func:`_plugin_judge_alignment` over the full snapshot so
+    every row in a plugin column renders its judge markers with the same
+    fixed segment widths (like-emojis line up). Rows without judge data
+    still occupy the same per-cell width, keeping the score digit column
+    consistent.
     """
     sv = s["status"]
     status_ch = {"pending": "\u23f3", "queued": "\u23f3",
@@ -844,7 +907,11 @@ def _format_model_row(name, s, display_idx, active_plugins, source_abbrevs,
     # length and column geometry as before. Joins the per-plugin blocks
     # with single spaces, matching the existing column-join pattern.
     plugin_parts = [
-        _plugin_cell_block(p.id, s, p, sleeping_lookup=sleeping_lookup)
+        _plugin_cell_block(
+            p.id, s, p,
+            sleeping_lookup=sleeping_lookup,
+            judge_slots=(judge_slots or {}).get(p.id),
+        )
         for p in active_plugins
     ]
     plugin_str = " ".join(plugin_parts)
@@ -1035,6 +1102,14 @@ def _build_frame_lines(state, active_plugins, source_abbrevs, frozen_hdr,
             plugin_hdr, scroll_x, max(0, max_x - frozen_width - 1)
         )
         lines.append(line(frozen_hdr + " " + visible_plugin_hdr, "bold underline"))
+    # Per-plugin-column judge marker slots, computed once over the FULL
+    # snapshot (not just the visible slice) so like-emojis line up in the
+    # same columns regardless of scroll position.
+    judge_slots = {}
+    for plugin in active_plugins:
+        slots = _plugin_judge_alignment(snap.values(), plugin.id)
+        if slots is not None:
+            judge_slots[plugin.id] = slots
     for row_idx in range(visible_rows):
         abs_idx = scroll_y + row_idx
         if abs_idx >= len(snap_items):
@@ -1044,6 +1119,7 @@ def _build_frame_lines(state, active_plugins, source_abbrevs, frozen_hdr,
             name, s, abs_idx + 1, active_plugins, source_abbrevs,
             sleeping_lookup=sleeping_lookup,
             active_judge_targets=active_judge_targets,
+            judge_slots=judge_slots,
         )
         visible_plugin = _slice_display_width(
             plugin_str, scroll_x, max(0, max_x - frozen_width - 1)
@@ -1250,7 +1326,12 @@ class _FrameRow(Static):  # pragma: no cover - live interactive loop
                 spans = [(0, width)]
         else:
             spans = [(0, width)]
-        self._line_text = "".join(cell if cell else " " for cell in cells)
+        # Join cell atoms WITHOUT inserting a space for the empty
+        # continuation cells that follow wide graphemes (an emoji occupies
+        # two display columns but only one atom here). Emitting a literal
+        # space there would push the following character apart, e.g.
+        # rendering ``95⚖️1`` as ``95⚖️ 1`` on every repaint.
+        self._line_text = "".join(cells)
         self._line_style = style
         self._line_cells = cells
         if spans:
