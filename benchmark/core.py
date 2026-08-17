@@ -1565,31 +1565,46 @@ def run_model(model_name, source, state, active_plugins, source_config, timeout,
     latest = {(res.get("state_key", res["model"]), res.get("runner", "http")): res
               for res in state.latest_results()}
     existing = latest.get((target_name, runner))
+    # Live per-plugin progress for this target. A previous session may have
+    # scored plugins into ``model_info`` but been interrupted before
+    # ``add_result`` committed a full row to ``results`` (e.g. a preload error
+    # row with no scores is left as the latest row). Fall back to those
+    # stranded scores so an interrupted-but-successful plugin is reused
+    # instead of silently re-run.
+    live_info = state.snapshot().get(target_name, {})
 
     plugins_to_run = []
     for plugin in active_plugins:
         pid = plugin.id
         score_key = f"{pid}_score"
         # Re-use successful plugin results from a previous run; re-run any
-        # plugin that failed or was missing.
-        if existing is not None and score_key in existing and existing[score_key] != "fail":
-            r[f"{pid}_score"] = existing[score_key]
-            r[f"{pid}_rubric"] = existing.get(f"{pid}_rubric", [])
-            r[f"{pid}_diagnostics"] = existing.get(f"{pid}_diagnostics", {})
-            r[f"{pid}_response_time"] = existing[f"{pid}_response_time"]
-            r[f"{pid}_output_tokens"] = existing[f"{pid}_output_tokens"]
-            r[f"{pid}_thinking_tokens"] = existing.get(f"{pid}_thinking_tokens")
-            r[f"{pid}_total_tokens"] = existing.get(f"{pid}_total_tokens")
-            r[f"{pid}_tps"] = existing[f"{pid}_tps"]
-            r[f"{pid}_stream_ok"] = existing.get(f"{pid}_stream_ok", True)
-            r[f"{pid}_empty_reason"] = existing.get(f"{pid}_empty_reason")
-            r[f"{pid}_judge_score"] = existing.get(f"{pid}_judge_score")
-            r[f"{pid}_judge_confidence"] = existing.get(f"{pid}_judge_confidence")
-            r[f"{pid}_judge_rationale"] = existing.get(f"{pid}_judge_rationale")
-            r[f"{pid}_judge_error"] = existing.get(f"{pid}_judge_error")
-            r[f"{pid}_judge_input_sha256"] = existing.get(f"{pid}_judge_input_sha256")
-            r[f"{pid}_judge_votes"] = existing.get(f"{pid}_judge_votes", [])
-            r[f"{pid}_judge_complete"] = existing.get(f"{pid}_judge_complete", False)
+        # plugin that failed or was missing. Prefer the latest committed
+        # result row, then fall back to the live model_info score.
+        source_row = existing
+        if existing is None or score_key not in existing or existing[score_key] == "fail":
+            live_score = live_info.get(score_key)
+            if live_score is not None and live_score != "fail":
+                source_row = live_info
+            else:
+                source_row = None
+        if source_row is not None:
+            r[f"{pid}_score"] = source_row[score_key]
+            r[f"{pid}_rubric"] = source_row.get(f"{pid}_rubric", [])
+            r[f"{pid}_diagnostics"] = source_row.get(f"{pid}_diagnostics", {})
+            r[f"{pid}_response_time"] = source_row.get(f"{pid}_response_time")
+            r[f"{pid}_output_tokens"] = source_row.get(f"{pid}_output_tokens")
+            r[f"{pid}_thinking_tokens"] = source_row.get(f"{pid}_thinking_tokens")
+            r[f"{pid}_total_tokens"] = source_row.get(f"{pid}_total_tokens")
+            r[f"{pid}_tps"] = source_row.get(f"{pid}_tps")
+            r[f"{pid}_stream_ok"] = source_row.get(f"{pid}_stream_ok", True)
+            r[f"{pid}_empty_reason"] = source_row.get(f"{pid}_empty_reason")
+            r[f"{pid}_judge_score"] = source_row.get(f"{pid}_judge_score")
+            r[f"{pid}_judge_confidence"] = source_row.get(f"{pid}_judge_confidence")
+            r[f"{pid}_judge_rationale"] = source_row.get(f"{pid}_judge_rationale")
+            r[f"{pid}_judge_error"] = source_row.get(f"{pid}_judge_error")
+            r[f"{pid}_judge_input_sha256"] = source_row.get(f"{pid}_judge_input_sha256")
+            r[f"{pid}_judge_votes"] = source_row.get(f"{pid}_judge_votes", [])
+            r[f"{pid}_judge_complete"] = source_row.get(f"{pid}_judge_complete", False)
         else:
             plugins_to_run.append(plugin)
 

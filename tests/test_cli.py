@@ -393,6 +393,62 @@ class TestPartialPluginFailure(unittest.TestCase):
         self.assertEqual(result["rate-limiter_score"], 5)
         self.assertEqual(result["moe-dense_score"], 7)
 
+    def test_interrupted_model_info_score_is_reused_not_rerun(self):
+        """A score stranded in model_info (interrupted before add_result)
+        is reused when the latest committed result row has no score for it.
+
+        Regression for a resume re-running already-successful plugins: a
+        preload failure leaves an empty ``error`` row in ``state.results``
+        while the live per-plugin scores sit only in ``model_info``, so the
+        skip gate must fall back to model_info instead of re-running them.
+        """
+        plugins = [p for p in self.plugins if p.id in ("rate-limiter", "moe-dense")]
+        models = {"dummy-model": "Local"}
+        state = self.module.BenchmarkState(models, [p.id for p in plugins])
+        source_config = {"Local": {"api_url": "http://localhost:11434/chat/completions", "headers": {}, "plugin_thread_limit": 1}}
+
+        # Simulate an interrupted run: rate-limiter succeeded and wrote its
+        # score to model_info, but no full result row was committed. The only
+        # committed row is a scoreless preload-failure error.
+        state.update("dummy-model", **{
+            "rate-limiter_score": 5,
+            "rate-limiter_response_time": 1.2,
+            "rate-limiter_output_tokens": 100,
+            "rate-limiter_tps": 50.0,
+        })
+        state.add_result({
+            "model": "dummy-model",
+            "status": "error",
+            "error": "preload failed: HTTP 400",
+        })
+
+        calls = []
+
+        def fake_run_plugin_task(target_name, api_model, source, plugin, *args, **kwargs):
+            calls.append(plugin.id)
+            self.assertEqual(plugin.id, "moe-dense")
+            return PluginTaskResult({
+                "moe-dense_score": 7,
+                "moe-dense_response_time": 2.0,
+                "moe-dense_output_tokens": 200,
+                "moe-dense_tps": 100.0,
+                "moe-dense_stream_ok": True,
+            }, None)
+
+        with mock.patch.object(self.module, "_run_plugin_task", side_effect=fake_run_plugin_task):
+            self.module.run_model(
+                "dummy-model", "Local", state, plugins, source_config,
+                timeout=1, token_levels=[100], output_dir="/tmp/benchmark-test",
+                session_seed=0, global_cfg={},
+            )
+
+        # Only the missing plugin re-runs; the stranded score is carried over.
+        self.assertEqual(calls, ["moe-dense"])
+        result = state.latest_results()[0]
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["rate-limiter_score"], 5)
+        self.assertEqual(result["moe-dense_score"], 7)
+
 
 class TestConsecutive429CircuitBreaker(unittest.TestCase):
     @classmethod
