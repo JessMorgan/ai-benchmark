@@ -25,7 +25,8 @@ from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from datetime import datetime, timezone
 from typing import ClassVar
 
-from textual.app import App, ComposeResult
+from textual.app import App
+from textual.geometry import Region
 from textual.widgets import Static
 from wcwidth import wcswidth, wcwidth
 
@@ -1160,8 +1161,111 @@ def _frame_lines_to_text(lines):
     return text
 
 
+def _line_cells(text, width):
+    """Expand ``text`` into per-display-column cells, padded to ``width``.
+
+    A wide grapheme (emoji, CJK) occupies its own column plus an empty
+    continuation column, matching how the terminal lays the glyph out.
+    Returns a list of exactly ``width`` entries so two lines can be diffed
+    column-by-column regardless of their rendered widths.
+    """
+    cells = []
+    for cluster in _grapheme_clusters(text):
+        cluster_width = _cluster_display_width(cluster)
+        if cluster_width <= 0:
+            continue
+        cells.append(cluster)
+        cells.extend([""] * (cluster_width - 1))
+    if len(cells) > width:
+        del cells[width:]
+    cells.extend([" "] * (width - len(cells)))
+    return cells
+
+
+def _changed_cell_spans(old_cells, new_cells):
+    """Return ``(start, width)`` spans of columns that differ between cell lists.
+
+    Returns an empty list when the lines render identically, so callers can
+    skip the repaint entirely. Spans are horizontal only; the caller applies
+    them to a single row of the terminal.
+    """
+    common = min(len(old_cells), len(new_cells))
+    spans = []
+    run_start = None
+    for i in range(common):
+        if old_cells[i] != new_cells[i]:
+            if run_start is None:
+                run_start = i
+        elif run_start is not None:
+            spans.append((run_start, i - run_start))
+            run_start = None
+    if run_start is not None:
+        spans.append((run_start, common - run_start))
+    if common < len(new_cells):
+        spans.append((common, len(new_cells) - common))
+    return spans
+
+
+class _FrameRow(Static):  # pragma: no cover - live interactive loop
+    """One TUI frame line that repaints only the cells that changed.
+
+    ``Static.update`` marks the entire widget dirty, so a whole-screen frame
+    repainted every tick rewrites every cell of the terminal every 0.2s -
+    visible as screen-wide cursor flicker on terminals without synchronized
+    output. Each row is therefore its own widget, and ``update_line`` marks
+    only the changed column spans (via ``refresh(*regions)``) so the
+    compositor emits just those cells.
+    """
+
+    def __init__(self):
+        super().__init__(markup=False)
+        self.styles.width = "1fr"
+        self.styles.height = 1
+        self._line_text = ""
+        self._line_style = None
+        self._line_cells = None
+
+    def render(self):
+        from rich.text import Text
+
+        return Text(self._line_text, style=_FRAME_STYLE_MAP.get(self._line_style, ""))
+
+    def update_line(self, content, style, width):
+        """Switch to ``content`` (styled ``style``), repainting changed cells only.
+
+        Returns ``True`` when the row changed (and a repaint was queued). The
+        frame is rebuilt every tick but identical rows are left untouched, so
+        an idle frame costs no terminal output at all.
+        """
+        if width <= 0:
+            return False
+        cells = _line_cells(content, width)
+        if (self._line_cells is not None and cells == self._line_cells
+                and style == self._line_style):
+            return False
+        spans = []
+        if self._line_cells is not None:
+            spans = _changed_cell_spans(self._line_cells, cells)
+            if not spans and style != self._line_style:
+                spans = [(0, width)]
+        else:
+            spans = [(0, width)]
+        self._line_text = "".join(cell if cell else " " for cell in cells)
+        self._line_style = style
+        self._line_cells = cells
+        if spans:
+            self.refresh(*[Region(x, 0, w, 1) for x, w in spans if w > 0])
+        return True
+
+
 class _BenchmarkTUIApp(App):  # pragma: no cover - live interactive loop
-    """Textual app that re-renders the benchmark status frame each tick."""
+    """Textual app that re-renders the benchmark status frame each tick.
+
+    The frame is rebuilt every tick but delivered to one ``_FrameRow`` widget
+    per line; each row repaints only the cells that changed, so an idle frame
+    produces no terminal output and a ticking clock/elapsed timer rewrites a
+    handful of cells instead of the whole screen.
+    """
 
     BINDINGS: ClassVar[list[tuple[str, str, str]]] = [
         ("q", "quit_tui", "Quit"),
@@ -1190,13 +1294,31 @@ class _BenchmarkTUIApp(App):  # pragma: no cover - live interactive loop
         self._model_thread_limits = model_thread_limits
         self._scroll_y = 0
         self._scroll_x = 0
-
-    def compose(self) -> ComposeResult:
-        yield Static(id="frame", markup=False)
+        self._rows: list[_FrameRow] = []
 
     def on_mount(self) -> None:
         self.set_interval(_TUI_REFRESH_SECONDS, self._refresh)
         self._refresh()
+
+    def _sync_rows(self, lines) -> None:
+        """Mount/unmount row widgets to match the frame, updating changed rows."""
+        width = max(0, self.size.width)
+        if len(self._rows) < len(lines):
+            new_rows = []
+            for i in range(len(self._rows), len(lines)):
+                row = _FrameRow()
+                row.id = f"row-{i}"
+                self._rows.append(row)
+                new_rows.append(row)
+            # Batch the mounts so the initial frame costs a single layout pass
+            # instead of one full repaint per row.
+            self.mount(*new_rows)
+        elif len(self._rows) > len(lines):
+            for row in self._rows[len(lines):]:
+                row.remove()
+            del self._rows[len(lines):]
+        for i, (content, style) in enumerate(lines):
+            self._rows[i].update_line(content, style, width)
 
     def _visible_rows(self) -> int:
         live_height = max(3, self._num_sources + 1)
@@ -1220,7 +1342,7 @@ class _BenchmarkTUIApp(App):  # pragma: no cover - live interactive loop
             model_thread_limits=self._model_thread_limits,
             session_seed=self._session_seed,
         )
-        self.query_one("#frame", Static).update(_frame_lines_to_text(lines))
+        self._sync_rows(lines)
 
     def action_quit_tui(self) -> None:
         self.exit()
