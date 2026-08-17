@@ -6,7 +6,6 @@ Supports arbitrary task plugins, versioned results, and plugin selection.
 Configuration: edit benchmark-config.json (or pass --config <path>).
 API keys can use ${VAR} or ${VAR:default} syntax for env-var expansion.
 """
-import contextlib
 import faulthandler
 import glob
 import json
@@ -24,7 +23,10 @@ import unicodedata
 from collections import deque
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from datetime import datetime, timezone
+from typing import ClassVar
 
+from textual.app import App, ComposeResult
+from textual.widgets import Static
 from wcwidth import wcswidth, wcwidth
 
 from benchmark.completions import build_parser, generate_shell_completion
@@ -408,7 +410,7 @@ def _active_source_target_counts(snap):
 
 
 def _fallback_tui_loop(state, stop_event, session_seed=None, model_thread_limits=None):
-    """Fallback terminal UI for non-interactive terminals (no Rich TUI)."""
+    """Fallback terminal UI for non-interactive terminals (no Textual TUI)."""
     while not stop_event.is_set():
         snap = state.snapshot()
         active = sum(
@@ -946,107 +948,36 @@ def _build_live_indicators(s, active_plugins, *, now=None):
 
 
 # ---------------------------------------------------------------------------
-# Rich live TUI (primary renderer). Rich re-renders the whole frame on every
-# tick, eliminating the incremental curses writes whose boundary conditions
-# (resize, emoji width) could leave stale characters on screen. Non-
-# interactive terminals fall back to the plain-text loop above.
+# Textual live TUI (primary renderer). A Textual App re-renders the whole
+# frame on every tick via a timer, delegating resize, keyboard input, and
+# screen writes to Textual so stale or partially-drawn rows cannot
+# accumulate. Non-interactive terminals fall back to the plain-text loop
+# above.
 # ---------------------------------------------------------------------------
 
-_RICH_ESCAPE_ACTIONS = {
-    b"\x1b[A": "up",
-    b"\x1b[B": "down",
-    b"\x1b[C": "right",
-    b"\x1b[D": "left",
-    b"\x1b[5~": "pageup",
-    b"\x1b[6~": "pagedown",
-    b"\x1b[H": "home",
-    b"\x1b[1~": "home",
-    b"\x1b[F": "end",
-    b"\x1b[4~": "end",
+_TUI_REFRESH_SECONDS = 0.2
+
+# Style names emitted by ``_build_frame_lines`` and mapped to Rich styles by
+# ``_frame_lines_to_text``. Plain strings keep the frame builder headlessly
+# testable without importing Rich/Textual.
+_FRAME_STYLE_MAP = {
+    "bold": "bold",
+    "bold underline": "bold underline",
+    "green": "green",
+    "red": "red",
+    "yellow": "yellow",
 }
 
 
-def _rich_key_action(chunk: bytes):
-    """Map one raw stdin chunk to a navigation action, else ``None``."""
-    if chunk in (b"q", b"Q", b"\x03", b"\x04"):
-        return "quit"
-    if chunk == b" ":
-        return "pagedown"
-    return _RICH_ESCAPE_ACTIONS.get(chunk)
+def _build_frame_lines(state, active_plugins, source_abbrevs, frozen_hdr,
+                       plugin_hdr, num_sources, scroll_y, scroll_x, size,
+                       model_thread_limits=None, session_seed=None):
+    """Build one full TUI frame as ``(text, style)`` line pairs.
 
-
-@contextlib.contextmanager
-def _rich_keyboard():  # pragma: no cover - POSIX terminal I/O setup
-    """Yield a non-blocking single-key action poller (POSIX).
-
-    Uses cbreak mode rather than raw mode so Ctrl+C still raises
-    KeyboardInterrupt and the benchmark's SIGINT handling keeps working. A
-    no-op poller is yielded when stdin is not a terminal.
+    Headlessly testable: ``text`` is already truncated to the terminal width
+    and ``style`` is a ``_FRAME_STYLE_MAP`` key or ``None`` for the default
+    style.
     """
-    try:
-        import select
-        import termios
-        import tty
-    except ImportError:  # pragma: no cover - POSIX only
-        yield lambda: None
-        return
-    try:
-        fd = sys.stdin.fileno()
-        old = termios.tcgetattr(fd)
-    except (OSError, ValueError):
-        yield lambda: None
-        return
-    try:
-        tty.setcbreak(fd)
-    except (OSError, termios.error):
-        yield lambda: None
-        return
-
-    def poll():
-        try:
-            ready, _, _ = select.select([sys.stdin], [], [], 0)
-        except (OSError, ValueError):
-            return None
-        if not ready:
-            return None
-        try:
-            first = os.read(fd, 1)
-        except OSError:
-            return None
-        if not first:
-            return None
-        if first == b"\x1b":
-            seq = b"\x1b"
-            for _ in range(4):
-                try:
-                    ready, _, _ = select.select([sys.stdin], [], [], 0.02)
-                except (OSError, ValueError):
-                    break
-                if not ready:
-                    break
-                try:
-                    seq += os.read(fd, 1)
-                except OSError:
-                    break
-            return _rich_key_action(seq)
-        return _rich_key_action(first)
-
-    try:
-        yield poll
-    finally:
-        try:
-            termios.tcsetattr(fd, termios.TCSADRAIN, old)
-        except (OSError, termios.error):  # pragma: no cover
-            pass
-
-
-def _build_rich_frame(state, active_plugins, source_abbrevs, frozen_hdr,
-                      plugin_hdr, num_sources, scroll_y, scroll_x, size,
-                      model_thread_limits=None, session_seed=None):
-    """Build one full TUI frame as a Rich Group (testable headlessly)."""
-    from rich.console import Group
-    from rich.text import Text
-
     max_y, max_x = size
     snap = state.snapshot()
     snap_items = list(snap.items())
@@ -1068,7 +999,7 @@ def _build_rich_frame(state, active_plugins, source_abbrevs, frozen_hdr,
     frozen_width = FROZEN_VIEW_WIDTH
 
     def line(text, style=None):
-        return Text(_truncate_display_width(text, max_x), style=style, no_wrap=True)
+        return (_truncate_display_width(text, max_x), style)
 
     lines = []
 
@@ -1212,15 +1143,115 @@ def _build_rich_frame(state, active_plugins, source_abbrevs, frozen_hdr,
             parts.append(judge_line)
         lines.append(line(" " + "  |  ".join(parts)))
 
-    return Group(*lines)
+    return lines
 
 
-def _tui_main_rich(state, stop_event, num_sources, active_plugins, session_seed=None,
-                   model_thread_limits=None):  # pragma: no cover - live interactive loop
-    """Run the live TUI with Rich, re-rendering the full frame each tick."""
-    from rich.console import Group
-    from rich.live import Live
+def _frame_lines_to_text(lines):
+    """Convert ``_build_frame_lines`` output to a styled Rich ``Text``."""
+    from rich.text import Text
 
+    text = Text(overflow="crop")
+    for index, (content, style) in enumerate(lines):
+        if index:
+            text.append("\n")
+        text.append(content, style=_FRAME_STYLE_MAP.get(style, ""))
+    return text
+
+
+class _BenchmarkTUIApp(App):  # pragma: no cover - live interactive loop
+    """Textual app that re-renders the benchmark status frame each tick."""
+
+    BINDINGS: ClassVar[list[tuple[str, str, str]]] = [
+        ("q", "quit_tui", "Quit"),
+        ("up", "scroll_up", "Up"),
+        ("down", "scroll_down", "Down"),
+        ("left", "scroll_left", "Left"),
+        ("right", "scroll_right", "Right"),
+        ("pageup", "scroll_page_up", "Page Up"),
+        ("pagedown", "scroll_page_down", "Page Down"),
+        ("home", "scroll_home", "Top"),
+        ("end", "scroll_end", "Bottom"),
+    ]
+
+    def __init__(self, state, stop_event, source_abbrevs, frozen_hdr,
+                 plugin_hdr, num_sources, active_plugins, session_seed,
+                 model_thread_limits):
+        super().__init__()
+        self._state = state
+        self._stop_event = stop_event
+        self._source_abbrevs = source_abbrevs
+        self._frozen_hdr = frozen_hdr
+        self._plugin_hdr = plugin_hdr
+        self._num_sources = num_sources
+        self._active_plugins = active_plugins
+        self._session_seed = session_seed
+        self._model_thread_limits = model_thread_limits
+        self._scroll_y = 0
+        self._scroll_x = 0
+
+    def compose(self) -> ComposeResult:
+        yield Static(id="frame", markup=False)
+
+    def on_mount(self) -> None:
+        self.set_interval(_TUI_REFRESH_SECONDS, self._refresh)
+        self._refresh()
+
+    def _visible_rows(self) -> int:
+        live_height = max(3, self._num_sources + 1)
+        return max(0, self.size.height - 9 - live_height)
+
+    def _max_row_offset(self) -> int:
+        return max(0, len(self._state.snapshot()) - self._visible_rows())
+
+    def _max_col_offset(self) -> int:
+        visible_width = max(0, self.size.width - FROZEN_VIEW_WIDTH - 1)
+        return max(0, _display_width(self._plugin_hdr) - visible_width)
+
+    def _refresh(self) -> None:
+        if self._stop_event.is_set():
+            self.exit()
+            return
+        lines = _build_frame_lines(
+            self._state, self._active_plugins, self._source_abbrevs,
+            self._frozen_hdr, self._plugin_hdr, self._num_sources,
+            self._scroll_y, self._scroll_x, (self.size.height, self.size.width),
+            model_thread_limits=self._model_thread_limits,
+            session_seed=self._session_seed,
+        )
+        self.query_one("#frame", Static).update(_frame_lines_to_text(lines))
+
+    def action_quit_tui(self) -> None:
+        self.exit()
+
+    def action_scroll_up(self) -> None:
+        self._scroll_y = max(0, self._scroll_y - 1)
+
+    def action_scroll_down(self) -> None:
+        self._scroll_y = min(self._max_row_offset(), self._scroll_y + 1)
+
+    def action_scroll_left(self) -> None:
+        self._scroll_x = max(0, self._scroll_x - 8)
+
+    def action_scroll_right(self) -> None:
+        self._scroll_x = min(self._max_col_offset(), self._scroll_x + 8)
+
+    def action_scroll_page_up(self) -> None:
+        self._scroll_y = max(0, self._scroll_y - self._visible_rows())
+
+    def action_scroll_page_down(self) -> None:
+        self._scroll_y = min(
+            self._max_row_offset(), self._scroll_y + self._visible_rows())
+
+    def action_scroll_home(self) -> None:
+        self._scroll_y = 0
+
+    def action_scroll_end(self) -> None:
+        self._scroll_y = self._max_row_offset()
+
+
+def _tui_main_textual(state, stop_event, num_sources, active_plugins, session_seed=None,
+                      model_thread_limits=None):  # pragma: no cover - live interactive loop
+    """Run the live TUI with Textual, re-rendering the full frame each tick."""
     source_abbrevs = _unique_source_abbrevs({s["source"] for s in state.snapshot().values()})
     frozen_cols = [("#", MODEL_NUMBER_COLUMN_WIDTH), ("S", 4), ("Model", 18), ("St", 4)]
     frozen_hdr = " ".join(f"{h:>{w}}" for h, w in frozen_cols)
@@ -1234,52 +1265,17 @@ def _tui_main_rich(state, stop_event, num_sources, active_plugins, session_seed=
         ])
     plugin_hdr = " ".join(f"{h:>{w}}" for h, w in plugin_cols)
 
-    scroll_y = 0
-    scroll_x = 0
-
-    with Live(Group(), refresh_per_second=5, screen=True, redirect_stderr=False) as live, \
-            _rich_keyboard() as poll:
-        while not stop_event.is_set():
-            max_y, max_x = live.console.size.height, live.console.size.width
-            live.update(_build_rich_frame(
-                state, active_plugins, source_abbrevs, frozen_hdr, plugin_hdr,
-                num_sources, scroll_y, scroll_x, (max_y, max_x),
-                model_thread_limits=model_thread_limits, session_seed=session_seed,
-            ))
-            live_height = max(3, num_sources + 1)
-            visible_rows = max(0, max_y - 9 - live_height)
-            max_row_offset = max(0, len(state.snapshot()) - visible_rows)
-            action = poll()
-            if action == "quit":
-                break
-            if action == "up":
-                scroll_y = max(0, scroll_y - 1)
-            elif action == "down":
-                scroll_y = min(max_row_offset, scroll_y + 1)
-            elif action == "pageup":
-                scroll_y = max(0, scroll_y - visible_rows)
-            elif action == "pagedown":
-                scroll_y = min(max_row_offset, scroll_y + visible_rows)
-            elif action == "home":
-                scroll_y = 0
-            elif action == "end":
-                scroll_y = max_row_offset
-            elif action == "left":
-                scroll_x = max(0, scroll_x - 8)
-            elif action == "right":
-                visible_width = max(0, max_x - FROZEN_VIEW_WIDTH - 1)
-                scroll_x = min(
-                    max(0, _display_width(plugin_hdr) - visible_width),
-                    scroll_x + 8,
-                )
-            stop_event.wait(0.2)
+    _BenchmarkTUIApp(
+        state, stop_event, source_abbrevs, frozen_hdr, plugin_hdr,
+        num_sources, active_plugins, session_seed, model_thread_limits,
+    ).run()
 
 
-def _rich_tui_enabled():
-    """Return whether the Rich TUI should be used (interactive terminal)."""
-    if os.environ.get("AI_BENCHMARK_NO_RICH"):
+def _textual_tui_enabled():
+    """Return whether the Textual TUI should be used (interactive terminal)."""
+    if os.environ.get("AI_BENCHMARK_NO_TEXTUAL"):
         return False
-    if os.environ.get("AI_BENCHMARK_FORCE_RICH"):
+    if os.environ.get("AI_BENCHMARK_FORCE_TEXTUAL"):
         return True
     try:
         return bool(sys.stdout.isatty())
@@ -1289,13 +1285,13 @@ def _rich_tui_enabled():
 
 def tui_main(state, stop_event, num_sources, active_plugins, session_seed=None,
              model_thread_limits=None):
-    """Run the live TUI: Rich on interactive terminals, plain text otherwise."""
-    if _rich_tui_enabled():
+    """Run the live TUI: Textual on interactive terminals, plain text otherwise."""
+    if _textual_tui_enabled():
         try:
-            _tui_main_rich(state, stop_event, num_sources, active_plugins,
-                           session_seed, model_thread_limits)
+            _tui_main_textual(state, stop_event, num_sources, active_plugins,
+                              session_seed, model_thread_limits)
             return
-        except Exception:  # noqa: BLE001 - a Rich failure must fall back to plain text
+        except Exception:  # noqa: BLE001 - a Textual failure must fall back to plain text
             try:
                 with open("tui_render_errors.log", "a", encoding="utf-8") as handle:
                     traceback.print_exc(file=handle)
@@ -1860,7 +1856,15 @@ def _enable_faulthandler() -> None:
         faulthandler.register(signal.SIGUSR1)
 
 
-def main():  # pragma: no cover - live benchmark orchestrator (no unit tests)
+def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orchestrator (no unit tests)
+    """Run the full benchmark (setup, orchestration, and final output).
+
+    ``tui_handoff`` is None on the non-interactive path, where the plain-text
+    TUI runs in a daemon thread and this function owns the current thread. On
+    the interactive Textual path the orchestrator runs in a worker thread and
+    ``tui_handoff`` carries the launch arguments and stop/interrupt events for
+    the main thread to drive the TUI (see ``main``).
+    """
     # Dump Python stacks on fatal signals so a native crash or a wedged run is
     # diagnosable instead of ending in a bare "Segmentation fault".
     _enable_faulthandler()
@@ -2320,18 +2324,24 @@ def main():  # pragma: no cover - live benchmark orchestrator (no unit tests)
 
         stop_event = threading.Event()
 
-        # Run the TUI as a daemon so the process can exit promptly on Ctrl+C.
-        # Without this, a stuck TUI thread would block interpreter
-        # shutdown, forcing the user to press Ctrl+C a second time.
-        tui_thread = threading.Thread(
-            target=tui_main,
-            args=(state, stop_event, len(source_config), active_plugins, session_seed,
-                  model_thread_limits),
-            daemon=True,
-        )
-        tui_thread.start()
-
-        time.sleep(0.3)
+        tui_args = (state, stop_event, len(source_config), active_plugins,
+                    session_seed, model_thread_limits)
+        tui_thread = None
+        tui_interrupt_event = None
+        if tui_handoff is None:
+            # Non-interactive fallback: the plain-text TUI is thread-safe, so
+            # run it as a daemon while the orchestration owns this thread.
+            tui_thread = threading.Thread(target=tui_main, args=tui_args, daemon=True)
+            tui_thread.start()
+            time.sleep(0.3)
+        else:
+            # Textual's Linux driver installs SIGTSTP/SIGCONT handlers, which
+            # ``signal.signal`` only permits from the main thread. Hand the TUI
+            # launch to the main thread and keep orchestrating here.
+            tui_interrupt_event = tui_handoff["interrupt"]
+            tui_handoff["args"] = tui_args
+            tui_handoff["stop_event"] = stop_event
+            tui_handoff["ready"].set()
 
         total = state.total
 
@@ -3154,12 +3164,24 @@ def main():  # pragma: no cover - live benchmark orchestrator (no unit tests)
                     stop_judge_workers()
                     _join_workers(timeout=1.0)
 
+        if tui_interrupt_event is not None and tui_interrupt_event.is_set() \
+                and not interrupted:
+            # The Textual TUI owns the main thread in this mode, so Ctrl+C is
+            # delivered there (which sets ``stop_event`` and the interrupt
+            # event) rather than raised here. Record the external interrupt so
+            # the run is reported as interrupted instead of completed.
+            interrupted = True
+            run_info["status"] = "interrupted"
+            close_active_requests()
+            stop_judge_workers()
+
         if not interrupted:
             finish_judge()
         stop_event.set()
         # The TUI thread is a daemon, so we don't need to wait for it. A short
         # timeout keeps the terminal tidy if it happens to finish quickly.
-        tui_thread.join(timeout=0.5)
+        if tui_thread is not None:
+            tui_thread.join(timeout=0.5)
 
         with persistence_lock:
             # This final snapshot is serialized with all worker saves. Keep
@@ -3206,6 +3228,57 @@ def main():  # pragma: no cover - live benchmark orchestrator (no unit tests)
             run_info["status"] = "completed"
         _inject_429_stats(run_info)
         _write_run_info(output_dir, run_info)
+
+
+def main():
+    """Dispatch to the benchmark orchestrator, keeping the Textual TUI on the
+    main thread when it is enabled.
+
+    Textual's Linux driver installs SIGTSTP/SIGCONT handlers in its
+    constructor, and ``signal.signal`` is only legal from the main thread of
+    the main interpreter. Launching the TUI from a worker thread therefore
+    crashes with ``ValueError: signal only works in main thread``. When the
+    interactive TUI is enabled we invert the arrangement: the orchestrator runs
+    in a worker thread and the TUI owns the main thread.
+    """
+    if not _textual_tui_enabled():
+        _run_benchmark()
+        return
+
+    handoff = {"ready": threading.Event(), "interrupt": threading.Event()}
+    outcome = {}
+
+    def _run_orchestrator():
+        try:
+            _run_benchmark(handoff)
+        except SystemExit as exc:
+            outcome["exit_code"] = exc.code
+        except BaseException as exc:  # noqa: BLE001 - re-raise fatal crashes here
+            outcome["error"] = exc
+
+    orchestrator = threading.Thread(target=_run_orchestrator, daemon=True)
+    orchestrator.start()
+
+    # Wait for setup to complete and hand over the TUI launch, or for the
+    # process to exit early (e.g. --list-plugins / --dump-default-config).
+    while not handoff["ready"].is_set() and orchestrator.is_alive():
+        handoff["ready"].wait(0.05)
+
+    if "args" in handoff:
+        try:
+            tui_main(*handoff["args"])
+        except KeyboardInterrupt:
+            # Ctrl+C landed on the main thread while the TUI was active; ask
+            # the orchestrator to wind down gracefully.
+            handoff["interrupt"].set()
+            handoff["stop_event"].set()
+
+    orchestrator.join()
+
+    if "error" in outcome:
+        raise outcome["error"]
+    if "exit_code" in outcome:
+        sys.exit(outcome["exit_code"])
 
 
 if __name__ == "__main__":

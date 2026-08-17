@@ -1,16 +1,15 @@
-"""Headless tests for the Rich-based live TUI in ``benchmark.cli``.
+"""Headless tests for the Textual-based live TUI in ``benchmark.cli``.
 
-The Rich renderer builds one full frame as a Rich ``Group``; these tests
-exercise the frame builder, key decoding, and the curses/Rich dispatch
-without needing a real terminal.
+The Textual renderer rebuilds one full frame as a list of ``(text, style)``
+pairs each tick and hands them to a ``Static`` widget. These tests exercise
+the pure frame builder, the Rich ``Text`` conversion, and the Textual/plain-
+text dispatch without needing a real terminal.
 """
 import os
 import threading
 import time
 import unittest
 from unittest import mock
-
-from rich.console import Console
 
 from benchmark import cli
 
@@ -54,10 +53,10 @@ def _plugin():
     return p
 
 
-def _render_frame(state=None, size=(24, 100), num_sources=1):
+def _render_lines(state=None, size=(24, 100), num_sources=1):
     state = state or _FakeState()
     plugin = _plugin()
-    return cli._build_rich_frame(
+    return cli._build_frame_lines(
         state, [plugin], {"Local": "LC"},
         "  #  S Model  St", "ratSc ratTok ratTm ratTPS",
         num_sources=num_sources, scroll_y=0, scroll_x=0, size=size,
@@ -65,49 +64,32 @@ def _render_frame(state=None, size=(24, 100), num_sources=1):
     )
 
 
-def _frame_text(frame, width=100):
-    console = Console(record=True, width=width, force_terminal=False)
-    console.print(frame)
-    return console.export_text()
+def _frame_text(lines):
+    return "\n".join(text for text, _style in lines)
 
 
-class TestRichKeyAction(unittest.TestCase):
-    def test_quit_keys(self):
-        for chunk in (b"q", b"Q", b"\x03", b"\x04"):
-            self.assertEqual(cli._rich_key_action(chunk), "quit")
+class TestFrameLinesToText(unittest.TestCase):
+    def test_joins_lines_with_newlines_and_preserves_content(self):
+        text = cli._frame_lines_to_text(
+            [("first", "bold"), ("second", None), ("third", "red")]
+        )
+        self.assertIn("first", text.plain)
+        self.assertIn("second", text.plain)
+        self.assertIn("third", text.plain)
+        self.assertIn("\n", text.plain)
 
-    def test_arrow_keys(self):
-        self.assertEqual(cli._rich_key_action(b"\x1b[A"), "up")
-        self.assertEqual(cli._rich_key_action(b"\x1b[B"), "down")
-        self.assertEqual(cli._rich_key_action(b"\x1b[C"), "right")
-        self.assertEqual(cli._rich_key_action(b"\x1b[D"), "left")
-
-    def test_page_and_home_end(self):
-        self.assertEqual(cli._rich_key_action(b"\x1b[5~"), "pageup")
-        self.assertEqual(cli._rich_key_action(b"\x1b[6~"), "pagedown")
-        self.assertEqual(cli._rich_key_action(b"\x1b[H"), "home")
-        self.assertEqual(cli._rich_key_action(b"\x1b[F"), "end")
-
-    def test_space_is_pagedown(self):
-        self.assertEqual(cli._rich_key_action(b" "), "pagedown")
-
-    def test_unknown_chunk_is_none(self):
-        self.assertIsNone(cli._rich_key_action(b"x"))
+    def test_unknown_style_is_ignored(self):
+        # A style name outside the map must not raise; it falls back to
+        # the default (unstyled) render.
+        text = cli._frame_lines_to_text([("x", "not-a-style")])
+        self.assertEqual(text.plain, "x")
 
 
-class TestRichKeyboardFallback(unittest.TestCase):
-    def test_non_tty_stdin_yields_noop_poller(self):
-        with mock.patch("sys.stdin") as stdin:
-            stdin.fileno.side_effect = ValueError("not a tty")
-            with cli._rich_keyboard() as poll:
-                self.assertIsNone(poll())
-
-
-class TestBuildRichFrame(unittest.TestCase):
+class TestBuildFrameLines(unittest.TestCase):
     def test_renders_header_summary_rows_live_and_footer(self):
         with mock.patch("benchmark.cli.get_active_request_count", return_value=2), \
                 mock.patch("benchmark.cli.get_429_stats", return_value={}):
-            text = _frame_text(_render_frame())
+            text = _frame_text(_render_lines())
         self.assertIn("AI Benchmark", text)
         self.assertIn("Seed: 42", text)
         self.assertIn("Total: 2", text)
@@ -119,75 +101,85 @@ class TestBuildRichFrame(unittest.TestCase):
     def test_row_style_is_colored_by_status(self):
         with mock.patch("benchmark.cli.get_active_request_count", return_value=0), \
                 mock.patch("benchmark.cli.get_429_stats", return_value={}):
-            frame = _render_frame()
-        # A completed row and a running row are both present in the frame.
-        self.assertEqual(len(frame.renderables), 10)
+            lines = _render_lines()
+        styles = {text: style for text, style in lines}
+        # The completed model-a row is green; the running model-b row is
+        # yellow (matching the old curses/Rich color coding).
+        self.assertIn("green", styles.values())
+        self.assertIn("yellow", styles.values())
 
     def test_small_terminal_limits_visible_rows(self):
         with mock.patch("benchmark.cli.get_active_request_count", return_value=0), \
                 mock.patch("benchmark.cli.get_429_stats", return_value={}):
-            text = _frame_text(_render_frame(size=(8, 100)))
+            text = _frame_text(_render_lines(size=(8, 100)))
         # Height 8 leaves no room for model rows; only the header/summary,
         # divider, live area, and footer remain.
         self.assertNotIn("model-a", text)
 
+    def test_lines_are_truncated_to_terminal_width(self):
+        with mock.patch("benchmark.cli.get_active_request_count", return_value=0), \
+                mock.patch("benchmark.cli.get_429_stats", return_value={}):
+            lines = _render_lines(size=(24, 40))
+        for text, _style in lines:
+            self.assertLessEqual(cli._display_width(text), 40)
 
-class TestRichTuiEnabled(unittest.TestCase):
-    def test_no_rich_env_disables(self):
-        with mock.patch.dict(os.environ, {"AI_BENCHMARK_NO_RICH": "1"}):
-            self.assertFalse(cli._rich_tui_enabled())
 
-    def test_force_rich_env_enables(self):
-        with mock.patch.dict(os.environ, {"AI_BENCHMARK_FORCE_RICH": "1"}):
-            self.assertTrue(cli._rich_tui_enabled())
+class TestTextualTuiEnabled(unittest.TestCase):
+    def test_no_textual_env_disables(self):
+        with mock.patch.dict(os.environ, {"AI_BENCHMARK_NO_TEXTUAL": "1"}):
+            self.assertFalse(cli._textual_tui_enabled())
+
+    def test_force_textual_env_enables(self):
+        with mock.patch.dict(os.environ, {"AI_BENCHMARK_FORCE_TEXTUAL": "1"}):
+            self.assertTrue(cli._textual_tui_enabled())
 
     def test_isatty_default(self):
         with mock.patch.dict(
                 os.environ,
-                {"AI_BENCHMARK_NO_RICH": "", "AI_BENCHMARK_FORCE_RICH": ""}), \
+                {"AI_BENCHMARK_NO_TEXTUAL": "", "AI_BENCHMARK_FORCE_TEXTUAL": ""}), \
                 mock.patch("sys.stdout") as stdout:
             stdout.isatty.return_value = True
-            self.assertTrue(cli._rich_tui_enabled())
+            self.assertTrue(cli._textual_tui_enabled())
             stdout.isatty.return_value = False
-            self.assertFalse(cli._rich_tui_enabled())
+            self.assertFalse(cli._textual_tui_enabled())
 
 
-class TestRichTuiDispatch(unittest.TestCase):
+class TestTextualTuiDispatch(unittest.TestCase):
     def _state(self):
         return _FakeState()
 
-    def test_force_rich_runs_rich_path(self):
+    def test_force_textual_runs_textual_path(self):
         stop = threading.Event()
         stop.set()
-        with mock.patch.dict(os.environ, {"AI_BENCHMARK_FORCE_RICH": "1"}), \
-                mock.patch("benchmark.cli._tui_main_rich") as rich, \
+        with mock.patch.dict(os.environ, {"AI_BENCHMARK_FORCE_TEXTUAL": "1"}), \
+                mock.patch("benchmark.cli._tui_main_textual") as textual, \
                 mock.patch("benchmark.cli._fallback_tui_loop") as fallback:
             cli.tui_main(self._state(), stop, 1, [_plugin()])
-        rich.assert_called_once()
+        textual.assert_called_once()
         fallback.assert_not_called()
 
     def test_default_dispatches_to_fallback(self):
         stop = threading.Event()
         stop.set()
-        with mock.patch("benchmark.cli._rich_tui_enabled", return_value=False), \
-                mock.patch("benchmark.cli._tui_main_rich") as rich, \
+        with mock.patch("benchmark.cli._textual_tui_enabled", return_value=False), \
+                mock.patch("benchmark.cli._tui_main_textual") as textual, \
                 mock.patch("benchmark.cli._fallback_tui_loop") as fallback:
             cli.tui_main(self._state(), stop, 1, [_plugin()])
-        rich.assert_not_called()
+        textual.assert_not_called()
         fallback.assert_called_once()
 
-    def test_rich_failure_falls_back_to_fallback(self):
+    def test_textual_failure_falls_back_to_fallback(self):
         stop = threading.Event()
         stop.set()
-        with mock.patch("benchmark.cli._rich_tui_enabled", return_value=True), \
-                mock.patch("benchmark.cli._tui_main_rich",
+        with mock.patch("benchmark.cli._textual_tui_enabled", return_value=True), \
+                mock.patch("benchmark.cli._tui_main_textual",
                            side_effect=RuntimeError("boom")), \
                 mock.patch("benchmark.cli._fallback_tui_loop") as fallback:
             cli.tui_main(self._state(), stop, 1, [_plugin()])
         fallback.assert_called_once()
 
 
-class TestBuildRichFrameAdvanced(unittest.TestCase):
+class TestBuildFrameLinesAdvanced(unittest.TestCase):
     def _state(self, snapshot, judge_activities=None, judge_progress=None,
                recent_log=None):
         state = mock.MagicMock()
@@ -217,7 +209,7 @@ class TestBuildRichFrameAdvanced(unittest.TestCase):
         )
         with mock.patch("benchmark.cli.get_active_request_count", return_value=1), \
                 mock.patch("benchmark.cli.get_429_stats", return_value={}):
-            text = _frame_text(_render_frame(state, num_sources=4))
+            text = _frame_text(_render_lines(state, num_sources=4))
         self.assertIn("Preloading model", text)
         self.assertIn("Judge judge-a", text)
         self.assertIn("Judging", text)
@@ -233,7 +225,7 @@ class TestBuildRichFrameAdvanced(unittest.TestCase):
             "wake_ts": time.time() + 5, "attempts": 1, "max_attempts": 3}}}
         with mock.patch("benchmark.cli.get_active_request_count", return_value=1), \
                 mock.patch("benchmark.cli.get_429_stats", return_value=backoff):
-            text = _frame_text(_render_frame(state, num_sources=4))
+            text = _frame_text(_render_lines(state, num_sources=4))
         self.assertIn("429 Sleeping:", text)
         self.assertIn("429 1/3", text)
 
@@ -244,7 +236,7 @@ class TestBuildRichFrameAdvanced(unittest.TestCase):
         )
         with mock.patch("benchmark.cli.get_active_request_count", return_value=0), \
                 mock.patch("benchmark.cli.get_429_stats", return_value={}):
-            text = _frame_text(_render_frame(state))
+            text = _frame_text(_render_lines(state))
         self.assertIn("Errors:", text)
         self.assertIn("boom", text)
 
@@ -254,5 +246,58 @@ class TestBuildRichFrameAdvanced(unittest.TestCase):
         )
         with mock.patch("benchmark.cli.get_active_request_count", return_value=0), \
                 mock.patch("benchmark.cli.get_429_stats", return_value={}):
-            text = _frame_text(_render_frame(state))
+            text = _frame_text(_render_lines(state))
         self.assertIn("All models complete", text)
+
+
+class TestMainThreadDispatch(unittest.TestCase):
+    """The Textual Linux driver needs the main thread (it installs signal
+    handlers), so ``main`` must run the orchestrator in a worker thread and
+    drive the TUI from the main thread when Textual is enabled."""
+
+    def test_textual_disabled_runs_orchestrator_inline(self):
+        with mock.patch("benchmark.cli._textual_tui_enabled", return_value=False), \
+                mock.patch("benchmark.cli._run_benchmark") as orchestrator, \
+                mock.patch("benchmark.cli.tui_main") as tui:
+            cli.main()
+        orchestrator.assert_called_once_with()
+        tui.assert_not_called()
+
+    def test_textual_enabled_runs_tui_on_main_thread(self):
+        captured = {}
+
+        def fake_orchestrator(handoff=None):
+            # Simulate setup completing and handing the TUI to the main thread.
+            handoff["args"] = ("STATE", "STOP", 1, ["rate-limiter"], None, {})
+            handoff["stop_event"] = threading.Event()
+            captured["handoff"] = handoff
+            handoff["ready"].set()
+
+        with mock.patch("benchmark.cli._textual_tui_enabled", return_value=True), \
+                mock.patch("benchmark.cli._run_benchmark",
+                           side_effect=fake_orchestrator), \
+                mock.patch("benchmark.cli.tui_main") as tui:
+            cli.main()
+        tui.assert_called_once_with("STATE", "STOP", 1, ["rate-limiter"], None, {})
+        self.assertIsNotNone(captured.get("handoff"))
+
+    def test_ctrl_c_sets_stop_event_and_winds_down(self):
+        captured = {}
+
+        def fake_orchestrator(handoff=None):
+            handoff["args"] = ("STATE", "STOP", 1, ["rate-limiter"], None, {})
+            handoff["stop_event"] = threading.Event()
+            captured["stop_event"] = handoff["stop_event"]
+            handoff["ready"].set()
+
+        with mock.patch("benchmark.cli._textual_tui_enabled", return_value=True), \
+                mock.patch("benchmark.cli._run_benchmark",
+                           side_effect=fake_orchestrator), \
+                mock.patch("benchmark.cli.tui_main",
+                           side_effect=KeyboardInterrupt):
+            cli.main()
+        self.assertTrue(captured["stop_event"].is_set())
+
+
+if __name__ == "__main__":
+    unittest.main()
