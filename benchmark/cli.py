@@ -1370,6 +1370,10 @@ class _BenchmarkTUIApp(App):  # pragma: no cover - live interactive loop
         ("pagedown", "scroll_page_down", "Page Down"),
         ("home", "scroll_home", "Top"),
         ("end", "scroll_end", "Bottom"),
+        ("shift+left", "scroll_page_left", "Page Left"),
+        ("shift+right", "scroll_page_right", "Page Right"),
+        ("ctrl+left", "scroll_home_x", "Far Left"),
+        ("ctrl+right", "scroll_end_x", "Far Right"),
     ]
 
     def __init__(self, state, stop_event, source_abbrevs, frozen_hdr,
@@ -1417,12 +1421,14 @@ class _BenchmarkTUIApp(App):  # pragma: no cover - live interactive loop
         live_height = max(3, self._num_sources + 1)
         return max(0, self.size.height - 9 - live_height)
 
+    def _visible_cols(self) -> int:
+        return max(0, self.size.width - FROZEN_VIEW_WIDTH - 1)
+
     def _max_row_offset(self) -> int:
         return max(0, len(self._state.snapshot()) - self._visible_rows())
 
     def _max_col_offset(self) -> int:
-        visible_width = max(0, self.size.width - FROZEN_VIEW_WIDTH - 1)
-        return max(0, _display_width(self._plugin_hdr) - visible_width)
+        return max(0, _display_width(self._plugin_hdr) - self._visible_cols())
 
     def _refresh(self) -> None:
         if self._stop_event.is_set():
@@ -1459,11 +1465,24 @@ class _BenchmarkTUIApp(App):  # pragma: no cover - live interactive loop
         self._scroll_y = min(
             self._max_row_offset(), self._scroll_y + self._visible_rows())
 
+    def action_scroll_page_left(self) -> None:
+        self._scroll_x = max(0, self._scroll_x - self._visible_cols())
+
+    def action_scroll_page_right(self) -> None:
+        self._scroll_x = min(
+            self._max_col_offset(), self._scroll_x + self._visible_cols())
+
     def action_scroll_home(self) -> None:
         self._scroll_y = 0
 
     def action_scroll_end(self) -> None:
         self._scroll_y = self._max_row_offset()
+
+    def action_scroll_home_x(self) -> None:
+        self._scroll_x = 0
+
+    def action_scroll_end_x(self) -> None:
+        self._scroll_x = self._max_col_offset()
 
 
 def _tui_main_textual(state, stop_event, num_sources, active_plugins, session_seed=None,

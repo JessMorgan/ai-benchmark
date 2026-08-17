@@ -400,6 +400,84 @@ class TestBenchmarkTUIAppRows(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(app._rows[0].id.startswith("row-"))
 
 
+class TestHorizontalScrollActions(unittest.IsolatedAsyncioTestCase):
+    """Shift+Left/Right pages horizontally, Ctrl+Left/Right jumps to the
+    extremes - mirroring the vertical Page Up/Down and Home/End bindings."""
+
+    WIDE_PLUGIN_HDR = ("rateLim rateTok rateTm rateTPS judgeSc judgeTok "
+                       "codeRev debugTr errorRec moeDens multiStp "
+                       "multiTurn orchestr prdCreat rateLim2 softArch "
+                       "structOut toolCall wirefrms extraCol")
+
+    def _make_app(self, width=100, height=30):
+        stop = threading.Event()
+        return cli._BenchmarkTUIApp(
+            _FakeState(), stop, {"Local": "LC"},
+            "  #  S Model  St", self.WIDE_PLUGIN_HDR,
+            1, [_plugin()], 0, {"Local": 2},
+        )
+
+    async def test_bindings_registered(self):
+        app = self._make_app()
+        binding_keys = {key for key, _action, _desc in app.BINDINGS}
+        self.assertIn("shift+left", binding_keys)
+        self.assertIn("shift+right", binding_keys)
+        self.assertIn("ctrl+left", binding_keys)
+        self.assertIn("ctrl+right", binding_keys)
+        by_key = {key: action for key, action, _desc in app.BINDINGS}
+        self.assertEqual(by_key["shift+left"], "scroll_page_left")
+        self.assertEqual(by_key["shift+right"], "scroll_page_right")
+        self.assertEqual(by_key["ctrl+left"], "scroll_home_x")
+        self.assertEqual(by_key["ctrl+right"], "scroll_end_x")
+
+    async def test_page_left_right_scrolls_by_visible_width(self):
+        app = self._make_app()
+        async with app.run_test(size=(100, 30)):
+            page = app._visible_cols()
+            self.assertGreater(page, 0)
+            max_off = app._max_col_offset()
+            self.assertGreater(max_off, 0, "test needs a header wider than the view")
+
+            app.action_scroll_right()  # move off the left edge first
+            self.assertGreater(app._scroll_x, 0)
+
+            app.action_scroll_page_left()
+            self.assertEqual(app._scroll_x, 0)
+
+            app.action_scroll_page_right()
+            self.assertEqual(app._scroll_x, min(max_off, 0 + page))
+            # No past-the-end overflow.
+            app.action_scroll_page_right()
+            self.assertEqual(app._scroll_x, min(max_off, page + page))
+            self.assertLessEqual(app._scroll_x, max_off)
+
+    async def test_ctrl_left_right_jumps_to_extremes(self):
+        app = self._make_app()
+        async with app.run_test(size=(100, 30)):
+            max_off = app._max_col_offset()
+            self.assertGreater(max_off, 0)
+
+            app.action_scroll_end_x()
+            self.assertEqual(app._scroll_x, max_off)
+
+            app.action_scroll_home_x()
+            self.assertEqual(app._scroll_x, 0)
+
+            # From a mid-page position, home/end still go to the extremes.
+            app._scroll_x = max_off // 2
+            app.action_scroll_home_x()
+            self.assertEqual(app._scroll_x, 0)
+            app.action_scroll_end_x()
+            self.assertEqual(app._scroll_x, max_off)
+
+    async def test_page_left_clamps_at_zero(self):
+        app = self._make_app()
+        async with app.run_test(size=(100, 30)):
+            app._scroll_x = 1
+            app.action_scroll_page_left()
+            self.assertEqual(app._scroll_x, 0)
+
+
 class TestMainThreadDispatch(unittest.TestCase):
     """The Textual Linux driver needs the main thread (it installs signal
     handlers), so ``main`` must run the orchestrator in a worker thread and
