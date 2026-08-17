@@ -199,7 +199,9 @@ when the user invokes a skill workflow (`skill <name>`).
 
 - **`purge-results`** — surgically removes `(model, plugin)` entries from
   `benchmark_state.json` so they re-run on the next `ai-benchmark.py`
-  run (or `ai-benchmark` console script) resume. Self-discovers plugin
+  run (or `ai-benchmark` console script) resume. Strips score/timing,
+  per-plugin judge (`{pid}_judge_*`), residual (`empty_reason`,
+  `diagnostics`), and transient keys. Self-discovers plugin
   ids from `state.active_plugins`, default
   dry-run, microsecond backup `benchmark_state.json.pre-purge-<ts>.bak`,
   `--quiet` gates per-pair table + main() banners, `--diff` reads a

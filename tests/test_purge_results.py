@@ -185,15 +185,29 @@ def _build_14_targets_state() -> dict:
             "pluginB_output_tokens": 50,
             "pluginA_response_time": 12.0,
             "pluginA_stream_ok": True,
+            "pluginA_judge_score": 90,
+            "pluginA_judge_votes": 3,
+            "pluginA_judge_complete": True,
+            "pluginA_judge_queued": False,
+            "pluginA_empty_reason": None,
+            "pluginA_diagnostics": {"errors": []},
         })
         state["model_info"][m] = {
             "source": "local",
             "pluginA_score": 5,
             "pluginA_output_tokens": 1,  # canonical mirror MATCH
             "pluginA_bytes_received": 32,
+            "pluginA_thinking_bytes_received": 8,
             "pluginA_first_chunk_seen": True,
             "pluginA_first_tok_ts": 1.234,
             "pluginA_start_ts": 1.0,
+            "pluginA_judge_score": 90,
+            "pluginA_judge_votes": 3,
+            "pluginA_judge_complete": True,
+            "pluginA_judge_queued": False,
+            "pluginA_judge_rationale": "ok",
+            "pluginA_empty_reason": None,
+            "pluginA_diagnostics": {"errors": []},
             "pluginB_score": 80,
             "pluginB_output_tokens": 50,
         }
@@ -207,6 +221,9 @@ def _build_14_targets_state() -> dict:
         "pluginA_score": 1,
         "pluginA_output_tokens": 1,  # MATCH (orphan path)
         "pluginA_bytes_received": 4,
+        "pluginA_judge_score": 70,
+        "pluginA_empty_reason": "empty",
+        "pluginA_diagnostics": {"errors": []},
     }
     # No state.results entry for model_orphan.
 
@@ -384,7 +401,8 @@ class TestPurgeResultsRemovePair(unittest.TestCase):
             if l_idx is None:
                 # Orphan path: model_info only, no state.results row.
                 for suf in ("score", "output_tokens", "response_time",
-                            "stream_ok"):
+                            "stream_ok", "judge_score", "empty_reason",
+                            "diagnostics"):
                     self.assertNotIn(
                         f"{pid}_{suf}", state["model_info"][m],
                         f"orphan {m} left {pid}_{suf}",
@@ -394,10 +412,13 @@ class TestPurgeResultsRemovePair(unittest.TestCase):
                     f"orphan {m} left transient {pid}_bytes_received",
                 )
             else:
-                # Normal path: BOTH dicts stripped of pluginA_*.
+                # Normal path: BOTH dicts stripped of pluginA_* (score,
+                # timing, judge, residual, and transient keys).
                 res = state["results"][l_idx]
                 for suf in ("score", "output_tokens", "response_time",
-                            "stream_ok"):
+                            "stream_ok", "judge_score", "judge_votes",
+                            "judge_complete", "judge_queued",
+                            "empty_reason", "diagnostics"):
                     self.assertNotIn(
                         f"{pid}_{suf}", res,
                         f"results[{l_idx}] left {pid}_{suf}",
@@ -405,8 +426,11 @@ class TestPurgeResultsRemovePair(unittest.TestCase):
                 info = state["model_info"][m]
                 for suf in ("score", "output_tokens", "response_time",
                             "stream_ok", "bytes_received",
-                            "first_chunk_seen", "first_tok_ts",
-                            "start_ts"):
+                            "thinking_bytes_received", "first_chunk_seen",
+                            "first_tok_ts", "start_ts", "judge_score",
+                            "judge_votes", "judge_complete",
+                            "judge_queued", "judge_rationale",
+                            "empty_reason", "diagnostics"):
                     self.assertNotIn(
                         f"{pid}_{suf}", info,
                         f"model_info[{m}] left {pid}_{suf}",
@@ -435,6 +459,31 @@ class TestPurgeResultsRemovePair(unittest.TestCase):
         self.assertNotIn("pluginA_bytes_received", after_info)
         # Anything that wasn't a pluginA_* key is intact (e.g. source).
         self.assertEqual(after_info["source"], before_info["source"])
+
+    def test_warn_unknown_plugin_keys_ignores_judge_subkeys(self):
+        """`warn_unknown_plugin_keys` must NOT flag per-plugin judge
+        sub-keys (e.g. ``pluginA_judge_score``) as unknown plugin ids --
+        they live under a real plugin's prefix. Only genuinely unknown
+        plugin ids (e.g. a stale ``ghost_score``) should warn. This keeps
+        the post-purge stderr clean now that judge keys are stripped by
+        default."""
+        import contextlib
+        import io
+
+        state = _build_14_targets_state()
+        # A genuinely unknown plugin id, plus the judge sub-keys that
+        # used to be misreported as unknown plugin ids.
+        state["model_info"]["model_00"]["ghost_score"] = 42
+
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            self.purge.warn_unknown_plugin_keys(
+                state, ["pluginA", "pluginB"]
+            )
+        out = err.getvalue()
+        self.assertIn("ghost", out)
+        self.assertNotIn("pluginA_judge", out)
+        self.assertNotIn("pluginB_judge", out)
 
 
 class TestPurgeResultsDryRunVsApply(unittest.TestCase):

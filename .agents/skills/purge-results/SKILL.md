@@ -7,9 +7,11 @@ run's `benchmark_state.json` so the affected plugins are re-executed on the
 next `ai-benchmark.py` resume. Other plugins' results stay intact — only the
 removed ones re-run.
 
-The script strips **both** the score/timing metrics **and** the transient
-runtime state (bytes_received, first_chunk_seen, first_tok_ts, start_ts) so
-the next run starts from a clean per-plugin slate.
+The script strips the score/timing metrics, the per-plugin judge keys
+(judge_score, judge_votes, judge_rationale, ...), the per-plugin result
+metadata (empty_reason, diagnostics), and the transient runtime state
+(bytes_received, thinking_bytes_received, first_chunk_seen, first_tok_ts,
+start_ts) so the next run starts from a clean per-plugin slate.
 
 ## When to use
 
@@ -23,6 +25,7 @@ Load this skill when the user asks to:
 - remove a specific `(model, plugin)` pair
 - remove all results for a specific model
 - remove all results for a specific plugin
+- remove judging / judge scores for a model or plugin
 - **inspect** what a previous purge did (`--diff <backup>`)
 
 ## Safety contract
@@ -48,12 +51,13 @@ a new plugin is added there, it becomes available to `--plugin` /
 `--target` here without any edit.
 
 Key suffixes stripped per pair are the schema constants
-`SCORE_SUFFIXES` and `TRANSIENT_SUFFIXES` declared at the top of the
-embedded script — they mirror what `BenchmarkState.__init__` writes
-alongside the `{pid}_score` field. The script also performs a
+`SCORE_SUFFIXES`, `TRANSIENT_SUFFIXES`, and `JUDGE_SUFFIXES` declared at
+the top of the embedded script — they mirror what `BenchmarkState.__init__`
+writes alongside the `{pid}_score` field. The script also performs a
 self-check: if `state["model_info"]` contains `_score` keys whose plugin
-id is NOT in `state["active_plugins"]`, the script prints a warning to
-stderr so the operator knows the state file is out-of-sync.
+id is NOT in `state["active_plugins"]` (and isn't a per-plugin sub-key
+like `code-review_judge_score`), the script prints a warning to stderr so
+the operator knows the state file is out-of-sync.
 
 ## How to invoke
 
@@ -135,12 +139,13 @@ choosing) and run it.
 benchmark_state.json.
 
 Default mode: dry-run (prints targets, mutates nothing).
-With --apply:  backs up state, mutates score + transient keys for matched
-              (model, plugin) pairs in BOTH state.results (latest dict per
-              model) and state.model_info, then writes back.
-With --diff:  reports what a previous backup-vs-current diff shows
-              (counting ALL stripped score/timing keys per pair, plus the
-              transient in-flight keys removed from model_info).
+With --apply:  backs up state, mutates score/timing/judge + transient keys
+              for matched (model, plugin) pairs in BOTH state.results
+              (latest dict per model) and state.model_info, then writes
+              back.
+With --diff:   reports what a previous backup-vs-current diff shows
+              (counting ALL stripped score/timing/judge keys per pair, plus
+              the transient in-flight keys removed from model_info).
 """
 import argparse
 import json
@@ -153,18 +158,30 @@ import time
 
 # Per-plugin key suffixes stripped from BOTH state.results (latest dict per
 # model) AND state.model_info. These mirror the keys BenchmarkState writes
-# alongside the {pid}_score field in __init__.
+# alongside the {pid}_score field in __init__, plus the per-plugin result
+# metadata (empty_reason, diagnostics) that should not survive a purge.
 SCORE_SUFFIXES = (
     "score", "tps", "response_time", "output_tokens",
     "thinking_tokens", "total_tokens",
     "stream_ok", "truncated", "repeating", "rubric",
+    "empty_reason", "diagnostics",
 )
 
 # Transient in-flight fields stripped ONLY from state.model_info (they
 # don't exist in latest results). Keeps the next dispatch from carrying
 # stale streaming byte counts or first-chunk timestamps across the re-run.
 TRANSIENT_SUFFIXES = (
-    "bytes_received", "first_chunk_seen", "first_tok_ts", "start_ts",
+    "bytes_received", "thinking_bytes_received",
+    "first_chunk_seen", "first_tok_ts", "start_ts",
+)
+
+# Per-plugin judge keys stripped alongside the score/timing keys. These live
+# under the same {pid}_ prefix in both state.results (latest dict) and
+# state.model_info; they must go too when "remove judging" is requested.
+JUDGE_SUFFIXES = (
+    "judge_complete", "judge_confidence", "judge_error",
+    "judge_input_sha256", "judge_queued", "judge_rationale",
+    "judge_score", "judge_votes",
 )
 
 # Per-model non-plugin fields preserved untouched during the surgery.
@@ -207,8 +224,15 @@ def warn_unknown_plugin_keys(state, plugin_ids):
     for info in state.get("model_info", {}).values():
         if isinstance(info, dict):
             for k in info.keys():
-                if k.endswith("_score"):
-                    seen_pids.add(k[: -len("_score")])
+                if not k.endswith("_score"):
+                    continue
+                pid = k[: -len("_score")]
+                # Skip per-plugin sub-keys: their derived "plugin id" is a
+                # real plugin id plus a suffix (e.g. ``code-review_judge``
+                # from ``code-review_judge_score``), not an unknown plugin.
+                if any(pid.startswith(p + "_") for p in plugin_ids):
+                    continue
+                seen_pids.add(pid)
     extra = seen_pids - set(plugin_ids)
     if extra:
         print(
@@ -367,21 +391,21 @@ def identify_targets(state, args, plugin_ids):
 
 def remove_pair(state, model_key, plugin_id, latest_idx):
     """Surgically remove per-plugin keys for one `(model, plugin)` pair."""
-    # 1. Latest result dict in state.results (score/timing keys only --
-    #    transient fields don't live here). Guard against orphan
+    # 1. Latest result dict in state.results (score/timing/judge keys only
+    #    -- transient fields don't live here). Guard against orphan
     #    model_info entries that never produced a ``state.results`` row
     #    -- ``identify_targets`` returns ``latest_idx=None`` for those
     #    so ``state[\"results\"][None]`` would otherwise IndexError.
     if latest_idx is not None:
         res = state["results"][latest_idx]
-        for suffix in SCORE_SUFFIXES:
+        for suffix in (*SCORE_SUFFIXES, *JUDGE_SUFFIXES):
             res.pop(f"{plugin_id}_{suffix}", None)
 
-    # 2. state.model_info[model_key] mirror (BOTH score/timing and
+    # 2. state.model_info[model_key] mirror (BOTH score/timing/judge and
     #    transient keys so the next dispatch starts clean).
     info = state.get("model_info", {}).get(model_key)
     if info is not None:
-        for suffix in SCORE_SUFFIXES:
+        for suffix in (*SCORE_SUFFIXES, *JUDGE_SUFFIXES):
             info.pop(f"{plugin_id}_{suffix}", None)
         for suffix in TRANSIENT_SUFFIXES:
             info.pop(f"{plugin_id}_{suffix}", None)
@@ -432,7 +456,8 @@ def print_table(targets, quiet=False):
 def run_diff(state_path, backup_path, quiet=False):
     """Show all per-plugin keys removed between a backup and the current
     state, not just ``_score``. Reports separately for the latest-dict
-    in state.results (8 timing keys) and state.model_info (12 keys).
+    in state.results (score/timing/judge keys) and state.model_info
+    (score/timing/judge/transient keys).
     """
     bak = load_state(backup_path)
     cur = load_state(state_path)
