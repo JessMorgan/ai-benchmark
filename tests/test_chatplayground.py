@@ -61,6 +61,28 @@ _CRASH_WORKER = "import sys; sys.stdin.readline(); sys.exit(3)\n"
 # path has to terminate it.
 _HANG_WORKER = "import sys, time; sys.stdin.readline(); time.sleep(3600)\n"
 
+# Echoes the ``timeout`` the parent forwarded, so a regression test can assert
+# the worker actually receives the request timeout (previously it was dropped
+# from the message, leaving the worker with timeout=0 and an empty answer).
+_ECHO_TIMEOUT_WORKER = r"""
+import json, sys
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    try:
+        msg = json.loads(line)
+    except ValueError:
+        continue
+    if msg.get("op") == "send":
+        resp = {"id": msg.get("id"), "ok": True,
+                "text": "timeout=" + str(msg.get("timeout"))}
+    else:
+        resp = {"id": msg.get("id"), "ok": False, "error": "unknown op"}
+    sys.stdout.write(json.dumps(resp) + "\n")
+    sys.stdout.flush()
+"""
+
 
 def _cfg(**overrides):
     base = {
@@ -256,6 +278,18 @@ class TestWorkerSubprocess(unittest.TestCase):
         self.assertEqual(text, "fake answer for hi")
         self.assertIsNone(error)
         self.assertGreaterEqual(elapsed, 0.0)
+
+    def test_request_forwards_timeout_to_worker(self):
+        # Regression: the request timeout must reach the worker. It used to be
+        # bound to ``_send_request``'s named parameter and dropped from the
+        # JSON message, so the worker ran with timeout=0, declared completion
+        # instantly, and read the answer before generation finished (empty
+        # response). The fake worker echoes the timeout it received.
+        script = _write_fake_worker(_ECHO_TIMEOUT_WORKER)
+        with _patch_worker(script):
+            text, error, _elapsed = cp.request(_cfg(), "gpt-5.6-terra", "hi", timeout=10)
+        self.assertIsNone(error)
+        self.assertEqual(text, "timeout=10")
 
     def test_worker_crash_is_surfaced_and_next_request_recovers(self):
         crash_script = _write_fake_worker(_CRASH_WORKER)

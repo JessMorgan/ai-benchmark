@@ -184,6 +184,13 @@ Before committing any complete change:
    and `kill -USR1 <pid>` forces a live stack dump of a wedged run. The
    worker's dump lands in the parent's captured stderr and is surfaced in the
    per-request error. Tests in `tests/test_cli_coverage.py::TestEnableFaulthandler`.
+8. **ChatPlayground request timeout must reach the worker.** `_send_request`
+   in `benchmark/chatplayground.py` binds `timeout` to a named parameter (for
+   the parent's own wait deadline) — it must also be copied into the JSON
+   message (`msg["timeout"] = timeout`) or the worker runs with `timeout=0`,
+   declares completion instantly, and reads the answer before generation
+   finishes (fast empty `(empty response)` legs, score 0, no error).
+   Regression in `tests/test_chatplayground.py::TestWorkerSubprocess::test_request_forwards_timeout_to_worker`.
 
 ## Freebuff skills
 

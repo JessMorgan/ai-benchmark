@@ -252,6 +252,14 @@ def _send_request(op, cfg, *, stop_event=None, timeout=None, **payload) -> dict:
         req_id = _next_id
         msg = {"id": req_id, "op": op, "config": cfg}
         msg.update(payload)
+        # Forward the request timeout to the worker so it can bound its own
+        # generation wait. ``timeout`` is a named parameter here (used for the
+        # parent's wait deadline) and would otherwise be dropped from the
+        # message, leaving the worker with ``timeout=0`` — it would declare
+        # completion instantly and read the answer before generation finished
+        # (empty response).
+        if timeout:
+            msg["timeout"] = timeout
         try:
             stdin.write(json.dumps(msg) + "\n")
             stdin.flush()
