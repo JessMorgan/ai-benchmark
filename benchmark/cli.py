@@ -6,6 +6,7 @@ Supports arbitrary task plugins, versioned results, and plugin selection.
 Configuration: edit benchmark-config.json (or pass --config <path>).
 API keys can use ${VAR} or ${VAR:default} syntax for env-var expansion.
 """
+import contextlib
 import curses
 import faulthandler
 import glob
@@ -1356,9 +1357,370 @@ def _render_footer(stdscr, max_x, max_y, live_models, queuing, footer_line,
         )
 
 
+# ---------------------------------------------------------------------------
+# Rich live TUI (primary renderer). Rich re-renders the whole frame on every
+# tick, eliminating the incremental curses writes whose boundary conditions
+# (resize, emoji width) could leave stale characters on screen. The curses
+# implementation below remains as the fallback for non-interactive terminals
+# and is removed once the Textual migration lands.
+# ---------------------------------------------------------------------------
+
+_RICH_ESCAPE_ACTIONS = {
+    b"\x1b[A": "up",
+    b"\x1b[B": "down",
+    b"\x1b[C": "right",
+    b"\x1b[D": "left",
+    b"\x1b[5~": "pageup",
+    b"\x1b[6~": "pagedown",
+    b"\x1b[H": "home",
+    b"\x1b[1~": "home",
+    b"\x1b[F": "end",
+    b"\x1b[4~": "end",
+}
+
+
+def _rich_key_action(chunk: bytes):
+    """Map one raw stdin chunk to a navigation action, else ``None``."""
+    if chunk in (b"q", b"Q", b"\x03", b"\x04"):
+        return "quit"
+    if chunk == b" ":
+        return "pagedown"
+    return _RICH_ESCAPE_ACTIONS.get(chunk)
+
+
+@contextlib.contextmanager
+def _rich_keyboard():  # pragma: no cover - POSIX terminal I/O setup
+    """Yield a non-blocking single-key action poller (POSIX).
+
+    Uses cbreak mode rather than raw mode so Ctrl+C still raises
+    KeyboardInterrupt and the benchmark's SIGINT handling keeps working. A
+    no-op poller is yielded when stdin is not a terminal.
+    """
+    try:
+        import select
+        import termios
+        import tty
+    except ImportError:  # pragma: no cover - POSIX only
+        yield lambda: None
+        return
+    try:
+        fd = sys.stdin.fileno()
+        old = termios.tcgetattr(fd)
+    except (OSError, ValueError):
+        yield lambda: None
+        return
+    try:
+        tty.setcbreak(fd)
+    except (OSError, termios.error):
+        yield lambda: None
+        return
+
+    def poll():
+        try:
+            ready, _, _ = select.select([sys.stdin], [], [], 0)
+        except (OSError, ValueError):
+            return None
+        if not ready:
+            return None
+        try:
+            first = os.read(fd, 1)
+        except OSError:
+            return None
+        if not first:
+            return None
+        if first == b"\x1b":
+            seq = b"\x1b"
+            for _ in range(4):
+                try:
+                    ready, _, _ = select.select([sys.stdin], [], [], 0.02)
+                except (OSError, ValueError):
+                    break
+                if not ready:
+                    break
+                try:
+                    seq += os.read(fd, 1)
+                except OSError:
+                    break
+            return _rich_key_action(seq)
+        return _rich_key_action(first)
+
+    try:
+        yield poll
+    finally:
+        try:
+            termios.tcsetattr(fd, termios.TCSADRAIN, old)
+        except (OSError, termios.error):  # pragma: no cover
+            pass
+
+
+def _build_rich_frame(state, active_plugins, source_abbrevs, frozen_hdr,
+                      plugin_hdr, num_sources, scroll_y, scroll_x, size,
+                      model_thread_limits=None, session_seed=None):
+    """Build one full TUI frame as a Rich Group (testable headlessly)."""
+    from rich.console import Group
+    from rich.text import Text
+
+    max_y, max_x = size
+    snap = state.snapshot()
+    snap_items = list(snap.items())
+    done = state.completed
+    total = state.total
+    running = [n for n, s in snap.items() if s.get("running_pids")]
+    preloading = [n for n, s in snap.items() if s.get("preloading")]
+    queued = [n for n, s in snap.items() if s["status"] == "queued" and not s.get("preloading")]
+    pending = [n for n, s in snap.items() if s["status"] == "pending" and not s.get("preloading")]
+    http_threads = get_active_request_count()
+    backoff_429 = get_429_stats()
+    sleeping_lookup = _build_sleeping_lookup(backoff_429)
+    sleeping_model_count = len({(src, model) for (src, model, _pid) in sleeping_lookup})
+    judge_activities = state.judge_activity_snapshot()
+    active_judge_targets = {activity["target"] for activity in judge_activities}
+
+    live_height = max(3, num_sources + 1)
+    visible_rows = max(0, max_y - 9 - live_height)
+    frozen_width = FROZEN_VIEW_WIDTH
+
+    def line(text, style=None):
+        return Text(_truncate_display_width(text, max_x), style=style, no_wrap=True)
+
+    lines = []
+
+    ts = datetime.now(timezone.utc).astimezone().strftime('%H:%M:%S')
+    seed_info = f"Seed: {session_seed}  |  " if session_seed is not None else ""
+    lines.append(line(f"AI Benchmark \u2014 Parallel  |  {seed_info}{ts}", "bold"))
+    failed_count = sum(1 for s in snap.values() if s["status"] == "failed")
+    err_indicator = f"  |  \u26a0 {failed_count} failed" if failed_count else ""
+    source_active = _active_source_target_counts(snap)
+    slot_text = ""
+    if model_thread_limits:
+        slot_text = "  |  " + ", ".join(
+            f"{source}: models {source_active.get(source, 0)}/{limit}"
+            for source, limit in model_thread_limits.items()
+        )
+    summary = (
+        f"Total: {total}  |  Done: {done}  |  Active: {len(running)}  |  "
+        f"Queued: {len(queued + pending)}  |  HTTP: {http_threads}  |  "
+        f"429\u23f8 {sleeping_model_count}{err_indicator}  |  "
+        f"\u2191\u2193 rows {scroll_y + 1}-{min(total, scroll_y + visible_rows)}/{total}"
+        f"  |  \u2190\u2192 cols{slot_text}"
+    )
+    if max_y > 1:
+        lines.append(line(summary))
+    if max_y > 2:
+        lines.append(line("\u2500" * min(max_x, 80)))
+
+    if max_y > 3:
+        visible_plugin_hdr = _slice_display_width(
+            plugin_hdr, scroll_x, max(0, max_x - frozen_width - 1)
+        )
+        lines.append(line(frozen_hdr + " " + visible_plugin_hdr, "bold underline"))
+    for row_idx in range(visible_rows):
+        abs_idx = scroll_y + row_idx
+        if abs_idx >= len(snap_items):
+            break
+        name, s = snap_items[abs_idx]
+        frozen, plugin_str = _format_model_row(
+            name, s, abs_idx + 1, active_plugins, source_abbrevs,
+            sleeping_lookup=sleeping_lookup,
+            active_judge_targets=active_judge_targets,
+        )
+        visible_plugin = _slice_display_width(
+            plugin_str, scroll_x, max(0, max_x - frozen_width - 1)
+        )
+        row_line = frozen + " " + visible_plugin
+        sv = s["status"]
+        if sv == "completed":
+            style = "green"
+        elif sv == "failed":
+            style = "red"
+        elif sv == "running" or s.get("running_pids"):
+            style = "yellow"
+        else:
+            style = None
+        lines.append(line(row_line, style))
+    lines.append(line("\u2500" * min(max_x, 60)))
+
+    live_lines = [("Live:", "bold")]
+    for nm, s in ((nm, snap.get(nm) or {}) for nm in running):
+        if len(live_lines) >= live_height:
+            break
+        src_ab = _source_abbr(source_abbrevs, s.get("source"))
+        err = s.get("last_error", "")
+        msg = f" \U0001f537 [{src_ab}] {nm[:36]}"
+        indicators = _build_live_indicators(s, active_plugins)
+        if indicators:
+            msg += "  " + indicators
+        if err:
+            msg += f"  {err}"
+        live_lines.append((msg, None))
+    for nm in preloading:
+        if len(live_lines) >= live_height:
+            break
+        s = snap.get(nm) or {}
+        src_ab = _source_abbr(source_abbrevs, s.get("source"))
+        elapsed = int(max(0, time.monotonic() - (s.get("preload_start_ts") or time.monotonic())))
+        live_lines.append((f" \U0001f504 [{src_ab}] Preloading model {nm[:36]} {elapsed}s", None))
+    judge_groups = {}
+    for activity in judge_activities:
+        judge_groups.setdefault(activity["judge"], []).append(activity)
+    for judge, activities in judge_groups.items():
+        if len(live_lines) >= live_height:
+            break
+        cells = " ".join(
+            f"[{activity['target']} {activity['plugin']} {activity['elapsed']}s]"
+            for activity in activities
+        )
+        live_lines.append((f" {_JUDGE_SCALES} Judge {judge} {cells}", None))
+    if sleeping_lookup:
+        if len(live_lines) < live_height:
+            live_lines.append(("429 Sleeping:", "bold"))
+        for (src_name, api_model, pid), info in sleeping_lookup.items():
+            if len(live_lines) >= live_height:
+                break
+            src_ab = _source_abbr(source_abbrevs, src_name)
+            remaining = max(0, round(info["wake_ts"] - time.time()))
+            live_lines.append((
+                f" \U0001f4a4 [{src_ab}] {api_model[:36]} ({pid}) "
+                + f"[429 {info['attempts']}/{info['max_attempts']} {remaining}s]",
+                None,
+            ))
+    for text, style in live_lines:
+        lines.append(line(text, style))
+
+    recent_errors = state.recent_log(2)
+    if recent_errors:
+        lines.append(line("Errors:", "bold"))
+        for ts_entry, model_entry, msg_entry in recent_errors[:3]:
+            t_str = datetime.fromtimestamp(ts_entry, tz=timezone.utc).astimezone().strftime('%H:%M:%S')
+            lines.append(line(f"  {t_str} [{model_entry[:20]}]: {msg_entry}", "red"))
+
+    queuing = queued + pending
+    preload_details = [
+        (name, max(0.0, time.monotonic() - (snap[name].get("preload_start_ts") or time.monotonic())))
+        for name in preloading
+        if name in snap
+    ]
+    judge_progress = state.judge_progress_snapshot()
+    judge_parts = [
+        f"[{model}: {values.get('completed', 0)}\u2705{values.get('failed', 0)}\u274c{values.get('expected', 0)}\u03a3]"
+        for model, values in judge_progress.items()
+    ]
+    judge_line = f"Judging {' '.join(judge_parts)}" if judge_parts else ""
+    if not running and not queuing and not preloading and not judge_line:
+        lines.append(line(" All models complete \u2014 generating outputs..."))
+    else:
+        parts = []
+        if running:
+            parts.append(f"{len(running)} active")
+        if preload_details:
+            parts.extend(
+                f"Preloading {name[:30]} {seconds:.0f}s"
+                for name, seconds in preload_details
+            )
+        elif preloading:
+            parts.append(f"{len(preloading)} preloading")
+        if queuing:
+            parts.append(f"{len(queuing)} queued")
+        if judge_line:
+            parts.append(judge_line)
+        lines.append(line(" " + "  |  ".join(parts)))
+
+    return Group(*lines)
+
+
+def _tui_main_rich(state, stop_event, num_sources, active_plugins, session_seed=None,
+                   model_thread_limits=None):  # pragma: no cover - live interactive loop
+    """Run the live TUI with Rich, re-rendering the full frame each tick."""
+    from rich.console import Group
+    from rich.live import Live
+
+    source_abbrevs = _unique_source_abbrevs({s["source"] for s in state.snapshot().values()})
+    frozen_cols = [("#", MODEL_NUMBER_COLUMN_WIDTH), ("S", 4), ("Model", 18), ("St", 4)]
+    frozen_hdr = " ".join(f"{h:>{w}}" for h, w in frozen_cols)
+    plugin_cols = []
+    for p in active_plugins:
+        plugin_cols.extend([
+            (f"{p.id[:3]}Sc", SCORE_COLUMN_WIDTH),
+            (f"{p.id[:3]}Tok", 6),
+            (f"{p.id[:3]}Tm", 6),
+            (f"{p.id[:3]}TPS", 6),
+        ])
+    plugin_hdr = " ".join(f"{h:>{w}}" for h, w in plugin_cols)
+
+    scroll_y = 0
+    scroll_x = 0
+
+    with Live(Group(), refresh_per_second=5, screen=True, redirect_stderr=False) as live, \
+            _rich_keyboard() as poll:
+        while not stop_event.is_set():
+            max_y, max_x = live.console.size.height, live.console.size.width
+            live.update(_build_rich_frame(
+                state, active_plugins, source_abbrevs, frozen_hdr, plugin_hdr,
+                num_sources, scroll_y, scroll_x, (max_y, max_x),
+                model_thread_limits=model_thread_limits, session_seed=session_seed,
+            ))
+            live_height = max(3, num_sources + 1)
+            visible_rows = max(0, max_y - 9 - live_height)
+            max_row_offset = max(0, len(state.snapshot()) - visible_rows)
+            action = poll()
+            if action == "quit":
+                break
+            if action == "up":
+                scroll_y = max(0, scroll_y - 1)
+            elif action == "down":
+                scroll_y = min(max_row_offset, scroll_y + 1)
+            elif action == "pageup":
+                scroll_y = max(0, scroll_y - visible_rows)
+            elif action == "pagedown":
+                scroll_y = min(max_row_offset, scroll_y + visible_rows)
+            elif action == "home":
+                scroll_y = 0
+            elif action == "end":
+                scroll_y = max_row_offset
+            elif action == "left":
+                scroll_x = max(0, scroll_x - 8)
+            elif action == "right":
+                visible_width = max(0, max_x - FROZEN_VIEW_WIDTH - 1)
+                scroll_x = min(
+                    max(0, _display_width(plugin_hdr) - visible_width),
+                    scroll_x + 8,
+                )
+            stop_event.wait(0.2)
+
+
+def _rich_tui_enabled():
+    """Return whether the Rich TUI should be used (interactive terminal)."""
+    if os.environ.get("AI_BENCHMARK_NO_RICH"):
+        return False
+    if os.environ.get("AI_BENCHMARK_FORCE_RICH"):
+        return True
+    try:
+        return bool(sys.stdout.isatty())
+    except (AttributeError, ValueError):  # pragma: no cover
+        return False
+
+
 def tui_main(state, stop_event, num_sources, active_plugins, session_seed=None,
              model_thread_limits=None):
-    """Run ncurses TUI in a daemon thread. Updates every 200ms."""
+    """Run the live TUI: Rich on interactive terminals, curses as fallback."""
+    if _rich_tui_enabled():
+        try:
+            _tui_main_rich(state, stop_event, num_sources, active_plugins,
+                           session_seed, model_thread_limits)
+            return
+        except Exception:  # noqa: BLE001 - a Rich failure must fall back to curses
+            try:
+                with open("tui_render_errors.log", "a", encoding="utf-8") as handle:
+                    traceback.print_exc(file=handle)
+            except Exception:  # noqa: BLE001, S110 - logging must not crash the TUI thread
+                pass
+    _tui_main_curses(state, stop_event, num_sources, active_plugins,
+                     session_seed, model_thread_limits)
+
+
+def _tui_main_curses(state, stop_event, num_sources, active_plugins, session_seed=None,
+             model_thread_limits=None):
+    """Run ncurses TUI in a daemon thread. Updates every 200ms (fallback)."""
     try:
         stdscr = curses.initscr()
         curses.noecho()
