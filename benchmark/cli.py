@@ -1304,7 +1304,19 @@ class _FrameRow(Static):  # pragma: no cover - live interactive loop
     def render(self):
         from rich.text import Text
 
-        return Text(self._line_text, style=_FRAME_STYLE_MAP.get(self._line_style, ""))
+        text = Text(self._line_text)
+        style = _FRAME_STYLE_MAP.get(self._line_style, "")
+        if style:
+            # Apply the style as a SPAN (not the Text base style) so Textual's
+            # ``Content.from_rich_text`` converts it through the app's ANSI
+            # theme (``Style.from_rich_style(..., ansi_theme)``). A base-style
+            # string stays raw and is parsed with Rich's default theme, which
+            # shifts named colors - e.g. ``green`` renders #008000 instead of
+            # the app's MONOKAI green #98e024 (this was the colour regression
+            # when the per-row rewrite moved from ``append()`` spans to a
+            # base style).
+            text.stylize(style)
+        return text
 
     def update_line(self, content, style, width):
         """Switch to ``content`` (styled ``style``), repainting changed cells only.

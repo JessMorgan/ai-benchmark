@@ -336,6 +336,32 @@ class TestFrameRowWidget(unittest.TestCase):
         row.update_line("hi", "bold", 5)
         self.assertEqual(row.render().plain, "hi   ")
 
+    def test_render_styles_are_spans_not_base_style(self):
+        """The frame style must ride as a Rich Text SPAN.
+
+        Regression: the per-row rewrite passed the style as ``Text(text,
+        style=...)`` (base style). Textual's ``Content.from_rich_text`` then
+        kept the raw style string, which Rich parsed with its DEFAULT theme
+        - so ``green`` rendered #008000 instead of the app's MONOKAI green
+        #98e024 (visible as dimmed colours in the live TUI). Span-styled
+        text goes through ``Style.from_rich_style(..., ansi_theme)`` and
+        keeps the theme mapping.
+        """
+        row = cli._FrameRow()
+        row.update_line("done", "green", 6)
+        rendered = row.render()
+        # The style string must be attached as a span (not the base style).
+        self.assertTrue(rendered._spans, "expected the style as a span")
+        self.assertEqual(rendered.style, "")
+        self.assertEqual(rendered._spans[0].style, "green")
+
+    def test_unstyled_rows_render_without_spans(self):
+        row = cli._FrameRow()
+        row.update_line("plain", None, 6)
+        rendered = row.render()
+        self.assertFalse(rendered._spans)
+        self.assertEqual(rendered.style, "")
+
     def test_wide_emoji_keeps_count_adjacent(self):
         """The wide scales emoji must not gain a space before its count.
 
