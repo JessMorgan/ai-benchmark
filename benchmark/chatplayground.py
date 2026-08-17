@@ -1,25 +1,39 @@
-"""ChatPlayground.ai interactive-web source adapter (Playwright-driven).
+"""ChatPlayground.ai interactive-web source adapter (subprocess-isolated).
 
 ChatPlayground.ai (https://web.chatplayground.ai) is a closed, JavaScript-
 rendered web app with no public API: it authenticates with a username/password
 (Clerk) and renders every chat interaction client-side. This module drives that
-UI with Playwright — log in with the credentials configured on the source,
-navigate to a single-model chat route, submit the prompt, and read back the
-completed (buffered) answer.
+UI with Playwright — but Playwright runs in a dedicated worker subprocess
+(:mod:`benchmark.chatplayground_worker`), never inside the benchmark runner.
+
+Why a subprocess: Playwright's sync API is not thread-safe and is documented
+as main-thread-only. The benchmark runs each model in its own worker thread,
+and exercising Playwright from such a thread (greenlets plus a per-thread
+asyncio loop) can corrupt the interpreter and segfault the entire run — which
+happened in production (a SIGSEGV while a ChatPlayground model was mid-turn).
+Isolating the browser in a child process means a native crash there surfaces as
+a per-request error instead of taking the benchmark down with it; the next
+request simply spawns a fresh worker.
 
 Each model is addressed by the slug used in the site's ``/chat/<slug>`` route
 (e.g. ``deepseek-v4-pro``, ``gpt-5.6-terra``, ``gemini-3-flash``). Use
 ``list_models(cfg)`` (or ``python -m benchmark.chatplayground``) to enumerate
 the slugs exposed by the sidebar's "AI MODELS" list.
 
-Playwright is imported lazily inside ``_get_page`` so the rest of the benchmark
-(and the test suite, which mocks the driver) never needs a browser at import
-time. All browser operations are serialized under a module lock: the sync
-Playwright API is not thread-safe, and a single logged-in session is reused
-across plugin tasks instead of re-authenticating for every request.
+The parent never imports Playwright. It proxies a JSON-lines protocol over the
+worker's stdin/stdout and serializes requests under a module lock; the worker
+serializes browser operations under its own lock, so a single logged-in session
+is reused across plugin tasks instead of re-authenticating for every request.
 """
 
+import atexit
 import contextlib
+import json
+import os
+import queue
+import signal
+import subprocess
+import sys
 import threading
 import time
 
@@ -53,43 +67,29 @@ DEFAULT_SELECTORS = {
     "wait_timeout_ms": 30000,
 }
 
-# RLock: ``probe`` holds the lock while calling ``list_models``, which also
-# acquires it.
+# ─── Worker subprocess lifecycle ─────────────────────────────────────────────
+# The browser lives in a child process (``benchmark.chatplayground_worker``).
+# A native crash there (Playwright/greenlet/Chromium) is contained: the parent
+# detects EOF on the worker's stdout, tears it down, and reports a per-request
+# error. The next request spawns a fresh worker, so a single browser crash
+# costs one plugin leg instead of the whole run.
+
+# Extra seconds beyond the request timeout before the parent kills a worker
+# that stopped responding (a hung browser turn). The worker enforces its own
+# generation timeout, so this is only a backstop for a wedged process.
+_WORKER_GRACE = 120.0
+# Hard ceiling for ops without a request timeout (``list_models`` / ``probe``):
+# login + enumeration should never approach this.
+_OP_CEILING = 180.0
+
+# All requests are serialized under this lock: only one browser operation is in
+# flight at a time, matching the single-session model of the worker.
 _lock = threading.RLock()
-_state = None
-
-# JS that returns the text of the last assistant answer. The answer is a sibling
-# of the ``ASSISTANT`` label inside its content wrapper; reading the wrapper's
-# ``innerText`` (minus the label itself) preserves code/newline formatting that
-# the plugin evaluators rely on.
-_READ_RESPONSE_JS = """
-(label) => {
-  const labels = [...document.querySelectorAll('p')]
-    .filter(p => (p.innerText || '').trim() === label);
-  if (!labels.length) return '';
-  const wrapper = labels[labels.length - 1].parentElement;
-  if (!wrapper) return '';
-  return wrapper.innerText.replace(label, '').trim();
-}
-"""
-
-# JS that returns the model slugs from the sidebar's "AI MODELS" section. The
-# heading is a leaf node whose parent holds the model links; scoping there keeps
-# conversation-history links (also ``/chat/...``) out of the result.
-_LIST_MODELS_JS = """
-() => {
-  const headings = [...document.querySelectorAll('*')]
-    .filter(e => e.children.length === 0 && (e.innerText || '').trim() === 'AI MODELS');
-  if (!headings.length) return [];
-  const container = headings[0].parentElement;
-  if (!container) return [];
-  return [...container.querySelectorAll('a[href*="/chat/"]')]
-    .map(a => a.getAttribute('href'))
-    .filter(href => href && href.includes('/chat/'))
-    .map(href => href.split('/chat/')[1].split('?')[0])
-    .filter(slug => slug && slug !== 'new');
-}
-"""
+_proc: subprocess.Popen | None = None
+_queue: queue.Queue | None = None
+_reader: threading.Thread | None = None
+_stderr_chunks: list[str] = []
+_next_id = 0
 
 
 def is_chatplayground(cfg) -> bool:
@@ -114,170 +114,209 @@ def selectors(cfg) -> dict:
     return merged
 
 
-def _close_session():
-    """Tear down the cached browser session, if any."""
-    global _state
-    if _state is None:
-        return
-    for closer in ("context", "playwright"):
-        obj = _state.get(closer)
-        if obj is not None:
-            with contextlib.suppress(Exception):
-                obj.stop() if closer == "playwright" else obj.close()
-    _state = None
+def _worker_command() -> list[str]:
+    """Return the argv that starts the browser worker subprocess."""
+    return [sys.executable, "-m", "benchmark.chatplayground_worker"]
 
 
-def _login(page, email, password, base_url, sel):
-    """Navigate to the Clerk login form and authenticate with email/password."""
-    page.goto(base_url.rstrip("/") + (sel.get("login_url") or "/login"))
-    page.fill(sel["email_input"], email)
-    page.fill(sel["password_input"], password)
-    page.get_by_role("button", name=sel["login_submit"], exact=True).click()
-    # Wait until the SPA leaves the login form and renders the chat composer.
-    page.wait_for_selector(sel["prompt_input"], timeout=sel.get("wait_timeout_ms", 30000))
-
-
-def _get_page(cfg):
-    """Return a logged-in page, reusing (or re-establishing) the cached session."""
-    global _state
-    email, password = credentials(cfg)
-    base_url = cfg.get("base_url", DEFAULT_BASE_URL)
-    key = (base_url, email)
-    if _state is not None and _state.get("key") != key:
-        _close_session()
-    if _state is None:
-        from playwright.sync_api import sync_playwright  # lazy import
-
-        pw = sync_playwright().start()
-        browser = pw.chromium.launch(headless=bool(cfg.get("headless", True)))
-        context = browser.new_context()
-        page = context.new_page()
-        # Register the session before logging in so a login failure tears down
-        # the freshly-launched browser via ``_close_session`` instead of leaking it.
-        _state = {
-            "playwright": pw,
-            "browser": browser,
-            "context": context,
-            "page": page,
-            "key": key,
-        }
-        try:
-            _login(page, email, password, base_url, selectors(cfg))
-        except Exception:
-            _close_session()
-            raise
-    return _state["page"]
-
-
-def _submit_prompt(page, prompt, sel):
-    """Type the prompt and send it."""
-    page.fill(sel["prompt_input"], prompt)
-    page.get_by_role("button", name=sel["send_button"], exact=True).click()
-
-
-def _has_response(page, sel):
-    """Return whether an assistant answer has appeared yet."""
-    return page.get_by_text(sel["assistant_label"], exact=True).count() > 0
-
-
-def _wait_for_completion(page, timeout, stop_event, sel):
-    """Wait for the in-flight answer to finish, honouring ``stop_event``.
-
-    The "Stop" affordance is present while a response is generating. A turn is
-    complete once that affordance has appeared and then disappeared; a very fast
-    response may never show it, so an assistant answer already being present is
-    also treated as completion.
-    """
-    deadline = time.monotonic() + timeout
-    stop = sel["stop_generation"]
-    saw_stop = False
-    while time.monotonic() < deadline:
-        if stop_event is not None and stop_event.is_set():
-            return False
-        with contextlib.suppress(Exception):
-            if page.locator(stop).count() > 0:
-                saw_stop = True
-                time.sleep(0.25)
+def _reader_loop(proc, out_queue) -> None:
+    """Pump worker stdout lines onto ``out_queue``; signal EOF on close."""
+    try:
+        for line in proc.stdout:
+            line = line.strip()
+            if not line:
                 continue
-        if saw_stop or _has_response(page, sel):
-            break
-        time.sleep(0.25)
-    settle = int(sel.get("settle_ms", 1500))
-    if settle > 0:
-        end = min(time.monotonic() + settle / 1000.0, deadline)
-        while time.monotonic() < end:
+            try:
+                msg = json.loads(line)
+            except ValueError:
+                continue
+            out_queue.put(("msg", msg))
+    except (OSError, ValueError):
+        pass
+    finally:
+        out_queue.put(("eof", None))
+
+
+def _stderr_loop(proc, chunks) -> None:
+    """Append worker stderr lines to ``chunks`` (bounded) for crash diagnostics."""
+    try:
+        for line in proc.stderr:
+            chunks.append(line)
+            if len(chunks) > 200:
+                chunks.pop(0)
+    except (OSError, ValueError):
+        pass
+
+
+def _terminate(proc) -> None:
+    """Terminate the worker and its process group where supported."""
+    if proc.poll() is not None:
+        return
+    try:
+        if os.name == "posix":
+            os.killpg(proc.pid, signal.SIGTERM)
+        else:
+            proc.terminate()
+    except (OSError, ProcessLookupError):
+        with contextlib.suppress(Exception):
+            proc.terminate()
+    try:
+        proc.wait(timeout=1)
+    except subprocess.TimeoutExpired:
+        try:
+            if os.name == "posix":
+                os.killpg(proc.pid, signal.SIGKILL)
+            else:
+                proc.kill()
+        except (OSError, ProcessLookupError):
+            pass
+
+
+def _teardown_worker() -> None:
+    """Close the worker's stdin, terminate it, and reset module state."""
+    global _proc, _queue, _reader
+    proc, _proc = _proc, None
+    _queue = None
+    _reader = None
+    if proc is None:
+        return
+    if proc.stdin is not None:
+        with contextlib.suppress(Exception):
+            proc.stdin.close()
+    _terminate(proc)
+    with contextlib.suppress(Exception):
+        proc.wait(timeout=2)
+
+
+def _ensure_worker() -> subprocess.Popen:
+    """Return a live worker subprocess, spawning one if needed."""
+    global _proc, _queue, _reader, _stderr_chunks
+    if _proc is not None and _proc.poll() is None:
+        return _proc
+    _teardown_worker()
+    _queue = queue.Queue()
+    _stderr_chunks = []
+    try:
+        _proc = subprocess.Popen(
+            _worker_command(),
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            bufsize=1,
+            start_new_session=(os.name == "posix"),
+        )
+    except OSError as exc:
+        _proc = None
+        raise RuntimeError(
+            f"Could not start ChatPlayground worker: {type(exc).__name__}: {exc}"
+        ) from exc
+    _reader = threading.Thread(target=_reader_loop, args=(_proc, _queue), daemon=True)
+    _reader.start()
+    _stderr_thread = threading.Thread(
+        target=_stderr_loop, args=(_proc, _stderr_chunks), daemon=True
+    )
+    _stderr_thread.start()
+    return _proc
+
+
+def _worker_diag() -> str:
+    """Build a crash diagnostic (exit code + stderr tail) for the dead worker."""
+    proc = _proc
+    rc = proc.poll() if proc is not None else None
+    tail = "\n".join(_stderr_chunks[-15:]).strip() if _stderr_chunks else ""
+    code = f"exit code {rc}" if rc is not None else "unexpectedly"
+    if tail:
+        return f"{code}; stderr: {tail[-1000:]}"
+    return code
+
+
+def _send_request(op, cfg, *, stop_event=None, timeout=None, **payload) -> dict:
+    """Send one op to the worker and wait for its response.
+
+    Serialized under the module lock (one browser operation at a time). A
+    worker death is detected via EOF on its stdout and surfaced as an error; the
+    next request spawns a fresh worker. ``stop_event`` (Ctrl+C) or the deadline
+    (request ``timeout`` + ``_WORKER_GRACE``) terminates the worker so a hung
+    browser turn cannot block the benchmark forever.
+    """
+    global _next_id
+    with _lock:
+        proc = _ensure_worker()
+        stdin = proc.stdin
+        out_queue = _queue
+        if stdin is None or out_queue is None:
+            _teardown_worker()
+            return {"ok": False, "error": "ChatPlayground worker unavailable"}
+        _next_id += 1
+        req_id = _next_id
+        msg = {"id": req_id, "op": op, "config": cfg}
+        msg.update(payload)
+        try:
+            stdin.write(json.dumps(msg) + "\n")
+            stdin.flush()
+        except (BrokenPipeError, OSError):
+            _teardown_worker()
+            return {"ok": False, "error": "ChatPlayground worker died before handling the request"}
+        try:
+            timeout = float(timeout) if timeout else 0.0
+        except (TypeError, ValueError):
+            timeout = 0.0
+        ceiling = (timeout + _WORKER_GRACE) if timeout else _OP_CEILING
+        deadline = time.monotonic() + ceiling
+        while True:
             if stop_event is not None and stop_event.is_set():
-                return False
-            time.sleep(0.1)
-    return True
-
-
-def _read_response(page, sel):
-    """Return the text of the last completed assistant message."""
-    return str(page.evaluate(_READ_RESPONSE_JS, sel["assistant_label"]) or "")
-
-
-def _send_prompt(page, model, prompt, timeout, stop_event, cfg):
-    """Run one chat turn on ``model`` and return the buffered answer text."""
-    sel = selectors(cfg)
-    base_url = cfg.get("base_url", DEFAULT_BASE_URL)
-    chat_path = (sel.get("chat_path") or "/chat").rstrip("/")
-    if model:
-        page.goto(f"{base_url.rstrip('/')}{chat_path}/{model}")
-    else:
-        page.goto(base_url.rstrip("/"))
-    page.wait_for_selector(sel["prompt_input"], timeout=sel.get("wait_timeout_ms", 30000))
-    _submit_prompt(page, prompt, sel)
-    if not _wait_for_completion(page, timeout, stop_event, sel):
-        raise TimeoutError("ChatPlayground request cancelled")
-    return _read_response(page, sel)
+                _teardown_worker()
+                return {"ok": False, "error": "ChatPlayground request cancelled (worker terminated)"}
+            if time.monotonic() >= deadline:
+                _teardown_worker()
+                return {"ok": False, "error": f"ChatPlayground request timed out after {ceiling:g}s"}
+            try:
+                kind, data = out_queue.get(timeout=0.1)
+            except queue.Empty:
+                continue
+            if kind == "eof":
+                diag = _worker_diag()
+                _teardown_worker()
+                return {"ok": False, "error": f"ChatPlayground worker crashed: {diag}"}
+            if isinstance(data, dict) and data.get("id") == req_id:
+                return data
 
 
 def request(cfg, model, prompt, *, timeout, stop_event=None, system_prompt=None):
     """Send ``prompt`` through a logged-in ChatPlayground session.
 
-    Returns ``(text, error, elapsed_seconds)``. The whole browser turn is
-    serialized under the module lock; the answer is buffered (no per-token
-    streaming), and an optional ``system_prompt`` is folded into the prompt.
+    Returns ``(text, error, elapsed_seconds)``. The whole browser turn runs in
+    the worker subprocess; the answer is buffered (no per-token streaming), and
+    an optional ``system_prompt`` is folded into the prompt by the worker.
     """
+    if stop_event is not None and stop_event.is_set():
+        return "", "ChatPlayground request cancelled", 0.0
     started = time.time()
-    text = ""
-    error = None
-    if system_prompt:
-        prompt = f"{system_prompt}\n\n{prompt}"
-    try:
-        with _lock:
-            page = _get_page(cfg)
-            text = _send_prompt(page, model, prompt, timeout, stop_event, cfg)
-    except Exception as exc:  # noqa: BLE001 - any browser failure becomes an error result
-        error = f"{type(exc).__name__}: {exc}"
-    return text, error, round(time.time() - started, 1)
+    resp = _send_request(
+        "send", cfg, stop_event=stop_event, timeout=timeout,
+        model=model, prompt=prompt, system_prompt=system_prompt,
+    )
+    elapsed = round(time.time() - started, 1)
+    if resp.get("ok"):
+        return resp.get("text", ""), None, elapsed
+    return "", resp.get("error", "ChatPlayground request failed"), elapsed
 
 
 def list_models(cfg) -> list[str]:
     """Enumerate the model slugs exposed by the sidebar's "AI MODELS" list."""
-    with _lock:
-        page = _get_page(cfg)
-        slugs = page.evaluate(_LIST_MODELS_JS) or []
-    return [str(slug) for slug in slugs if slug]
+    resp = _send_request("list_models", cfg)
+    if resp.get("ok"):
+        return [str(slug) for slug in (resp.get("models") or [])]
+    raise RuntimeError(resp.get("error", "ChatPlayground model enumeration failed"))
 
 
 def probe(cfg) -> dict:
     """Capture diagnostic DOM information for selector finalization."""
-    with _lock:
-        page = _get_page(cfg)
-        info = {
-            "url": page.url,
-            "title": page.title(),
-            "textarea_count": page.locator("textarea").count(),
-            "input_count": page.locator("input").count(),
-            "button_count": page.locator("button").count(),
-        }
-        try:
-            info["models"] = list_models(cfg)
-        except Exception as exc:  # noqa: BLE001 - model enumeration is best-effort
-            info["models_error"] = f"{type(exc).__name__}: {exc}"
-        return info
+    resp = _send_request("probe", cfg)
+    if resp.get("ok"):
+        return resp.get("probe") or {}
+    raise RuntimeError(resp.get("error", "ChatPlayground probe failed"))
 
 
 def config_from_env() -> dict:
@@ -287,8 +326,6 @@ def config_from_env() -> dict:
     credentials; ``CHATPLAYGROUND_BASE_URL`` and ``CHATPLAYGROUND_HEADLESS``
     (default ``"1"``) override the site and browser mode.
     """
-    import os
-
     return {
         "api_protocol": "chatplayground",
         "base_url": os.environ.get("CHATPLAYGROUND_BASE_URL", DEFAULT_BASE_URL),
@@ -318,8 +355,9 @@ def generate_config(source_cfg: dict | None = None, models: list[str] | None = N
 
     When ``source_cfg`` is omitted it is built from the environment (see
     :func:`config_from_env`). When ``models`` is omitted the model slugs are
-    enumerated from the live sidebar's "AI MODELS" list. Each discovered slug
-    becomes a ``models`` entry pointing at the ``ChatPlayground`` source.
+    enumerated from the live sidebar's "AI MODELS" list (via the worker
+    subprocess). Each discovered slug becomes a ``models`` entry pointing at
+    the ``ChatPlayground`` source.
     """
     if source_cfg is None:
         source_cfg = config_from_env()
@@ -348,8 +386,20 @@ def _cli_probe() -> dict:
     return probe(config_from_env())
 
 
-if __name__ == "__main__":  # pragma: no cover - diagnostic entry point
-    import json
+def _close_session() -> None:
+    """Tear down the worker subprocess (and its browser), if any."""
+    with _lock:
+        _teardown_worker()
 
-    result = _cli_probe()
-    print(json.dumps(result, indent=2, default=str))
+
+def _atexit_cleanup() -> None:
+    """Best-effort worker teardown at interpreter exit (no lock: shutdown)."""
+    _teardown_worker()
+
+
+atexit.register(_atexit_cleanup)
+
+
+if __name__ == "__main__":  # pragma: no cover - diagnostic entry point
+    result = _cli_probe()  # pragma: no cover
+    print(json.dumps(result, indent=2, default=str))  # pragma: no cover

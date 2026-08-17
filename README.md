@@ -146,7 +146,10 @@ with Playwright using a username/password (Clerk login, no API key). Install
 Chromium once with `uv run playwright install chromium`. Each model is
 addressed by its `/chat/<slug>` route, so put the slug in `models` (e.g.
 `deepseek-v4-pro`, `gpt-5.6-terra`). Answers are buffered (no TTFT/TPS), and
-browser work is serialized under one logged-in session.
+browser work is serialized under one logged-in session. Playwright runs in an
+**isolated worker subprocess** (`benchmark/chatplayground_worker.py`): a native
+crash in the browser stack surfaces as a per-request error and the next request
+spawns a fresh worker, instead of segfaulting the whole benchmark runner.
 
 To enumerate the site's model slugs and emit a ready-to-run config, run
 `ai-benchmark --chatplayground-config > benchmark-config.json` with

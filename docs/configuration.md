@@ -134,6 +134,14 @@ Behavior and limitations:
 - Browser operations are serialized under a module lock and one logged-in
   session is reused across plugin tasks, so keep `model_thread_limit` and
   `plugin_thread_limit` at `1`.
+- Playwright runs in an **isolated worker subprocess**
+  (`benchmark/chatplayground_worker.py`); the runner module
+  (`benchmark/chatplayground.py`) never imports it. Playwright's sync API is
+  not thread-safe and is main-thread-only, and the benchmark runs each model in
+  its own worker thread — exercising it in-process could corrupt the
+  interpreter and segfault the whole run. With the worker, a native browser
+  crash surfaces as a per-request error, the worker is torn down, and the next
+  request spawns a fresh one.
 - The CSS selectors were captured against the live site (see
   `benchmark/chatplayground.py`) and can be overridden per source via a
   `selectors` mapping if the site changes:

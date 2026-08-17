@@ -19,7 +19,7 @@ to know what to grep first.
   - **`benchmark/outputs.py`** — `gen_markdown / gen_csv / gen_html / gen_pdf`.
   - **`benchmark/completions.py`** — `--generate-shell-completion`.
   - **`benchmark/opencode.py`** — the optional OpenCode subprocess runner.
-  - **`benchmark/chatplayground.py`** — Playwright-driven interactive-web adapter for ChatPlayground.ai sources (`api_protocol: "chatplayground"`, username/password login, buffered answers, UI model enumeration).
+  - **`benchmark/chatplayground.py`** — subprocess-proxy adapter for ChatPlayground.ai sources (`api_protocol: "chatplayground"`, username/password login, buffered answers, UI model enumeration). **`benchmark/chatplayground_worker.py`** — the Playwright browser worker it spawns; the runner never imports Playwright (its sync API is not thread-safe, and running it in a model worker thread segfaulted the run).
 - **`plugins/challenges/`** — 18 task plugins; auto-discovered and metadata-validated. **`plugins/outputs/`** — md/csv/html/pdf output plugins.
 - **`scripts/recover_state_from_csv.py`** — explicit, dry-run-by-default recovery of historical `benchmark_state.json` files from `results.csv`; accepts known historical plugin subsets and rejects unknown score columns.
 - **`tests/`** — pytest/unittest suite. **`pyproject.toml`** — project metadata, runtime deps, `dev` dependency group, pytest/coverage/mypy/ruff config. **`uv.lock`** — pinned dependency tree (managed by `uv`).

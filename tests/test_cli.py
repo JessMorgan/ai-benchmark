@@ -79,9 +79,13 @@ class TestCLIArgs(unittest.TestCase):
             self.assertEqual(src_cfg["preload_timeout"], 300)
 
     def test_chatplayground_config_flag_reports_missing_credentials(self):
+        # Set the vars to empty strings rather than popping them: the CLI loads
+        # a local .env at startup (real env vars win over .env values), so
+        # popping would let a repo-local .env re-supply real credentials and
+        # the flag would actually enumerate models and exit 0.
         env = dict(os.environ)
-        env.pop("CHATPLAYGROUND_EMAIL", None)
-        env.pop("CHATPLAYGROUND_PASSWORD", None)
+        env["CHATPLAYGROUND_EMAIL"] = ""
+        env["CHATPLAYGROUND_PASSWORD"] = ""
         result = subprocess.run(
             [sys.executable, "ai-benchmark.py", "--chatplayground-config"],
             capture_output=True,
