@@ -1205,11 +1205,15 @@ def _build_frame_lines(state, active_plugins, source_abbrevs, frozen_hdr,
         for name in preloading
         if name in snap
     ]
-    judge_parts = [
-        f"[{model}: {values.get('completed', 0)}\u2705{values.get('failed', 0)}\u274c{values.get('expected', 0)}\u03a3]"
-        for model, values in judge_progress.items()
-    ]
-    judge_line = f"Judging {' '.join(judge_parts)}" if judge_parts else ""
+    active_judge_parts = []
+    stopped_judge_parts = []
+    for model, values in judge_progress.items():
+        part = (
+            f"[{model}: {values.get('completed', 0)}\u2705{values.get('failed', 0)}\u274c"
+            f"{values.get('expected', 0)}\u03a3]"
+        )
+        (stopped_judge_parts if values.get("stopped") else active_judge_parts).append(part)
+    judge_line = f"Judging {' '.join(active_judge_parts)}" if active_judge_parts else ""
     if not running and not queuing and not preloading and not judge_line:
         lines.append(line(" All models complete \u2014 generating outputs..."))
     else:
@@ -1237,7 +1241,14 @@ def _build_frame_lines(state, active_plugins, source_abbrevs, frozen_hdr,
             base_parts = [p for p in parts if p != judge_line]
             if base_parts:
                 lines.append(line(" " + "  |  ".join(base_parts)))
-            lines.extend(line(wrapped) for wrapped in _wrap_judge_parts(judge_parts, max_x))
+            lines.extend(line(wrapped) for wrapped in _wrap_judge_parts(active_judge_parts, max_x))
+    if stopped_judge_parts:
+        # Judges halted by an exhausted 429 (terminal_429) render on their
+        # own red footer line(s) so they stand out from the active roster.
+        lines.extend(
+            line(wrapped, "red")
+            for wrapped in _wrap_judge_parts(stopped_judge_parts, max_x)
+        )
 
     return lines
 

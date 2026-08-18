@@ -291,6 +291,52 @@ class TestBuildFrameLinesAdvanced(unittest.TestCase):
         text = _frame_text(lines)
         self.assertEqual(text.count("Judging"), 1)
 
+    def test_stopped_judge_renders_red_on_own_footer_line(self):
+        """A 429-halted judge gets its own red footer line; active judges
+        stay on the default-styled line."""
+        snapshot = {
+            "model-a": {"status": "running", "source": "Local",
+                        "running_pids": ["rate-limiter"],
+                        "rate-limiter_start_ts": 0},
+        }
+        state = self._state(
+            snapshot,
+            judge_progress={
+                "judge-active": {"completed": 3, "failed": 0, "expected": 4},
+                "judge-stopped": {"completed": 1, "failed": 2, "expected": 3,
+                                  "stopped": True},
+            },
+        )
+        with mock.patch("benchmark.cli.get_active_request_count", return_value=1), \
+                mock.patch("benchmark.cli.get_429_stats", return_value={}):
+            lines = _render_lines(state, num_sources=4)
+        text = _frame_text(lines)
+        self.assertIn("Judging [judge-active:", text)
+        self.assertIn("Judging [judge-stopped:", text)
+        stopped = next(l for l in lines if "judge-stopped:" in l[0])
+        active = next(l for l in lines if "judge-active:" in l[0])
+        self.assertEqual(stopped[1], "red")
+        self.assertIsNone(active[1])
+
+    def test_stopped_judge_alone_renders_red_without_blank_footer(self):
+        """With no models running and only a halted judge, the red judge
+        line still renders (no stray blank footer row, no crash)."""
+        state = self._state(
+            {"model-a": {"status": "completed", "source": "Local"}},
+            judge_progress={
+                "judge-stopped": {"completed": 1, "failed": 2, "expected": 3,
+                                  "stopped": True},
+            },
+        )
+        with mock.patch("benchmark.cli.get_active_request_count", return_value=1), \
+                mock.patch("benchmark.cli.get_429_stats", return_value={}):
+            lines = _render_lines(state, num_sources=4)
+        text = _frame_text(lines)
+        self.assertIn("Judging [judge-stopped:", text)
+        self.assertIn("All models complete", text)
+        stopped = next(l for l in lines if "judge-stopped:" in l[0])
+        self.assertEqual(stopped[1], "red")
+
     def test_429_sleeping_render(self):
         snapshot = {
             "model-a": {"status": "running", "source": "Local",
