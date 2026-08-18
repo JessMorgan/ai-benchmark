@@ -36,8 +36,9 @@ class TestReasoningPlugin:
         self.plugin = ReasoningPlugin()
 
     def test_metadata_and_temperature(self):
-        assert self.plugin.version == "1.0.0"
+        assert self.plugin.version == "1.1.0"
         assert "Profile before Auth" in self.plugin.get_prompt()
+        assert "Profile is P4" in self.plugin.get_prompt()
         assert self.plugin.get_temperature({"reasoning_temperature": 0.1}) == 0.1
 
     def test_empty_response_scores_zero(self):

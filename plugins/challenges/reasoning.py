@@ -14,7 +14,7 @@ class ReasoningPlugin(BenchmarkTaskPlugin):
 
     @property
     def version(self):
-        return "1.0.0"
+        return "1.1.0"
 
     @property
     def name(self):
@@ -36,7 +36,7 @@ class ReasoningPlugin(BenchmarkTaskPlugin):
             "P1-P6 are each used once. Clues: Auth immediately before Search; Profile before Auth; "
             "Upload after Search; Billing after Upload and before Notifications; Ana owns 10:15; Ben owns "
             "Search; Eli owns the incident immediately after Search; Auth is P1; Notifications is P2; "
-            "Upload priority > Search priority > Billing priority. Determine the service, owner, priority, "
+            "Profile is P4; Upload priority > Search priority > Billing priority. Determine the service, owner, priority, "
             "and time at 09:30. Final lines must be exactly:\nFAILED_SERVICE: <service>\nOWNER: <person>\n"
             "PRIORITY: <P1/P2/P3/P4/P5/P6>\nTIME: <HH:MM>"
         )
@@ -85,9 +85,10 @@ class ReasoningPlugin(BenchmarkTaskPlugin):
         priorities = sum(self._has(text, pattern) for pattern in (
             r"Auth.{0,30}P1|P1.{0,30}Auth", r"Notifications.{0,30}P2|P2.{0,30}Notifications", r"Upload.{0,60}higher.{0,40}Search.{0,60}higher.{0,40}Billing",
         ))
-        # The chain leaves P4 for Profile, P5 for Search, P6 for Upload, and
-        # P3 for Billing. The requested 09:30 service is therefore Search/P5;
-        # accepting P4 here would reward a plausible-looking but wrong answer.
+        # Profile is pinned to P4 by the clue, leaving P5 for Search, P6 for
+        # Upload, and P3 for Billing (B < S < U). The requested 09:30 service
+        # is therefore Search/P5; accepting P4 here would reward a
+        # plausible-looking but wrong answer.
         if not self._has(text, r"(?:Search|09:30).{0,40}P5|P5.{0,40}(?:Search|09:30)"):
             priorities = max(0, priorities - 1)
         rubric.add_criterion("Priority-chain deductions", 2.0, float(priorities) * 2.0 / 3.0)
