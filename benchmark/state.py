@@ -341,6 +341,11 @@ class BenchmarkState:
         self.score_schema = SCORE_SCHEMA
         self._judge_progress = {}
         self._judge_activity = {}
+        # Judge runners can remain selected between individual cell requests;
+        # this is distinct from ``_judge_activity``, which only represents
+        # requests currently executing. The TUI uses this transient set to
+        # keep selected judges green across queue/transport gaps.
+        self._judge_selected = set()
         self._next_judge_activity_id = 0
         # Optional append-only result journal (see ``set_journal_path``).
         self._journal_path = None
@@ -785,6 +790,19 @@ class BenchmarkState:
         """Return a copy of live per-judge progress for the TUI."""
         with self._lock:
             return {model: dict(values) for model, values in self._judge_progress.items()}
+
+    def set_judge_selected(self, judge_model, selected):
+        """Mark whether a judge runner is selected for work on its source."""
+        with self._lock:
+            if selected:
+                self._judge_selected.add(judge_model)
+            else:
+                self._judge_selected.discard(judge_model)
+
+    def judge_selected_snapshot(self):
+        """Return judge runners selected between individual cell requests."""
+        with self._lock:
+            return set(self._judge_selected)
 
     def start_judge_activity(self, judge_model, target, plugin):
         """Register one currently executing judge request for the live TUI."""

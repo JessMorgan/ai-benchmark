@@ -1066,6 +1066,13 @@ def _build_frame_lines(state, active_plugins, source_abbrevs, frozen_hdr,
     sleeping_model_count = len({(src, model) for (src, model, _pid) in sleeping_lookup})
     judge_activities = state.judge_activity_snapshot()
     active_judge_targets = {activity["target"] for activity in judge_activities}
+    selected_snapshot = getattr(state, "judge_selected_snapshot", None)
+    selected_judges = (
+        set(selected_snapshot() or ()) if callable(selected_snapshot) else set()
+    )
+    active_judge_names = selected_judges | {
+        activity["judge"] for activity in judge_activities
+    }
     judge_progress = state.judge_progress_snapshot()
 
     live_height = max(3, num_sources + 1)
@@ -1208,7 +1215,7 @@ def _build_frame_lines(state, active_plugins, source_abbrevs, frozen_hdr,
         for name in preloading
         if name in snap
     ]
-    running_judges = {activity["judge"] for activity in judge_activities}
+    running_judges = active_judge_names
     running_parts, waiting_parts, complete_parts, stopped_parts = [], [], [], []
     for model, values in judge_progress.items():
         part = (
@@ -1226,7 +1233,8 @@ def _build_frame_lines(state, active_plugins, source_abbrevs, frozen_hdr,
         else:
             waiting_parts.append(part)
     judge_line = f"Judging {' '.join(waiting_parts)}" if waiting_parts else ""
-    if not running and not queuing and not preloading and not judge_line:
+    if (not running and not queuing and not preloading
+            and not judge_line and not active_judge_names):
         lines.append(line(" All models complete \u2014 generating outputs..."))
     else:
         parts = []
@@ -1936,12 +1944,13 @@ class SourceJudgeWorkerPool:
     """
 
     def __init__(self, source, model_limit, process_job, stop_event,
-                 plugin_limit=1):
+                 plugin_limit=1, on_selection_change=None):
         self.source = source
         self.model_limit = max(1, int(model_limit))
         self.plugin_limit = max(1, int(plugin_limit))
         self.process_job = process_job
         self.stop_event = stop_event
+        self.on_selection_change = on_selection_change
         self._condition = threading.Condition()
         self._queues = {}          # judge -> _JudgeQueue
         self._order = []           # judge discovery order
@@ -1990,6 +1999,19 @@ class SourceJudgeWorkerPool:
                 return judge
         return _NO_JUDGE
 
+    def _notify_selection(self, judge, selected):
+        """Publish a judge-runner selection change without affecting workers."""
+        if self.on_selection_change is None:
+            return
+        try:
+            self.on_selection_change(judge, selected)
+        except Exception as exc:  # noqa: BLE001 - TUI bookkeeping must not kill a judge
+            print(
+                f"⚠️  Judge selection update ({self.source}/{judge}) failed: "
+                f"{type(exc).__name__}: {exc}",
+                file=sys.stderr,
+            )
+
     def _activate_locked(self):
         """Start judge runners for pending judges while model slots are free."""
         while (not self._stopped and not self.stop_event.is_set()
@@ -2004,6 +2026,7 @@ class SourceJudgeWorkerPool:
                 daemon=True,
             )
             self._active[judge] = thread
+            self._notify_selection(judge, True)
             thread.start()
 
     def _judge_runner(self, judge):
@@ -2034,6 +2057,10 @@ class SourceJudgeWorkerPool:
             thread.join()
         with self._condition:
             self._active.pop(judge, None)
+            # Clear the old selection before activating its replacement so
+            # the live footer never treats a finished runner as selected after
+            # another judge has taken its slot.
+            self._notify_selection(judge, False)
             self._activate_locked()
             self._condition.notify_all()
 
@@ -2108,8 +2135,11 @@ class SourceJudgeWorkerPool:
         with self._condition:
             self._stopped = True
             self._condition.notify_all()
-            active = list(self._active.values())
-        for thread in active:
+            active = list(self._active.items())
+            if not drain:
+                for judge, _thread in active:
+                    self._notify_selection(judge, False)
+        for _judge, thread in active:
             thread.join(timeout=timeout)
 
 
@@ -3345,6 +3375,9 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
             source: SourceJudgeWorkerPool(
                 source, judge_model_limits[source], process_judge_job, stop_event,
                 plugin_limit=judge_plugin_limits[source],
+                on_selection_change=lambda judge, selected: state.set_judge_selected(
+                    judge, selected,
+                ),
             )
             for source in set(judge_sources.values())
         }

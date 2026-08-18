@@ -44,6 +44,9 @@ class _FakeState:
     def judge_progress_snapshot(self):
         return {}
 
+    def judge_selected_snapshot(self):
+        return set()
+
     def recent_log(self, _n):
         return []
 
@@ -195,13 +198,14 @@ class TestTextualTuiDispatch(unittest.TestCase):
 
 class TestBuildFrameLinesAdvanced(unittest.TestCase):
     def _state(self, snapshot, judge_activities=None, judge_progress=None,
-               recent_log=None):
+               recent_log=None, judge_selected=None):
         state = mock.MagicMock()
         state.snapshot.return_value = snapshot
         state.completed = 0
         state.total = 2
         state.judge_activity_snapshot.return_value = judge_activities or []
         state.judge_progress_snapshot.return_value = judge_progress or {}
+        state.judge_selected_snapshot.return_value = judge_selected or set()
         state.recent_log.return_value = recent_log or []
         return state
 
@@ -372,6 +376,43 @@ class TestBuildFrameLinesAdvanced(unittest.TestCase):
         self.assertIn("Judging [judge-run:", text)
         run_line = next(l for l in lines if "judge-run:" in l[0])
         self.assertEqual(run_line[1], "green")
+
+    def test_selected_judge_stays_green_without_active_request(self):
+        """A selected judge remains green during a gap between cell requests."""
+        state = self._state(
+            {"model-a": {"status": "completed", "source": "Local"}},
+            judge_progress={
+                "judge-selected": {"completed": 3, "failed": 0, "expected": 5},
+            },
+            judge_selected={"judge-selected"},
+        )
+        with mock.patch("benchmark.cli.get_active_request_count", return_value=0), \
+                mock.patch("benchmark.cli.get_429_stats", return_value={}):
+            lines = _render_lines(state, num_sources=4)
+        selected_line = next(
+            line for line in lines if "judge-selected:" in line[0]
+        )
+        self.assertEqual(selected_line[1], "green")
+        self.assertNotIn("All models complete", _frame_text(lines))
+
+    def test_deselected_judge_returns_to_waiting_white(self):
+        """Only the newly selected judge stays green after a handoff."""
+        state = self._state(
+            {"model-a": {"status": "completed", "source": "Local"}},
+            judge_progress={
+                "judge-old": {"completed": 3, "failed": 0, "expected": 5},
+                "judge-new": {"completed": 1, "failed": 0, "expected": 5},
+            },
+            judge_selected={"judge-new"},
+        )
+        with mock.patch("benchmark.cli.get_active_request_count", return_value=0), \
+                mock.patch("benchmark.cli.get_429_stats", return_value={}):
+            lines = _render_lines(state, num_sources=4)
+        styles = {
+            name: next(line[1] for line in lines if f"judge-{name}:" in line[0])
+            for name in ("old", "new")
+        }
+        self.assertEqual(styles, {"old": None, "new": "green"})
 
     def test_completed_judge_renders_grey(self):
         """A judge whose whole workload is done renders dimmed grey."""

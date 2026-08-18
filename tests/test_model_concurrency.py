@@ -173,6 +173,28 @@ def test_judge_source_reservation_configures_one_then_full_pool():
     pool.stop(timeout=1)
 
 
+def test_judge_pool_reports_selection_until_judge_finishes():
+    stop = threading.Event()
+    selected = []
+    selected_started = threading.Event()
+
+    def on_selection_change(judge, is_selected):
+        selected.append((judge, is_selected))
+        if is_selected:
+            selected_started.set()
+
+    pool = SourceJudgeWorkerPool(
+        "Cloud", 1, lambda _job: time.sleep(0.03), stop,
+        on_selection_change=on_selection_change,
+    )
+    pool.enqueue(("cell", None, None, None, "judge-a", True))
+    pool.start(1)
+    assert selected_started.wait(timeout=1)
+    pool.stop(drain=True)
+
+    assert selected == [("judge-a", True), ("judge-a", False)]
+
+
 def test_judge_pool_drains_all_jobs_before_stop():
     stop = threading.Event()
     processed = []
