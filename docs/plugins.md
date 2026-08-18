@@ -21,7 +21,7 @@ AI Benchmark uses a plugin architecture. Each plugin defines a benchmark task, a
 | `rate-limiter` | Rate Limiter | 1.0.0 | 20 | Yes |
 | `reasoning` | Logical Reasoning | 1.0.0 | 20 | Yes |
 | `software-architecture` | Software Architecture | 1.0.0 | 20 | Yes |
-| `structured-output` | Structured Output | 1.2.0 | 22 | No |
+| `structured-output` | Structured Output | 1.3.0 | 22 | No |
 | `tool-calling` | Tool Calling Agent | 1.0.0 | 25 | Yes |
 | `wireframes` | Wireframes | 1.0.0 | 20 | Yes |
 

@@ -422,14 +422,14 @@ judge:
           additionalProperties: false
           required: [score, confidence, rationale]
           properties:
-            score: {type: number, minimum: 0, maximum: 100}
+            score: {type: integer, minimum: 0, maximum: 100}
             confidence: {type: string, enum: [high, medium, low]}
             rationale: {type: string}
 ```
 
 The benchmark also does not send `enable_thinking: false`; operators who need
 to control thinking explicitly can add provider-supported fields under
-`judge.request_params`. The judge prompt (version `judge-v5`) presents the
+`judge.request_params`. The judge prompt (version `judge-v6`) presents the
 task and candidate answer as explicitly delimited, quoted data and tells the
 judge not to follow candidate instructions, emit tool calls, continue the
 embedded task, or reproduce any fragment of it. It also requires exactly one
@@ -443,17 +443,41 @@ can be combined safely. Use the relevant provider's supported request fields;
 unsupported fields can be removed with the judge model's `drop_params`
 configuration.
 
+### Schema portability (llama.cpp and Ollama)
+
+The built-in judge and Structured Output schemas intentionally use a
+conservative intersection of the documented local Ollama and llama.cpp
+features: objects, arrays with `items`, required properties,
+`additionalProperties: false`, primitive types, enums, anchored patterns, and
+bounded integer values. They avoid `$ref`, `oneOf`/`anyOf`, `format`,
+`patternProperties`, conditionals, lookarounds, regex shorthand such as `\\d`,
+and string length bounds.
+
+Ollama's native `/api/chat` endpoint accepts a schema object in `format`; its
+OpenAI-compatible `/v1/chat/completions` endpoint documents `response_format`,
+but support for the `json_schema` wrapper is version-dependent. For an Ollama
+installation that ignores or rejects the wrapper, use the native endpoint or
+configure the proxy to translate `response_format.json_schema.schema` to
+Ollama's `format` field. Ollama Cloud does not currently support structured
+outputs. Regardless of provider enforcement, the benchmark validates the
+returned JSON and applies the semantic/plugin checks after generation.
+
 `judge.token_levels` controls the total `max_tokens` cap for judge generation;
 the default is `16384`. It is independent of any provider-specific thinking
-setting an operator adds to `judge.request_params`. The default
-`response_format` uses the standard OpenAI-compatible `json_schema` form,
-which combines JSON mode with the expected judge-result schema. CI also runs
-`tests/test_schema_grammar_compat.py`, which validates the schemas and rejects
-string-length grammar bounds known to make llama.cpp grammar construction
-fail. This is stronger than `json_object` alone: the provider can constrain
-not only the outer format but also the required fields and value types. A provider that
-only supports `json_object` can override `judge.request_params`, but that
-removes schema enforcement and should be verified empirically.
+setting an operator adds to `judge.request_params`.
+
+The default `response_format` uses the standard OpenAI-compatible `json_schema`
+form, which combines JSON mode with the expected judge-result schema. The judge
+score is an integer because the parser rounds fractional scores and llama.cpp
+only grammar-enforces numeric bounds for integer schemas. CI also runs
+`tests/test_schema_grammar_compat.py`, which validates the schemas against a
+conservative Ollama/llama.cpp intersection: no unsupported keywords,
+no string-length grammar bounds, anchored backslash-free patterns,
+integer-only numeric bounds, and explicit `additionalProperties: false` on
+objects. This is stronger than `json_object` alone: the provider can constrain
+not only the outer format but also the required fields and value types. A
+provider that only supports `json_object` can override `judge.request_params`,
+but that removes schema enforcement and should be verified empirically.
 
 Each HTTP request log now records the exact merged request body used for the
 `requests.post` call in its replayable curl command, including any explicit

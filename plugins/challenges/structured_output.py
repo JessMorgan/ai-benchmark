@@ -25,7 +25,7 @@ STRUCTURED_OUTPUT_RESPONSE_SCHEMA = {
         "age": {"type": "integer", "minimum": 18, "maximum": 120},
         "email": {
             "type": "string",
-            "pattern": r"^[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}$",
+            "pattern": r"^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+[.][A-Za-z]{2,}$",
         },
         "department": {
             "type": "string",
@@ -44,7 +44,7 @@ STRUCTURED_OUTPUT_RESPONSE_SCHEMA = {
                 "street": {"type": "string"},
                 "city": {"type": "string"},
                 "state": {"type": "string", "pattern": r"^[A-Z]{2}$"},
-                "zip": {"type": "string", "pattern": r"^\d{5}$"},
+                "zip": {"type": "string", "pattern": r"^[0-9]{5}$"},
             },
         },
         "settings": {
@@ -89,10 +89,10 @@ STRUCTURED_OUTPUT_RESPONSE_SCHEMA = {
             "properties": {
                 "created_at": {
                     "type": "string",
-                    "pattern": r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$",
+                    "pattern": r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}([.][0-9]+)?(Z|[+-][0-9]{2}:[0-9]{2})$",
                 },
                 "active": {"type": "boolean"},
-                "score": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+                "score": {"type": "number"},
             },
         },
     },
@@ -106,7 +106,7 @@ class StructuredOutputPlugin(BenchmarkTaskPlugin):
 
     @property
     def version(self):
-        return "1.2.0"
+        return "1.3.0"
 
     @property
     def name(self):

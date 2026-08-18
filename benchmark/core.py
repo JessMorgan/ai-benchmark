@@ -53,7 +53,7 @@ PRELOAD_DEFAULT_TIMEOUT = 300
 # skipped the model for the whole benchmark. 256 tokens is comfortably past
 # typical reasoning preambles while keeping the probe cheap.
 PRELOAD_MAX_TOKENS = 256
-JUDGE_PROMPT_VERSION = "judge-v5"
+JUDGE_PROMPT_VERSION = "judge-v6"
 JUDGE_DEFAULT_MAX_TOKENS = 16384
 JUDGE_MAX_RATIONALE_CHARS = 2000
 JUDGE_RESPONSE_SCHEMA = {
@@ -61,7 +61,7 @@ JUDGE_RESPONSE_SCHEMA = {
     "additionalProperties": False,
     "properties": {
         "score": {
-            "type": "number",
+            "type": "integer",
             "minimum": 0,
             "maximum": 100,
         },

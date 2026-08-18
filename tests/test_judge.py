@@ -74,6 +74,12 @@ class TestJudgeCore(unittest.TestCase):
         self.assertIn("Keep the rationale under approximately 2000 characters", prompt)
         self.assertIn("make it non-empty", prompt)
 
+    def test_judge_schema_uses_llama_compatible_integer_score(self):
+        score = JUDGE_RESPONSE_SCHEMA["properties"]["score"]
+        self.assertEqual(score["type"], "integer")
+        self.assertEqual(score["minimum"], 0)
+        self.assertEqual(score["maximum"], 100)
+
     def test_judge_schema_leaves_string_lengths_to_prompt_guidance(self):
         schema_text = json.dumps(JUDGE_RESPONSE_SCHEMA)
         self.assertNotIn("minLength", schema_text)
