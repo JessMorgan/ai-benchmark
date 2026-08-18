@@ -74,6 +74,7 @@ class TestPluginDiscovery(unittest.TestCase):
             ids,
             [
                 "code-review",
+                "data-transformation",
                 "debug-consistency",
                 "debug-traversal",
                 "error-recovery",
@@ -88,7 +89,6 @@ class TestPluginDiscovery(unittest.TestCase):
                 "rate-limiter",
                 "reasoning",
                 "software-architecture",
-                "structured-output",
                 "tool-calling",
                 "wireframes",
             ],
@@ -172,6 +172,14 @@ class TestPluginDiscovery(unittest.TestCase):
     def test_whitelist_filters_plugins(self):
         plugins = discover_plugins(whitelist=["rate-limiter"])
         self.assertEqual([p.id for p in plugins], ["rate-limiter"])
+
+    def test_removed_plugin_id_is_not_an_alias(self):
+        self.assertEqual(discover_plugins(whitelist=["structured-output"]), [])
+        all_ids = {plugin.id for plugin in discover_plugins()}
+        self.assertEqual(
+            {plugin.id for plugin in discover_plugins(blacklist=["structured-output"])},
+            all_ids,
+        )
 
     def test_blacklist_filters_plugins(self):
         all_ids = {p.id for p in discover_plugins()}

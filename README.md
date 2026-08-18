@@ -218,9 +218,7 @@ python ai-benchmark.py [options]  # repository launcher
 
 By default, re-running resumes from where you left off — completed models are skipped, and failed models are retried. Saved state is stored in `benchmark_state.json` inside the output directory and is preserved after completion so you can re-run to retry any failures. New models added to the config between runs are picked up automatically. Use `--restart` to force a clean run. Use `--scripted` to continue automatically without the interactive restart/continue prompt.
 
-If the saved state file is unreadable or fails to load (e.g. a corrupt `benchmark_state.json`), the run **aborts with an error** instead of silently discarding prior results — inspect or repair the state file, or pass `--restart` to explicitly discard it.
-
-If the set of active plugins changes between runs, the app detects this and asks whether to **restart** or **continue**. If you continue, newly added plugins are run for models that already completed, and data for removed plugins is preserved but not run again.
+If the saved state file is unreadable or fails to load (e.g. a corrupt `benchmark_state.json`), the run **aborts with an error** instead of silently discarding prior results — inspect or repair the state file, or pass `--restart` to explicitly discard it. If the set of active plugins changes between runs, the app detects this and asks whether to **restart** or **continue**. Other newly added plugins are run for models that already completed, and data for removed plugins is preserved but not run again.
 
 ## OpenCode runner
 
@@ -270,7 +268,7 @@ Plugins are discovered automatically from `plugins/challenges/`. Each plugin is 
 | `rate-limiter` | Rate Limiter | 1.0.0 | 20 | Yes |
 | `reasoning` | Logical Reasoning | 1.0.0 | 20 | Yes |
 | `software-architecture` | Software Architecture | 1.0.0 | 20 | Yes |
-| `structured-output` | Structured Output | 1.0.0 | 22 | No |
+| `data-transformation` | Data Transformation | 1.0.1 | 22 | No |
 | `tool-calling` | Tool Calling Agent | 1.0.0 | 25 | Yes |
 | `wireframes` | Wireframes | 1.0.0 | 20 | Yes |
 

@@ -1,0 +1,58 @@
+# Data Transformation Plugin
+
+| Property | Value |
+|---|---|
+| ID | `data-transformation` |
+| Version | `1.0.1` |
+| Max Score | 22 |
+| Streaming | No |
+
+This challenge evaluates deterministic multi-record processing rather than
+mere JSON generation. The model receives an order feed containing historical
+versions, duplicates, filtered records, inconsistent formatting, and sorting
+ties. It must produce the current eligible records in a strict JSON object.
+
+The task requires the model to:
+
+1. Keep the newest version of each order.
+2. Filter by payment status, refund state, amount, region, and channel.
+3. Normalize customer names and numeric totals.
+4. Sort by total descending and customer name ascending.
+5. Assign deterministic ranks.
+6. Compute count, total, and top-order summary fields.
+
+The request schema remains strict and provider-compatible, but schema
+compliance is worth only **one of 22 points**. The remaining points measure
+selection/filtering, deduplication, normalization, sorting/ranking, and the
+derived summary. A schema-valid response containing the wrong records can
+therefore still score poorly.
+
+| Criterion | Points |
+|---|---:|
+| Structured schema contract | 1 |
+| Record selection and filtering | 7 |
+| Deduplication and latest versions | 4 |
+| Normalization | 3 |
+| Sorting and ranking | 3 |
+| Derived summary | 3 |
+| Strict format and no decoys | 1 |
+| **Total** | **22** |
+
+The evaluator independently validates JSON and the request schema. Per-cell
+metadata records `schema_requested`, `schema_request_status`,
+`response_schema_valid`, and `schema_enforcement_verified`. A normal valid
+response cannot prove provider-side enforcement; use the separate
+`--schema-sentinel` tool for that operational check.
+
+Use the plugin ID in all configurations:
+
+```yaml
+plugins_whitelist:
+  - data-transformation
+```
+
+The former `structured-output` ID is no longer recognized. Update existing
+configuration selectors and per-plugin temperature keys before running.
+When an older state file contains the former task, the changed plugin set is
+treated as a normal task change and requires the usual resume decision; its
+scores are not reused for this task.

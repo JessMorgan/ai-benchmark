@@ -1072,12 +1072,16 @@ class BenchmarkState:
                     expected_runner = state._model_info[name].get("runner", runner)
                     latest = latest_by_model.get((name, expected_runner))
                     if latest is not None:
-                        result_plugins = set(latest.get("plugin_versions", {}).keys())
-                        if result_plugins and result_plugins.issubset(set(plugin_ids)):
-                            for pid in plugin_ids:
-                                if f"{pid}_score" not in latest:
-                                    state._model_info[name]["status"] = "pending"
-                                    break
+                        result_plugins = set(latest.get("plugin_versions", {}))
+                        needs_current_plugin_check = bool(result_plugins)
+                        if (
+                            needs_current_plugin_check
+                            and (
+                                not result_plugins.issubset(set(plugin_ids))
+                                or any(f"{pid}_score" not in latest for pid in plugin_ids)
+                            )
+                        ):
+                            state._model_info[name]["status"] = "pending"
         state.results = data.get("results", [])
         state._judge_progress = data.get("judge_progress", {})
         for result in state.results:

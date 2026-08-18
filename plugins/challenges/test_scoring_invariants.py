@@ -21,7 +21,7 @@ EXPECTED_MAX_SCORES = {
     "rate-limiter": 20.0,
     "reasoning": 20.0,
     "software-architecture": 20.0,
-    "structured-output": 22.0,
+    "data-transformation": 22.0,
     "tool-calling": 25.0,
     "wireframes": 20.0,
 }
@@ -69,20 +69,19 @@ def test_rate_limiter_requires_fixed_window():
     assert fixed["earned"] == 0.0
 
 
-def test_structured_output_rejects_wrong_nested_types_and_explanatory_text():
-    payload = {
-        "id": "550e8400-e29b-41d4-a716-446655440000", "name": "Alice", "age": 30,
-        "email": "alice@example.com", "department": "Engineering", "roles": ["admin"],
-        "address": {"street": "123 Main", "city": "Springfield", "state": "IL", "zip": "62701"},
-        "settings": {"theme": "dark", "notifications": {"email": "yes", "sms": False, "push": True}, "language": "en"},
-        "tags": [{"name": "remote", "priority": 1}],
-        "metadata": {"created_at": "2024-01-15T09:30:00Z", "active": True, "score": 0.9},
-    }
-    result = by_id()["structured-output"].evaluate("```json\n" + json.dumps(payload) + "\n```\nExtra prose")
+def test_data_transformation_rejects_wrong_types_and_extra_records():
+    from plugins.challenges.data_transformation import DATA_TRANSFORMATION_EXPECTED_OUTPUT
+
+    payload = json.loads(json.dumps(DATA_TRANSFORMATION_EXPECTED_OUTPUT))
+    payload["records"][0]["rank"] = "first"
+    payload["records"].append({
+        "order_id": "O-205", "customer": "Eve Stone", "total": 49.99, "rank": 6,
+    })
+    result = by_id()["data-transformation"].evaluate(json.dumps(payload))
     schema = next(item for item in result.rubric if item["name"] == "Structured schema contract")
-    strict = next(item for item in result.rubric if item["name"] == "Strict format (no extra keys)")
+    filtering = next(item for item in result.rubric if item["name"] == "Record selection and filtering")
     assert schema["earned"] < schema["max"]
-    assert any("explanatory text" in finding["finding"] for finding in strict["negative_findings"])
+    assert filtering["earned"] < filtering["max"]
     assert sum(item["earned"] for item in result.rubric) == result.score
 
 

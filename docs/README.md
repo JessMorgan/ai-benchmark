@@ -25,7 +25,7 @@ AI Benchmark lets you:
 | [Plugin: Code Review](./plugins/code-review.md) | Code review and issue identification task |
 | [Plugin: Orchestration](./plugins/orchestration.md) | Multi-step workflow orchestration task |
 | [Plugin: Tool Calling](./plugins/tool-calling.md) | Tool-use and agent routing task |
-| [Plugin: Structured Output](./plugins/structured-output.md) | JSON/YAML structured output task |
+| [Plugin: Data Transformation](./plugins/data-transformation.md) | Multi-record filtering, normalization, and strict structured output task |
 | [Plugin: Debug Traversal](./plugins/debug-traversal.md) | Real-bug debugging and executable fix task |
 | [Plugin: Debug Consistency](./plugins/debug-consistency.md) | Inconsistent bug-report detection task |
 | [Plugin: Error Recovery](./plugins/error-recovery.md) | Injectable async recovery task |

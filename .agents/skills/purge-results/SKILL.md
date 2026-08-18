@@ -201,7 +201,9 @@ def discover_plugin_ids(state):
     """
     pids = list(state.get("active_plugins") or [])
     if pids:
-        return pids
+        # Keep the IDs that actually occur in the state so removal targets
+        # use the correct key prefix, while deduplicating repeated entries.
+        return list(dict.fromkeys(pids))
     # Legacy fallback: derive from any _score key in model_info.
     seen = set()
     for info in state.get("model_info", {}).values():

@@ -92,9 +92,11 @@ merely mentioning a heading's vocabulary elsewhere is insufficient.
   puzzle's correct 09:30 answer is Search, owned by Ben, priority P5.
 - **Long Context** requires the joined answer and the F02/F05/F09 evidence
   chain from a large deterministic distractor set.
-- **Structured Output** parses one JSON/YAML object, validates nested types and
-  constraints, rejects multiple candidates, checks exact top-level keys, and
-  penalizes explanatory text outside a fenced object.
+- **Data Transformation** parses one strict JSON object, validates the record
+  contract, and scores multi-record filtering, latest-version deduplication,
+  normalization, deterministic ordering, ranking, and aggregate summaries.
+  Schema validity is only a one-point contract signal; semantic data
+  correctness supplies the remaining points.
 - **Tool Calling** parses typed `<tool_call>` envelopes, validates names,
   required argument types/values, exact cardinality/order, a complete plan,
   and a final synthesis.

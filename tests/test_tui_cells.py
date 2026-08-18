@@ -989,20 +989,20 @@ class TestBuildLiveIndicators(unittest.TestCase):
         base_ts = 1000.0
         now = base_ts + 4.0
         s = {
-            "running_pids": ["rate-limiter", "structured-output"],
+            "running_pids": ["rate-limiter", "data-transformation"],
             "rate-limiter_first_tok_ts": base_ts,
             "rate-limiter_bytes_received": 64,  # 16 tok
             "rate-limiter_start_ts": base_ts,
-            "structured-output_start_ts": base_ts,
+            "data-transformation_start_ts": base_ts,
         }
         plugins = [
             self._plugin("rate-limiter", streaming=True),
-            self._plugin("structured-output", streaming=False),
+            self._plugin("data-transformation", streaming=False),
         ]
         out = ai_benchmark._build_live_indicators(s, plugins, now=now)
         self.assertEqual(
             out,
-            "[rate-limiter: 16 tok (4s)] [structured-output: requested 4s]",
+            "[rate-limiter: 16 tok (4s)] [data-transformation: requested 4s]",
         )
 
     def test_plugin_not_in_running_pids_is_excluded(self):

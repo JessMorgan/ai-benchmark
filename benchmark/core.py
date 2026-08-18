@@ -1037,7 +1037,7 @@ def resolve_targets(cfg):
                 "system_prompt": None,
                 "is_agent": False,
                 "drop_params": val.get("drop_params", []),
-                "plugins_blacklist": val.get("plugins_blacklist", []),
+                "plugins_blacklist": list(val.get("plugins_blacklist", [])),
             }
         elif isinstance(val, str):
             targets[name] = {

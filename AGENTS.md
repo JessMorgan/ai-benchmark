@@ -118,11 +118,11 @@ The runtime inventory below matches `uv run ai-benchmark --list-plugins`:
 | `rate-limiter` | 1.0.0 | 20 | Yes |
 | `reasoning` | 1.0.0 | 20 | Yes |
 | `software-architecture` | 1.0.0 | 20 | Yes |
-| `structured-output` | 1.0.0 | 22 | No |
+| `data-transformation` | 1.0.1 | 22 | No |
 | `tool-calling` | 1.0.0 | 25 | Yes |
 | `wireframes` | 1.0.0 | 20 | Yes |
 
-`code-review` and `structured-output` set
+`code-review` and `data-transformation` set
 `supports_streaming=False` and use the **non-streaming** request path. `moe-dense`
 uses the streaming path. Code-shaped plugins
 use a pytest-compatible assertion harness in the Podman sandbox, with a
@@ -209,8 +209,10 @@ and the OpenCode runner are exempt (the kwargs default off).
    `resp` before the interruptible `stop_event.wait(delay)`. Don't reorder —
    Ctrl+C would leak.
 5. **Per-plugin max_score varies** — `code-review=15`, `moe-dense=17`,
-   `orchestration=16`, `prd-creation=22`, `structured-output=22`,
-   `tool-calling=25`, and the remaining plugins use 20. Cross-plugin
+   `orchestration=16`, `prd-creation=22`, `data-transformation=22`,
+   `tool-calling=25`, and the remaining plugins use 20. The former
+   `structured-output` ID is no longer recognized; update configurations to
+   `data-transformation`. Cross-plugin
    contract tests pin the inventory and native scales; public results are
    normalized once to percentage-v1.
 6. **Thinking-truncation auto-escalation.** `_run_plugin_task` in

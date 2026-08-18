@@ -2,9 +2,9 @@
 import json
 
 from plugins import discover_plugins
-from plugins.challenges.structured_output import (
-    STRUCTURED_OUTPUT_EXPECTED_RECORD,
-    STRUCTURED_OUTPUT_RESPONSE_SCHEMA,
+from plugins.challenges.data_transformation import (
+    DATA_TRANSFORMATION_EXPECTED_OUTPUT,
+    DATA_TRANSFORMATION_RESPONSE_SCHEMA,
 )
 
 
@@ -34,19 +34,19 @@ def test_tool_calling_requires_exact_call_set():
     assert plugin("tool-calling").score(response) < 15.0
 
 
-def test_structured_output_requests_strict_json_schema():
-    request_params = plugin("structured-output").get_request_params({})
+def test_data_transformation_requests_strict_json_schema():
+    request_params = plugin("data-transformation").get_request_params({})
     response_format = request_params["response_format"]
     assert response_format["type"] == "json_schema"
-    assert response_format["json_schema"]["name"] == "structured_employee_record"
+    assert response_format["json_schema"]["name"] == "data_transformation_result"
     assert response_format["json_schema"]["strict"] is True
-    assert response_format["json_schema"]["schema"] == STRUCTURED_OUTPUT_RESPONSE_SCHEMA
-    schema_text = json.dumps(STRUCTURED_OUTPUT_RESPONSE_SCHEMA)
+    assert response_format["json_schema"]["schema"] == DATA_TRANSFORMATION_RESPONSE_SCHEMA
+    schema_text = json.dumps(DATA_TRANSFORMATION_RESPONSE_SCHEMA)
     assert "minLength" not in schema_text
     assert "maxLength" not in schema_text
-    prompt = plugin("structured-output").get_prompt()
-    assert "non-empty strings" in prompt
-    assert "name non-empty string" in prompt
+    prompt = plugin("data-transformation").get_prompt()
+    assert "filtered or superseded records" in prompt
+    assert "Sort retained records" in prompt
 
 
 def test_other_plugins_do_not_opt_into_response_schemas():
@@ -54,31 +54,34 @@ def test_other_plugins_do_not_opt_into_response_schemas():
     assert plugin("reasoning").get_request_params({}) == {}
 
 
-def test_structured_output_current_profile_scores_full():
-    assert plugin("structured-output").score(json.dumps(STRUCTURED_OUTPUT_EXPECTED_RECORD)) == 22.0
+def test_data_transformation_current_records_score_full():
+    assert plugin("data-transformation").score(json.dumps(DATA_TRANSFORMATION_EXPECTED_OUTPUT)) == 22.0
 
 
-def test_structured_output_archived_decoy_does_not_score_as_current_profile():
-    payload = json.loads(json.dumps(STRUCTURED_OUTPUT_EXPECTED_RECORD))
-    payload["name"] = "Casey Rivera"
-    payload["email"] = "casey.rivera@old-example.net"
-    payload["department"] = "Sales"
-    payload["age"] = 29
-    assert plugin("structured-output").score(json.dumps(payload)) < 22.0
-
-
-def test_structured_output_requires_normalization_and_derived_values():
-    payload = json.loads(json.dumps(STRUCTURED_OUTPUT_EXPECTED_RECORD))
-    payload["name"] = "Rivera, Jordan"
-    payload["age"] = 35
-    payload["roles"] = ["auditor", "admin"]
-    payload["metadata"]["score"] = 85
-    result = plugin("structured-output").evaluate(json.dumps(payload))
-    normalization = next(
-        item for item in result.rubric if item["name"] == "Normalization and derived values"
-    )
-    assert normalization["earned"] < normalization["max"]
+def test_data_transformation_filtered_or_superseded_record_loses_credit():
+    payload = json.loads(json.dumps(DATA_TRANSFORMATION_EXPECTED_OUTPUT))
+    payload["records"].append({
+        "order_id": "O-205", "customer": "Eve Stone", "total": 49.99, "rank": 6,
+    })
+    result = plugin("data-transformation").evaluate(json.dumps(payload))
     assert result.score < 22.0
+
+
+def test_data_transformation_requires_latest_version_sorting_and_summary():
+    payload = json.loads(json.dumps(DATA_TRANSFORMATION_EXPECTED_OUTPUT))
+    payload["records"][0]["total"] = 120.0
+    payload["records"].reverse()
+    payload["summary"]["total"] = 540.0
+    result = plugin("data-transformation").evaluate(json.dumps(payload))
+    assert next(
+        item for item in result.rubric if item["name"] == "Deduplication and latest versions"
+    )["earned"] < 4.0
+    assert next(
+        item for item in result.rubric if item["name"] == "Sorting and ranking"
+    )["earned"] < 3.0
+    assert next(
+        item for item in result.rubric if item["name"] == "Derived summary"
+    )["earned"] < 3.0
 
 
 def test_multi_step_requires_behavior_not_just_definitions():

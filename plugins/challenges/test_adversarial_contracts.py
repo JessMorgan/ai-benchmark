@@ -4,6 +4,10 @@ import json
 import pytest
 
 from plugins.challenges.code_review import CodeReviewPlugin
+from plugins.challenges.data_transformation import (
+    DATA_TRANSFORMATION_EXPECTED_OUTPUT,
+    DataTransformationPlugin,
+)
 from plugins.challenges.debug_consistency import DebugConsistencyPlugin
 from plugins.challenges.debug_traversal import DebugTraversalPlugin
 from plugins.challenges.error_recovery import ErrorRecoveryPlugin
@@ -18,7 +22,6 @@ from plugins.challenges.prd_creation import PRDCreationPlugin
 from plugins.challenges.rate_limiter import RateLimiterPlugin
 from plugins.challenges.reasoning import ReasoningPlugin
 from plugins.challenges.software_architecture import SoftwareArchitecturePlugin
-from plugins.challenges.structured_output import StructuredOutputPlugin
 from plugins.challenges.tool_calling import ToolCallingPlugin
 from plugins.challenges.wireframes import WireframesPlugin
 
@@ -164,9 +167,9 @@ def test_architecture_keywords_without_required_sections_score_low():
     assert SoftwareArchitecturePlugin().score(response) < 8.0
 
 
-def test_structured_output_rejects_multiple_candidates():
-    payload = {"id": "550e8400-e29b-41d4-a716-446655440000"}
-    result = StructuredOutputPlugin().evaluate(
+def test_data_transformation_rejects_multiple_candidates():
+    payload = DATA_TRANSFORMATION_EXPECTED_OUTPUT
+    result = DataTransformationPlugin().evaluate(
         "```json\n" + json.dumps(payload) + "\n```\n```json\n" + json.dumps(payload) + "\n```"
     )
     assert result.score == 0.0

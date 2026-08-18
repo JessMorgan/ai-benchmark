@@ -21,7 +21,7 @@ AI Benchmark uses a plugin architecture. Each plugin defines a benchmark task, a
 | `rate-limiter` | Rate Limiter | 1.0.0 | 20 | Yes |
 | `reasoning` | Logical Reasoning | 1.0.0 | 20 | Yes |
 | `software-architecture` | Software Architecture | 1.0.0 | 20 | Yes |
-| `structured-output` | Structured Output | 1.5.0 | 22 | No |
+| `data-transformation` | Data Transformation | 1.0.1 | 22 | No |
 | `tool-calling` | Tool Calling Agent | 1.0.0 | 25 | Yes |
 | `wireframes` | Wireframes | 1.0.0 | 20 | Yes |
 
@@ -72,9 +72,8 @@ class BenchmarkTaskPlugin(abc.ABC):
 
 `get_request_params` is an optional hook for task contracts that should be
 provided to the model at the API boundary. It defaults to an empty dict so
-normal tasks remain unconstrained; `structured-output` uses it to request a
-strict JSON schema while scoring schema compliance as only one point beside
-its semantic extraction task.
+normal tasks remain unconstrained; `data-transformation` uses it to request a strict JSON schema while scoring schema compliance as only one point beside
+its semantic record-processing task. Use `data-transformation` in all new and existing configurations.
 
 `get_response_schema` is optional diagnostic metadata. When present, the core
 records response-schema validity and request compatibility separately from the
@@ -115,7 +114,7 @@ See [Development](./development.md#writing-a-plugin) for a step-by-step guide.
 - [Code Review](./plugins/code-review.md)
 - [Orchestration](./plugins/orchestration.md)
 - [Tool Calling](./plugins/tool-calling.md)
-- [Structured Output](./plugins/structured-output.md)
+- [Data Transformation](./plugins/data-transformation.md)
 - [Multi-Step Instructions](./plugins/multi-step.md)
 - [PRD Creation](./plugins/prd-creation.md)
 - [Wireframes](./plugins/wireframes.md)
@@ -130,6 +129,10 @@ All challenge plugins have dedicated documentation or an explicit source-level
 contract. Use `python ai-benchmark.py --list-plugins` for the authoritative
 runtime inventory and versions; this table is a checked-in snapshot for quick
 reference.
+
+## Data Transformation
+
+`data-transformation` processes a multi-record order feed with historical versions, filtering rules, normalization, deterministic sorting, ranking, and aggregate fields. The strict schema is a one-point contract signal; semantic correctness supplies the remaining 21 points. See [Data Transformation](./plugins/data-transformation.md).
 
 ## Selected Challenge Plugins
 

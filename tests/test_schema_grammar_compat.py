@@ -14,11 +14,11 @@ import pytest
 from jsonschema import Draft202012Validator
 
 from benchmark.core import JUDGE_RESPONSE_SCHEMA
-from plugins.challenges.structured_output import STRUCTURED_OUTPUT_RESPONSE_SCHEMA
+from plugins.challenges.data_transformation import DATA_TRANSFORMATION_RESPONSE_SCHEMA
 
 SCHEMAS = {
     "judge": JUDGE_RESPONSE_SCHEMA,
-    "structured-output": STRUCTURED_OUTPUT_RESPONSE_SCHEMA,
+    "data-transformation": DATA_TRANSFORMATION_RESPONSE_SCHEMA,
 }
 
 # This is deliberately narrower than all of JSON Schema. Ollama documents a

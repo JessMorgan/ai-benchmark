@@ -445,7 +445,7 @@ configuration.
 
 ### Schema portability (llama.cpp and Ollama)
 
-The built-in judge and Structured Output schemas intentionally use a
+The built-in judge and Data Transformation schemas intentionally use a
 conservative intersection of the documented local Ollama and llama.cpp
 features: objects, arrays with `items`, required properties,
 `additionalProperties: false`, primitive types, enums, anchored patterns, and
@@ -462,9 +462,9 @@ Ollama's `format` field. Ollama Cloud does not currently support structured
 outputs. Regardless of provider enforcement, the benchmark validates the
 returned JSON and applies the semantic/plugin checks after generation.
 
-### Structured-output schema sentinel
+### Data-transformation schema sentinel
 
-The Structured Output task records schema compatibility separately from its
+The Data Transformation task records schema compatibility separately from its
 semantic score. Its schema contract is worth at most one of the 22 task
 points; extraction, normalization, and current-record selection provide the
 remaining discrimination. Per-plugin result metadata includes
@@ -616,7 +616,7 @@ You can set the temperature for each plugin using either of these config keys:
   "code-review_temperature": 0.3,
   "orchestration_temperature": 0.5,
   "tool-calling_temperature": 0.2,
-  "structured-output_temperature": 0.2,
+  "data-transformation_temperature": 0.2,
   "instruction-following_temperature": 0.2,
   "reasoning_temperature": 0.1
 }

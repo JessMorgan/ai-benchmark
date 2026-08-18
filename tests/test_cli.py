@@ -36,10 +36,10 @@ class TestCLIArgs(unittest.TestCase):
         self.assertIn("MoE vs Dense", output)
         self.assertIn("tool-calling", output)
         self.assertIn("Tool Calling Agent", output)
-        self.assertIn("structured-output", output)
-        self.assertIn("Structured Output", output)
+        self.assertIn("data-transformation", output)
+        self.assertIn("Data Transformation", output)
         # Check a specific ID/name/version line
-        self.assertRegex(output, r"structured-output\s+Structured Output\s+1\.5\.0")
+        self.assertRegex(output, r"data-transformation\s+Data Transformation\s+1\.0\.1")
         # Footer hint helps users use the IDs
         self.assertIn("--plugins-whitelist", output)
         self.assertIn("--plugins-blacklist", output)
@@ -847,7 +847,7 @@ class TestNonStreamingPluginRetry(unittest.TestCase):
     """Regression tests for the ``on_retry`` closure-scope bug that
     previously raised ``UnboundLocalError`` on every
     ``supports_streaming=False`` plugin (``code-review``, ``moe-dense``,
-    ``structured-output``).
+    ``data-transformation``).
 
     Bug history: ``def on_retry():`` was defined *inside* the
     ``if plugin.supports_streaming:`` branch of
@@ -872,10 +872,10 @@ class TestNonStreamingPluginRetry(unittest.TestCase):
         cls.plugins = discover_plugins()
 
     def _nonstreaming_plugin(self):
-        candidates = [p for p in self.plugins if p.id == "structured-output"]
+        candidates = [p for p in self.plugins if p.id == "data-transformation"]
         self.assertEqual(
             len(candidates), 1,
-            "structured-output plugin must be present for this regression test",
+            "data-transformation plugin must be present for this regression test",
         )
         return candidates[0]
 
@@ -915,10 +915,10 @@ class TestNonStreamingPluginRetry(unittest.TestCase):
         # Empty response correctly scores 0 -- we only assert no
         # exception was raised at the kwargs evaluation.
         self.assertIsNone(task_result.error)
-        self.assertEqual(task_result.result["structured-output_score"], 0)
+        self.assertEqual(task_result.result["data-transformation_score"], 0)
         response_format = request.call_args.kwargs["request_params"]["response_format"]
         self.assertEqual(response_format["type"], "json_schema")
-        self.assertEqual(response_format["json_schema"]["name"], "structured_employee_record")
+        self.assertEqual(response_format["json_schema"]["name"], "data_transformation_result")
 
     def test_run_plugin_task_nonstreaming_429_retry_fires_on_retry(self):
         """End-to-end: a 429 retry on a non-streaming plugin still

@@ -8,7 +8,6 @@ from typing import Any
 
 SCORE_SCHEMA = "percentage-v1"
 
-
 def _decimal_value(value, name):
     """Convert a numeric value to Decimal without accepting non-finite values."""
     if isinstance(value, bool) or not isinstance(value, (Real, Decimal)):
