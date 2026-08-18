@@ -16,7 +16,7 @@ class ToolCallingPlugin(BenchmarkTaskPlugin):
 
     @property
     def version(self):
-        return "1.0.0"
+        return "1.1.0"
 
     @property
     def name(self):
@@ -42,6 +42,24 @@ class ToolCallingPlugin(BenchmarkTaskPlugin):
 
     def get_temperature(self, global_config):
         return global_config.get("tool_calling_temperature")
+
+    def sanitize_for_judge(self, text):
+        """Mask the XML-ish tool-call tags shown to judge models.
+
+        Candidate answers (and the task text) are full of
+        ``<tool_call>{...}</tool_call>`` and ``<plan>...</plan>`` blocks. The
+        angle-bracket tags mimic the judge's own required JSON output and
+        repeatedly hijack judge models into echoing the format instead of
+        returning their ``{"score": ...}`` verdict (observed on ~2/3 of
+        tool-calling judging attempts). Replace the tags with neutral
+        markers, keeping the JSON bodies so the judge can still evaluate the
+        arguments.
+        """
+        text = re.sub(r"<tool_call>", "[TOOL_CALL]", text, flags=re.IGNORECASE)
+        text = re.sub(r"</tool_call>", "[/TOOL_CALL]", text, flags=re.IGNORECASE)
+        text = re.sub(r"<plan>", "[PLAN]", text, flags=re.IGNORECASE)
+        text = re.sub(r"</plan>", "[/PLAN]", text, flags=re.IGNORECASE)
+        return text
 
     @staticmethod
     def _date_matches(value, expected):

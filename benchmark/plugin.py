@@ -199,6 +199,18 @@ class BenchmarkTaskPlugin(abc.ABC):
         """Return the temperature to use for this task, or None to omit it."""
         raise NotImplementedError
 
+    def sanitize_for_judge(self, text: str) -> str:
+        """Return ``text`` prepared for embedding in a judge prompt.
+
+        Plugins whose candidate answers (or prompts) contain structured
+        fragments that can hijack a judge model's output format - e.g.
+        XML/JSON tool-call blocks that mimic the judge's own required JSON
+        verdict - override this to mask those fragments while preserving
+        their semantic content. The default is identity; the hook is applied
+        by :func:`benchmark.core.build_judge_prompt`.
+        """
+        return text
+
     @abc.abstractmethod
     def score(self, response_text: str) -> float:
         """Return the native score in this plugin's task-specific scale."""

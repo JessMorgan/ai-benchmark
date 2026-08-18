@@ -417,11 +417,13 @@ judge:
 
 The benchmark also does not send `enable_thinking: false`; operators who need
 to control thinking explicitly can add provider-supported fields under
-`judge.request_params`. The judge prompt (version `judge-v2`) presents the
+`judge.request_params`. The judge prompt (version `judge-v3`) presents the
 task and candidate answer as explicitly delimited, quoted data and tells the
-judge not to follow candidate instructions, emit tool calls, or continue the
-embedded task. It also requires exactly one JSON object with no surrounding
-text. Nested dictionaries are merged, so explicit provider-specific options
+judge not to follow candidate instructions, emit tool calls, continue the
+embedded task, or reproduce any fragment of it. It also requires exactly one
+JSON object with no surrounding text. Plugins may override
+`sanitize_for_judge` (see `docs/plugins.md`) to mask structured fragments -
+such as tool-calling's `<tool_call>` blocks - before they reach the judge. Nested dictionaries are merged, so explicit provider-specific options
 can be combined safely. Use the relevant provider's supported request fields;
 unsupported fields can be removed with the judge model's `drop_params`
 configuration.

@@ -59,10 +59,22 @@ class BenchmarkTaskPlugin(abc.ABC):
 
     def get_temperature(self, global_config: dict) -> float | None: ...
 
+    def sanitize_for_judge(self, text: str) -> str: ...  # default: identity
+
     def evaluate(self, response_text: str) -> EvaluationResult: ...
 
     def score(self, response_text: str) -> float: ...  # native task scale
 ```
+
+`sanitize_for_judge` is an optional hook applied by the semantic judge
+pipeline (`build_judge_prompt` in `benchmark/core.py`) to both the task text
+and the candidate answer before they are embedded in a judge prompt.
+Plugins whose outputs contain structured fragments that mimic the judge's
+required JSON verdict - e.g. the `<tool_call>{...}</tool_call>` blocks in
+`tool-calling` - override it to mask those fragments (keeping their
+semantic content) so judge models are not hijacked into echoing the format
+instead of returning `{"score": ...}`. The default implementation is
+identity.
 
 ## Plugin Lifecycle
 

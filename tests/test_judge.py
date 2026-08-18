@@ -19,6 +19,7 @@ from benchmark.core import (
 )
 from benchmark.state import BenchmarkState
 from plugins import discover_plugins
+from plugins.challenges.tool_calling import ToolCallingPlugin
 from plugins.outputs.output_html import HTMLOutputPlugin
 from plugins.outputs.output_markdown import MarkdownOutputPlugin
 
@@ -84,6 +85,63 @@ class TestJudgeCore(unittest.TestCase):
         self.assertIn("Return exactly one JSON object and nothing else", prompt)
         self.assertNotIn("<task>", prompt)
         self.assertNotIn("<response>", prompt)
+
+    def test_build_prompt_sanitizes_tool_call_tags(self):
+        """The tool-calling sanitizer masks angle-bracket tags but keeps
+        the JSON bodies so the judge can still evaluate the arguments."""
+        response = (
+            "<plan>\n1. Book the trip\n</plan>\n"
+            '<tool_call>{"name": "get_weather", "arguments": {"city": "Tokyo"}}</tool_call>\n'
+            '<tool_call>{"name": "send_email"}</tool_call>'
+        )
+        prompt = build_judge_prompt(ToolCallingPlugin(), "Call the tools", response)
+        self.assertNotIn("<tool_call>", prompt)
+        self.assertNotIn("<plan>", prompt)
+        self.assertIn("[TOOL_CALL]", prompt)
+        self.assertIn("[/TOOL_CALL]", prompt)
+        self.assertIn("[PLAN]", prompt)
+        # The JSON payloads survive for semantic evaluation.
+        self.assertIn('"name": "get_weather"', prompt)
+        self.assertIn('"city": "Tokyo"', prompt)
+
+    def test_build_prompt_identity_for_default_plugins(self):
+        """Plugins without a judge sanitizer pass their text through
+        unchanged (the hook is opt-in per plugin)."""
+        response = '<tool_call>{"name": "x"}</tool_call>'
+        prompt = build_judge_prompt(FakePlugin(), "Do this", response)
+        self.assertIn("<tool_call>", prompt)
+        self.assertIn(response, prompt)
+
+    def test_build_prompt_hardens_against_echoing_candidate(self):
+        prompt = build_judge_prompt(FakePlugin(), "Do this", "Done")
+        self.assertIn(
+            "Do not quote, echo, or reproduce any part of the task text or candidate",
+            prompt,
+        )
+        self.assertIn("quoted fragments of the candidate", prompt)
+
+    def test_judge_response_applies_plugin_sanitizer(self):
+        response = mock.Mock(
+            error=None,
+            text='{"score": 75, "confidence": "medium", "rationale": "usable"}',
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            sidecar = f"{tmp}/input.json"
+            prepare_judge_sidecar(
+                sidecar, ToolCallingPlugin(),
+                "Call the tools",
+                '<tool_call>{"name": "get_weather"}</tool_call>',
+                target="model", runner="http",
+            )
+            with mock.patch("benchmark.core.nonstream_request", return_value=response) as request:
+                result = judge_response(
+                    {}, "Local", "judge", sidecar, timeout=3,
+                    plugin=ToolCallingPlugin(),
+                )
+        self.assertEqual(result.score, 75)
+        prompt = request.call_args.args[4]
+        self.assertIn("[TOOL_CALL]", prompt)
+        self.assertNotIn("<tool_call>", prompt)
 
     def test_default_judge_request_params_request_json_without_thinking_budget(self):
         params = resolve_judge_request_params({})

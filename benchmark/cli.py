@@ -3118,6 +3118,12 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
                 )
                 outcome = None
                 try:
+                    # Pass the real plugin instance so its judge sanitizer
+                    # (e.g. tool-calling masks its <tool_call> tags) is
+                    # applied when the judge prompt is built.
+                    plugin_obj = next(
+                        (p for p in active_plugins if p.id == plugin_id), None
+                    )
                     outcome = judge_response(
                         source_config,
                         judge_sources[judge_name],
@@ -3131,6 +3137,7 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
                                      if isinstance(raw_targets.get(judge_name), dict) else []),
                         stop_event=judge_request_stop_events[judge_name],
                         log_path=os.path.join(output_dir, f"judge-{judge_name}.log"),
+                        plugin=plugin_obj,
                     )
                 finally:
                     if outcome is not None and outcome.response_text is not None:
