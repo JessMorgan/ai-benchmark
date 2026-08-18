@@ -208,6 +208,15 @@ class BenchmarkTaskPlugin(abc.ABC):
         """
         return {}
 
+    def get_response_schema(self) -> dict[str, Any] | None:
+        """Return the response schema, when this task requests one.
+
+        This optional metadata hook lets the runner and offline tooling report
+        schema compatibility without making every plugin depend on a schema
+        library. The default means the task is unconstrained.
+        """
+        return None
+
     def sanitize_for_judge(self, text: str) -> str:
         """Return ``text`` prepared for embedding in a judge prompt.
 

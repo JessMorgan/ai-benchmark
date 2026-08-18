@@ -54,8 +54,10 @@ from benchmark.core import (
     resolve_preload_timeout,
     resolve_targets,
     run_model,
+    run_schema_sentinel,
     save_judge_response,
     save_judge_response_metadata,
+    summarize_schema_compatibility,
 )
 from benchmark.http import (
     close_active_requests,
@@ -2410,6 +2412,28 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
     _apply_http_retry_default(cfg, args.retry_on_429)
     source_config = cfg.get("sources", {})
     models = cfg.get("models", {})
+
+    if args.schema_sentinel:
+        targets_for_probe = resolve_targets(cfg)
+        timeout = args.timeout if args.timeout is not None else int(cfg.get("timeout", 600))
+        probe_results = []
+        for target_name, target in targets_for_probe.items():
+            result = run_schema_sentinel(
+                source_config,
+                target["source"],
+                target["api_model"],
+                timeout=timeout,
+                drop_params=target.get("drop_params", []),
+            )
+            result["target"] = target_name
+            result["is_agent"] = target.get("is_agent", False)
+            probe_results.append(result)
+        print(json.dumps({
+            "probe": "schema-sentinel-v1",
+            "scores_affected": False,
+            "results": probe_results,
+        }, indent=2))
+        sys.exit(0)
     agents = cfg.get("agents", {})
     collisions = set(models) & set(agents)
     if collisions:
@@ -3652,6 +3676,10 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
         if run_info["status"] == "running":
             run_info["status"] = "completed"
         _inject_429_stats(run_info)
+        if state is not None:
+            run_info["schema_compatibility"] = summarize_schema_compatibility(
+                state.latest_results(), active_plugins,
+            )
         _write_run_info(output_dir, run_info)
 
 

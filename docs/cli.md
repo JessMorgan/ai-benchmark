@@ -39,6 +39,7 @@ ignored, and real environment variables take precedence over file values. See
 | `--base-url URL` | (with `--dump-default-config`) Discover models from `/v1/models` |
 | `--api-key KEY` | (with `--base-url`) API key for model discovery |
 | `--chatplayground-config` | Enumerate ChatPlayground.ai models from the web UI and print a ready-to-run config (uses `CHATPLAYGROUND_EMAIL`/`CHATPLAYGROUND_PASSWORD`) |
+| `--schema-sentinel` | Run a non-scoring structured-output compatibility probe for every configured model and print JSON |
 | `--save-responses` | Save each model's plugin response text to the selected runner namespace under `<output_dir>/{http,opencode}/responses/` |
 | `--seed INT` | Fixed random seed for all API requests |
 | `--no-rerun-failed` | Keep failed models as failed on resume (default re-runs them) |
@@ -191,6 +192,24 @@ and Gaming PC sources unless you intentionally accept the hardware risk; cloud
 sources can be set to `2`, `4`, or another positive integer. The CLI prints the
 effective limits and warns when a local source is explicitly raised above one.
 No CLI override is provided in this implementation.
+
+### Structured-output schema sentinel
+
+Run the compatibility probe separately from a benchmark run:
+
+```sh
+python ai-benchmark.py --config benchmark-config.json --schema-sentinel
+```
+
+The probe sends a deliberately contradictory prompt with a tiny strict schema.
+The schema permits only `{"sentinel":"schema-enforced"}`, while the prompt
+asks for `schema-not-enforced`. Results are diagnostic JSON only and never enter
+`benchmark_state.json`, reports, or scores. Possible statuses distinguish
+`schema_likely_enforced`, `schema_accepted_invalid`, `schema_rejected`,
+`schema_transport_error`, and `schema_not_supported_by_source`. A successful
+structured response is evidence, not mathematical proof, of enforcement; the
+probe is designed to catch the practical failure mode where a proxy silently
+ignores `response_format`.
 
 ### Discover models from an API
 

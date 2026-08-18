@@ -2,11 +2,14 @@
 from __future__ import annotations
 
 import copy
+import json
 import re
 from datetime import datetime
-from typing import ClassVar
+from typing import Any, ClassVar
 
-from benchmark.plugin import BenchmarkTaskPlugin
+from jsonschema import Draft202012Validator
+
+from benchmark.plugin import BenchmarkTaskPlugin, EvaluationResult
 from plugins.challenges._rubric import Rubric
 from plugins.challenges._validators import parse_structured
 
@@ -182,7 +185,7 @@ class StructuredOutputPlugin(BenchmarkTaskPlugin):
 
     @property
     def version(self):
-        return "1.4.0"
+        return "1.5.0"
 
     @property
     def name(self):
@@ -213,6 +216,10 @@ class StructuredOutputPlugin(BenchmarkTaskPlugin):
 
     def get_temperature(self, global_config):
         return global_config.get("structured_output_temperature")
+
+    def get_response_schema(self):
+        """Expose the schema for compatibility diagnostics and sentinel tools."""
+        return copy.deepcopy(STRUCTURED_OUTPUT_RESPONSE_SCHEMA)
 
     def get_request_params(self, global_config):
         """Enforce the same employee-record contract at the API boundary."""
@@ -317,6 +324,43 @@ class StructuredOutputPlugin(BenchmarkTaskPlugin):
                     findings.append(f"unexpected key {location}.{key}")
         return findings
 
+    @staticmethod
+    def _schema_validation(data: Any) -> tuple[bool, list[str]]:
+        """Validate the parsed candidate independently of provider enforcement."""
+        errors = sorted(
+            Draft202012Validator(STRUCTURED_OUTPUT_RESPONSE_SCHEMA).iter_errors(data),
+            key=lambda error: list(error.path),
+        )
+        return not errors, [error.message for error in errors]
+
+    @staticmethod
+    def _json_format_valid(text: str) -> bool:
+        """Require the response format requested from the provider, not YAML."""
+        candidate = text.strip()
+        if candidate.startswith("```"):
+            lines = candidate.splitlines()
+            if len(lines) < 3 or not lines[-1].strip().startswith("```"):
+                return False
+            candidate = "\\n".join(lines[1:-1]).strip()
+        try:
+            json.loads(candidate)
+        except (json.JSONDecodeError, TypeError):
+            return False
+        return True
+
+    @staticmethod
+    def _evaluation_with_schema_diagnostics(rubric, valid, errors):
+        """Attach response-schema metadata without changing the task API."""
+        result = rubric.results()
+        diagnostics = dict(result.diagnostics or {})
+        diagnostics.update({
+            "schema_requested": True,
+            "response_schema_valid": valid,
+            "response_schema_errors": errors,
+            "schema_enforcement_verified": False,
+        })
+        return EvaluationResult(result.score, result.rubric, diagnostics)
+
     def _semantic_criterion(self, rubric, name, maximum, data, paths):
         matched = []
         mismatched = []
@@ -348,11 +392,10 @@ class StructuredOutputPlugin(BenchmarkTaskPlugin):
         rubric.record_validation(validation)
         if not validation.valid or not isinstance(validation.value, dict):
             names = [
-                ("Valid JSON/YAML syntax", 2.0),
-                ("Required top-level fields", 2.0),
-                ("Basic types and constraints", 3.0),
-                ("Source extraction accuracy", 7.0),
-                ("Normalization and derived values", 5.0),
+                ("Structured schema contract", 1.0),
+                ("Source extraction accuracy", 8.0),
+                ("Normalization and derived values", 8.0),
+                ("Current-profile selection", 2.0),
                 ("Strict format (no extra keys)", 2.0),
                 ("No placeholder values", 1.0),
             ]
@@ -362,31 +405,30 @@ class StructuredOutputPlugin(BenchmarkTaskPlugin):
                     maximum,
                     0.0,
                     negative_findings=[{"finding": "structured object could not be parsed"}]
-                    if name == "Valid JSON/YAML syntax" else [],
+                    if name == "Structured schema contract" else [],
                 )
-            return rubric.results()
+            return self._evaluation_with_schema_diagnostics(
+                rubric, False, list(validation.errors or ["structured object could not be parsed"]),
+            )
 
         data = validation.value
-        rubric.add_criterion("Valid JSON/YAML syntax", 2.0, 2.0)
-        present = self._required & set(data)
+        schema_valid, schema_errors = self._schema_validation(data)
+        json_format_valid = self._json_format_valid(text)
+        if not json_format_valid:
+            schema_errors = [*schema_errors, "response is not valid JSON"]
+        schema_valid = schema_valid and json_format_valid
         rubric.add_criterion(
-            "Required top-level fields",
-            2.0,
-            2.0 if present == self._required else 2.0 * len(present) / len(self._required),
-            negative_findings=[] if present == self._required else [
-                {"finding": f"missing keys: {sorted(self._required - present)}"}
+            "Structured schema contract",
+            1.0,
+            1.0 if schema_valid else 0.0,
+            negative_findings=[] if schema_valid else [
+                {"finding": error} for error in schema_errors
             ],
-        )
-        checks = self._checks(data)
-        rubric.add_criterion(
-            "Basic types and constraints",
-            3.0,
-            round(3.0 * sum(checks) / len(checks), 1),
         )
         self._semantic_criterion(
             rubric,
             "Source extraction accuracy",
-            7.0,
+            8.0,
             data,
             [
                 ("id",),
@@ -401,7 +443,7 @@ class StructuredOutputPlugin(BenchmarkTaskPlugin):
         self._semantic_criterion(
             rubric,
             "Normalization and derived values",
-            5.0,
+            8.0,
             data,
             [
                 ("name",),
@@ -414,6 +456,13 @@ class StructuredOutputPlugin(BenchmarkTaskPlugin):
                 ("metadata", "created_at"),
                 ("metadata", "score"),
             ],
+        )
+        self._semantic_criterion(
+            rubric,
+            "Current-profile selection",
+            2.0,
+            data,
+            [("id",), ("metadata", "active")],
         )
         unexpected = self._unexpected_keys(data)
         exact_keys = not unexpected and set(data) == self._required
@@ -443,7 +492,9 @@ class StructuredOutputPlugin(BenchmarkTaskPlugin):
             1.0 if not placeholders else 0.0,
             negative_findings=[] if not placeholders else [{"finding": "placeholder value present"}],
         )
-        return rubric.results()
+        return self._evaluation_with_schema_diagnostics(
+            rubric, schema_valid, schema_errors,
+        )
 
     def score(self, response_text):
         return self.evaluate(response_text).score

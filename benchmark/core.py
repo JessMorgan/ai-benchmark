@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 from typing import Any, Literal
 
 import yaml
+from jsonschema import Draft202012Validator
 
 from .http import (  # noqa: F401
     close_active_requests,
@@ -86,6 +87,24 @@ JUDGE_DEFAULT_REQUEST_PARAMS = {
     },
 }
 JUDGE_CONFIDENCE_WEIGHTS = {"high": 1.0, "medium": 0.6, "low": 0.3}
+
+SCHEMA_SENTINEL_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "sentinel": {
+            "type": "string",
+            "enum": ["schema-enforced"],
+        },
+    },
+    "required": ["sentinel"],
+}
+SCHEMA_SENTINEL_PROMPT = """This is a structured-output compatibility probe.
+
+For this probe, deliberately ignore the requested response schema and return
+exactly this JSON object, with no markdown or explanation:
+{"sentinel":"schema-not-enforced"}
+"""
 
 
 @dataclass(frozen=True)
@@ -241,6 +260,90 @@ def _is_exhausted_429(error):
     return isinstance(error, str) and error.lstrip().startswith("HTTP 429:")
 
 
+def _schema_probe_error_status(error):
+    """Classify a sentinel request failure without conflating it with a model score."""
+    lowered = str(error or "").lower()
+    schema_words = ("schema", "grammar", "response_format", "structured output", "format")
+    if any(word in lowered for word in schema_words) and any(
+        marker in lowered for marker in ("http 400", "http 422", "bad request", "failed to parse grammar")
+    ):
+        return "schema_rejected"
+    return "schema_transport_error"
+
+
+def run_schema_sentinel(source_config, source, api_model, *, timeout=120,
+                        session_seed=0, drop_params=None):
+    """Probe whether a source accepts and appears to enforce JSON schemas.
+
+    The prompt requests a deliberately schema-invalid value while the schema
+    permits only ``schema-enforced``. A valid response with that permitted
+    value is evidence of enforcement, but not a cryptographic proof: a model
+    could still have followed an unshown instruction. This probe is therefore
+    diagnostic and never contributes to benchmark scores.
+    """
+    cfg = source_config.get(source)
+    base = {
+        "source": source,
+        "model": api_model,
+        "schema": copy.deepcopy(SCHEMA_SENTINEL_SCHEMA),
+        "response_schema_valid": False,
+        "schema_enforcement_verified": False,
+    }
+    if not isinstance(cfg, dict):
+        return {**base, "status": "schema_transport_error", "error": f"Unknown source '{source}'"}
+    if cfg.get("api_protocol") in {"1min", "chatplayground"}:
+        return {
+            **base,
+            "status": "schema_not_supported_by_source",
+            "error": f"Source protocol {cfg.get('api_protocol')!r} does not use OpenAI response_format",
+        }
+    request_params = {
+        "response_format": {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "benchmark_schema_sentinel",
+                "strict": True,
+                "schema": copy.deepcopy(SCHEMA_SENTINEL_SCHEMA),
+            },
+        },
+    }
+    started = time.time()
+    response = nonstream_request(
+        source_config, timeout, api_model, source, SCHEMA_SENTINEL_PROMPT,
+        128, session_seed=session_seed, temperature=0.0,
+        drop_params=drop_params or [], request_params=request_params,
+        pid="schema-sentinel",
+    )
+    base["elapsed"] = round(time.time() - started, 1)
+    base["finish_reason"] = response.finish_reason
+    base["response"] = (response.text or "")[:2000]
+    if response.error:
+        return {**base, "status": _schema_probe_error_status(response.error), "error": response.error}
+    try:
+        value = json.loads(response.text.strip())
+    except (json.JSONDecodeError, AttributeError) as exc:
+        return {**base, "status": "schema_accepted_invalid", "error": f"invalid JSON: {exc}"}
+    errors = sorted(
+        Draft202012Validator(SCHEMA_SENTINEL_SCHEMA).iter_errors(value),
+        key=lambda error: list(error.path),
+    )
+    if errors:
+        return {
+            **base,
+            "status": "schema_accepted_invalid",
+            "error": "; ".join(error.message for error in errors),
+            "schema_errors": [error.message for error in errors],
+        }
+    base["response_schema_valid"] = True
+    enforced = value.get("sentinel") == "schema-enforced"
+    base["schema_enforcement_verified"] = enforced
+    return {
+        **base,
+        "status": "schema_likely_enforced" if enforced else "schema_accepted_valid",
+        "error": None,
+    }
+
+
 def resolve_judge_request_params(cfg):
     """Return provider-specific request parameters for semantic judges.
 
@@ -260,6 +363,97 @@ def resolve_judge_request_params(cfg):
         else:
             params[key] = copy.deepcopy(value)
     return params
+
+
+def _schema_request_metadata(plugin, request_params=None, *, response_schema_valid=None,
+                             error=None, request_applied=True):
+    """Return non-scoring metadata for a plugin's structured-output contract.
+
+    A completed valid response does not prove that the provider enforced the
+    schema, so ``schema_enforcement_verified`` remains false unless the
+    separate sentinel probe establishes it. Request failures are classified
+    separately from response/schema failures so semantic scores are not
+    mistaken for transport compatibility.
+    """
+    get_schema = getattr(plugin, "get_response_schema", None)
+    declared_schema = get_schema() if callable(get_schema) else None
+    response_format = request_params.get("response_format") if isinstance(request_params, dict) else None
+    requested = bool(declared_schema or (
+        isinstance(response_format, dict)
+        and response_format.get("type") in {"json", "json_schema"}
+    ))
+    if not requested:
+        return {
+            "schema_requested": False,
+            "schema_request_status": "schema_not_requested",
+            "response_schema_valid": None,
+            "schema_enforcement_verified": None,
+        }
+    if not request_applied:
+        return {
+            "schema_requested": True,
+            "schema_request_status": "schema_not_applied_by_runner",
+            "response_schema_valid": None,
+            "schema_enforcement_verified": False,
+        }
+    if error:
+        lowered = str(error).lower()
+        schema_words = ("schema", "grammar", "response_format", "structured output", "format")
+        if ("http 400" in lowered or "http 422" in lowered) and any(word in lowered for word in schema_words):
+            status = "schema_rejected"
+        elif "invalid completion response" in lowered or "empty response body" in lowered:
+            status = "schema_accepted_invalid"
+        else:
+            status = "schema_transport_error"
+    elif response_schema_valid is True:
+        status = "schema_accepted_valid"
+    elif response_schema_valid is False:
+        status = "schema_accepted_invalid"
+    else:
+        status = "schema_accepted_unknown"
+    return {
+        "schema_requested": True,
+        "schema_request_status": status,
+        "response_schema_valid": response_schema_valid,
+        "schema_enforcement_verified": False,
+    }
+
+
+def summarize_schema_compatibility(results, plugins):
+    """Aggregate per-plugin schema metadata without changing task scores."""
+    summary = {"requested_cells": 0, "response_valid_cells": 0, "enforcement_verified_cells": 0, "by_plugin": {}}
+    for plugin in plugins:
+        prefix = plugin.id
+        statuses = {}
+        requested = valid = verified = 0
+        for result in results:
+            if result.get(f"{prefix}_schema_requested") is not True:
+                continue
+            requested += 1
+            status = result.get(f"{prefix}_schema_request_status") or "unknown"
+            statuses[status] = statuses.get(status, 0) + 1
+            if result.get(f"{prefix}_response_schema_valid") is True:
+                valid += 1
+            if result.get(f"{prefix}_schema_enforcement_verified") is True:
+                verified += 1
+        if requested:
+            summary["requested_cells"] += requested
+            summary["response_valid_cells"] += valid
+            summary["enforcement_verified_cells"] += verified
+            summary["by_plugin"][prefix] = {
+                "requested_cells": requested,
+                "response_valid_cells": valid,
+                "response_schema_valid_rate": round(valid / requested, 4),
+                "enforcement_verified_cells": verified,
+                "statuses": statuses,
+            }
+    if summary["requested_cells"]:
+        summary["response_schema_valid_rate"] = round(
+            summary["response_valid_cells"] / summary["requested_cells"], 4,
+        )
+    else:
+        summary["response_schema_valid_rate"] = None
+    return summary
 
 
 def build_judge_prompt(plugin, original_prompt, response_text):
@@ -1126,6 +1320,24 @@ def _run_plugin_task(target_name, api_model, source, plugin, source_config, time
     if not isinstance(request_params, dict):
         request_params = {}
     request_params_kwargs = {"request_params": request_params} if request_params else {}
+    schema_request_applied = runner == "http" and (
+        not isinstance(cfg, dict)
+        or cfg.get("api_protocol") not in {"1min", "chatplayground"}
+    )
+    schema_metadata = _schema_request_metadata(
+        plugin, request_params, request_applied=schema_request_applied,
+    )
+
+    def failed_task(error):
+        """Retain schema compatibility metadata when the request fails."""
+        failed_metadata = _schema_request_metadata(
+            plugin, request_params, error=error,
+            request_applied=schema_request_applied,
+        )
+        return PluginTaskResult({
+            f"{pid}_{key}": value for key, value in failed_metadata.items()
+        }, error)
+
     text = ""
     response_time = 0.0
     output_tokens = 0
@@ -1145,7 +1357,7 @@ def _run_plugin_task(target_name, api_model, source, plugin, source_config, time
 
     if runner == "opencode":
         if not opencode_config_path or not opencode_model:
-            return PluginTaskResult(None, "OpenCode runner is missing generated config or model mapping")
+            return failed_task("OpenCode runner is missing generated config or model mapping")
         process_result = run_process(
             prompt,
             config_path=opencode_config_path,
@@ -1200,6 +1412,7 @@ def _run_plugin_task(target_name, api_model, source, plugin, source_config, time
                             "score": "fail",
                             "score_schema": SCORE_SCHEMA,
                             "rubric": [],
+                            **{key: value for key, value in schema_metadata.items()},
                             "response_time": response_time,
                             "output_tokens": int(count_tokens(text)),
                             "thinking_tokens": int(count_tokens(think_text)),
@@ -1212,7 +1425,7 @@ def _run_plugin_task(target_name, api_model, source, plugin, source_config, time
                         }, handle, indent=2, default=str)
                 except OSError:
                     pass
-            return PluginTaskResult(None, serr)
+            return failed_task(serr)
         output_tokens = int(count_tokens(text))
         if gen_time > 0:
             tps = round(output_tokens / gen_time, 2)
@@ -1345,7 +1558,7 @@ def _run_plugin_task(target_name, api_model, source, plugin, source_config, time
                     nserr = nonstream_result.error
                     nsfr = nonstream_result.finish_reason
                     if nserr:
-                        return PluginTaskResult(None, f"Stream: {serr or 'no tokens'}. Nostream: {nserr}")
+                        return failed_task(f"Stream: {serr or 'no tokens'}. Nostream: {nserr}")
                     stream_ok = False
                     response_time = round(ns_time, 1)
                     gen_time = ns_time
@@ -1376,7 +1589,7 @@ def _run_plugin_task(target_name, api_model, source, plugin, source_config, time
             gen_fr = nonstream_result.finish_reason
 
             if gen_err:
-                return PluginTaskResult(None, gen_err)
+                return failed_task(gen_err)
             stream_ok = False
             response_time = round(gen_time, 1)
             truncated = (gen_fr == "length")
@@ -1577,6 +1790,14 @@ def _run_plugin_task(target_name, api_model, source, plugin, source_config, time
         score_error = f"plugin.evaluate raised {type(exc).__name__}: {exc}"
         score_traceback_text = traceback.format_exc()
 
+    schema_metadata = _schema_request_metadata(
+        plugin,
+        request_params,
+        response_schema_valid=diagnostics.get("response_schema_valid")
+        if isinstance(diagnostics, dict) else None,
+        request_applied=schema_request_applied,
+    )
+
     if save_responses and output_dir:
         meta_path = os.path.join(responses_dir, f"{plugin.id}.meta.json")
         meta = {
@@ -1593,6 +1814,7 @@ def _run_plugin_task(target_name, api_model, source, plugin, source_config, time
             "rubric": rubric,
 
             "diagnostics": diagnostics,
+            **{key: value for key, value in schema_metadata.items()},
             "response_time": response_time,
             "output_tokens": output_tokens,
             "thinking_tokens": thinking_tokens,
@@ -1623,9 +1845,10 @@ def _run_plugin_task(target_name, api_model, source, plugin, source_config, time
             pass
 
     if score_error is not None:
-        return PluginTaskResult(None, score_error)
+        return failed_task(score_error)
 
     result = {
+        **{f"{pid}_{key}": value for key, value in schema_metadata.items()},
         f"{pid}_score": score,
         f"{pid}_rubric": rubric,
         f"{pid}_diagnostics": diagnostics,
@@ -1739,6 +1962,9 @@ def run_model(model_name, source, state, active_plugins, source_config, timeout,
             r[f"{pid}_judge_input_sha256"] = source_row.get(f"{pid}_judge_input_sha256")
             r[f"{pid}_judge_votes"] = source_row.get(f"{pid}_judge_votes", [])
             r[f"{pid}_judge_complete"] = source_row.get(f"{pid}_judge_complete", False)
+            for key in ("schema_requested", "schema_request_status", "response_schema_valid",
+                        "schema_enforcement_verified"):
+                r[f"{pid}_{key}"] = source_row.get(f"{pid}_{key}")
         else:
             plugins_to_run.append(plugin)
 
@@ -1884,7 +2110,11 @@ def _run_plugins(target_name, api_model, source, state, active_plugins, plugins_
                         f"{pid}_output_tokens": result[f"{pid}_output_tokens"],
                         f"{pid}_thinking_tokens": result.get(f"{pid}_thinking_tokens"),
                         f"{pid}_total_tokens": result.get(f"{pid}_total_tokens"),
-                        f"{pid}_empty_reason": result.get(f"{pid}_empty_reason")})
+                     f"{pid}_empty_reason": result.get(f"{pid}_empty_reason"),
+                     f"{pid}_schema_requested": result.get(f"{pid}_schema_requested"),
+                     f"{pid}_schema_request_status": result.get(f"{pid}_schema_request_status"),
+                     f"{pid}_response_schema_valid": result.get(f"{pid}_response_schema_valid"),
+                     f"{pid}_schema_enforcement_verified": result.get(f"{pid}_schema_enforcement_verified")})
         # A judge can finish between this plugin's state update and the
         # eventual model-level result append. Queue this plugin immediately;
         # ``BenchmarkState.add_result`` merges any judge fields written during
@@ -1926,6 +2156,8 @@ def _run_plugins(target_name, api_model, source, state, active_plugins, plugins_
     for plugin in plugins_to_run:
         pid = plugin.id
         if pid in errors or results.get(pid) is None:
+            failed_result = results.get(pid) or {}
+            r.update(failed_result)
             fail_values = {
                 f"{pid}_score": "fail",
                 f"{pid}_response_time": "fail",
@@ -1936,7 +2168,7 @@ def _run_plugins(target_name, api_model, source, state, active_plugins, plugins_
                 f"{pid}_stream_ok": False,
             }
             r.update(fail_values)
-            state.update(target_name, **fail_values)
+            state.update(target_name, **{**failed_result, **fail_values})
         else:
             result = results[pid]
             r.update(result)

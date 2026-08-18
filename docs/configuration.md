@@ -462,6 +462,30 @@ Ollama's `format` field. Ollama Cloud does not currently support structured
 outputs. Regardless of provider enforcement, the benchmark validates the
 returned JSON and applies the semantic/plugin checks after generation.
 
+### Structured-output schema sentinel
+
+The Structured Output task records schema compatibility separately from its
+semantic score. Its schema contract is worth at most one of the 22 task
+points; extraction, normalization, and current-record selection provide the
+remaining discrimination. Per-plugin result metadata includes
+`schema_requested`, `schema_request_status`, `response_schema_valid`, and
+`schema_enforcement_verified`. The last value remains false for ordinary
+benchmark cells because a valid response alone cannot prove that the provider
+enforced the schema.
+
+Use the separately-run sentinel for an operational check:
+
+```sh
+python ai-benchmark.py --config benchmark-config.json --schema-sentinel
+```
+
+It does not create benchmark results or affect scores. The sentinel asks for a
+value forbidden by the prompt but permitted by the schema, allowing the run to
+classify likely enforcement separately from request rejection, transport
+failure, or an invalid response. Native 1min.ai and ChatPlayground protocols
+are reported as `schema_not_supported_by_source` because they do not use the
+OpenAI `response_format` request field.
+
 `judge.token_levels` controls the total `max_tokens` cap for judge generation;
 the default is `16384`. It is independent of any provider-specific thinking
 setting an operator adds to `judge.request_params`.
@@ -487,6 +511,41 @@ record `request_params`, `request_max_tokens`, `response_finish_reason`,
 The last field is `true` or `false` only when an explicit thinking budget was
 requested and the provider reports reasoning-token usage (or it can be
 estimated from `reasoning_content`); otherwise it is `null`.
+
+## Per-plugin capability metadata
+
+Scores are useful for ranking, but a model-selection benchmark should also
+retain evidence about *why* a cell succeeded or failed. The current structured
+metadata pattern is intended to generalize to every plugin without creating a
+second hidden score:
+
+- **Contract metadata:** requested format, parser status, schema/tool-call
+  validity, and whether provider enforcement was independently probed.
+- **Semantic evidence:** normalized entities, matched requirements, missing
+  requirements, contradictions, and negative findings rather than only a
+  keyword count.
+- **Execution evidence:** syntax/compiler status, test exit code, timeout,
+  resource use, generated artifacts, and isolated-test diagnostics.
+- **Reliability metadata:** transport errors, EOFs, 429s, retries, truncation,
+  repetition aborts, empty-response reason, and whether the result was
+  resumed or reused.
+- **Interaction metadata:** turn count, state carried between turns, tool-call
+  validity, argument correctness, and whether the model recovered after a
+  tool/error message.
+- **Capability vectors:** record dimensions such as extraction, planning,
+  coding, debugging, long-context retrieval, instruction adherence, and
+  adversarial robustness so model selection can use strengths and weaknesses
+  instead of one global mean.
+- **Composition signals:** identify complementary models—for example one with
+  strong planning but weak execution, and another with reliable code tests—so
+  future agent pipelines can route, verify, or critique rather than simply
+  choose the highest aggregate score.
+
+These fields should stay diagnostic and machine-readable. Keep the primary
+plugin score task-specific, and aggregate capability rates only when the
+underlying evidence is comparable. This prevents an API/schema incompatibility
+from being mislabeled as a reasoning failure while still making an unusable
+model/source combination visible.
 
 ## Automatic Thinking-Truncation Escalation
 

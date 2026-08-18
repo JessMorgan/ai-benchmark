@@ -115,6 +115,8 @@ def build_parser(prog=None, plugin_ids=None):
                              help='API key for model discovery (used with --dump-default-config --base-url)')
     tools_group.add_argument('--chatplayground-config', action='store_true',
                              help='Enumerate ChatPlayground.ai models from the web UI and print a ready-to-run config to stdout (uses CHATPLAYGROUND_EMAIL/PASSWORD env vars)')
+    tools_group.add_argument('--schema-sentinel', action='store_true',
+                             help='Run a non-scoring structured-output schema compatibility probe for every configured model and print JSON')
 
     output_group = parser.add_argument_group('Output')
     output_group.add_argument('--save-responses', action='store_true',

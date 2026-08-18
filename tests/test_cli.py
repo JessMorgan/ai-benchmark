@@ -39,7 +39,7 @@ class TestCLIArgs(unittest.TestCase):
         self.assertIn("structured-output", output)
         self.assertIn("Structured Output", output)
         # Check a specific ID/name/version line
-        self.assertRegex(output, r"structured-output\s+Structured Output\s+1\.4\.0")
+        self.assertRegex(output, r"structured-output\s+Structured Output\s+1\.5\.0")
         # Footer hint helps users use the IDs
         self.assertIn("--plugins-whitelist", output)
         self.assertIn("--plugins-blacklist", output)
@@ -100,6 +100,29 @@ class TestCLIArgs(unittest.TestCase):
         self.assertIn("CHATPLAYGROUND_EMAIL", result.stderr)
         self.assertIn("Could not enumerate ChatPlayground models", result.stderr)
 
+    def test_schema_sentinel_is_non_scoring_cli_tool(self):
+        project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        launcher = os.path.join(project_root, "ai-benchmark.py")
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = os.path.join(tmp, "config.json")
+            with open(config_path, "w", encoding="utf-8") as handle:
+                json.dump({
+                    "timeout": 1,
+                    "sources": {"Native": {"api_protocol": "1min"}},
+                    "models": {"demo": "Native"},
+                }, handle)
+            result = subprocess.run(
+                [sys.executable, launcher, "--config", config_path, "--schema-sentinel"],
+                capture_output=True,
+                text=True,
+                check=False,
+                cwd=tmp,
+            )
+        self.assertEqual(result.returncode, 0)
+        report = json.loads(result.stdout)
+        self.assertFalse(report["scores_affected"])
+        self.assertEqual(report["results"][0]["status"], "schema_not_supported_by_source")
+
     def test_convert_config_loads_dotenv_from_cwd(self):
         project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         launcher = os.path.join(project_root, "ai-benchmark.py")
@@ -154,7 +177,7 @@ class TestCLIArgs(unittest.TestCase):
             "--restart", "--config", "--out", "--timeout", "--token-levels",
             "--temperature", "--plugin-temperature", "--plugin-thread-limit",
             "--plugins-whitelist", "--plugins-blacklist", "--list-plugins",
-            "--generate-shell-completion", "--dump-default-config",
+            "--generate-shell-completion", "--dump-default-config", "--schema-sentinel",
             "--convert-config", "--base-url", "--api-key", "--chatplayground-config",
             "--save-responses",
             "--judge-models", "--build-judge-queue", "--judge-queue-output",
@@ -196,7 +219,7 @@ class TestCLIArgs(unittest.TestCase):
             "Tools:": (
                 "--list-plugins", "--generate-shell-completion",
                 "--dump-default-config", "--convert-config", "--base-url", "--api-key",
-                "--chatplayground-config",
+                "--chatplayground-config", "--schema-sentinel",
             ),
             "Output:": ("--save-responses",),
             "Judge analysis:": (

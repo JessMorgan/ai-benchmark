@@ -21,7 +21,7 @@ AI Benchmark uses a plugin architecture. Each plugin defines a benchmark task, a
 | `rate-limiter` | Rate Limiter | 1.0.0 | 20 | Yes |
 | `reasoning` | Logical Reasoning | 1.0.0 | 20 | Yes |
 | `software-architecture` | Software Architecture | 1.0.0 | 20 | Yes |
-| `structured-output` | Structured Output | 1.4.0 | 22 | No |
+| `structured-output` | Structured Output | 1.5.0 | 22 | No |
 | `tool-calling` | Tool Calling Agent | 1.0.0 | 25 | Yes |
 | `wireframes` | Wireframes | 1.0.0 | 20 | Yes |
 
@@ -61,6 +61,8 @@ class BenchmarkTaskPlugin(abc.ABC):
 
     def get_request_params(self, global_config: dict) -> dict: ...  # default: {}
 
+    def get_response_schema(self) -> dict | None: ...  # default: None
+
     def sanitize_for_judge(self, text: str) -> str: ...  # default: identity
 
     def evaluate(self, response_text: str) -> EvaluationResult: ...
@@ -71,7 +73,13 @@ class BenchmarkTaskPlugin(abc.ABC):
 `get_request_params` is an optional hook for task contracts that should be
 provided to the model at the API boundary. It defaults to an empty dict so
 normal tasks remain unconstrained; `structured-output` uses it to request a
-strict JSON schema because schema compliance is the purpose of that task.
+strict JSON schema while scoring schema compliance as only one point beside
+its semantic extraction task.
+
+`get_response_schema` is optional diagnostic metadata. When present, the core
+records response-schema validity and request compatibility separately from the
+plugin's primary score; it does not imply that a successful response proves
+provider-side enforcement.
 
 `sanitize_for_judge` is an optional hook applied by the semantic judge
 pipeline (`build_judge_prompt` in `benchmark/core.py`) to both the task text

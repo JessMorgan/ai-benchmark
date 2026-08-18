@@ -79,9 +79,9 @@ def test_structured_output_rejects_wrong_nested_types_and_explanatory_text():
         "metadata": {"created_at": "2024-01-15T09:30:00Z", "active": True, "score": 0.9},
     }
     result = by_id()["structured-output"].evaluate("```json\n" + json.dumps(payload) + "\n```\nExtra prose")
-    types = next(item for item in result.rubric if item["name"] == "Basic types and constraints")
+    schema = next(item for item in result.rubric if item["name"] == "Structured schema contract")
     strict = next(item for item in result.rubric if item["name"] == "Strict format (no extra keys)")
-    assert types["earned"] < types["max"]
+    assert schema["earned"] < schema["max"]
     assert any("explanatory text" in finding["finding"] for finding in strict["negative_findings"])
     assert sum(item["earned"] for item in result.rubric) == result.score
 
