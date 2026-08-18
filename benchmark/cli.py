@@ -1036,6 +1036,9 @@ _FRAME_STYLE_MAP = {
     "green": "green",
     "red": "red",
     "yellow": "yellow",
+    # Rich has no plain "grey"/"gray" color name; a truecolor value
+    # renders literally as dimmed grey in every terminal.
+    "grey": "#808080",
 }
 
 
@@ -1205,15 +1208,24 @@ def _build_frame_lines(state, active_plugins, source_abbrevs, frozen_hdr,
         for name in preloading
         if name in snap
     ]
-    active_judge_parts = []
-    stopped_judge_parts = []
+    running_judges = {activity["judge"] for activity in judge_activities}
+    running_parts, waiting_parts, complete_parts, stopped_parts = [], [], [], []
     for model, values in judge_progress.items():
         part = (
             f"[{model}: {values.get('completed', 0)}\u2705{values.get('failed', 0)}\u274c"
             f"{values.get('expected', 0)}\u03a3]"
         )
-        (stopped_judge_parts if values.get("stopped") else active_judge_parts).append(part)
-    judge_line = f"Judging {' '.join(active_judge_parts)}" if active_judge_parts else ""
+        expected = values.get("expected", 0)
+        if values.get("stopped"):
+            stopped_parts.append(part)
+        elif model in running_judges:
+            running_parts.append(part)
+        elif (expected > 0
+              and values.get("completed", 0) + values.get("failed", 0) >= expected):
+            complete_parts.append(part)
+        else:
+            waiting_parts.append(part)
+    judge_line = f"Judging {' '.join(waiting_parts)}" if waiting_parts else ""
     if not running and not queuing and not preloading and not judge_line:
         lines.append(line(" All models complete \u2014 generating outputs..."))
     else:
@@ -1241,13 +1253,27 @@ def _build_frame_lines(state, active_plugins, source_abbrevs, frozen_hdr,
             base_parts = [p for p in parts if p != judge_line]
             if base_parts:
                 lines.append(line(" " + "  |  ".join(base_parts)))
-            lines.extend(line(wrapped) for wrapped in _wrap_judge_parts(active_judge_parts, max_x))
-    if stopped_judge_parts:
+            lines.extend(line(wrapped) for wrapped in _wrap_judge_parts(waiting_parts, max_x))
+    if running_parts:
+        # Judges actively judging a cell right now (selected to run) render
+        # green so they stand out from the waiting roster.
+        lines.extend(
+            line(wrapped, "green")
+            for wrapped in _wrap_judge_parts(running_parts, max_x)
+        )
+    if complete_parts:
+        # Judges whose whole workload is done render dimmed grey so they
+        # recede while the others are still working.
+        lines.extend(
+            line(wrapped, "grey")
+            for wrapped in _wrap_judge_parts(complete_parts, max_x)
+        )
+    if stopped_parts:
         # Judges halted by an exhausted 429 (terminal_429) render on their
         # own red footer line(s) so they stand out from the active roster.
         lines.extend(
             line(wrapped, "red")
-            for wrapped in _wrap_judge_parts(stopped_judge_parts, max_x)
+            for wrapped in _wrap_judge_parts(stopped_parts, max_x)
         )
 
     return lines

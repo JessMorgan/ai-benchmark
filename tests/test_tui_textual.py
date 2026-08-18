@@ -86,6 +86,18 @@ class TestFrameLinesToText(unittest.TestCase):
         text = cli._frame_lines_to_text([("x", "not-a-style")])
         self.assertEqual(text.plain, "x")
 
+    def test_every_style_map_value_is_a_valid_rich_style(self):
+        # Regression: a style value Rich cannot parse (e.g. the plain
+        # "grey" color name) crashes the live TUI render with
+        # ColorParseError. Every mapped value must parse as a Rich style.
+        from rich.style import Style
+
+        for key, value in cli._FRAME_STYLE_MAP.items():
+            self.assertIsNotNone(
+                Style.parse(value),
+                f"_FRAME_STYLE_MAP[{key!r}] = {value!r} is not a valid Rich style",
+            )
+
 
 class TestBuildFrameLines(unittest.TestCase):
     def test_renders_header_summary_rows_live_and_footer(self):
@@ -336,6 +348,78 @@ class TestBuildFrameLinesAdvanced(unittest.TestCase):
         self.assertIn("All models complete", text)
         stopped = next(l for l in lines if "judge-stopped:" in l[0])
         self.assertEqual(stopped[1], "red")
+
+    def test_running_judge_renders_green(self):
+        """A judge with an in-flight activity (selected to run) renders on
+        its own green footer line."""
+        snapshot = {
+            "model-a": {"status": "running", "source": "Local",
+                        "running_pids": ["rate-limiter"],
+                        "rate-limiter_start_ts": 0},
+        }
+        state = self._state(
+            snapshot,
+            judge_activities=[{"judge": "judge-run", "target": "model-a",
+                                "plugin": "rate-limiter", "elapsed": 3}],
+            judge_progress={
+                "judge-run": {"completed": 1, "failed": 0, "expected": 2},
+            },
+        )
+        with mock.patch("benchmark.cli.get_active_request_count", return_value=1), \
+                mock.patch("benchmark.cli.get_429_stats", return_value={}):
+            lines = _render_lines(state, num_sources=4)
+        text = _frame_text(lines)
+        self.assertIn("Judging [judge-run:", text)
+        run_line = next(l for l in lines if "judge-run:" in l[0])
+        self.assertEqual(run_line[1], "green")
+
+    def test_completed_judge_renders_grey(self):
+        """A judge whose whole workload is done renders dimmed grey."""
+        state = self._state(
+            {"model-a": {"status": "running", "source": "Local",
+                        "running_pids": ["rate-limiter"],
+                        "rate-limiter_start_ts": 0}},
+            judge_progress={
+                "judge-done": {"completed": 5, "failed": 0, "expected": 5},
+            },
+        )
+        with mock.patch("benchmark.cli.get_active_request_count", return_value=1), \
+                mock.patch("benchmark.cli.get_429_stats", return_value={}):
+            lines = _render_lines(state, num_sources=4)
+        text = _frame_text(lines)
+        self.assertIn("Judging [judge-done:", text)
+        done_line = next(l for l in lines if "judge-done:" in l[0])
+        self.assertEqual(done_line[1], "grey")
+
+    def test_judge_footer_groups_by_state(self):
+        """Running/waiting/complete/stopped judges land on separate footer
+        lines with green/white/grey/red styles."""
+        snapshot = {
+            "model-a": {"status": "running", "source": "Local",
+                        "running_pids": ["rate-limiter"],
+                        "rate-limiter_start_ts": 0},
+        }
+        state = self._state(
+            snapshot,
+            judge_activities=[{"judge": "judge-run", "target": "model-a",
+                                "plugin": "rate-limiter", "elapsed": 3}],
+            judge_progress={
+                "judge-run": {"completed": 1, "failed": 0, "expected": 2},
+                "judge-wait": {"completed": 0, "failed": 0, "expected": 4},
+                "judge-done": {"completed": 4, "failed": 0, "expected": 4},
+                "judge-stop": {"completed": 1, "failed": 1, "expected": 2,
+                                "stopped": True},
+            },
+        )
+        with mock.patch("benchmark.cli.get_active_request_count", return_value=1), \
+                mock.patch("benchmark.cli.get_429_stats", return_value={}):
+            lines = _render_lines(state, num_sources=4)
+        styles = {
+            name: next(l[1] for l in lines if f"judge-{name}:" in l[0])
+            for name in ("run", "wait", "done", "stop")
+        }
+        self.assertEqual(styles, {"run": "green", "wait": None,
+                                  "done": "grey", "stop": "red"})
 
     def test_429_sleeping_render(self):
         snapshot = {
