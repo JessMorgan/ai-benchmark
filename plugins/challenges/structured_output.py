@@ -1,12 +1,102 @@
 """Strict structured employee-record output challenge."""
 from __future__ import annotations
 
+import copy
 import re
 from datetime import datetime
 
 from benchmark.plugin import BenchmarkTaskPlugin
 from plugins.challenges._rubric import Rubric
 from plugins.challenges._validators import parse_structured
+
+STRUCTURED_OUTPUT_RESPONSE_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": [
+        "id", "name", "age", "email", "department", "roles",
+        "address", "settings", "tags", "metadata",
+    ],
+    "properties": {
+        "id": {
+            "type": "string",
+            "pattern": r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$",
+        },
+        "name": {"type": "string", "minLength": 1},
+        "age": {"type": "integer", "minimum": 18, "maximum": 120},
+        "email": {
+            "type": "string",
+            "pattern": r"^[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}$",
+        },
+        "department": {
+            "type": "string",
+            "enum": ["Engineering", "Sales", "Marketing", "HR"],
+        },
+        "roles": {
+            "type": "array",
+            "minItems": 1,
+            "items": {"type": "string", "enum": ["admin", "editor", "viewer", "auditor"]},
+        },
+        "address": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["street", "city", "state", "zip"],
+            "properties": {
+                "street": {"type": "string", "minLength": 1},
+                "city": {"type": "string", "minLength": 1},
+                "state": {"type": "string", "pattern": r"^[A-Z]{2}$"},
+                "zip": {"type": "string", "pattern": r"^\d{5}$"},
+            },
+        },
+        "settings": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["theme", "notifications", "language"],
+            "properties": {
+                "theme": {"type": "string", "enum": ["dark", "light", "auto"]},
+                "notifications": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["email", "sms", "push"],
+                    "properties": {
+                        "email": {"type": "boolean"},
+                        "sms": {"type": "boolean"},
+                        "push": {"type": "boolean"},
+                    },
+                },
+                "language": {
+                    "type": "string",
+                    "enum": ["en", "es", "fr", "de", "ja", "zh", "pt", "it", "ko", "ar", "hi", "ru"],
+                },
+            },
+        },
+        "tags": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["name", "priority"],
+                "properties": {
+                    "name": {"type": "string", "minLength": 1},
+                    "priority": {"type": "integer", "minimum": 1, "maximum": 5},
+                },
+            },
+        },
+        "metadata": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["created_at", "active", "score"],
+            "properties": {
+                "created_at": {
+                    "type": "string",
+                    "pattern": r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$",
+                },
+                "active": {"type": "boolean"},
+                "score": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+            },
+        },
+    },
+}
 
 
 class StructuredOutputPlugin(BenchmarkTaskPlugin):
@@ -16,7 +106,7 @@ class StructuredOutputPlugin(BenchmarkTaskPlugin):
 
     @property
     def version(self):
-        return "1.0.0"
+        return "1.1.0"
 
     @property
     def name(self):
@@ -32,7 +122,7 @@ class StructuredOutputPlugin(BenchmarkTaskPlugin):
 
     def get_prompt(self):
         return (
-            "Return exactly one JSON or YAML object and no explanatory text. The object must "
+            "Return exactly one JSON object and no explanatory text. The object must "
             "contain exactly these top-level keys: id (UUID v4 string), name (non-empty string), "
             "age (integer 18-120), email (valid email), department (Engineering/Sales/Marketing/HR), "
             "roles (non-empty array of admin/editor/viewer/auditor), address {street, city, state "
@@ -44,6 +134,19 @@ class StructuredOutputPlugin(BenchmarkTaskPlugin):
 
     def get_temperature(self, global_config):
         return global_config.get("structured_output_temperature")
+
+    def get_request_params(self, global_config):
+        """Enforce the same employee-record contract at the API boundary."""
+        return {
+            "response_format": {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "structured_employee_record",
+                    "strict": True,
+                    "schema": copy.deepcopy(STRUCTURED_OUTPUT_RESPONSE_SCHEMA),
+                },
+            },
+        }
 
     _required = frozenset({"id", "name", "age", "email", "department", "roles", "address", "settings", "tags", "metadata"})
     _departments = frozenset({"Engineering", "Sales", "Marketing", "HR"})

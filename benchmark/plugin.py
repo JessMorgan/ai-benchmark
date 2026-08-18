@@ -199,6 +199,15 @@ class BenchmarkTaskPlugin(abc.ABC):
         """Return the temperature to use for this task, or None to omit it."""
         raise NotImplementedError
 
+    def get_request_params(self, global_config: dict) -> dict:
+        """Return additional OpenAI-compatible request parameters.
+
+        The default is empty so normal benchmark tasks are not constrained by
+        a provider-side response format. A task may opt into a machine-
+        enforced contract when that contract is itself what the task tests.
+        """
+        return {}
+
     def sanitize_for_judge(self, text: str) -> str:
         """Return ``text`` prepared for embedding in a judge prompt.
 

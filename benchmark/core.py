@@ -1122,6 +1122,11 @@ def _run_plugin_task(target_name, api_model, source, plugin, source_config, time
     drop_params = []
     if isinstance(raw_model_cfg, dict):
         drop_params = raw_model_cfg.get("drop_params", [])
+    get_request_params = getattr(plugin, "get_request_params", None)
+    request_params = get_request_params(global_cfg or {}) if callable(get_request_params) else {}
+    if not isinstance(request_params, dict):
+        request_params = {}
+    request_params_kwargs = {"request_params": request_params} if request_params else {}
     text = ""
     response_time = 0.0
     output_tokens = 0
@@ -1286,7 +1291,7 @@ def _run_plugin_task(target_name, api_model, source, plugin, source_config, time
                 log_label=f"{plugin.name} (Streaming, attempt {attempt + 1})",
                 session_seed=session_seed, temperature=temperature,
                 drop_params=drop_params, stop_event=stop_event,
-                system_prompt=system_prompt,
+                system_prompt=system_prompt, **request_params_kwargs,
                 on_chunk=on_chunk, on_think_chunk=on_think_chunk, pid=pid, on_retry=on_retry,
                 max_content_tokens=max_content_tokens,
                 max_thinking_tokens=max_thinking_tokens,
@@ -1330,7 +1335,8 @@ def _run_plugin_task(target_name, api_model, source, plugin, source_config, time
                         log_label=f"{plugin.name} (Non-Streaming, attempt {attempt + 1})",
                         session_seed=session_seed, temperature=temperature,
                         drop_params=drop_params, stop_event=stop_event,
-                        system_prompt=system_prompt, pid=pid, on_retry=on_retry,
+                        system_prompt=system_prompt, **request_params_kwargs,
+                        pid=pid, on_retry=on_retry,
                         max_content_tokens=max_content_tokens,
                         max_thinking_tokens=max_thinking_tokens,
                         repetition_guard=repetition_guard)
@@ -1359,7 +1365,8 @@ def _run_plugin_task(target_name, api_model, source, plugin, source_config, time
                 log_label=f"{plugin.name} (attempt {attempt + 1})",
                 session_seed=session_seed, temperature=temperature,
                 drop_params=drop_params, stop_event=stop_event,
-                system_prompt=system_prompt, pid=pid, on_retry=on_retry,
+                system_prompt=system_prompt, **request_params_kwargs,
+                pid=pid, on_retry=on_retry,
                 max_content_tokens=max_content_tokens,
                 max_thinking_tokens=max_thinking_tokens,
                 repetition_guard=repetition_guard)
@@ -1442,7 +1449,7 @@ def _run_plugin_task(target_name, api_model, source, plugin, source_config, time
                 log_label=f"{plugin.name} (Streaming, thinking-truncation retry, budget={escalated})",
                 session_seed=session_seed, temperature=temperature,
                 drop_params=drop_params, stop_event=stop_event,
-                system_prompt=system_prompt,
+                system_prompt=system_prompt, **request_params_kwargs,
                 on_chunk=on_chunk, on_think_chunk=on_think_chunk, pid=pid, on_retry=on_retry,
                 max_content_tokens=max_content_tokens,
                 max_thinking_tokens=max_thinking_tokens,

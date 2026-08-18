@@ -39,7 +39,7 @@ class TestCLIArgs(unittest.TestCase):
         self.assertIn("structured-output", output)
         self.assertIn("Structured Output", output)
         # Check a specific ID/name/version line
-        self.assertRegex(output, r"structured-output\s+Structured Output\s+1\.0\.0")
+        self.assertRegex(output, r"structured-output\s+Structured Output\s+1\.1\.0")
         # Footer hint helps users use the IDs
         self.assertIn("--plugins-whitelist", output)
         self.assertIn("--plugins-blacklist", output)
@@ -880,7 +880,7 @@ class TestNonStreamingPluginRetry(unittest.TestCase):
         with mock.patch.object(
             self.module, "nonstream_request",
             return_value=NonStreamResult("", "", {}, 0.1, None, "stop"),
-        ):
+        ) as request:
             # Will raise UnboundLocalError if ``on_retry`` is not bound
             # before the call site below.
             task_result = self.module._run_plugin_task(
@@ -893,6 +893,9 @@ class TestNonStreamingPluginRetry(unittest.TestCase):
         # exception was raised at the kwargs evaluation.
         self.assertIsNone(task_result.error)
         self.assertEqual(task_result.result["structured-output_score"], 0)
+        response_format = request.call_args.kwargs["request_params"]["response_format"]
+        self.assertEqual(response_format["type"], "json_schema")
+        self.assertEqual(response_format["json_schema"]["name"], "structured_employee_record")
 
     def test_run_plugin_task_nonstreaming_429_retry_fires_on_retry(self):
         """End-to-end: a 429 retry on a non-streaming plugin still

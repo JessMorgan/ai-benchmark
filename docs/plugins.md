@@ -59,12 +59,19 @@ class BenchmarkTaskPlugin(abc.ABC):
 
     def get_temperature(self, global_config: dict) -> float | None: ...
 
+    def get_request_params(self, global_config: dict) -> dict: ...  # default: {}
+
     def sanitize_for_judge(self, text: str) -> str: ...  # default: identity
 
     def evaluate(self, response_text: str) -> EvaluationResult: ...
 
     def score(self, response_text: str) -> float: ...  # native task scale
 ```
+
+`get_request_params` is an optional hook for task contracts that should be
+provided to the model at the API boundary. It defaults to an empty dict so
+normal tasks remain unconstrained; `structured-output` uses it to request a
+strict JSON schema because schema compliance is the purpose of that task.
 
 `sanitize_for_judge` is an optional hook applied by the semantic judge
 pipeline (`build_judge_prompt` in `benchmark/core.py`) to both the task text

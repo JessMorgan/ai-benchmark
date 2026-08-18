@@ -2,6 +2,7 @@
 import json
 
 from plugins import discover_plugins
+from plugins.challenges.structured_output import STRUCTURED_OUTPUT_RESPONSE_SCHEMA
 
 
 def plugin(plugin_id):
@@ -28,6 +29,20 @@ def test_tool_calling_requires_exact_call_set():
         for _ in range(6)
     )
     assert plugin("tool-calling").score(response) < 15.0
+
+
+def test_structured_output_requests_strict_json_schema():
+    request_params = plugin("structured-output").get_request_params({})
+    response_format = request_params["response_format"]
+    assert response_format["type"] == "json_schema"
+    assert response_format["json_schema"]["name"] == "structured_employee_record"
+    assert response_format["json_schema"]["strict"] is True
+    assert response_format["json_schema"]["schema"] == STRUCTURED_OUTPUT_RESPONSE_SCHEMA
+
+
+def test_other_plugins_do_not_opt_into_response_schemas():
+    assert plugin("code-review").get_request_params({}) == {}
+    assert plugin("reasoning").get_request_params({}) == {}
 
 
 def test_structured_output_valid_payload_scores_full():
