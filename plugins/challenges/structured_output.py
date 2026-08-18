@@ -4,6 +4,7 @@ from __future__ import annotations
 import copy
 import re
 from datetime import datetime
+from typing import ClassVar
 
 from benchmark.plugin import BenchmarkTaskPlugin
 from plugins.challenges._rubric import Rubric
@@ -99,6 +100,81 @@ STRUCTURED_OUTPUT_RESPONSE_SCHEMA = {
 }
 
 
+STRUCTURED_OUTPUT_SOURCE_PACKET = """SOURCE PACKET
+
+ARCHIVED SNAPSHOT (superseded; do not use these values):
+- Record ID: 2e1b4c88-7f90-4a12-8d33-0c5d9a6e7102
+- Name: Rivera, Casey
+- Email: casey.rivera@old-example.net
+- Organization: Product / Sales
+- Access labels: sales-read
+- Address: 8 Old Harbor Road; Austin, Texas 78701
+- Preferences: theme=light; email_digest=disabled; sms_alerts=enabled; push_alerts=disabled; locale=es-MX
+- Account state: inactive
+
+CURRENT PROFILE (use this record):
+- Record ID: 7f3e9c2a-1d84-4b76-a5c1-0e9d8f6a2b34
+- Display name: Rivera, Jordan
+- Date of birth: 1990-05-12
+- Reference date for age calculation: 2026-08-18
+- Primary email:   Jordan.Rivera@Example.COM
+- Organization path: Product / Platform Engineering
+- Access labels: platform-admin, audit-read
+- Shipping address: 24 Market Street; Portland, Oregon 97205
+- Preferences: theme=dark; email_digest=enabled; sms_alerts=disabled; push_alerts=enabled; locale=en-US
+- Tags: platform (P2), onboarding (P1)
+- Created at: 2024-06-01 09:30:00 UTC
+- Account state: active
+- Quality score: 85/100
+
+TRANSFORMATION RULES:
+1. Use CURRENT PROFILE only; the archived snapshot is a decoy.
+2. Convert `Family, Given` to `Given Family` for `name`.
+3. Calculate age on the reference date; subtract one if the birthday has not occurred yet.
+4. Lowercase and trim the email address.
+5. Map an organization ending in `Engineering` to department `Engineering`.
+6. Map access labels: `platform-admin` → `admin`; `audit-read` → `auditor`.
+   Sort roles alphabetically.
+7. Expand the state name `Oregon` to `OR` and split the shipping address into fields.
+8. Map enabled/disabled preferences to booleans and keep only the first locale
+   component (`en-US` → `en`).
+9. Convert tag priorities P1–P5 to integers and sort tags by priority, then name.
+10. Convert the UTC creation time to ISO-8601 with `Z`; convert quality score
+    from a percentage to a decimal.
+
+Return exactly one JSON object matching the requested schema. Do not include
+explanations, archived values, source-only fields, or extra keys."""
+
+STRUCTURED_OUTPUT_EXPECTED_RECORD = {
+    "id": "7f3e9c2a-1d84-4b76-a5c1-0e9d8f6a2b34",
+    "name": "Jordan Rivera",
+    "age": 36,
+    "email": "jordan.rivera@example.com",
+    "department": "Engineering",
+    "roles": ["admin", "auditor"],
+    "address": {
+        "street": "24 Market Street",
+        "city": "Portland",
+        "state": "OR",
+        "zip": "97205",
+    },
+    "settings": {
+        "theme": "dark",
+        "notifications": {"email": True, "sms": False, "push": True},
+        "language": "en",
+    },
+    "tags": [
+        {"name": "onboarding", "priority": 1},
+        {"name": "platform", "priority": 2},
+    ],
+    "metadata": {
+        "created_at": "2024-06-01T09:30:00Z",
+        "active": True,
+        "score": 0.85,
+    },
+}
+
+
 class StructuredOutputPlugin(BenchmarkTaskPlugin):
     @property
     def id(self):
@@ -106,7 +182,7 @@ class StructuredOutputPlugin(BenchmarkTaskPlugin):
 
     @property
     def version(self):
-        return "1.3.0"
+        return "1.4.0"
 
     @property
     def name(self):
@@ -122,15 +198,17 @@ class StructuredOutputPlugin(BenchmarkTaskPlugin):
 
     def get_prompt(self):
         return (
-            "Return exactly one JSON object and no explanatory text. The object must "
-            "contain exactly these top-level keys: id (UUID v4 string), name (non-empty string), "
-            "age (integer 18-120), email (valid email), department (Engineering/Sales/Marketing/HR), "
-            "roles (non-empty array of admin/editor/viewer/auditor), address {street and city "
-            "non-empty strings, state (uppercase US two-letter code), zip (five-digit string)}, "
-            "settings {theme (dark/light/auto), notifications {email, sms, push booleans}, "
-            "language (ISO 639-1)}, tags (non-empty array of {name non-empty string, priority "
-            "integer 1-5}), metadata {created_at ISO-8601 datetime with "
-            "timezone, active boolean, score number 0.0-1.0}."
+            "Extract and normalize the current employee profile from the source packet below.\n\n"
+            "The output must contain exactly these top-level keys: id (UUID v4 string), "
+            "name (non-empty string), age (integer 18-120), email (valid email), "
+            "department (Engineering/Sales/Marketing/HR), roles (non-empty array of "
+            "admin/editor/viewer/auditor), address {street and city non-empty strings, "
+            "state (uppercase US two-letter code), zip (five-digit string)}, settings "
+            "{theme (dark/light/auto), notifications {email, sms, push booleans}, "
+            "language (ISO 639-1)}, tags (non-empty array of {name non-empty string, "
+            "priority integer 1-5}), metadata {created_at ISO-8601 datetime with "
+            "timezone, active boolean, score number 0.0-1.0}.\n\n"
+            + STRUCTURED_OUTPUT_SOURCE_PACKET
         )
 
     def get_temperature(self, global_config):
@@ -149,10 +227,17 @@ class StructuredOutputPlugin(BenchmarkTaskPlugin):
             },
         }
 
-    _required = frozenset({"id", "name", "age", "email", "department", "roles", "address", "settings", "tags", "metadata"})
+    _required = frozenset(STRUCTURED_OUTPUT_EXPECTED_RECORD)
     _departments = frozenset({"Engineering", "Sales", "Marketing", "HR"})
     _roles = frozenset({"admin", "editor", "viewer", "auditor"})
     _languages = frozenset({"en", "es", "fr", "de", "ja", "zh", "pt", "it", "ko", "ar", "hi", "ru"})
+    _object_keys: ClassVar[dict[tuple[str, ...], frozenset[str]]] = {
+        (): _required,
+        ("address",): frozenset({"street", "city", "state", "zip"}),
+        ("settings",): frozenset({"theme", "notifications", "language"}),
+        ("settings", "notifications"): frozenset({"email", "sms", "push"}),
+        ("metadata",): frozenset({"created_at", "active", "score"}),
+    }
 
     @staticmethod
     def _uuid(value):
@@ -213,33 +298,151 @@ class StructuredOutputPlugin(BenchmarkTaskPlugin):
         else:
             yield value
 
+    @staticmethod
+    def _value_at(data, path):
+        value = data
+        for key in path:
+            if not isinstance(value, dict):
+                return None
+            value = value.get(key)
+        return value
+
+    def _unexpected_keys(self, data):
+        findings = []
+        for path, allowed in self._object_keys.items():
+            value = self._value_at(data, path)
+            if isinstance(value, dict):
+                for key in sorted(set(value) - allowed):
+                    location = ".".join(path) or "<root>"
+                    findings.append(f"unexpected key {location}.{key}")
+        return findings
+
+    def _semantic_criterion(self, rubric, name, maximum, data, paths):
+        matched = []
+        mismatched = []
+        for path in paths:
+            actual = self._value_at(data, path)
+            expected = self._value_at(STRUCTURED_OUTPUT_EXPECTED_RECORD, path)
+            if actual == expected:
+                matched.append(".".join(path))
+            else:
+                mismatched.append({
+                    "finding": f"{'.'.join(path)} does not match the current profile",
+                    "expected": expected,
+                    "actual": actual,
+                })
+        earned = round(maximum * len(matched) / len(paths), 1) if paths else 0.0
+        rubric.add_criterion(
+            name,
+            maximum,
+            earned,
+            evidence=[{"kind": "exact-field", "path": path} for path in matched],
+            matched=bool(matched),
+            negative_findings=mismatched,
+        )
+
     def evaluate(self, response_text):
         text = response_text.strip()
         rubric = Rubric(self.max_score)
         validation = parse_structured(text)
         rubric.record_validation(validation)
         if not validation.valid or not isinstance(validation.value, dict):
-            names = [("Valid JSON/YAML syntax", 4.0), ("Required top-level fields", 4.0), ("Basic types and constraints", 6.0), ("Non-empty values / completeness", 4.0), ("Strict format (no extra keys)", 2.0), ("No placeholder values", 2.0)]
+            names = [
+                ("Valid JSON/YAML syntax", 2.0),
+                ("Required top-level fields", 2.0),
+                ("Basic types and constraints", 3.0),
+                ("Source extraction accuracy", 7.0),
+                ("Normalization and derived values", 5.0),
+                ("Strict format (no extra keys)", 2.0),
+                ("No placeholder values", 1.0),
+            ]
             for name, maximum in names:
-                rubric.add_criterion(name, maximum, 0.0, negative_findings=[{"finding": "structured object could not be parsed"}] if name == "Valid JSON/YAML syntax" else [])
+                rubric.add_criterion(
+                    name,
+                    maximum,
+                    0.0,
+                    negative_findings=[{"finding": "structured object could not be parsed"}]
+                    if name == "Valid JSON/YAML syntax" else [],
+                )
             return rubric.results()
+
         data = validation.value
-        rubric.add_criterion("Valid JSON/YAML syntax", 4.0, 4.0)
+        rubric.add_criterion("Valid JSON/YAML syntax", 2.0, 2.0)
         present = self._required & set(data)
-        rubric.add_criterion("Required top-level fields", 4.0, 4.0 if present == self._required else 2.0 * len(present) / len(self._required), negative_findings=[] if present == self._required else [{"finding": f"missing keys: {sorted(self._required - present)}"}])
+        rubric.add_criterion(
+            "Required top-level fields",
+            2.0,
+            2.0 if present == self._required else 2.0 * len(present) / len(self._required),
+            negative_findings=[] if present == self._required else [
+                {"finding": f"missing keys: {sorted(self._required - present)}"}
+            ],
+        )
         checks = self._checks(data)
-        rubric.add_criterion("Basic types and constraints", 6.0, round(6.0 * sum(checks) / len(checks), 1))
-        complete = present == self._required and all(value not in (None, "", [], {}) for value in (data.get("name"), data.get("email"), data.get("roles"), data.get("tags")))
-        rubric.add_criterion("Non-empty values / completeness", 4.0, 4.0 if complete else 0.0)
-        exact_keys = set(data) == self._required
-        rubric.add_criterion("Strict format (no extra keys)", 2.0, 2.0 if exact_keys else 0.0, negative_findings=[] if exact_keys else [{"finding": f"unexpected top-level keys: {sorted(set(data) - self._required)}"}])
-        fenced = ["fence"] if "```" in text else []
+        rubric.add_criterion(
+            "Basic types and constraints",
+            3.0,
+            round(3.0 * sum(checks) / len(checks), 1),
+        )
+        self._semantic_criterion(
+            rubric,
+            "Source extraction accuracy",
+            7.0,
+            data,
+            [
+                ("id",),
+                ("email",),
+                ("settings", "theme"),
+                ("settings", "notifications", "email"),
+                ("settings", "notifications", "sms"),
+                ("settings", "notifications", "push"),
+                ("metadata", "active"),
+            ],
+        )
+        self._semantic_criterion(
+            rubric,
+            "Normalization and derived values",
+            5.0,
+            data,
+            [
+                ("name",),
+                ("age",),
+                ("department",),
+                ("roles",),
+                ("address",),
+                ("settings", "language"),
+                ("tags",),
+                ("metadata", "created_at"),
+                ("metadata", "score"),
+            ],
+        )
+        unexpected = self._unexpected_keys(data)
+        exact_keys = not unexpected and set(data) == self._required
+        rubric.add_criterion(
+            "Strict format (no extra keys)",
+            2.0,
+            2.0 if exact_keys else 0.0,
+            negative_findings=[] if exact_keys else [{"finding": item} for item in unexpected]
+            or [{"finding": f"unexpected top-level keys: {sorted(set(data) - self._required)}"}],
+        )
+        fenced = "```" in text
         outside = re.sub(r"```[\s\S]*?```", "", text).strip()
         if fenced and outside:
-            rubric.penalize_criterion("Strict format (no extra keys)", 0.5, "response contains explanatory text outside structured data")
+            rubric.penalize_criterion(
+                "Strict format (no extra keys)",
+                0.5,
+                "response contains explanatory text outside structured data",
+            )
         bad = {"unknown", "n/a", "none", "null", ""}
-        placeholders = [value for value in self._leaf_values(data) if isinstance(value, str) and value.strip().lower() in bad]
-        rubric.add_criterion("No placeholder values", 2.0, 2.0 if complete and not placeholders else 0.0, negative_findings=[] if not placeholders else [{"finding": "placeholder value present"}])
+        placeholders = [
+            value for value in self._leaf_values(data)
+            if isinstance(value, str) and value.strip().lower() in bad
+        ]
+        rubric.add_criterion(
+            "No placeholder values",
+            1.0,
+            1.0 if not placeholders else 0.0,
+            negative_findings=[] if not placeholders else [{"finding": "placeholder value present"}],
+        )
         return rubric.results()
 
     def score(self, response_text):

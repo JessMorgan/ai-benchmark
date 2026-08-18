@@ -2,7 +2,10 @@
 import json
 
 from plugins import discover_plugins
-from plugins.challenges.structured_output import STRUCTURED_OUTPUT_RESPONSE_SCHEMA
+from plugins.challenges.structured_output import (
+    STRUCTURED_OUTPUT_EXPECTED_RECORD,
+    STRUCTURED_OUTPUT_RESPONSE_SCHEMA,
+)
 
 
 def plugin(plugin_id):
@@ -51,16 +54,31 @@ def test_other_plugins_do_not_opt_into_response_schemas():
     assert plugin("reasoning").get_request_params({}) == {}
 
 
-def test_structured_output_valid_payload_scores_full():
-    payload = {
-        "id": "550e8400-e29b-41d4-a716-446655440000", "name": "Alice", "age": 30,
-        "email": "alice@example.com", "department": "Engineering", "roles": ["admin"],
-        "address": {"street": "123 Main", "city": "Springfield", "state": "IL", "zip": "62701"},
-        "settings": {"theme": "dark", "notifications": {"email": True, "sms": False, "push": True}, "language": "en"},
-        "tags": [{"name": "remote", "priority": 1}],
-        "metadata": {"created_at": "2024-01-15T09:30:00Z", "active": True, "score": 0.95},
-    }
-    assert plugin("structured-output").score(json.dumps(payload)) == 22.0
+def test_structured_output_current_profile_scores_full():
+    assert plugin("structured-output").score(json.dumps(STRUCTURED_OUTPUT_EXPECTED_RECORD)) == 22.0
+
+
+def test_structured_output_archived_decoy_does_not_score_as_current_profile():
+    payload = json.loads(json.dumps(STRUCTURED_OUTPUT_EXPECTED_RECORD))
+    payload["name"] = "Casey Rivera"
+    payload["email"] = "casey.rivera@old-example.net"
+    payload["department"] = "Sales"
+    payload["age"] = 29
+    assert plugin("structured-output").score(json.dumps(payload)) < 22.0
+
+
+def test_structured_output_requires_normalization_and_derived_values():
+    payload = json.loads(json.dumps(STRUCTURED_OUTPUT_EXPECTED_RECORD))
+    payload["name"] = "Rivera, Jordan"
+    payload["age"] = 35
+    payload["roles"] = ["auditor", "admin"]
+    payload["metadata"]["score"] = 85
+    result = plugin("structured-output").evaluate(json.dumps(payload))
+    normalization = next(
+        item for item in result.rubric if item["name"] == "Normalization and derived values"
+    )
+    assert normalization["earned"] < normalization["max"]
+    assert result.score < 22.0
 
 
 def test_multi_step_requires_behavior_not_just_definitions():

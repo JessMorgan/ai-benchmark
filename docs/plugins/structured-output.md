@@ -3,8 +3,8 @@
 | Property | Value |
 |---|---|
 | ID | `structured-output` |
-| Version | `1.3.0` |
+| Version | `1.4.0` |
 | Max Score | 22 |
 | Streaming | No |
 
-The model returns exactly one JSON employee object. The request schema uses a conservative Ollama/llama.cpp-compatible subset: anchored patterns with explicit character classes, finite enums, typed nested objects/arrays, and explicit `additionalProperties: false`. Non-empty name, address-city/street, and tag-name requirements are prompt-level rather than JSON-schema string-length bounds, and the fractional metadata score range is validated after generation because llama.cpp does not grammar-enforce bounds on JSON `number` values. Scoring uses typed nested validation: UUID v4, email, integer ranges, enums, arrays, booleans, five-digit ZIP, ISO-8601 timestamps with timezone, and placeholder detection. Additional top-level keys and explanatory text outside a fenced object lose strict-format credit.
+The model must extract the current employee profile from a source packet containing an archived decoy, then normalize and derive the requested fields. It must reverse `Family, Given` names, calculate age from a fixed reference date, normalize email and locale, map organization/access labels, split and normalize the address, sort roles/tags, convert timestamps, and convert a percentage score to a decimal. The strict request schema still removes syntax and shape noise, but most semantic points are awarded by exact comparison with the current profile rather than by merely producing schema-valid JSON. The evaluator separately checks typed constraints, placeholders, extra keys, and explanatory text. The schema uses a conservative Ollama/llama.cpp-compatible subset: anchored patterns with explicit character classes, finite enums, typed nested objects/arrays, and explicit `additionalProperties: false`.
