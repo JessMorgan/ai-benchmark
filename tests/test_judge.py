@@ -71,6 +71,13 @@ class TestJudgeCore(unittest.TestCase):
         self.assertIn("Do this", prompt)
         self.assertIn("Done well", prompt)
         self.assertIn("semantic score", prompt.lower())
+        self.assertIn("Keep the rationale under approximately 2000 characters", prompt)
+        self.assertIn("make it non-empty", prompt)
+
+    def test_judge_schema_leaves_string_lengths_to_prompt_guidance(self):
+        schema_text = json.dumps(JUDGE_RESPONSE_SCHEMA)
+        self.assertNotIn("minLength", schema_text)
+        self.assertNotIn("maxLength", schema_text)
 
     def test_build_prompt_delimits_candidate_as_inert_data(self):
         prompt = build_judge_prompt(

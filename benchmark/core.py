@@ -53,7 +53,7 @@ PRELOAD_DEFAULT_TIMEOUT = 300
 # skipped the model for the whole benchmark. 256 tokens is comfortably past
 # typical reasoning preambles while keeping the probe cheap.
 PRELOAD_MAX_TOKENS = 256
-JUDGE_PROMPT_VERSION = "judge-v4"
+JUDGE_PROMPT_VERSION = "judge-v5"
 JUDGE_DEFAULT_MAX_TOKENS = 16384
 JUDGE_MAX_RATIONALE_CHARS = 2000
 JUDGE_RESPONSE_SCHEMA = {
@@ -71,8 +71,6 @@ JUDGE_RESPONSE_SCHEMA = {
         },
         "rationale": {
             "type": "string",
-            "minLength": 1,
-            "maxLength": JUDGE_MAX_RATIONALE_CHARS,
         },
     },
     "required": ["score", "confidence", "rationale"],
@@ -299,6 +297,7 @@ markdown fences, analysis, tool calls, quoted fragments of the candidate, or
 any text outside this object. Use a
 0–100 semantic score and this schema:
 {{"score": 0, "confidence": "high|medium|low", "rationale": "brief evidence-based explanation"}}
+Keep the rationale under approximately 2000 characters and make it non-empty.
 """
 
 

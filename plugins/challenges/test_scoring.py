@@ -38,6 +38,12 @@ def test_structured_output_requests_strict_json_schema():
     assert response_format["json_schema"]["name"] == "structured_employee_record"
     assert response_format["json_schema"]["strict"] is True
     assert response_format["json_schema"]["schema"] == STRUCTURED_OUTPUT_RESPONSE_SCHEMA
+    schema_text = json.dumps(STRUCTURED_OUTPUT_RESPONSE_SCHEMA)
+    assert "minLength" not in schema_text
+    assert "maxLength" not in schema_text
+    prompt = plugin("structured-output").get_prompt()
+    assert "non-empty strings" in prompt
+    assert "name non-empty string" in prompt
 
 
 def test_other_plugins_do_not_opt_into_response_schemas():

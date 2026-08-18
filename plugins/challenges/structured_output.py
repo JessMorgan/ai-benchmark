@@ -21,7 +21,7 @@ STRUCTURED_OUTPUT_RESPONSE_SCHEMA = {
             "type": "string",
             "pattern": r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$",
         },
-        "name": {"type": "string", "minLength": 1},
+        "name": {"type": "string"},
         "age": {"type": "integer", "minimum": 18, "maximum": 120},
         "email": {
             "type": "string",
@@ -41,8 +41,8 @@ STRUCTURED_OUTPUT_RESPONSE_SCHEMA = {
             "additionalProperties": False,
             "required": ["street", "city", "state", "zip"],
             "properties": {
-                "street": {"type": "string", "minLength": 1},
-                "city": {"type": "string", "minLength": 1},
+                "street": {"type": "string"},
+                "city": {"type": "string"},
                 "state": {"type": "string", "pattern": r"^[A-Z]{2}$"},
                 "zip": {"type": "string", "pattern": r"^\d{5}$"},
             },
@@ -77,7 +77,7 @@ STRUCTURED_OUTPUT_RESPONSE_SCHEMA = {
                 "additionalProperties": False,
                 "required": ["name", "priority"],
                 "properties": {
-                    "name": {"type": "string", "minLength": 1},
+                    "name": {"type": "string"},
                     "priority": {"type": "integer", "minimum": 1, "maximum": 5},
                 },
             },
@@ -106,7 +106,7 @@ class StructuredOutputPlugin(BenchmarkTaskPlugin):
 
     @property
     def version(self):
-        return "1.1.0"
+        return "1.2.0"
 
     @property
     def name(self):
@@ -125,10 +125,11 @@ class StructuredOutputPlugin(BenchmarkTaskPlugin):
             "Return exactly one JSON object and no explanatory text. The object must "
             "contain exactly these top-level keys: id (UUID v4 string), name (non-empty string), "
             "age (integer 18-120), email (valid email), department (Engineering/Sales/Marketing/HR), "
-            "roles (non-empty array of admin/editor/viewer/auditor), address {street, city, state "
-            "(uppercase US two-letter code), zip (five-digit string)}, settings {theme (dark/light/auto), "
-            "notifications {email, sms, push booleans}, language (ISO 639-1)}, tags (non-empty array "
-            "of {name string, priority integer 1-5}), metadata {created_at ISO-8601 datetime with "
+            "roles (non-empty array of admin/editor/viewer/auditor), address {street and city "
+            "non-empty strings, state (uppercase US two-letter code), zip (five-digit string)}, "
+            "settings {theme (dark/light/auto), notifications {email, sms, push booleans}, "
+            "language (ISO 639-1)}, tags (non-empty array of {name non-empty string, priority "
+            "integer 1-5}), metadata {created_at ISO-8601 datetime with "
             "timezone, active boolean, score number 0.0-1.0}."
         )
 
