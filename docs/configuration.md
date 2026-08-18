@@ -447,9 +447,11 @@ configuration.
 the default is `16384`. It is independent of any provider-specific thinking
 setting an operator adds to `judge.request_params`. The default
 `response_format` uses the standard OpenAI-compatible `json_schema` form,
-which combines JSON mode with the expected judge-result schema. This is
-stronger than `json_object` alone: the provider can constrain not only the
-outer format but also the required fields and value types. A provider that
+which combines JSON mode with the expected judge-result schema. CI also runs
+`tests/test_schema_grammar_compat.py`, which validates the schemas and rejects
+string-length grammar bounds known to make llama.cpp grammar construction
+fail. This is stronger than `json_object` alone: the provider can constrain
+not only the outer format but also the required fields and value types. A provider that
 only supports `json_object` can override `judge.request_params`, but that
 removes schema enforcement and should be verified empirically.
 
