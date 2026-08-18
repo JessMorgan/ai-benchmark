@@ -7,6 +7,7 @@ from benchmark import cli
 from benchmark.core import (
     JUDGE_DEFAULT_MAX_TOKENS,
     JUDGE_DEFAULT_REQUEST_PARAMS,
+    JUDGE_RESPONSE_SCHEMA,
     JudgeResult,
     build_judge_prompt,
     confidence_weighted_consensus,
@@ -143,10 +144,18 @@ class TestJudgeCore(unittest.TestCase):
         self.assertIn("[TOOL_CALL]", prompt)
         self.assertNotIn("<tool_call>", prompt)
 
-    def test_default_judge_request_params_request_json_without_thinking_budget(self):
+    def test_default_judge_request_params_include_strict_schema_without_thinking_budget(self):
         params = resolve_judge_request_params({})
         self.assertEqual(params, JUDGE_DEFAULT_REQUEST_PARAMS)
-        self.assertEqual(params, {"response_format": {"type": "json_object"}})
+        response_format = params["response_format"]
+        self.assertEqual(response_format["type"], "json_schema")
+        self.assertEqual(response_format["json_schema"]["name"], "benchmark_judge_result")
+        self.assertTrue(response_format["json_schema"]["strict"])
+        self.assertEqual(response_format["json_schema"]["schema"], JUDGE_RESPONSE_SCHEMA)
+        self.assertEqual(
+            response_format["json_schema"]["schema"]["required"],
+            ["score", "confidence", "rationale"],
+        )
         self.assertNotIn("chat_template_kwargs", params)
 
     def test_judge_request_params_are_nested_mergeable(self):
@@ -161,7 +170,11 @@ class TestJudgeCore(unittest.TestCase):
         self.assertEqual(params["chat_template_kwargs"], {
             "enable_thinking": True,
         })
-        self.assertEqual(params["response_format"], {"type": "json_schema"})
+        self.assertEqual(params["response_format"]["type"], "json_schema")
+        self.assertEqual(
+            params["response_format"]["json_schema"]["schema"],
+            JUDGE_RESPONSE_SCHEMA,
+        )
 
     def test_judge_response_artifact_uses_existing_response_naming_convention(self):
         with tempfile.TemporaryDirectory() as tmp:

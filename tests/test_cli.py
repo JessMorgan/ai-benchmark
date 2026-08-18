@@ -57,9 +57,13 @@ class TestCLIArgs(unittest.TestCase):
         self.assertEqual(result.returncode, 0)
         cfg = json.loads(result.stdout)
         self.assertEqual(cfg["judge"]["token_levels"], [16384])
+        response_format = cfg["judge"]["request_params"]["response_format"]
+        self.assertEqual(response_format["type"], "json_schema")
+        self.assertEqual(response_format["json_schema"]["name"], "benchmark_judge_result")
+        self.assertTrue(response_format["json_schema"]["strict"])
         self.assertEqual(
-            cfg["judge"]["request_params"],
-            {"response_format": {"type": "json_object"}},
+            response_format["json_schema"]["schema"]["required"],
+            ["score", "confidence", "rationale"],
         )
         self.assertNotIn("chat_template_kwargs", cfg["judge"]["request_params"])
 

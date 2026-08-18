@@ -53,12 +53,40 @@ PRELOAD_DEFAULT_TIMEOUT = 300
 # skipped the model for the whole benchmark. 256 tokens is comfortably past
 # typical reasoning preambles while keeping the probe cheap.
 PRELOAD_MAX_TOKENS = 256
-JUDGE_PROMPT_VERSION = "judge-v3"
+JUDGE_PROMPT_VERSION = "judge-v4"
 JUDGE_DEFAULT_MAX_TOKENS = 16384
-JUDGE_DEFAULT_REQUEST_PARAMS = {
-    "response_format": {"type": "json_object"},
-}
 JUDGE_MAX_RATIONALE_CHARS = 2000
+JUDGE_RESPONSE_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "score": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 100,
+        },
+        "confidence": {
+            "type": "string",
+            "enum": ["high", "medium", "low"],
+        },
+        "rationale": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": JUDGE_MAX_RATIONALE_CHARS,
+        },
+    },
+    "required": ["score", "confidence", "rationale"],
+}
+JUDGE_DEFAULT_REQUEST_PARAMS = {
+    "response_format": {
+        "type": "json_schema",
+        "json_schema": {
+            "name": "benchmark_judge_result",
+            "strict": True,
+            "schema": JUDGE_RESPONSE_SCHEMA,
+        },
+    },
+}
 JUDGE_CONFIDENCE_WEIGHTS = {"high": 1.0, "medium": 0.6, "low": 0.3}
 
 

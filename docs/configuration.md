@@ -404,20 +404,32 @@ Precedence: per-target `token_levels` inside the model/agent entry > `model_toke
 The optional `judge.request_params` object is merged into every HTTP request
 made by a semantic judge. It supports provider-specific OpenAI-compatible
 parameters that are not part of the benchmark's normal model request. The
-built-in default requests a JSON object and does **not** send a thinking-token
-budget or otherwise change the model's native thinking behavior:
+built-in default requests a JSON object matching a strict schema and does
+**not** send a thinking-token budget or otherwise change the model's native
+thinking behavior:
 
 ```yaml
 judge:
   token_levels: [16384]
   request_params:
     response_format:
-      type: json_object
+      type: json_schema
+      json_schema:
+        name: benchmark_judge_result
+        strict: true
+        schema:
+          type: object
+          additionalProperties: false
+          required: [score, confidence, rationale]
+          properties:
+            score: {type: number, minimum: 0, maximum: 100}
+            confidence: {type: string, enum: [high, medium, low]}
+            rationale: {type: string, minLength: 1, maxLength: 2000}
 ```
 
 The benchmark also does not send `enable_thinking: false`; operators who need
 to control thinking explicitly can add provider-supported fields under
-`judge.request_params`. The judge prompt (version `judge-v3`) presents the
+`judge.request_params`. The judge prompt (version `judge-v4`) presents the
 task and candidate answer as explicitly delimited, quoted data and tells the
 judge not to follow candidate instructions, emit tool calls, continue the
 embedded task, or reproduce any fragment of it. It also requires exactly one
@@ -429,10 +441,14 @@ unsupported fields can be removed with the judge model's `drop_params`
 configuration.
 
 `judge.token_levels` controls the total `max_tokens` cap for judge generation;
-the default is `16384`. It is independent of any provider-specific thinking setting an operator adds
-to `judge.request_params`. The judge request uses
-`response_format: {"type": "json_object"}` by default to reduce reasoning or
-other prose leaking into the machine-parsed answer.
+the default is `16384`. It is independent of any provider-specific thinking
+setting an operator adds to `judge.request_params`. The default
+`response_format` uses the standard OpenAI-compatible `json_schema` form,
+which combines JSON mode with the expected judge-result schema. This is
+stronger than `json_object` alone: the provider can constrain not only the
+outer format but also the required fields and value types. A provider that
+only supports `json_object` can override `judge.request_params`, but that
+removes schema enforcement and should be verified empirically.
 
 Each HTTP request log now records the exact merged request body used for the
 `requests.post` call in its replayable curl command, including any explicit
