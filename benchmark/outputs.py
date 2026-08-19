@@ -82,21 +82,33 @@ def _numeric_judge_score(result, plugin_id, default=0):
     return default
 
 
+def _judge_consensus_by_contract(result, plugin_id):
+    """Return versioned consensus, with a legacy vote fallback."""
+    consensus = result.get(f"{plugin_id}_judge_consensus_by_contract")
+    if isinstance(consensus, dict) and consensus:
+        return consensus
+    return {}
+
+
 def _judge_criteria(result, plugin_id):
-    """Return structured judge criteria, including legacy vote fallbacks."""
-    criteria = result.get(f"{plugin_id}_judge_criteria")
-    if isinstance(criteria, list) and criteria:
-        return criteria
+    """Return structured judge criteria, including contract identity."""
     votes = result.get(f"{plugin_id}_judge_votes", [])
-    if not isinstance(votes, list):
-        return []
-    return [
-        {"judge": vote.get("model"), "criteria": vote.get("criteria", [])}
-        for vote in votes
-        if isinstance(vote, dict)
-        and isinstance(vote.get("criteria"), list)
-        and vote.get("criteria")
-    ]
+    if isinstance(votes, list):
+        reports = [
+            {
+                "judge": vote.get("model"),
+                "judge_contract_id": vote.get("judge_contract_id"),
+                "criteria": vote.get("criteria", []),
+            }
+            for vote in votes
+            if isinstance(vote, dict)
+            and isinstance(vote.get("criteria"), list)
+            and vote.get("criteria")
+        ]
+        if reports:
+            return reports
+    criteria = result.get(f"{plugin_id}_judge_criteria")
+    return criteria if isinstance(criteria, list) else []
 
 
 def _judge_enabled(results):

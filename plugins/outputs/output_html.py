@@ -6,6 +6,7 @@ from pathlib import Path
 import jinja2
 
 from benchmark.outputs import (
+    _judge_consensus_by_contract,
     _judge_criteria,
     _numeric_score,
     _plugin_token_counts,
@@ -139,6 +140,7 @@ class HTMLOutputPlugin(BenchmarkOutputPlugin):
                                 f"<td>{html_lib.escape(str(r.get('model', '-')))}</td>"
                                 f"<td>{html_lib.escape(str(p.name))}</td>"
                                 f"<td>{judge_name}</td>"
+                                f"<td>{html_lib.escape(str(judge_report.get('judge_contract_id', '-')))}</td>"
                                 f"<td>{html_lib.escape(str(item.get('id', '-')))}</td>"
                                 f"<td>{html_lib.escape(str(item.get('criterion', '-')))}</td>"
                                 f"<td>{html_lib.escape(str(item.get('status', '-')))}</td>"
@@ -149,10 +151,32 @@ class HTMLOutputPlugin(BenchmarkOutputPlugin):
                 "<h2>🧭 Judge Criteria and Evidence</h2>"
                 "<p class=\"subtitle\">The judge's requirement interpretation and evidence; "
                 "separate from the deterministic rubric and non-scoring.</p>"
-                "<table><tr><th>Model</th><th>Plugin</th><th>Judge</th><th>ID</th>"
+                "<table><tr><th>Model</th><th>Plugin</th><th>Judge</th><th>Contract</th><th>ID</th>"
                 "<th>Criterion</th><th>Status</th><th>Evidence</th></tr>"
                 + "".join(rows_html) + "</table>"
             )
+            consensus_rows = []
+            for r in results:
+                for p in active_plugins:
+                    for contract_id, consensus in _judge_consensus_by_contract(r, p.id).items():
+                        consensus_rows.append(
+                            "<tr>"
+                            f"<td>{html_lib.escape(str(r.get('model', '-')))}</td>"
+                            f"<td>{html_lib.escape(str(p.name))}</td>"
+                            f"<td>{html_lib.escape(str(contract_id))}</td>"
+                            f"<td>{html_lib.escape(str(consensus.get('score', '-')))}</td>"
+                            f"<td>{html_lib.escape(str(consensus.get('confidence', '-')))}</td>"
+                            f"<td>{html_lib.escape(str(consensus.get('valid_judges', '-')))}</td>"
+                            f"<td>{html_lib.escape(str(consensus.get('attempts', '-')))}</td>"
+                            "</tr>"
+                        )
+            if consensus_rows:
+                judge_criteria_html += (
+                    "<h3>Versioned Judge Consensus</h3>"
+                    "<table><tr><th>Model</th><th>Plugin</th><th>Contract</th>"
+                    "<th>Score</th><th>Confidence</th><th>Valid Judges</th><th>Attempts</th></tr>"
+                    + "".join(consensus_rows) + "</table>"
+                )
 
         header_cells = "<th>Model</th><th>Runner</th><th>Load(s)</th>"
         for p in active_plugins:

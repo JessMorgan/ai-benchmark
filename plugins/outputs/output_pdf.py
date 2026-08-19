@@ -2,6 +2,7 @@ import os
 from datetime import datetime, timezone
 
 from benchmark.outputs import (
+    _judge_consensus_by_contract,
     _judge_criteria,
     _numeric_score,
     _plugin_token_counts,
@@ -149,12 +150,28 @@ class PDFOutputPlugin(BenchmarkOutputPlugin):
                         for item in judge_report.get("criteria", []):
                             text = (
                                 f"{r.get('model', '-')} / {p.name} / {judge_name} / "
+                                f"{judge_report.get('judge_contract_id', '-')} / "
                                 f"{item.get('id', '-')} [{item.get('status', '-')}]\n"
                                 f"Criterion: {item.get('criterion', '-')}\n"
                                 f"Evidence: {item.get('evidence', '-')}"
                             )
                             pdf.multi_cell(0, 4, text, new_x="LMARGIN", new_y="NEXT")
                             pdf.ln(1)
+            if any(_judge_consensus_by_contract(r, p.id) for r in results for p in active_plugins):
+                pdf.set_font("Helvetica", "B", 8)
+                pdf.cell(0, 5, "Versioned Judge Consensus", new_x="LMARGIN", new_y="NEXT")
+                pdf.set_font("Helvetica", "", 7)
+                for r in results:
+                    for p in active_plugins:
+                        for contract_id, consensus in _judge_consensus_by_contract(r, p.id).items():
+                            pdf.cell(
+                                0, 4,
+                                f"{r.get('model', '-')} / {p.name} / {contract_id}: "
+                                f"{consensus.get('score', '-')} "
+                                f"({consensus.get('confidence', '-')}, "
+                                f"{consensus.get('valid_judges', 0)}/{consensus.get('attempts', 0)})",
+                                new_x="LMARGIN", new_y="NEXT",
+                            )
 
         has_rubric = any(isinstance(r.get(f"{p.id}_rubric"), list) and r.get(f"{p.id}_rubric") for p in active_plugins for r in results)
         if has_rubric:

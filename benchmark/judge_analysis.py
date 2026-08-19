@@ -224,6 +224,7 @@ def build_disagreement_queue(
                 "judgments": [
                     {
                         "model": vote.get("model"),
+                        "judge_contract_id": vote.get("judge_contract_id"),
                         "score": vote.get("score"),
                         "confidence": vote.get("confidence"),
                         "rationale": vote.get("rationale"),

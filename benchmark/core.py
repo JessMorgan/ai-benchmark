@@ -838,6 +838,29 @@ def is_successful_judge_vote(vote):
     )
 
 
+def confidence_weighted_consensus_by_contract(votes):
+    """Return independent confidence-weighted consensus for each contract."""
+    grouped = {}
+    for vote in votes:
+        if not isinstance(vote, dict):
+            continue
+        contract_id = vote.get("judge_contract_id")
+        if contract_id is None:
+            continue
+        grouped.setdefault(contract_id, []).append(vote)
+    return {
+        contract_id: {
+            **confidence_weighted_consensus(contract_votes),
+            "judge_contract_id": contract_id,
+            "valid_judges": sum(
+                1 for vote in contract_votes if is_successful_judge_vote(vote)
+            ),
+            "attempts": len(contract_votes),
+        }
+        for contract_id, contract_votes in grouped.items()
+    }
+
+
 def confidence_weighted_consensus(votes):
     """Combine valid judge votes using confidence weights.
 

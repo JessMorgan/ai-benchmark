@@ -11,6 +11,7 @@ from benchmark.core import (
     JudgeResult,
     build_judge_prompt,
     confidence_weighted_consensus,
+    confidence_weighted_consensus_by_contract,
     judge_contract_id,
     judge_response,
     judge_votes_for_contract,
@@ -108,6 +109,18 @@ class TestJudgeCore(unittest.TestCase):
         self.assertIn("semantic score", prompt.lower())
         self.assertIn("Keep the rationale under approximately 2000 characters", prompt)
         self.assertIn("make it non-empty", prompt)
+
+    def test_consensus_is_calculated_independently_per_contract(self):
+        votes = [
+            {"model": "judge", "judge_contract_id": "old", "score": 20,
+             "confidence": "high", "rationale": "old"},
+            {"model": "judge", "judge_contract_id": "current", "score": 90,
+             "confidence": "high", "rationale": "current"},
+        ]
+        summary = confidence_weighted_consensus_by_contract(votes)
+        self.assertEqual(summary["old"]["score"], 20)
+        self.assertEqual(summary["current"]["score"], 90)
+        self.assertEqual(summary["old"]["valid_judges"], 1)
 
     def test_versioned_vote_merge_preserves_other_contracts(self):
         old = {"model": "judge", "judge_contract_id": "old", "score": 60}

@@ -54,6 +54,11 @@ class TestCSVOutputPlugin(unittest.TestCase):
         results = [dict(self.sample_results[0])]
         results[0]["judge_models"] = ["judge-a"]
         results[0]["judge_status"] = "complete"
+        results[0]["rate-limiter_judge_consensus_by_contract"] = {
+            "judge-contract-v1:current": {
+                "score": 80, "confidence": "high", "valid_judges": 1, "attempts": 1,
+            },
+        }
         results[0]["rate-limiter_judge_votes"] = [{
             "model": "judge-a",
             "score": 80,
@@ -68,6 +73,8 @@ class TestCSVOutputPlugin(unittest.TestCase):
         }]
         csv_text = self.plugin.generate(results, self.plugins)
         self.assertIn("rate-limiter_Judge_Criteria_JSON", csv_text)
+        self.assertIn("rate-limiter_Judge_Consensus_By_Contract_JSON", csv_text)
+        self.assertIn("judge-contract-v1:current", csv_text)
         self.assertIn("Completeness", csv_text)
         self.assertIn("One required item is absent.", csv_text)
 

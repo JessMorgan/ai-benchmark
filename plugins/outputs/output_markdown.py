@@ -2,6 +2,7 @@ import os
 from datetime import datetime, timezone
 
 from benchmark.outputs import (
+    _judge_consensus_by_contract,
     _judge_criteria,
     _numeric_score,
     _plugin_token_counts,
@@ -184,26 +185,45 @@ class MarkdownOutputPlugin(BenchmarkOutputPlugin):
             for r in results for p in active_plugins
         )
         if judge_criteria_present:
+            def _cell(value):
+                return str(value or "-").replace("|", "\\|").replace("\n", " ")
+
             lines.extend(["", "---", "## 🧭 Judge Criteria and Evidence", ""])
             lines.append(
                 "The following is the semantic judge's interpretation of each requirement; "
                 "it is separate from the deterministic plugin rubric and does not change scores."
             )
             lines.append("")
-            lines.append("| Model | Plugin | Judge | ID | Criterion | Status | Evidence |")
-            lines.append("|---|---|---|---|---|---|---|")
+            lines.append("| Model | Plugin | Judge | Contract | ID | Criterion | Status | Evidence |")
+            lines.append("|---|---|---|---|---|---|---|---|")
             for r in results:
                 for p in active_plugins:
                     for judge_report in _judge_criteria(r, p.id):
                         judge_name = judge_report.get("judge", "-")
+                        contract_id = judge_report.get("judge_contract_id", "-")
                         for item in judge_report.get("criteria", []):
-                            def _cell(value):
-                                return str(value or "-").replace("|", "\\|").replace("\n", " ")
                             lines.append(
                                 f"| {_cell(r.get('model'))} | {_cell(p.name)} | "
-                                f"{_cell(judge_name)} | {_cell(item.get('id'))} | "
+                                f"{_cell(judge_name)} | {_cell(contract_id)} | "
+                                f"{_cell(item.get('id'))} | "
                                 f"{_cell(item.get('criterion'))} | {_cell(item.get('status'))} | "
                                 f"{_cell(item.get('evidence'))} |"
+                            )
+            consensus_present = any(
+                _judge_consensus_by_contract(r, p.id)
+                for r in results for p in active_plugins
+            )
+            if consensus_present:
+                lines.extend(["", "### Versioned Judge Consensus", ""])
+                lines.append("| Model | Plugin | Contract | Score | Confidence | Valid Judges | Attempts |")
+                lines.append("|---|---|---|---|---|---|---|")
+                for r in results:
+                    for p in active_plugins:
+                        for contract_id, consensus in _judge_consensus_by_contract(r, p.id).items():
+                            lines.append(
+                                f"| {_cell(r.get('model'))} | {_cell(p.name)} | {_cell(contract_id)} | "
+                                f"{_cell(consensus.get('score'))} | {_cell(consensus.get('confidence'))} | "
+                                f"{_cell(consensus.get('valid_judges'))} | {_cell(consensus.get('attempts'))} |"
                             )
 
         lines.extend(["", "## ❌ Failed Models", ""])

@@ -40,6 +40,7 @@ from benchmark.core import (
     _save_outputs,
     _unique_source_abbrevs,
     confidence_weighted_consensus,
+    confidence_weighted_consensus_by_contract,
     dump_default_config,
     generate_config_from_api,
     get_target_plugins_blacklist,
@@ -3290,7 +3291,12 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
                     prior_all_votes = merge_judge_vote(prior_all_votes, vote)
                     judge_votes[vote_identity] = prior_all_votes
                     votes = judge_votes_for_contract(prior_all_votes, contract_id)
-                consensus = confidence_weighted_consensus(votes)
+                consensus_by_contract = confidence_weighted_consensus_by_contract(
+                    prior_all_votes,
+                )
+                consensus = consensus_by_contract.get(
+                    contract_id, confidence_weighted_consensus(votes),
+                )
                 expected_judges = set(judge_models)
                 received_judges = {
                     vote.get("model") for vote in votes
@@ -3317,6 +3323,7 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
                     confidence=consensus["confidence"],
                     rationale=consensus["rationale"],
                     criteria=consensus.get("criteria", []),
+                    consensus_by_contract=consensus_by_contract,
                     error=consensus["error"],
                     input_sha256=item.get("response_sha256"),
                     votes=prior_all_votes,
