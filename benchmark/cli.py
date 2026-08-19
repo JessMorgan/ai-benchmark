@@ -57,6 +57,7 @@ from benchmark.core import (
     run_schema_sentinel,
     save_judge_response,
     save_judge_response_metadata,
+    summarize_judge_criteria,
     summarize_schema_compatibility,
 )
 from benchmark.http import (
@@ -3210,6 +3211,7 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
                     "score": outcome.score,
                     "confidence": outcome.confidence,
                     "rationale": outcome.rationale,
+                    "criteria": outcome.criteria or [],
                     "error": outcome.error,
                 }
                 response_text = outcome.response_text or ""
@@ -3238,6 +3240,7 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
                             "error": outcome.error,
                             "terminal_429": outcome.terminal_429,
                             "rationale": outcome.rationale,
+                            "criteria": outcome.criteria or [],
                             "diagnostics": outcome.diagnostics,
                             "saved_at": datetime.now(timezone.utc).isoformat(),
                         },
@@ -3279,6 +3282,7 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
                     score=consensus["score"],
                     confidence=consensus["confidence"],
                     rationale=consensus["rationale"],
+                    criteria=consensus.get("criteria", []),
                     error=consensus["error"],
                     input_sha256=item.get("response_sha256"),
                     votes=votes,
@@ -3351,6 +3355,7 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
                     "score": None,
                     "confidence": None,
                     "rationale": None,
+                    "criteria": [],
                     "error": (
                         f"judge input failed: {type(exc).__name__}: {exc}"
                         + (f"; {artifact_error}" if artifact_error else "")
@@ -3677,8 +3682,12 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
             run_info["status"] = "completed"
         _inject_429_stats(run_info)
         if state is not None:
+            latest_results = state.latest_results()
             run_info["schema_compatibility"] = summarize_schema_compatibility(
-                state.latest_results(), active_plugins,
+                latest_results, active_plugins,
+            )
+            run_info["judge_criteria"] = summarize_judge_criteria(
+                latest_results, active_plugins,
             )
         _write_run_info(output_dir, run_info)
 

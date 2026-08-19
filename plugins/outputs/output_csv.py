@@ -4,6 +4,7 @@ import json
 import os
 
 from benchmark.outputs import (
+    _judge_criteria,
     _judge_enabled,
     _plugin_token_counts,
     _plugin_total_score,
@@ -41,6 +42,7 @@ class CSVOutputPlugin(BenchmarkOutputPlugin):
                     f"{p.id}_Judge_Confidence",
                     f"{p.id}_Judge_Error",
                     f"{p.id}_Judge_Votes",
+                    f"{p.id}_Judge_Criteria_JSON",
                 ] if judge_enabled else []),
                 f"{p.id}_Empty_Reason",
             ])
@@ -70,6 +72,7 @@ class CSVOutputPlugin(BenchmarkOutputPlugin):
                         r.get(f"{p.id}_judge_confidence", ''),
                         r.get(f"{p.id}_judge_error", ''),
                         json.dumps(r.get(f"{p.id}_judge_votes", []), ensure_ascii=False),
+                        json.dumps(_judge_criteria(r, p.id), ensure_ascii=False),
                     ] if judge_enabled else []),
                     r.get(f"{p.id}_empty_reason", ''),
                 ])

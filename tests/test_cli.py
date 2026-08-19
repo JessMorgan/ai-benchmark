@@ -63,7 +63,7 @@ class TestCLIArgs(unittest.TestCase):
         self.assertTrue(response_format["json_schema"]["strict"])
         self.assertEqual(
             response_format["json_schema"]["schema"]["required"],
-            ["score", "confidence", "rationale"],
+            ["score", "confidence", "rationale", "criteria"],
         )
         self.assertNotIn("chat_template_kwargs", cfg["judge"]["request_params"])
 

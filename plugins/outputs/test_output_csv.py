@@ -50,6 +50,27 @@ class TestCSVOutputPlugin(unittest.TestCase):
         csv_text = self.plugin.generate(self.sample_results, self.plugins)
         self.assertIn("test-model", csv_text)
 
+    def test_gen_csv_includes_machine_readable_judge_criteria(self):
+        results = [dict(self.sample_results[0])]
+        results[0]["judge_models"] = ["judge-a"]
+        results[0]["judge_status"] = "complete"
+        results[0]["rate-limiter_judge_votes"] = [{
+            "model": "judge-a",
+            "score": 80,
+            "confidence": "high",
+            "rationale": "Mostly complete.",
+            "criteria": [{
+                "id": "C1",
+                "criterion": "Completeness",
+                "status": "partial",
+                "evidence": "One required item is absent.",
+            }],
+        }]
+        csv_text = self.plugin.generate(results, self.plugins)
+        self.assertIn("rate-limiter_Judge_Criteria_JSON", csv_text)
+        self.assertIn("Completeness", csv_text)
+        self.assertIn("One required item is absent.", csv_text)
+
     def test_output_generators_render_partial_failure(self):
         results = [
             {

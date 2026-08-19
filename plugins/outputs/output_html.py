@@ -6,6 +6,7 @@ from pathlib import Path
 import jinja2
 
 from benchmark.outputs import (
+    _judge_criteria,
     _numeric_score,
     _plugin_token_counts,
     _plugin_total_score,
@@ -125,6 +126,34 @@ class HTMLOutputPlugin(BenchmarkOutputPlugin):
                         rubric_html += f"<tr><td>{html_lib.escape(str(item['name']))}</td><td>{item.get('points', '-')}</td><td>{item.get('total', '-')}</td></tr>\n"
                     rubric_html += "</table>\n"
 
+        judge_criteria_html = ""
+        if any(_judge_criteria(r, p.id) for r in results for p in active_plugins):
+            rows_html = []
+            for r in results:
+                for p in active_plugins:
+                    for judge_report in _judge_criteria(r, p.id):
+                        judge_name = html_lib.escape(str(judge_report.get("judge", "-")))
+                        for item in judge_report.get("criteria", []):
+                            rows_html.append(
+                                "<tr>"
+                                f"<td>{html_lib.escape(str(r.get('model', '-')))}</td>"
+                                f"<td>{html_lib.escape(str(p.name))}</td>"
+                                f"<td>{judge_name}</td>"
+                                f"<td>{html_lib.escape(str(item.get('id', '-')))}</td>"
+                                f"<td>{html_lib.escape(str(item.get('criterion', '-')))}</td>"
+                                f"<td>{html_lib.escape(str(item.get('status', '-')))}</td>"
+                                f"<td>{html_lib.escape(str(item.get('evidence', '-')))}</td>"
+                                "</tr>"
+                            )
+            judge_criteria_html = (
+                "<h2>🧭 Judge Criteria and Evidence</h2>"
+                "<p class=\"subtitle\">The judge's requirement interpretation and evidence; "
+                "separate from the deterministic rubric and non-scoring.</p>"
+                "<table><tr><th>Model</th><th>Plugin</th><th>Judge</th><th>ID</th>"
+                "<th>Criterion</th><th>Status</th><th>Evidence</th></tr>"
+                + "".join(rows_html) + "</table>"
+            )
+
         header_cells = "<th>Model</th><th>Runner</th><th>Load(s)</th>"
         for p in active_plugins:
             header_cells += (f"<th>{p.name} Resp(s)</th><th>{p.name} TPS</th>"
@@ -159,6 +188,7 @@ class HTMLOutputPlugin(BenchmarkOutputPlugin):
             header_cells=header_cells,
             rows=rows,
             rubric_html=rubric_html,
+            judge_criteria_html=judge_criteria_html,
         )
 
         if output_dir:

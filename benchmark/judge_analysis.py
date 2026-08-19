@@ -103,9 +103,20 @@ def judge_statistics(data: dict[str, Any]) -> dict[str, Any]:
             if isinstance(score, (int, float)) and not isinstance(score, bool):
                 deterministic.append(float(score))
                 judged.append(float(cast(float, vote["score"])))
+        criterion_status_counts: dict[str, int] = {}
+        criterion_count = 0
+        for vote in votes:
+            for criterion in vote.get("criteria", []) or []:
+                if not isinstance(criterion, dict):
+                    continue
+                criterion_count += 1
+                status = str(criterion.get("status", "unknown"))
+                criterion_status_counts[status] = criterion_status_counts.get(status, 0) + 1
         per_judge.append({
             "model": model,
             "valid_votes": len(votes),
+            "criteria": criterion_count,
+            "criteria_status_counts": criterion_status_counts,
             "failed_attempts": failed.get(model, 0),
             "mean_score": _mean_or_none(scores),
             "sample_sd": _sample_sd(scores),
@@ -216,6 +227,7 @@ def build_disagreement_queue(
                         "score": vote.get("score"),
                         "confidence": vote.get("confidence"),
                         "rationale": vote.get("rationale"),
+                        "criteria": vote.get("criteria", []),
                         "error": vote.get("error"),
                     }
                     for vote in votes

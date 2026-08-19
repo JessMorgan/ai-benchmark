@@ -53,18 +53,33 @@ class TestJudgeCore(unittest.TestCase):
 
     def test_confidence_weighted_consensus(self):
         result = confidence_weighted_consensus([
-            {"score": 90, "confidence": "high", "rationale": "strong"},
-            {"score": 50, "confidence": "low", "rationale": "weak"},
+            {"model": "a", "score": 90, "confidence": "high", "rationale": "strong",
+             "criteria": [{"id": "C1", "criterion": "Completeness", "status": "met", "evidence": "All items present."}]},
+            {"model": "b", "score": 50, "confidence": "low", "rationale": "weak",
+             "criteria": [{"id": "C1", "criterion": "Completeness", "status": "partial", "evidence": "One item absent."}]},
         ])
         self.assertEqual(result["score"], 81)
         self.assertEqual(result["confidence"], "high")
+        self.assertEqual([item["judge"] for item in result["criteria"]], ["a", "b"])
 
     def test_parse_judge_json_and_rejects_invalid(self):
         self.assertEqual(
-            parse_judge_response('{"score": 82.4, "confidence": "high", "rationale": "complete"}'),
-            JudgeResult(score=82, confidence="high", rationale="complete"),
+            parse_judge_response('{"score": 82.4, "confidence": "high", "rationale": "complete", "criteria": [{"id": "R1", "criterion": "The task is satisfied", "status": "met", "evidence": "The answer provides the requested result."}]}'),
+            JudgeResult(score=82, confidence="high", rationale="complete", criteria=[{"id": "R1", "criterion": "The task is satisfied", "status": "met", "evidence": "The answer provides the requested result."}]),
         )
         self.assertEqual(parse_judge_response("not json").error, "invalid judge JSON: Expecting value")
+
+    def test_parse_judge_requires_criterion_interpretation_and_evidence(self):
+        missing = parse_judge_response(
+            '{"score": 80, "confidence": "high", "rationale": "valid"}'
+        )
+        self.assertEqual(missing.error, "judge criteria must be a non-empty array")
+        parsed = parse_judge_response(
+            '{"score": 80, "confidence": "high", "rationale": "valid", '
+            '"criteria": [{"id": "C1", "criterion": "Completeness", '
+            '"status": "partial", "evidence": "One required item is absent."}]}'
+        )
+        self.assertEqual(parsed.criteria[0]["status"], "partial")
 
     def test_build_prompt_blinds_deterministic_score(self):
         prompt = build_judge_prompt(FakePlugin(), "Do this", "Done well")
@@ -137,7 +152,7 @@ class TestJudgeCore(unittest.TestCase):
     def test_judge_response_applies_plugin_sanitizer(self):
         response = mock.Mock(
             error=None,
-            text='{"score": 75, "confidence": "medium", "rationale": "usable"}',
+            text='{"score": 75, "confidence": "medium", "rationale": "usable", "criteria": [{"id": "R1", "criterion": "The task is satisfied", "status": "met", "evidence": "The answer is usable."}]}',
         )
         with tempfile.TemporaryDirectory() as tmp:
             sidecar = f"{tmp}/input.json"
@@ -167,7 +182,7 @@ class TestJudgeCore(unittest.TestCase):
         self.assertEqual(response_format["json_schema"]["schema"], JUDGE_RESPONSE_SCHEMA)
         self.assertEqual(
             response_format["json_schema"]["schema"]["required"],
-            ["score", "confidence", "rationale"],
+            ["score", "confidence", "rationale", "criteria"],
         )
         self.assertNotIn("chat_template_kwargs", params)
 
@@ -254,7 +269,7 @@ class TestJudgeCore(unittest.TestCase):
     def test_judge_response_records_budget_diagnostics(self):
         response = mock.Mock(
             error=None,
-            text='{"score": 75, "confidence": "medium", "rationale": "usable"}',
+            text='{"score": 75, "confidence": "medium", "rationale": "usable", "criteria": [{"id": "R1", "criterion": "The task is satisfied", "status": "met", "evidence": "The answer is usable."}]}',
             think_text="r" * (2500 * 4),
             usage={"completion_tokens_details": {"reasoning_tokens": 2500}},
             finish_reason="length",
@@ -287,7 +302,7 @@ class TestJudgeCore(unittest.TestCase):
     def test_judge_response_passes_request_params(self):
         response = mock.Mock(
             error=None,
-            text='{"score": 75, "confidence": "medium", "rationale": "usable"}',
+            text='{"score": 75, "confidence": "medium", "rationale": "usable", "criteria": [{"id": "R1", "criterion": "The task is satisfied", "status": "met", "evidence": "The answer is usable."}]}',
         )
         request_params = {
             "chat_template_kwargs": {"thinking_token_budget": 2048},
@@ -310,7 +325,7 @@ class TestJudgeCore(unittest.TestCase):
     def test_judge_response_uses_16384_default_token_budget(self):
         response = mock.Mock(
             error=None,
-            text='{"score": 75, "confidence": "medium", "rationale": "usable"}',
+            text='{"score": 75, "confidence": "medium", "rationale": "usable", "criteria": [{"id": "R1", "criterion": "The task is satisfied", "status": "met", "evidence": "The answer is usable."}]}',
         )
         with tempfile.TemporaryDirectory() as tmp:
             sidecar = f"{tmp}/input.json"
@@ -325,7 +340,7 @@ class TestJudgeCore(unittest.TestCase):
         self.assertEqual(request.call_args.args[5], 16384)
 
     def test_judge_response_retries_invalid_json(self):
-        response = mock.Mock(error=None, text='{"score": 75, "confidence": "medium", "rationale": "usable"}')
+        response = mock.Mock(error=None, text='{"score": 75, "confidence": "medium", "rationale": "usable", "criteria": [{"id": "R1", "criterion": "The task is satisfied", "status": "met", "evidence": "The answer is usable."}]}')
         with tempfile.TemporaryDirectory() as tmp:
             sidecar = f"{tmp}/input.json"
             prepare_judge_sidecar(sidecar, FakePlugin(), "Prompt", "Response", target="model", runner="http")
@@ -531,10 +546,16 @@ class TestJudgeStateAndReports(unittest.TestCase):
             f"{self.plugin.id}_judge_score": 91,
             f"{self.plugin.id}_judge_confidence": "high",
             f"{self.plugin.id}_judge_error": "",
-            f"{self.plugin.id}_judge_votes": [{"model": "judge", "score": 91, "confidence": "high"}],
+            f"{self.plugin.id}_judge_votes": [{"model": "judge", "score": 91, "confidence": "high", "criteria": [{"id": "C1", "criterion": "Correctness", "status": "met", "evidence": "The answer is correct."}]}],
         }
-        self.assertIn("Judge Confidence", MarkdownOutputPlugin().generate([result], [self.plugin]))
-        self.assertIn("91", HTMLOutputPlugin().generate([result], [self.plugin]))
+        markdown = MarkdownOutputPlugin().generate([result], [self.plugin])
+        html = HTMLOutputPlugin().generate([result], [self.plugin])
+        self.assertIn("Judge Confidence", markdown)
+        self.assertIn("Judge Criteria and Evidence", markdown)
+        self.assertIn("Correctness", markdown)
+        self.assertIn("Judge Criteria and Evidence", html)
+        self.assertIn("The answer is correct.", html)
+        self.assertIn("91", html)
 
 
 if __name__ == "__main__":

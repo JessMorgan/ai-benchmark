@@ -400,6 +400,7 @@ class BenchmarkState:
                 self._model_info[name][f"{pid}_judge_score"] = None
                 self._model_info[name][f"{pid}_judge_confidence"] = None
                 self._model_info[name][f"{pid}_judge_rationale"] = None
+                self._model_info[name][f"{pid}_judge_criteria"] = []
                 self._model_info[name][f"{pid}_judge_error"] = None
                 self._model_info[name][f"{pid}_judge_input_sha256"] = None
                 self._model_info[name][f"{pid}_judge_votes"] = []
@@ -851,8 +852,8 @@ class BenchmarkState:
             ]
 
     def update_judge_result(self, state_key, runner, plugin_id, *, score=None,
-                            confidence=None, rationale=None, error=None,
-                            input_sha256=None, votes=None, status=None,
+                            confidence=None, rationale=None, criteria=None,
+                            error=None, input_sha256=None, votes=None, status=None,
                             complete=None):
         """Persist one judge outcome in live model info and latest result.
 
@@ -863,6 +864,7 @@ class BenchmarkState:
             f"{plugin_id}_judge_score": score,
             f"{plugin_id}_judge_confidence": confidence,
             f"{plugin_id}_judge_rationale": rationale,
+            f"{plugin_id}_judge_criteria": criteria if criteria is not None else [],
             f"{plugin_id}_judge_error": error,
         }
         if input_sha256 is not None:
@@ -1056,6 +1058,7 @@ class BenchmarkState:
                         state._model_info[name].setdefault(f"{pid}_judge_score", None)
                         state._model_info[name].setdefault(f"{pid}_judge_confidence", None)
                         state._model_info[name].setdefault(f"{pid}_judge_rationale", None)
+                        state._model_info[name].setdefault(f"{pid}_judge_criteria", [])
                         state._model_info[name].setdefault(f"{pid}_judge_error", None)
                         state._model_info[name].setdefault(f"{pid}_judge_input_sha256", None)
                         state._model_info[name].setdefault(f"{pid}_judge_votes", [])
@@ -1086,11 +1089,15 @@ class BenchmarkState:
         state._judge_progress = data.get("judge_progress", {})
         for result in state.results:
             for pid in plugin_ids:
+                result.setdefault(f"{pid}_judge_criteria", [])
                 if f"{pid}_judge_complete" not in result:
                     result[f"{pid}_judge_complete"] = bool(
                         result.get(f"{pid}_judge_votes")
                         and result.get("judge_status") in {"complete", "partial", "failed"}
                     )
+        for info in state._model_info.values():
+            for pid in plugin_ids:
+                info.setdefault(f"{pid}_judge_criteria", [])
         for name, info in state._model_info.items():
             if info.get("status") == "completed":
                 continue

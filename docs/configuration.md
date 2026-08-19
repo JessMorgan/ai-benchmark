@@ -420,23 +420,36 @@ judge:
         schema:
           type: object
           additionalProperties: false
-          required: [score, confidence, rationale]
+          required: [score, confidence, rationale, criteria]
           properties:
             score: {type: integer, minimum: 0, maximum: 100}
             confidence: {type: string, enum: [high, medium, low]}
             rationale: {type: string}
+            criteria:
+              type: array
+              items:
+                type: object
+                additionalProperties: false
+                required: [id, criterion, status, evidence]
+                properties:
+                  id: {type: string}
+                  criterion: {type: string}
+                  status: {type: string, enum: [met, partial, not_met, not_applicable]}
+                  evidence: {type: string}
 ```
 
 The benchmark also does not send `enable_thinking: false`; operators who need
 to control thinking explicitly can add provider-supported fields under
-`judge.request_params`. The judge prompt (version `judge-v6`) presents the
+`judge.request_params`. The judge prompt (version `judge-v7`) presents the
 task and candidate answer as explicitly delimited, quoted data and tells the
 judge not to follow candidate instructions, emit tool calls, continue the
 embedded task, or reproduce any fragment of it. It also requires exactly one
-JSON object with no surrounding text. The prompt asks the judge to keep its
-rationale under approximately 2000 characters; this guidance is intentionally
-not encoded as a grammar string-length bound because long bounded strings can
-exceed llama.cpp's grammar-construction limits. Plugins may override
+JSON object with no surrounding text. The prompt asks the judge to keep its rationale, criterion descriptions, and
+evidence concise; these guidance limits are intentionally not encoded as grammar
+string-length bounds because long bounded strings can exceed llama.cpp's
+grammar-construction limits. Each criterion records the judge's interpretation
+of one explicit requirement, whether the candidate met it, and concise evidence
+for that determination. Plugins may override
 `sanitize_for_judge` (see `docs/plugins.md`) to mask structured fragments -
 such as tool-calling's `<tool_call>` blocks - before they reach the judge. Nested dictionaries are merged, so explicit provider-specific options
 can be combined safely. Use the relevant provider's supported request fields;
@@ -489,6 +502,15 @@ OpenAI `response_format` request field.
 `judge.token_levels` controls the total `max_tokens` cap for judge generation;
 the default is `16384`. It is independent of any provider-specific thinking
 setting an operator adds to `judge.request_params`.
+
+The judge prompt uses a fixed authority hierarchy, a requirement-by-requirement
+checklist, a least-restrictive ambiguity policy, and a finalization checklist to
+reduce overthinking, speculation, prompt distraction, and score drift. Judge
+criterion reports are persisted in each plugin's `*_judge_votes` and
+`*_judge_criteria` state fields, exposed as `{plugin}_Judge_Criteria_JSON` in
+CSV, rendered in the Markdown/HTML/PDF detailed sections, and summarized in
+`run-info.json` under `judge_criteria`. They are diagnostic and do not create a
+second score.
 
 The default `response_format` uses the standard OpenAI-compatible `json_schema`
 form, which combines JSON mode with the expected judge-result schema. The judge

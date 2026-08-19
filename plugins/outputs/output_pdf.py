@@ -2,6 +2,7 @@ import os
 from datetime import datetime, timezone
 
 from benchmark.outputs import (
+    _judge_criteria,
     _numeric_score,
     _plugin_token_counts,
     _plugin_total_score,
@@ -126,6 +127,34 @@ class PDFOutputPlugin(BenchmarkOutputPlugin):
                 pdf.set_font("Helvetica", "", 7)
                 for i, r in enumerate(sorted(ok, key=lambda x: _numeric_score(x, p.id), reverse=True)[:5], 1):
                     pdf.cell(0, 4, f"  {i}. {r['model'][:50]}  --  {r.get(f'{p.id}_score', '-')}/100", new_x="LMARGIN", new_y="NEXT")
+
+        has_judge_criteria = any(
+            _judge_criteria(r, p.id)
+            for r in results for p in active_plugins
+        )
+        if has_judge_criteria:
+            pdf.add_page()
+            pdf.set_font("Helvetica", "B", 10)
+            pdf.cell(0, 6, "Judge Criteria and Evidence", new_x="LMARGIN", new_y="NEXT")
+            pdf.set_font("Helvetica", "", 7)
+            pdf.multi_cell(
+                0, 4,
+                "The judge's requirement interpretation and evidence; separate from the deterministic rubric.",
+                new_x="LMARGIN", new_y="NEXT",
+            )
+            for r in results:
+                for p in active_plugins:
+                    for judge_report in _judge_criteria(r, p.id):
+                        judge_name = judge_report.get("judge", "-")
+                        for item in judge_report.get("criteria", []):
+                            text = (
+                                f"{r.get('model', '-')} / {p.name} / {judge_name} / "
+                                f"{item.get('id', '-')} [{item.get('status', '-')}]\n"
+                                f"Criterion: {item.get('criterion', '-')}\n"
+                                f"Evidence: {item.get('evidence', '-')}"
+                            )
+                            pdf.multi_cell(0, 4, text, new_x="LMARGIN", new_y="NEXT")
+                            pdf.ln(1)
 
         has_rubric = any(isinstance(r.get(f"{p.id}_rubric"), list) and r.get(f"{p.id}_rubric") for p in active_plugins for r in results)
         if has_rubric:
