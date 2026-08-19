@@ -903,6 +903,54 @@ class BenchmarkState:
             for result in self.results:
                 result["judge_models"] = list(models)
 
+    def set_active_judge_contracts(self, contracts):
+        """Project the current judge contracts onto live/current result rows.
+
+        Resume can load a completed model without calling ``run_model`` again.
+        In that case its live ``model_info`` may still identify the previous
+        judge contract, causing the TUI to render historical votes even though
+        the current judge progress correctly starts at zero. Update the active
+        contract before rendering and clear only the legacy flat projection
+        when it changes. Versioned votes and consensus remain untouched.
+        """
+        if not contracts:
+            return
+        projection_fields = {
+            "judge_score": None,
+            "judge_confidence": None,
+            "judge_rationale": None,
+            "judge_criteria": [],
+            "judge_error": None,
+            "judge_input_sha256": None,
+            "judge_complete": False,
+            "judge_queued": False,
+        }
+        with self._lock:
+            current_results = {}
+            for result in reversed(self.results):
+                identity = (
+                    result.get("state_key", result.get("model")),
+                    result.get("runner", "http"),
+                )
+                if identity not in current_results:
+                    current_results[identity] = result
+
+            containers = [*self._model_info.values(), *current_results.values()]
+            for container in containers:
+                changed = False
+                for plugin_id, contract_id in contracts.items():
+                    selected_key = f"{plugin_id}_judge_selected_contract"
+                    if container.get(selected_key) == contract_id:
+                        continue
+                    container[selected_key] = contract_id
+                    changed = True
+                    for suffix, value in projection_fields.items():
+                        container[f"{plugin_id}_{suffix}"] = (
+                            list(value) if isinstance(value, list) else value
+                        )
+                if changed:
+                    container["judge_status"] = "pending"
+
     def snapshot(self):
         with self._lock:
             return {k: dict(v) for k, v in self._model_info.items()}

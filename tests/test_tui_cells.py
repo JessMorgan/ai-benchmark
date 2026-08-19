@@ -486,6 +486,23 @@ class TestPluginCellBlock(unittest.TestCase):
         for block in blocks:
             self.assertEqual(ai_benchmark._display_width(block), ai_benchmark.PLUGIN_BLOCK_WIDTH)
 
+    def test_old_contract_votes_are_not_rendered_for_active_contract(self):
+        s = {
+            "running_pids": [],
+            "rate-limiter_score": 95,
+            "judge_models": ["judge-a"],
+            "rate-limiter_judge_selected_contract": "new-contract",
+            "rate-limiter_judge_votes": [{
+                "model": "judge-a", "score": 90, "confidence": "high",
+                "rationale": "historical", "judge_contract_id": "old-contract",
+            }],
+        }
+        block = ai_benchmark._plugin_cell_block(
+            "rate-limiter", s, self.p_streaming, None)
+        self.assertNotIn("✅", block)
+        self.assertNotIn("⚖️", block)
+        self.assertNotIn("❌", block)
+
     def test_completed_three_judges_show_checkmark(self):
         s = {
             "running_pids": [],

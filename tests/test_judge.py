@@ -648,6 +648,39 @@ class TestJudgeStateAndReports(unittest.TestCase):
         self.plugins = discover_plugins()
         self.plugin = self.plugins[0]
 
+    def test_active_contract_refresh_clears_stale_projection_but_keeps_history(self):
+        state = BenchmarkState({"model": "Local"}, [self.plugin.id])
+        state.update(
+            "model",
+            status="completed",
+            **{
+                f"{self.plugin.id}_judge_selected_contract": "old-contract",
+                f"{self.plugin.id}_judge_score": 91,
+                f"{self.plugin.id}_judge_votes": [{"model": "judge", "score": 91}],
+            },
+        )
+        state.add_result({
+            "model": "model", "state_key": "model", "runner": "http", "status": "ok",
+            f"{self.plugin.id}_score": 80,
+        })
+
+        state.set_active_judge_contracts({self.plugin.id: "new-contract"})
+
+        info = state.snapshot()["model"]
+        result = state.latest_results()[0]
+        for row in (info, result):
+            self.assertEqual(row[f"{self.plugin.id}_judge_selected_contract"], "new-contract")
+            self.assertIsNone(row[f"{self.plugin.id}_judge_score"])
+            self.assertFalse(row[f"{self.plugin.id}_judge_complete"])
+        self.assertEqual(
+            info[f"{self.plugin.id}_judge_votes"],
+            [{"model": "judge", "score": 91}],
+        )
+        self.assertEqual(
+            result[f"{self.plugin.id}_judge_votes"],
+            [{"model": "judge", "score": 91}],
+        )
+
     def test_state_update_judge_result_does_not_append_row(self):
         state = BenchmarkState({"model": "Local"}, [self.plugin.id])
         state.add_result({

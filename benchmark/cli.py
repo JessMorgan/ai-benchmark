@@ -2807,6 +2807,11 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
         # The active CLI judge configuration is authoritative on resume; do
         # not let a prior run's judge set drive stale row markers.
         state.set_judge_models(judge_models)
+        active_judge_contracts = (
+            {plugin.id: judge_contract_id(plugin) for plugin in active_plugins}
+            if judge_models else {}
+        )
+        state.set_active_judge_contracts(active_judge_contracts)
 
         if restored_targets and runner_mode in ("opencode", "both"):
             # OpenCode's generated projection is created before the state file
@@ -3050,10 +3055,7 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
             model: _CombinedStopEvent(stop_event, judge_stop_events[model])
             for model in judge_models
         }
-        judge_contracts = {
-            plugin.id: judge_contract_id(plugin)
-            for plugin in active_plugins
-        }
+        judge_contracts = active_judge_contracts
         existing_judge_counts = {model: 0 for model in judge_models}
         existing_judge_failures = {model: 0 for model in judge_models}
         existing_judge_expected = {model: 0 for model in judge_models}
