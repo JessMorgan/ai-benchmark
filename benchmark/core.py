@@ -45,6 +45,7 @@ from .plugin import (
     serialize_rubric,
 )
 from .state import BenchmarkState  # noqa: F401
+from .transport import TransportRequest, TransportResult, execute_transport
 
 PRELOAD_PROMPT = "Reply with the single word OK."
 PRELOAD_DEFAULT_TIMEOUT = 300
@@ -2416,137 +2417,64 @@ def _run_plugin_task(target_name, api_model, source, plugin, source_config, time
     def on_retry():
         state.start_plugin_run(target_name, pid)
 
-    observer = TaskObserver(
-        model_name=target_name,
-        pid=pid,
-        on_retry=on_retry,
-    )
-
-    def request_nonstream(request_prompt, label):
-        """Perform a non-streaming request, including the grammar fallback."""
-        nonlocal schema_fallback_used, schema_fallback_error, request_params
-        request_kwargs = {
-            "log_path": log_file, "log_label": label,
-            "session_seed": session_seed, "temperature": temperature,
-            "drop_params": drop_params, "stop_event": stop_event,
-            "system_prompt": system_prompt, "pid": pid, "observer": observer,
-            "max_content_tokens": max_content_tokens,
-            "max_thinking_tokens": max_thinking_tokens,
-            "repetition_guard": repetition_guard,
-        }
-        if request_params:
-            request_kwargs["request_params"] = request_params
-        result = nonstream_request(
-            source_config, timeout, api_model, source, request_prompt, budget,
-            **request_kwargs,
-        )
-        fallback_params = (
-            _json_object_fallback_params(request_params)
-            if result.error and _is_schema_grammar_error(result.error) else None
-        )
-        if fallback_params is not None:
-            schema_fallback_used = True
-            schema_fallback_error = result.error
-            request_params = fallback_params
-            fallback_kwargs = {
-                "log_path": log_file,
-                "log_label": f"{label} (JSON-object schema fallback)",
-                "session_seed": session_seed, "temperature": temperature,
-                "drop_params": drop_params, "stop_event": stop_event,
-                "system_prompt": system_prompt, "pid": pid, "observer": observer,
-                "max_content_tokens": max_content_tokens,
-                "max_thinking_tokens": max_thinking_tokens,
-                "repetition_guard": repetition_guard,
-            }
-            if request_params:
-                fallback_kwargs["request_params"] = request_params
-            result = nonstream_request(
-                source_config, timeout, api_model, source, request_prompt, budget,
-                **fallback_kwargs,
-            )
-        return result
-
-    def execute_once(request_prompt, attempt_number):
-        # Reset the live counters at the beginning of every logical attempt.
-        # Transport-level retries call ``on_retry`` separately and preserve
-        # this same attempt number while resetting their transient counters.
+    def execute_once(request_prompt, attempt_number) -> TransportResult:
+        # Retry orchestration remains in this function for Level 1; the
+        # transport module owns only one normalized attempt.
         state.set_plugin_attempt(target_name, pid, attempt_number)
-        started = time.time()
-        if runner == "opencode":
-            if not opencode_config_path or not opencode_model:
-                return {
-                    "text": "", "think_text": "", "error": "OpenCode runner is missing generated config or model mapping",
-                    "finish_reason": None, "response_time": 0.0, "gen_time": 0.0,
-                    "stream_ok": False, "repeating": False, "usage": {},
-                }
-            response = run_process(
-                request_prompt, config_path=opencode_config_path, model=opencode_model,
-                timeout=timeout, binary=opencode_binary or OPENCODE_BINARY,
-                agent=opencode_agent, output_dir=output_dir, target_key=artifact_target,
-                plugin_id=pid, stop_event=stop_event,
-                no_output_grace=resolve_opencode_timeout(source_config, source),
-            )
-            text = response.text or ""
-            think_text = response.think_text or ""
-            return {
-                "text": text, "think_text": think_text, "error": response.error,
-                "finish_reason": None, "response_time": round(response.elapsed, 1),
-                "gen_time": response.elapsed, "stream_ok": False,
-                "repeating": is_repeating(text), "usage": {},
-            }
-        if plugin.supports_streaming:
-            stream_kwargs = {
-                "log_path": log_file,
-                "log_label": f"{plugin.name} (Streaming, attempt {attempt_number})",
-                "session_seed": session_seed,
-                "temperature": temperature,
-                "drop_params": drop_params,
-                "stop_event": stop_event,
-                "system_prompt": system_prompt,
-                "observer": TaskObserver(
-                    model_name=target_name,
-                    pid=pid,
-                    on_chunk=lambda delta: (
-                        state.mark_first_chunk_seen(target_name, pid, ts=time.time()),
-                        state.add_bytes_received(target_name, pid, len(delta)),
-                    ),
-                    on_think_chunk=lambda delta: (
-                        state.mark_first_chunk_seen(target_name, pid, ts=time.time()),
-                        state.add_thinking_bytes_received(target_name, pid, len(delta)),
-                    ),
-                    on_retry=on_retry,
-                ),
-                "pid": pid,
-                "max_content_tokens": max_content_tokens,
-                "max_thinking_tokens": max_thinking_tokens,
-                "repetition_guard": repetition_guard,
-            }
-            if request_params:
-                stream_kwargs["request_params"] = request_params
-            response = stream_request(
-                source_config, timeout, api_model, source, request_prompt, budget,
-                **stream_kwargs,
-            )
-            first = response.first_tok
-            stream_end = response.stream_end or time.time()
-            gen_time = stream_end - first if first else stream_end - started
-            return {
-                "text": response.text or "", "think_text": response.think_text or "",
-                "error": response.error, "finish_reason": response.finish_reason,
-                "response_time": round(stream_end - started, 1),
-                "gen_time": max(0.0, gen_time),
-                "stream_ok": response.error is None and first is not None,
-                "repeating": is_repeating(response.text or "") or "repetition" in str(response.error or "").lower(),
-                "usage": getattr(response, "usage", {}) or {},
-            }
-        response = request_nonstream(request_prompt, f"{plugin.name} (attempt {attempt_number})")
-        return {
-            "text": response.text or "", "think_text": response.think_text or "",
-            "error": response.error, "finish_reason": response.finish_reason,
-            "response_time": round(response.gen_time, 1), "gen_time": response.gen_time,
-            "stream_ok": False, "repeating": is_repeating(response.text or ""),
-            "usage": getattr(response, "usage", {}) or {},
-        }
+
+        def on_chunk(delta):
+            state.mark_first_chunk_seen(target_name, pid, ts=time.time())
+            state.add_bytes_received(target_name, pid, len(delta))
+
+        def on_think_chunk(delta):
+            state.mark_first_chunk_seen(target_name, pid, ts=time.time())
+            state.add_thinking_bytes_received(target_name, pid, len(delta))
+
+        task_observer = TaskObserver(
+            model_name=target_name,
+            pid=pid,
+            on_chunk=on_chunk,
+            on_think_chunk=on_think_chunk,
+            on_retry=on_retry,
+        )
+
+        request = TransportRequest(
+            prompt=request_prompt,
+            max_tokens=budget,
+            source_config=source_config,
+            api_model=api_model,
+            source=source,
+            timeout=timeout,
+            temperature=temperature,
+            system_prompt=system_prompt,
+            drop_params=drop_params,
+            request_params=request_params,
+            session_seed=session_seed,
+            log_path=log_file,
+            log_label=f"{plugin.name} (attempt {attempt_number})",
+            pid=pid,
+            stop_event=stop_event,
+            observer=task_observer,
+            max_content_tokens=max_content_tokens,
+            max_thinking_tokens=max_thinking_tokens,
+            repetition_guard=repetition_guard,
+            transport=runner,
+            supports_streaming=plugin.supports_streaming,
+            opencode_config_path=opencode_config_path,
+            opencode_model=opencode_model,
+            opencode_agent=opencode_agent,
+            opencode_binary=opencode_binary,
+            opencode_output_dir=output_dir,
+            opencode_no_output_grace=resolve_opencode_timeout(source_config, source),
+            opencode_target_key=artifact_target,
+            opencode_plugin_id=pid,
+        )
+        return execute_transport(
+            request,
+            stream_request_fn=stream_request,
+            nonstream_request_fn=nonstream_request,
+            run_process_fn=run_process,
+        )
 
     def evaluate(text):
         try:
@@ -2566,17 +2494,18 @@ def _run_plugin_task(target_name, api_model, source, plugin, source_config, time
                 return PluginTaskResult(None, "Cancelled")
             break
         raw = execute_once(request_prompt, attempt_number)
-        text = raw["text"]
-        think_text = raw["think_text"]
+        text = raw.text
+        think_text = raw.think_text
+        schema_fallback_used = schema_fallback_used or raw.schema_fallback_used
+        if raw.schema_fallback_error:
+            schema_fallback_error = raw.schema_fallback_error
         nature = response_nature(
-            text=text, error=raw["error"], finish_reason=raw["finish_reason"],
-            repeating=raw["repeating"],
+            text=text, error=raw.error, finish_reason=raw.finish_reason,
+            repeating=raw.repeating,
             cancelled=bool(stop_event and stop_event.is_set()),
         )
-        thinking_tokens = _response_reasoning_tokens(type("Response", (), {
-            "usage": raw["usage"], "think_text": think_text,
-        })()) or 0
-        if raw["error"] and not text.strip():
+        thinking_tokens = raw.thinking_tokens
+        if raw.error and not text.strip():
             score, rubric, diagnostics = "fail", [], {}
             score_error, score_traceback = None, None
         else:
@@ -2588,11 +2517,11 @@ def _run_plugin_task(target_name, api_model, source, plugin, source_config, time
             and nature not in {"timeout", "cancelled", "transport_error"}
             and score_error is None
         )
-        attempt_failure_cause = raw["error"] or score_error
+        attempt_failure_cause = raw.error or score_error
         if attempt_failure_cause is None and nature == "token_limit":
             attempt_failure_cause = (
-                f"finish_reason:{raw['finish_reason']}"
-                if raw["finish_reason"] else "token_limit"
+                f"finish_reason:{raw.finish_reason}"
+                if raw.finish_reason else "token_limit"
             )
         elif attempt_failure_cause is None and nature not in {"completed", "empty"}:
             attempt_failure_cause = nature
@@ -2602,20 +2531,20 @@ def _run_plugin_task(target_name, api_model, source, plugin, source_config, time
             "prompt_altered": current_alteration,
             "retry_reason": retry_reason,
             "response_nature": nature,
-            "finish_reason": raw["finish_reason"],
-            "error": raw["error"],
+            "finish_reason": raw.finish_reason,
+            "error": raw.error,
             "failure_cause": attempt_failure_cause,
-            "response_time": raw["response_time"],
-            "gen_time": raw["gen_time"],
+            "response_time": raw.response_time,
+            "gen_time": raw.gen_time,
             "output_tokens": int(count_tokens(text)),
             "thinking_tokens": thinking_tokens,
             "total_tokens": int(count_tokens(text)) + thinking_tokens,
-            "stream_ok": raw["stream_ok"],
-            "truncated": raw["finish_reason"] == "length",
+            "stream_ok": raw.stream_ok,
+            "truncated": raw.finish_reason == "length",
             "truncated_due_to_time": nature == "timeout",
-            "repeating": raw["repeating"],
+            "repeating": raw.repeating,
             "empty_reason": classify_empty_reason(
-                text, think_text, raw["finish_reason"], raw["error"],
+                text, think_text, raw.finish_reason, raw.error,
             ),
             "score": score,
             "rubric": rubric,

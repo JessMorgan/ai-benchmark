@@ -809,7 +809,7 @@ class TestDropParams(unittest.TestCase):
                                 log_path=None, log_label=None, session_seed=0, temperature=None,
                                 drop_params=None, stop_event=None, system_prompt=None,
                                 observer=None, on_chunk=None, on_think_chunk=None, pid=None, on_retry=None,
-                                max_content_tokens=None, max_thinking_tokens=None,
+                                request_params=None, max_content_tokens=None, max_thinking_tokens=None,
                                 repetition_guard=False):
             # Simulate two SSE deltas; the closure should fire once per delta.
             # ``on_think_chunk`` is the parallel reasoning-content

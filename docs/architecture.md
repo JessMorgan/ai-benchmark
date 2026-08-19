@@ -50,7 +50,9 @@ This document describes the high-level design of AI Benchmark.
 4. **Plugin Execution**
    - `_run_plugins()` uses `ThreadPoolExecutor` with `plugin_thread_limit` workers.
    - Each plugin task calls `_run_plugin_task()`.
-   - HTTP tasks call `stream_request()` or `nonstream_request()`.
+   - HTTP tasks call the normalized one-attempt `execute_transport()` layer,
+     which selects `stream_request()`/`nonstream_request()` and owns provider
+     schema/stream fallback; OpenCode is normalized through the same layer.
    - OpenCode tasks call the subprocess adapter with `opencode run --pure --format json --thinking`, capture stdout/stderr separately, extract the final assistant answer and reasoning from the NDJSON event stream, and score the answer as the response.
    - Each HTTP/OpenCode task uses one scalar `max_tokens` budget and at most one benchmark-level retry. Attempt metadata records `response_nature`, `retry_reason`, `prompt_altered`, token breakdown, failure cause, and the selected attempt; timeout and cancellation are terminal and mark time truncation/cancellation instead of retrying. Provider-level 429 backoff and schema fallbacks remain separate diagnostics.
 
