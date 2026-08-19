@@ -59,6 +59,14 @@ PRELOAD_MAX_TOKENS = 256
 JUDGE_PROMPT_VERSION = "judge-v8"
 JUDGE_DEFAULT_MAX_TOKENS = 4096
 JUDGE_MAX_RATIONALE_CHARS = 2000
+# State persistence is throttled across the whole run: completed judge votes
+# and completed benchmark tasks accumulate in memory, and the full state
+# snapshot flushes at most every ``FLUSH_INTERVAL_SECONDS`` seconds or
+# ``FLUSH_MAX_VOTES`` changes, whichever comes first. A final flush on
+# drain/shutdown always persists the tail, so a crash loses at most one
+# interval of changes (re-runnable on resume).
+FLUSH_INTERVAL_SECONDS = 60.0
+FLUSH_MAX_VOTES = 10
 
 
 def _thinking_budget_retry_instruction(token_budget):
@@ -1564,6 +1572,8 @@ def dump_default_config():
         "output_dir": "benchmark-output-dir",
         "timeout": 1200,
         "max_tokens": 16384,
+        "flush_interval_seconds": FLUSH_INTERVAL_SECONDS,
+        "flush_votes": FLUSH_MAX_VOTES,
         "judge": {
             "max_tokens": JUDGE_DEFAULT_MAX_TOKENS,
             "request_params": copy.deepcopy(JUDGE_DEFAULT_REQUEST_PARAMS),

@@ -32,6 +32,8 @@ from wcwidth import wcswidth, wcwidth
 
 from benchmark.completions import build_parser, generate_shell_completion
 from benchmark.core import (
+    FLUSH_INTERVAL_SECONDS,
+    FLUSH_MAX_VOTES,
     JUDGE_DEFAULT_MAX_TOKENS,
     JUDGE_PROMPT_VERSION,
     BenchmarkState,
@@ -1847,6 +1849,118 @@ class SourceModelScheduler:
         if not self.stop_event.is_set() and self.on_complete:
             self.on_complete(self.source)
 
+
+
+class _FlushGate:
+    """Decide when in-memory changes warrant a full-state flush.
+
+    The judge path used to persist the entire ``benchmark_state.json`` plus
+    regenerate every report after each completed vote, which burned ~6 s of
+    GIL-bound CPU and ~210 MB of disk writes per vote. ``_FlushGate`` throttles
+    that: ``changed()`` is called once per in-memory change (a completed or
+    failed judge vote) and returns ``True`` when a flush is due -- either
+    ``interval`` seconds have elapsed since the last flush or ``max_changes``
+    changes have accumulated, whichever comes first. The caller schedules the
+    actual save only when ``changed()`` reports due, then calls ``reset()``.
+
+    ``changed()``/``reset()`` are called from judge cell workers without the
+    ``persistence_lock`` (the save itself runs on the background flusher
+    thread, which owns the lock). A lost or duplicated due-decision is
+    harmless: ``_BackgroundFlusher.request_flush()`` coalesces duplicates, and
+    a lost request only defers the flush to the next cadence boundary (at most
+    ``interval`` seconds later), never losing votes.
+    """
+
+    def __init__(self, interval=60.0, max_changes=10):
+        try:
+            self.interval = float(interval)
+        except (TypeError, ValueError):
+            self.interval = 60.0
+        try:
+            self.max_changes = max(1, int(max_changes))
+        except (TypeError, ValueError):
+            self.max_changes = 10
+        self._last_flush = time.monotonic()
+        self._changes = 0
+
+    def changed(self):
+        """Record one in-memory change; return True when a flush is due."""
+        self._changes += 1
+        return self._due()
+
+    def _due(self):
+        return (self._changes >= self.max_changes
+                or time.monotonic() - self._last_flush >= self.interval)
+
+    def reset(self):
+        """Mark the current flush as completed, starting a fresh cadence."""
+        self._last_flush = time.monotonic()
+        self._changes = 0
+
+
+class _BackgroundFlusher:
+    """Serialize full-state snapshots on a dedicated thread.
+
+    The judge path used to run the full-state save synchronously in the worker
+    thread that completed the vote: ~6 s of GIL-bound deepcopy + JSON dump +
+    report regeneration stalled every other judge worker (and the TUI) on the
+    GIL, and later finishers queued behind ``persistence_lock`` instead of
+    starting their next request. ``_BackgroundFlusher`` moves that
+    serialization off the hot path: ``request_flush()`` is non-blocking (it
+    only sets a pending flag), and one dedicated daemon thread runs
+    ``flush_fn`` -- which must take ``persistence_lock`` itself -- for each
+    batch of requests. Requests that arrive while a flush is running are
+    coalesced into one follow-up flush, so at most one save is in flight and
+    at most one is queued behind it. The flush persists only the state
+    snapshot; report files are regenerated once at the end of the run.
+
+    ``stop()`` drains any pending request (one final flush) before exiting, so
+    callers can rely on the flusher for the tail; the benchmark additionally
+    performs a guaranteed final ``save_state(raise_on_error=True)`` on the
+    main thread after ``stop()``.
+    """
+
+    def __init__(self, flush_fn, name="background-flusher"):
+        self._flush_fn = flush_fn
+        self._condition = threading.Condition()
+        self._pending = False
+        self._stopped = False
+        self._thread = threading.Thread(
+            target=self._run, name=name, daemon=True,
+        )
+
+    def start(self):
+        self._thread.start()
+
+    def request_flush(self):
+        """Request a flush; never blocks the caller."""
+        with self._condition:
+            self._pending = True
+            self._condition.notify()
+
+    def stop(self, timeout=None):
+        """Drain pending work (one final flush) and join the thread."""
+        with self._condition:
+            self._stopped = True
+            self._condition.notify()
+        self._thread.join(timeout=timeout)
+
+    def _run(self):
+        while True:
+            with self._condition:
+                while not self._pending and not self._stopped:
+                    self._condition.wait()
+                if self._pending:
+                    self._pending = False
+                elif self._stopped:
+                    return
+            try:
+                self._flush_fn()
+            except Exception as exc:  # noqa: BLE001 - keep the flusher alive
+                print(
+                    f"⚠️  Background state flush failed: {type(exc).__name__}: {exc}",
+                    file=sys.stderr,
+                )
 
 
 def _resolve_judge_plugin_limit(source_config, source):
