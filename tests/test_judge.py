@@ -487,6 +487,41 @@ class TestJudgeResumeDiscovery(unittest.TestCase):
             )
             self.assertEqual(len(only_b), 1)
 
+    def test_resume_eligibility_requires_current_judge_contract(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sidecar = f"{tmp}/http/model/fake.json"
+            prepare_judge_sidecar(
+                sidecar, FakePlugin(), "Prompt", "Response",
+                target="model", runner="http", state_key="model",
+            )
+            state = BenchmarkState({"model": "Local"}, ["fake"])
+            state.add_result({
+                "model": "model", "state_key": "model", "runner": "http",
+                "status": "ok", "fake_score": 80,
+                "fake_judge_votes": [{
+                    "model": "judge", "score": 90, "confidence": "high",
+                    "rationale": "legacy vote",
+                }],
+            })
+            state.update("model", status="completed")
+            current_contract = judge_contract_id(FakePlugin())
+            eligible = cli._eligible_judge_sidecars(
+                tmp, {"model": {"source": "Local"}}, state,
+                {"fake"}, ["judge"], {"fake": current_contract},
+            )
+            self.assertEqual(len(eligible), 1)
+            state.results[0]["fake_judge_votes"] = [{
+                "model": "judge", "score": 91, "confidence": "high",
+                "rationale": "current vote", "judge_contract_id": current_contract,
+            }]
+            self.assertEqual(
+                cli._eligible_judge_sidecars(
+                    tmp, {"model": {"source": "Local"}}, state,
+                    {"fake"}, ["judge"], {"fake": current_contract},
+                ),
+                [],
+            )
+
     def test_failed_judge_vote_remains_eligible_for_retry(self):
         """A failed attempt does not satisfy that judge's cell."""
         with tempfile.TemporaryDirectory() as tmp:

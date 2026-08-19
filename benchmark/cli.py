@@ -166,7 +166,7 @@ def _scan_judge_sidecars(judge_input_dir):
 
 
 def _eligible_judge_sidecars(judge_input_dir, targets, state, active_plugin_ids,
-                             judge_models):
+                             judge_models, judge_contracts=None):
     """Return retained sidecars for individually judgeable plugin results.
 
     Eligibility is deliberately per ``(target, runner, plugin)`` rather than
@@ -211,9 +211,11 @@ def _eligible_judge_sidecars(judge_input_dir, targets, state, active_plugin_ids,
         result_votes = result.get(f"{plugin_id}_judge_votes", []) or []
         info_votes = info.get(f"{plugin_id}_judge_votes", []) or []
         votes = [*result_votes, *info_votes]
+        expected_contract = (judge_contracts or {}).get(plugin_id)
         judged_models = {
             vote.get("model") for vote in votes
             if is_successful_judge_vote(vote)
+            and vote.get("judge_contract_id") == expected_contract
         }
         # Do not trust a stale aggregate completion flag by itself: the
         # configured judge set is authoritative, and a missing judge remains
@@ -3020,15 +3022,22 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
             model: _CombinedStopEvent(stop_event, judge_stop_events[model])
             for model in judge_models
         }
+        judge_contracts = {
+            plugin.id: judge_contract_id(plugin)
+            for plugin in active_plugins
+        }
         existing_judge_counts = {model: 0 for model in judge_models}
         existing_judge_failures = {model: 0 for model in judge_models}
         existing_judge_expected = {model: 0 for model in judge_models}
         for result in state.latest_results():
             for plugin in active_plugins:
+                expected_contract = judge_contracts.get(plugin.id)
                 votes_by_model = {
                     vote.get("model"): vote
                     for vote in (result.get(f"{plugin.id}_judge_votes", []) or [])
-                    if isinstance(vote, dict) and vote.get("model")
+                    if isinstance(vote, dict)
+                    and vote.get("model")
+                    and vote.get("judge_contract_id") == expected_contract
                 }
                 for model, vote in votes_by_model.items():
                     if model not in existing_judge_counts:
@@ -3097,10 +3106,13 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
                 return
             result_votes = result.get(f"{plugin_id}_judge_votes", []) or []
             info_votes = info.get(f"{plugin_id}_judge_votes", []) or []
+            contract_id = judge_contracts.get(plugin_id)
             votes_by_model = {
                 vote.get("model"): vote
                 for vote in [*result_votes, *info_votes]
-                if isinstance(vote, dict) and vote.get("model")
+                if isinstance(vote, dict)
+                and vote.get("model")
+                and vote.get("judge_contract_id") == contract_id
             }
             judged_models = {
                 judge_name for judge_name, vote in votes_by_model.items()
@@ -3114,7 +3126,10 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
                         continue
                 source = judge_sources[judge_name]
                 expected_added = judge_name not in votes_by_model
-                key = (os.path.abspath(sidecar), target_name, runner, plugin_id, judge_name)
+                key = (
+                    os.path.abspath(sidecar), target_name, runner, plugin_id,
+                    judge_name, contract_id,
+                )
                 with judge_seen_lock:
                     if key in judge_seen:
                         continue
@@ -3157,13 +3172,16 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
                 state_key = item.get("state_key", state_key)
                 live_info = state.snapshot().get(state_key, {})
                 vote_key = f"{plugin_id}_judge_votes"
+                expected_contract = item.get("judge_contract_id") or contract_id
                 existing_by_model = {
                     vote.get("model"): vote
                     for vote in [
                         *(latest.get(vote_key, []) or []),
                         *(live_info.get(vote_key, []) or []),
                     ]
-                    if isinstance(vote, dict) and vote.get("model")
+                    if isinstance(vote, dict)
+                    and vote.get("model")
+                    and vote.get("judge_contract_id") == expected_contract
                 }
                 existing_votes = list(existing_by_model.values())
                 previous_vote = existing_by_model.get(judge_name)
@@ -3433,7 +3451,7 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
         # but their durable sidecars still need judging immediately.
         for sidecar, item in _eligible_judge_sidecars(
             judge_input_dir, targets, state, {plugin.id for plugin in active_plugins},
-            judge_models,
+            judge_models, judge_contracts,
         ):
             enqueue_judge(sidecar, item["target"], item["runner"], item["plugin"])
 
@@ -3475,7 +3493,7 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
                 return
             jobs = _eligible_judge_sidecars(
                 judge_input_dir, targets, state, {plugin.id for plugin in active_plugins},
-                judge_models,
+                judge_models, judge_contracts,
             )
             for sidecar, item in jobs:
                 enqueue_judge(sidecar, item["target"], item["runner"], item["plugin"])
