@@ -13,6 +13,8 @@ from benchmark.core import (
     confidence_weighted_consensus,
     judge_contract_id,
     judge_response,
+    judge_votes_for_contract,
+    merge_judge_vote,
     parse_judge_response,
     prepare_judge_sidecar,
     resolve_judge_request_params,
@@ -106,6 +108,17 @@ class TestJudgeCore(unittest.TestCase):
         self.assertIn("semantic score", prompt.lower())
         self.assertIn("Keep the rationale under approximately 2000 characters", prompt)
         self.assertIn("make it non-empty", prompt)
+
+    def test_versioned_vote_merge_preserves_other_contracts(self):
+        old = {"model": "judge", "judge_contract_id": "old", "score": 60}
+        current = {"model": "judge", "judge_contract_id": "current", "score": 80}
+        replaced = merge_judge_vote([old], current)
+        self.assertEqual(len(replaced), 2)
+        self.assertEqual(judge_votes_for_contract(replaced, "old"), [old])
+        newer = {"model": "judge", "judge_contract_id": "current", "score": 90}
+        replaced = merge_judge_vote(replaced, newer)
+        self.assertEqual(len(replaced), 2)
+        self.assertEqual(judge_votes_for_contract(replaced, "current"), [newer])
 
     def test_judge_contract_id_changes_with_plugin_guidance(self):
         self.assertNotEqual(judge_contract_id(FakePlugin()), judge_contract_id(GuidedPlugin()))

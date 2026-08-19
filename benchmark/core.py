@@ -794,6 +794,31 @@ def publish_judge_sidecars(judge_input_dir, target, runner, plugins, callback):
             callback(sidecar, target, runner, plugin.id)
 
 
+def judge_vote_identity(vote):
+    """Return the stable storage identity for one versioned judge vote."""
+    if not isinstance(vote, dict):
+        return (None, None)
+    return (vote.get("model"), vote.get("judge_contract_id"))
+
+
+def judge_votes_for_contract(votes, contract_id):
+    """Return votes belonging to one judge contract."""
+    return [
+        vote for vote in votes
+        if isinstance(vote, dict)
+        and vote.get("judge_contract_id") == contract_id
+    ]
+
+
+def merge_judge_vote(votes, vote):
+    """Replace only the same model/contract vote, preserving other versions."""
+    identity = judge_vote_identity(vote)
+    return [
+        existing for existing in votes
+        if judge_vote_identity(existing) != identity
+    ] + [vote]
+
+
 def is_successful_judge_vote(vote):
     """Return whether a persisted judge vote contains usable judgment data.
 

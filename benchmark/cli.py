@@ -46,8 +46,10 @@ from benchmark.core import (
     is_successful_judge_vote,
     judge_contract_id,
     judge_response,
+    judge_votes_for_contract,
     load_config,
     load_dotenv_file,
+    merge_judge_vote,
     parse_plugin_temperatures,
     preload_model,
     resolve_judge_request_params,
@@ -3173,17 +3175,19 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
                 live_info = state.snapshot().get(state_key, {})
                 vote_key = f"{plugin_id}_judge_votes"
                 expected_contract = item.get("judge_contract_id") or contract_id
-                existing_by_model = {
-                    vote.get("model"): vote
+                all_existing_by_identity = {
+                    (vote.get("model"), vote.get("judge_contract_id")): vote
                     for vote in [
                         *(latest.get(vote_key, []) or []),
                         *(live_info.get(vote_key, []) or []),
                     ]
-                    if isinstance(vote, dict)
-                    and vote.get("model")
-                    and vote.get("judge_contract_id") == expected_contract
+                    if isinstance(vote, dict) and vote.get("model")
                 }
-                existing_votes = list(existing_by_model.values())
+                all_existing_votes = list(all_existing_by_identity.values())
+                existing_votes = judge_votes_for_contract(all_existing_votes, expected_contract)
+                existing_by_model = {
+                    vote.get("model"): vote for vote in existing_votes
+                }
                 previous_vote = existing_by_model.get(judge_name)
                 if any(
                     vote.get("model") == judge_name
@@ -3280,11 +3284,12 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
                     vote["error"] = vote["error"] or artifact_error
                 vote_identity = (state_key, runner, plugin_id)
                 with judge_votes_lock:
-                    prior_votes = list(judge_votes.get(vote_identity, existing_votes))
-                    prior_votes = [v for v in prior_votes if v.get("model") != judge_name]
-                    prior_votes.append(vote)
-                    judge_votes[vote_identity] = prior_votes
-                    votes = list(prior_votes)
+                    prior_all_votes = list(
+                        judge_votes.get(vote_identity, all_existing_votes)
+                    )
+                    prior_all_votes = merge_judge_vote(prior_all_votes, vote)
+                    judge_votes[vote_identity] = prior_all_votes
+                    votes = judge_votes_for_contract(prior_all_votes, contract_id)
                 consensus = confidence_weighted_consensus(votes)
                 expected_judges = set(judge_models)
                 received_judges = {
@@ -3314,7 +3319,7 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
                     criteria=consensus.get("criteria", []),
                     error=consensus["error"],
                     input_sha256=item.get("response_sha256"),
-                    votes=votes,
+                    votes=prior_all_votes,
                     status=judge_status,
                     complete=(
                         all_judges_finished
@@ -3373,16 +3378,22 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
                         for result in state.latest_results()
                     }.get((state_key, runner), {})
                     live_info = state.snapshot().get(state_key, {})
-                    existing_by_model = {
-                        vote.get("model"): vote
+                    all_existing_by_identity = {
+                        (vote.get("model"), vote.get("judge_contract_id")): vote
                         for vote in [
                             *(latest.get(f"{plugin_id}_judge_votes", []) or []),
                             *(live_info.get(f"{plugin_id}_judge_votes", []) or []),
                         ]
                         if isinstance(vote, dict) and vote.get("model")
                     }
-                    existing_votes = list(existing_by_model.values())
-                    previous_vote = existing_by_model.get(judge_name)
+                    all_existing_votes = list(all_existing_by_identity.values())
+                    existing_votes = judge_votes_for_contract(
+                        all_existing_votes, contract_id,
+                    )
+                    previous_vote = next(
+                        (vote for vote in existing_votes if vote.get("model") == judge_name),
+                        None,
+                    )
                 failure_vote = {
                     "model": judge_name,
                     "score": None,
@@ -3398,17 +3409,19 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
                 }
                 vote_identity = (state_key, runner, plugin_id)
                 with judge_votes_lock:
-                    prior_votes = list(judge_votes.get(vote_identity, existing_votes))
-                    prior_votes = [v for v in prior_votes if v.get("model") != judge_name]
-                    prior_votes.append(failure_vote)
-                    judge_votes[vote_identity] = prior_votes
+                    prior_all_votes = list(
+                        judge_votes.get(vote_identity, all_existing_votes)
+                    )
+                    prior_all_votes = merge_judge_vote(prior_all_votes, failure_vote)
+                    judge_votes[vote_identity] = prior_all_votes
                 expected_judges = set(judge_models)
+                current_votes = judge_votes_for_contract(prior_all_votes, contract_id)
                 received_judges = {
-                    vote.get("model") for vote in prior_votes
+                    vote.get("model") for vote in current_votes
                     if is_successful_judge_vote(vote)
                 }
                 failed_judges = {
-                    vote.get("model") for vote in prior_votes
+                    vote.get("model") for vote in current_votes
                     if isinstance(vote, dict)
                     and vote.get("model") in expected_judges
                     and not is_successful_judge_vote(vote)
@@ -3419,7 +3432,7 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
                 state.update_judge_result(
                     state_key, runner, plugin_id,
                     error=failure_vote["error"],
-                    votes=prior_votes,
+                    votes=prior_all_votes,
                     status="failed" if all_judges_finished else "running",
                     complete=(
                         all_judges_finished
