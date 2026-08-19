@@ -56,7 +56,7 @@ class TestCLIArgs(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0)
         cfg = json.loads(result.stdout)
-        self.assertEqual(cfg["judge"]["token_levels"], [16384])
+        self.assertEqual(cfg["judge"]["token_levels"], [4096])
         response_format = cfg["judge"]["request_params"]["response_format"]
         self.assertEqual(response_format["type"], "json_schema")
         self.assertEqual(response_format["json_schema"]["name"], "benchmark_judge_result")

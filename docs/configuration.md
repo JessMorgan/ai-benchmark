@@ -412,7 +412,7 @@ thinking behavior:
 
 ```yaml
 judge:
-  token_levels: [16384]
+  token_levels: [4096]
   request_params:
     response_format:
       type: json_schema
@@ -502,7 +502,7 @@ are reported as `schema_not_supported_by_source` because they do not use the
 OpenAI `response_format` request field.
 
 `judge.token_levels` controls the total `max_tokens` cap for judge generation;
-the default is `16384`. It is independent of any provider-specific thinking
+the default is `4096`. It is independent of any provider-specific thinking
 setting an operator adds to `judge.request_params`.
 
 The judge prompt uses a fixed authority hierarchy, a requirement-by-requirement
