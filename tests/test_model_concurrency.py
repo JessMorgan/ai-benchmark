@@ -309,6 +309,47 @@ def test_judge_pool_plugin_limit_scores_cells_in_parallel():
     assert pool.thread_count == 0
 
 
+def test_judge_pool_plugin_workers_survive_delayed_cells():
+    """A quiet queue must not kill a cell worker before later results arrive."""
+    stop = threading.Event()
+    lock = threading.Lock()
+    active = 0
+    peak = 0
+    first_started = threading.Event()
+    both_active = threading.Event()
+    release = threading.Event()
+
+    def process(_job):
+        nonlocal active, peak
+        with lock:
+            active += 1
+            peak = max(peak, active)
+            if active == 1:
+                first_started.set()
+            elif active == 2:
+                both_active.set()
+        release.wait(timeout=2)
+        with lock:
+            active -= 1
+
+    pool = SourceJudgeWorkerPool("Cloud", 1, process, stop, plugin_limit=2)
+    pool.enqueue(("first", None, None, None, "judge-a", True))
+    pool.start(1)
+    assert first_started.wait(timeout=1)
+
+    # This exceeds the cell worker's polling timeout. The second worker must
+    # remain alive and take the result when it is eventually enqueued.
+    time.sleep(0.35)
+    pool.enqueue(("second", None, None, None, "judge-a", True))
+    assert both_active.wait(timeout=1)
+
+    release.set()
+    pool.stop(drain=True)
+    with lock:
+        assert peak == 2
+    assert pool.thread_count == 0
+
+
 def test_judge_pool_continues_after_unexpected_callback_exception():
     stop = threading.Event()
     processed = []

@@ -2066,10 +2066,10 @@ class SourceJudgeWorkerPool:
             self._activate_locked()
             self._condition.notify_all()
 
-    def _cell_worker(self, queue):
+    def _cell_worker(self, judge_queue):
         while True:
             try:
-                job = queue.get(timeout=0.2)
+                job = judge_queue.get(timeout=0.2)
             except queue.Empty:
                 if self.stop_event.is_set():
                     break
@@ -2097,7 +2097,7 @@ class SourceJudgeWorkerPool:
                         file=sys.stderr,
                     )
             finally:
-                queue.task_done()
+                judge_queue.task_done()
 
     def start(self, count=1):
         """Allow up to ``count`` judge models to run concurrently."""
