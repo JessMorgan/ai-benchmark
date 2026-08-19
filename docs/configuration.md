@@ -302,8 +302,10 @@ in content|thinking — stream aborted`); any text streamed before the abort
 is retained for scoring and diagnosis. Budget-aborted attempts never trip
 the thinking-truncation auto-escalation (the abort is an error, not a
 `thinking-truncation` classification). The watchdog applies to the HTTP
-benchmark task path only — preload probes, judge requests, and the
-OpenCode subprocess runner are unaffected.
+benchmark task path only — preload probes and judge requests do not use the
+benchmark task watchdog (although judge requests are streamed and honor the
+shared shutdown cancellation), and the OpenCode subprocess runner is
+unaffected.
 
 ### Environment Variable Expansion
 

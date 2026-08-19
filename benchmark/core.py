@@ -1,4 +1,5 @@
 """Core benchmark logic shared by the CLI and tests."""
+import contextlib
 import copy
 import hashlib
 import json
@@ -7,6 +8,7 @@ import re
 import threading
 import time
 import traceback
+from collections.abc import Callable
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -1014,8 +1016,8 @@ def _judge_response_diagnostics(response, request_params, max_tokens):
 def judge_response(source_config, judge_source, judge_api_model, sidecar,
                    *, timeout, token_levels=None, temperature=0.0,
                    drop_params=None, request_params=None, stop_event=None, log_path=None,
-                   plugin=None):
-    """Run one HTTP judge request, retrying once when its JSON is invalid."""
+                   plugin=None, progress_callback: Callable[[str, str], None] | None = None):
+    """Run one streaming judge request, retrying once when its JSON is invalid."""
     with open(sidecar, encoding="utf-8") as handle:
         item = json.load(handle)
     if plugin is None:
@@ -1028,26 +1030,37 @@ def judge_response(source_config, judge_source, judge_api_model, sidecar,
     prompt = build_judge_prompt(plugin, item["prompt"], item["response"])
     budgets = list(token_levels or [JUDGE_DEFAULT_MAX_TOKENS])
     budgets = [int(budget) for budget in budgets if budget > 0] or [JUDGE_DEFAULT_MAX_TOKENS]
+
+    def report_progress(content_delta="", thinking_delta=""):
+        if progress_callback is None:
+            return
+        # Progress is observational only; a broken TUI/state observer must
+        # never terminate a judge stream.
+        with contextlib.suppress(Exception):
+            progress_callback(content_delta, thinking_delta)
+
     for attempt in range(2):
         request_prompt = prompt if attempt == 0 else (
             prompt + "\n\nYour previous response was invalid. Return only the required JSON schema."
         )
-        response = nonstream_request(
+        response = stream_request(
             source_config, timeout, judge_api_model, judge_source, request_prompt,
             budgets[0], log_path=log_path,
-            log_label=f"Judge {item['target']} / {item['plugin']} (attempt {attempt + 1})",
+            log_label=f"Judge {item['target']} / {item['plugin']} (streaming attempt {attempt + 1})",
             temperature=temperature, drop_params=drop_params or [],
             request_params=request_params,
             stop_event=stop_event,
+            on_chunk=report_progress,
+            on_think_chunk=lambda delta: report_progress("", delta),
+            pid=f"judge:{item['plugin']}",
         )
         diagnostics = _judge_response_diagnostics(response, request_params, budgets[0])
         if response.error:
-            # Transport failures, including exhausted HTTP 429 retries, are
-            # terminal for this cell attempt. Do not spend the parser retry on
-            # a response body that cannot contain a usable judgment; the
-            # scheduler records the failed attempt and resume can retry it.
+            # Preserve partial streamed content for cancellation/transport
+            # diagnostics, while still treating the attempt as unsuccessful.
             return JudgeResult(
                 error=response.error,
+                response_text=response.text or None,
                 terminal_429=_is_exhausted_429(response.error),
                 diagnostics=diagnostics,
             )

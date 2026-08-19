@@ -1545,7 +1545,17 @@ class _BenchmarkTUIApp(App):  # pragma: no cover - live interactive loop
         )
         self._sync_rows(lines)
 
+    def _cancel_requests(self) -> None:
+        """Cancel benchmark and judge HTTP requests before leaving the TUI."""
+        self._stop_event.set()
+        close_active_requests()
+
+    def on_unmount(self) -> None:
+        """Ensure app teardown also cancels requests on non-keyboard exits."""
+        self._cancel_requests()
+
     def action_quit_tui(self) -> None:
+        self._cancel_requests()
         self.exit()
 
     def action_scroll_up(self) -> None:
@@ -2127,14 +2137,20 @@ class SourceJudgeWorkerPool:
         self.start(self.model_limit)
 
     def drain(self):
-        """Wait until every queued job has finished processing."""
+        """Wait until every queued job has finished, unless cancellation starts."""
         with self._condition:
             judge_queues = list(self._queues.values())
         for judge_queue in judge_queues:
-            judge_queue.join()
+            while judge_queue.unfinished_tasks:
+                if self.stop_event.is_set():
+                    return False
+                time.sleep(0.05)
         with self._condition:
             while self._active:
+                if self.stop_event.is_set():
+                    return False
                 self._condition.wait(timeout=0.05)
+        return True
 
     def stop(self, timeout=None, *, drain=False):
         """Stop judges, optionally draining all queued jobs first.
@@ -2143,9 +2159,8 @@ class SourceJudgeWorkerPool:
         cancellation path skips the drain so Ctrl+C can save resumable state
         without waiting on new work.
         """
-        if drain:
-            self.drain()
-        else:
+        drained = self.drain() if drain else False
+        if not drained:
             with self._condition:
                 queues = list(self._queues.values())
             for queue in queues:
@@ -3213,6 +3228,16 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
                 activity_id = state.start_judge_activity(
                     judge_name, target_name, plugin_id,
                 )
+                progress_chars = [0, 0]
+
+                def judge_progress(content_delta, thinking_delta):
+                    progress_chars[0] += len(content_delta or "")
+                    progress_chars[1] += len(thinking_delta or "")
+                    state.update_judge_activity(
+                        activity_id,
+                        tokens=(progress_chars[0] + progress_chars[1]) // 4,
+                    )
+
                 outcome = None
                 try:
                     # Pass the real plugin instance so its judge sanitizer
@@ -3232,6 +3257,7 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
                         stop_event=judge_request_stop_events[judge_name],
                         log_path=os.path.join(output_dir, f"judge-{judge_name}.log"),
                         plugin=plugin_obj,
+                        progress_callback=judge_progress,
                     )
                 finally:
                     if outcome is not None and outcome.response_text is not None:
@@ -3691,6 +3717,14 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
             # delivered there (which sets ``stop_event`` and the interrupt
             # event) rather than raised here. Record the external interrupt so
             # the run is reported as interrupted instead of completed.
+            interrupted = True
+            run_info["status"] = "interrupted"
+            close_active_requests()
+            stop_judge_workers()
+        elif stop_event.is_set() and not interrupted:
+            # ``q``/app teardown sets the shared stop event directly. Treat it
+            # like Ctrl+C so we do not enter the final judge drain with queued
+            # jobs that no worker is allowed to start.
             interrupted = True
             run_info["status"] = "interrupted"
             close_active_requests()

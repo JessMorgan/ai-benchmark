@@ -645,6 +645,20 @@ class TestBenchmarkTUIAppRows(unittest.IsolatedAsyncioTestCase):
             self.assertIn("AI Benchmark", app._rows[0]._line_text)
             self.assertTrue(app._rows[0].id.startswith("row-"))
 
+    async def test_quit_cancels_requests_and_sets_stop_event(self):
+        stop = threading.Event()
+        app = cli._BenchmarkTUIApp(
+            _FakeState(), stop, {"Local": "LC"},
+            "  #  S Model  St", "ratSc ratTok ratTm ratTPS",
+            1, [_plugin()], 0, {"Local": 2},
+        )
+        with mock.patch("benchmark.cli.close_active_requests") as close_requests:
+            async with app.run_test(size=(30, 100)) as pilot:
+                app.action_quit_tui()
+                await pilot.pause()
+        self.assertTrue(stop.is_set())
+        close_requests.assert_called()
+
 
 class TestHorizontalScrollActions(unittest.IsolatedAsyncioTestCase):
     """Shift+Left/Right pages horizontally, Ctrl+Left/Right jumps to the

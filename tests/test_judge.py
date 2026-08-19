@@ -210,7 +210,7 @@ class TestJudgeCore(unittest.TestCase):
                 '<tool_call>{"name": "get_weather"}</tool_call>',
                 target="model", runner="http",
             )
-            with mock.patch("benchmark.core.nonstream_request", return_value=response) as request:
+            with mock.patch("benchmark.core.stream_request", return_value=response) as request:
                 result = judge_response(
                     {}, "Local", "judge", sidecar, timeout=3,
                     plugin=ToolCallingPlugin(),
@@ -219,6 +219,36 @@ class TestJudgeCore(unittest.TestCase):
         prompt = request.call_args.args[4]
         self.assertIn("[TOOL_CALL]", prompt)
         self.assertNotIn("<tool_call>", prompt)
+
+    def test_judge_response_streams_and_reports_content_and_thinking_progress(self):
+        response = mock.Mock(
+            error=None,
+            text='{"score": 75, "confidence": "medium", "rationale": "usable", "criteria": [{"id": "R1", "criterion": "The task is satisfied", "status": "met", "evidence": "The answer is usable."}]}',
+            think_text="thinking",
+            usage={},
+            finish_reason="stop",
+        )
+        progress = mock.Mock()
+        with tempfile.TemporaryDirectory() as tmp:
+            sidecar = f"{tmp}/input.json"
+            prepare_judge_sidecar(
+                sidecar, FakePlugin(), "Prompt", "Response",
+                target="model", runner="http",
+            )
+            with mock.patch("benchmark.core.stream_request", return_value=response) as request:
+                result = judge_response(
+                    {}, "Local", "judge", sidecar, timeout=3,
+                    progress_callback=progress,
+                )
+        self.assertEqual(result.score, 75)
+        self.assertIn("on_chunk", request.call_args.kwargs)
+        self.assertIn("on_think_chunk", request.call_args.kwargs)
+        request.call_args.kwargs["on_chunk"]("abcd")
+        request.call_args.kwargs["on_think_chunk"]("efgh")
+        self.assertEqual(progress.call_args_list, [
+            mock.call("abcd", ""),
+            mock.call("", "efgh"),
+        ])
 
     def test_default_judge_request_params_include_strict_schema_without_thinking_budget(self):
         params = resolve_judge_request_params({})
@@ -302,7 +332,7 @@ class TestJudgeCore(unittest.TestCase):
                 sidecar, FakePlugin(), "Prompt", "Response",
                 target="model", runner="http",
             )
-            with mock.patch("benchmark.core.nonstream_request", return_value=response) as request:
+            with mock.patch("benchmark.core.stream_request", return_value=response) as request:
                 result = judge_response({}, "Local", "judge", sidecar, timeout=3)
         self.assertEqual(result.error, "HTTP 429: rate limited")
         self.assertTrue(result.terminal_429)
@@ -316,7 +346,7 @@ class TestJudgeCore(unittest.TestCase):
                 sidecar, FakePlugin(), "Prompt", "Response",
                 target="model", runner="http",
             )
-            with mock.patch("benchmark.core.nonstream_request", return_value=response):
+            with mock.patch("benchmark.core.stream_request", return_value=response):
                 result = judge_response({}, "Local", "judge", sidecar, timeout=3)
         self.assertIsNone(result.response_text)
         self.assertEqual(result.error, "timeout")
@@ -339,7 +369,7 @@ class TestJudgeCore(unittest.TestCase):
                 sidecar, FakePlugin(), "Prompt", "Response",
                 target="model", runner="http",
             )
-            with mock.patch("benchmark.core.nonstream_request", return_value=response):
+            with mock.patch("benchmark.core.stream_request", return_value=response):
                 result = judge_response(
                     {}, "Local", "judge", sidecar, timeout=3,
                     request_params=request_params,
@@ -369,7 +399,7 @@ class TestJudgeCore(unittest.TestCase):
                 sidecar, FakePlugin(), "Prompt", "Response",
                 target="model", runner="http",
             )
-            with mock.patch("benchmark.core.nonstream_request", return_value=response) as request:
+            with mock.patch("benchmark.core.stream_request", return_value=response) as request:
                 result = judge_response(
                     {}, "Local", "judge", sidecar, timeout=3,
                     request_params=request_params,
@@ -388,7 +418,7 @@ class TestJudgeCore(unittest.TestCase):
                 sidecar, FakePlugin(), "Prompt", "Response",
                 target="model", runner="http",
             )
-            with mock.patch("benchmark.core.nonstream_request", return_value=response) as request:
+            with mock.patch("benchmark.core.stream_request", return_value=response) as request:
                 result = judge_response({}, "Local", "judge", sidecar, timeout=3)
         self.assertEqual(JUDGE_DEFAULT_MAX_TOKENS, 16384)
         self.assertEqual(result.score, 75)
@@ -399,7 +429,7 @@ class TestJudgeCore(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             sidecar = f"{tmp}/input.json"
             prepare_judge_sidecar(sidecar, FakePlugin(), "Prompt", "Response", target="model", runner="http")
-            with mock.patch("benchmark.core.nonstream_request", return_value=response) as request:
+            with mock.patch("benchmark.core.stream_request", return_value=response) as request:
                 result = judge_response({}, "Local", "judge", sidecar, timeout=3)
         self.assertEqual(result.score, 75)
         request.assert_called_once()
