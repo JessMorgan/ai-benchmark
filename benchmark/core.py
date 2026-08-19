@@ -44,6 +44,7 @@ from .plugin import (
     normalize_score,
     serialize_rubric,
 )
+from .results import save_task_result
 from .state import BenchmarkState  # noqa: F401
 from .transport import (
     BENCHMARK_RETRY_POLICY,
@@ -2547,11 +2548,6 @@ def _run_plugin_task(target_name, api_model, source, plugin, source_config, time
     repeating = selected["repeating"]
     selected_alteration = selected["prompt_altered"]
     selected_retry_reason = selected["retry_reason"]
-    attempt_history = [
-        {key: value for key, value in attempt.items()
-         if key != "score_traceback"}
-        for attempt in attempts
-    ]
     schema_metadata = _schema_request_metadata(
         plugin, request_params,
         response_schema_valid=diagnostics.get("response_schema_valid")
@@ -2562,124 +2558,58 @@ def _run_plugin_task(target_name, api_model, source, plugin, source_config, time
         error=selected_error or score_error,
     )
 
-    if judge_input_dir:
-        sidecar = judge_sidecar_path(judge_input_dir, artifact_target, runner, pid)
-        try:
-            prepare_judge_sidecar(
-                sidecar, plugin, selected_prompt, selected_text,
-                target=artifact_target, state_key=target_name, runner=runner,
-            )
-        except OSError:
-            pass
-
-    meta = {
-        "plugin": pid,
-        "plugin_version": plugin.version,
-        "target": artifact_target,
-        "model": api_model,
-        "runner": runner,
-        "opencode_model": opencode_model,
-        "is_agent": is_agent,
-        "system_prompt": system_prompt,
-        "score": score,
-        "score_schema": SCORE_SCHEMA,
-        "rubric": rubric,
-        "diagnostics": diagnostics,
-        **{key: value for key, value in schema_metadata.items()},
-        "response_time": response_time,
-        "output_tokens": output_tokens,
-        "thinking_tokens": thinking_tokens,
-        "total_tokens": total_tokens,
-        "tps": tps,
-        "seed": session_seed,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "max_tokens": budget,
-        "attempt_count": len(attempts),
-        "retry_count": max(0, len(attempts) - 1),
-        "retried": len(attempts) > 1,
-        "retry_reasons": [
-            attempt["retry_reason"] for attempt in attempts
-            if attempt.get("retry_reason") is not None
-        ],
-        "selected_attempt": selected["attempt"],
-        "retry_reason": selected_retry_reason,
-        "prompt_altered": selected_alteration,
-        "response_nature": selected_nature,
-        "finish_reason": selected["finish_reason"],
-        "truncated": truncated,
-        "truncated_due_to_time": selected["truncated_due_to_time"],
-        "failure_cause": selected["failure_cause"],
-        "attempts": attempt_history,
-        "think_text": selected_think,
-    }
-    if score_error:
-        meta["error"] = score_error
-        meta["traceback"] = selected.get("score_traceback")
-    if selected_error:
-        meta["error"] = selected_error
-        meta["stream_error"] = selected_error
-    if empty_reason is not None:
-        meta["empty_reason"] = empty_reason
-
-    if save_responses and output_dir:
-        responses_dir = os.path.join(output_dir, "responses", sanitize_filename(artifact_target))
-        os.makedirs(responses_dir, exist_ok=True)
-        files = {
-            f"{pid}.prompt.txt": selected_prompt,
-            f"{pid}.content.txt": selected_text,
-            f"{pid}.txt": (
-                f"<thinking>\n{selected_think}\n</thinking>\n\n{selected_text}"
-                if selected_think else selected_text
-            ),
-        }
-        if selected_think:
-            files[f"{pid}.think.txt"] = selected_think
-        for filename, content in files.items():
-            try:
-                with open(os.path.join(responses_dir, filename), "w", encoding="utf-8") as handle:
-                    handle.write(content)
-            except OSError:
-                pass
-        try:
-            with open(os.path.join(responses_dir, f"{pid}.meta.json"), "w", encoding="utf-8") as handle:
-                json.dump(meta, handle, indent=2, default=str)
-        except OSError:
-            pass
-
-    result = {
-        **{f"{pid}_{key}": value for key, value in schema_metadata.items()},
-        f"{pid}_score": score,
-        f"{pid}_rubric": rubric,
-        f"{pid}_diagnostics": diagnostics,
-        f"{pid}_response_time": response_time,
-        f"{pid}_output_tokens": output_tokens,
-        f"{pid}_thinking_tokens": thinking_tokens,
-        f"{pid}_total_tokens": total_tokens,
-        f"{pid}_tps": tps,
-        f"{pid}_truncated": truncated,
-        f"{pid}_repeating": repeating,
-        f"{pid}_stream_ok": stream_ok,
-        f"{pid}_empty_reason": empty_reason,
-        f"{pid}_max_tokens": budget,
-        f"{pid}_attempt_count": len(attempts),
-        f"{pid}_retry_count": max(0, len(attempts) - 1),
-        f"{pid}_retried": len(attempts) > 1,
-        f"{pid}_retry_reasons": [
-            attempt["retry_reason"] for attempt in attempts
-            if attempt.get("retry_reason") is not None
-        ],
-        f"{pid}_selected_attempt": selected["attempt"],
-        f"{pid}_retry_reason": selected_retry_reason,
-        f"{pid}_prompt_altered": selected_alteration,
-        f"{pid}_response_nature": selected_nature,
-        f"{pid}_finish_reason": selected["finish_reason"],
-        f"{pid}_truncated_due_to_time": selected["truncated_due_to_time"],
-        f"{pid}_failure_cause": selected["failure_cause"],
-        f"{pid}_attempts": attempt_history,
-    }
     task_error = score_error
     if selected_nature in {"transport_error", "cancelled"} and not selected_text.strip():
         task_error = selected_error or score_error or selected_nature
+    result = save_task_result(
+        execution,
+        state=state,
+        model_name=target_name,
+        pid=pid,
+        plugin=plugin,
+        output_dir=output_dir,
+        save_responses=save_responses,
+        judge_input_dir=judge_input_dir,
+        judge_enqueue=judge_enqueue,
+        artifact_target=artifact_target,
+        runner=runner,
+        request_applied=schema_request_applied,
+        score=score,
+        rubric=rubric,
+        diagnostics=diagnostics,
+        score_error=score_error,
+        score_traceback=selected.get("score_traceback"),
+        selected_prompt=selected_prompt,
+        selected_text=selected_text,
+        selected_think=selected_think,
+        response_time=response_time,
+        output_tokens=output_tokens,
+        thinking_tokens=thinking_tokens,
+        total_tokens=total_tokens,
+        tps=tps,
+        seed=session_seed,
+        max_tokens=budget,
+        attempts=attempts,
+        selected_attempt=selected["attempt"],
+        retry_reason=selected_retry_reason,
+        prompt_altered=selected_alteration,
+        response_nature=selected_nature,
+        finish_reason=selected["finish_reason"],
+        truncated=truncated,
+        truncated_due_to_time=selected["truncated_due_to_time"],
+        failure_cause=selected["failure_cause"],
+        repeating=repeating,
+        stream_ok=stream_ok,
+        empty_reason=empty_reason,
+        schema_metadata=schema_metadata,
+        selected_error=selected_error,
+        api_model=api_model,
+        opencode_model=opencode_model,
+        is_agent=is_agent,
+        system_prompt=system_prompt,
+        prepare_judge_sidecar_fn=prepare_judge_sidecar,
+        judge_sidecar_path_fn=judge_sidecar_path,
+    )
     return PluginTaskResult(result, task_error)
 
 

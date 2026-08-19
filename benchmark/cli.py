@@ -83,6 +83,7 @@ from benchmark.opencode import (
     resolve_opencode_binary,
 )
 from benchmark.plugin import SCORE_SCHEMA
+from benchmark.results import save_judge_result
 from benchmark.state import apply_state_recovery, prepare_state_recovery
 from plugins import discover_plugins, format_plugin_list
 
@@ -3588,16 +3589,12 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
                         halted_judges.add(judge_name)
                     state.update_judge_progress(judge_name, stopped=True)
                     judge_stop_events[judge_name].set()
-                vote = {
-                    "model": judge_name,
-                    "score": outcome.score,
-                    "confidence": outcome.confidence,
-                    "rationale": outcome.rationale,
-                    "criteria": outcome.criteria or [],
-                    "judge_prompt_version": JUDGE_PROMPT_VERSION,
-                    "judge_contract_id": contract_id,
-                    "error": outcome.error,
-                }
+                vote = save_judge_result(
+                    outcome,
+                    model_name=judge_name,
+                    judge_prompt_version=JUDGE_PROMPT_VERSION,
+                    judge_contract_id=contract_id,
+                )
                 response_text = outcome.response_text or ""
                 artifact_error = None
                 try:
@@ -3755,19 +3752,18 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
                         (vote for vote in existing_votes if vote.get("model") == judge_name),
                         None,
                     )
-                failure_vote = {
-                    "model": judge_name,
-                    "score": None,
-                    "confidence": None,
-                    "rationale": None,
-                    "criteria": [],
-                    "judge_prompt_version": JUDGE_PROMPT_VERSION,
-                    "judge_contract_id": contract_id,
-                    "error": (
-                        f"judge input failed: {type(exc).__name__}: {exc}"
-                        + (f"; {artifact_error}" if artifact_error else "")
-                    ),
-                }
+                failure_vote = save_judge_result(
+                    None,
+                    model_name=judge_name,
+                    judge_prompt_version=JUDGE_PROMPT_VERSION,
+                    judge_contract_id=contract_id,
+                    parsed_judge={
+                        "error": (
+                            f"judge input failed: {type(exc).__name__}: {exc}"
+                            + (f"; {artifact_error}" if artifact_error else "")
+                        ),
+                    },
+                )
                 vote_identity = (state_key, runner, plugin_id)
                 with judge_votes_lock:
                     prior_all_votes = list(

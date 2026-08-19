@@ -132,6 +132,11 @@ State persistence and report generation are deliberately separate stages:
   process crashes after a snapshot but before compaction, startup replays the
   journal tail whose sequence is newer than the snapshot. A partial final JSONL
   line is ignored; a corrupt state can use the complete journal for recovery.
+- **Result storage helpers** in `benchmark/results.py` build the flat
+  per-plugin result fields and `meta.json` payloads, write prompt/content/
+  thinking artifacts, and prepare judge sidecars. `save_judge_result()` builds
+  versioned judge votes; scheduling, consensus, and state mutation remain in
+  their callers.
 - **Report generation** is not part of a persistence flush. `_save_outputs()`
   reads the final in-memory state once after workers and persistence have been
   drained, producing CSV/HTML/Markdown/PDF artifacts. Reports may therefore be
