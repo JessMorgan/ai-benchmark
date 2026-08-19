@@ -44,6 +44,7 @@ from benchmark.core import (
     generate_config_from_api,
     get_target_plugins_blacklist,
     is_successful_judge_vote,
+    judge_contract_id,
     judge_response,
     load_config,
     load_dotenv_file,
@@ -2621,6 +2622,10 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
         "judge_model": judge_model,
         "judge_models": judge_models,
         "judge_prompt_version": JUDGE_PROMPT_VERSION if judge_models else None,
+        "judge_contracts": (
+            {plugin.id: judge_contract_id(plugin) for plugin in active_plugins}
+            if judge_models else {}
+        ),
         "judge_status": "disabled" if not judge_models else "pending",
         "judge_counts": {"queued": 0, "completed": 0, "failed": 0, "votes": 0},
         "preload": {
@@ -3138,6 +3143,10 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
                 target_name if runner == "http"
                 else f"{target_name} [opencode]"
             )
+            plugin_obj = next(
+                (p for p in active_plugins if p.id == plugin_id), None
+            )
+            contract_id = judge_contract_id(plugin_obj) if plugin_obj is not None else None
             try:
                 with open(sidecar, encoding="utf-8") as handle:
                     item = json.load(handle)
@@ -3176,9 +3185,6 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
                     # Pass the real plugin instance so its judge sanitizer
                     # (e.g. tool-calling masks its <tool_call> tags) is
                     # applied when the judge prompt is built.
-                    plugin_obj = next(
-                        (p for p in active_plugins if p.id == plugin_id), None
-                    )
                     outcome = judge_response(
                         source_config,
                         judge_sources[judge_name],
@@ -3212,6 +3218,8 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
                     "confidence": outcome.confidence,
                     "rationale": outcome.rationale,
                     "criteria": outcome.criteria or [],
+                    "judge_prompt_version": JUDGE_PROMPT_VERSION,
+                    "judge_contract_id": contract_id,
                     "error": outcome.error,
                 }
                 response_text = outcome.response_text or ""
@@ -3223,7 +3231,7 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
                     # missing/abandoned job.
                     save_judge_response(
                         output_dir, target_name, runner, plugin_id,
-                        judge_name, response_text,
+                        judge_name, response_text, contract_id,
                     )
                     save_judge_response_metadata(
                         output_dir, target_name, runner, plugin_id, judge_name,
@@ -3232,6 +3240,8 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
                             "runner": runner,
                             "plugin": plugin_id,
                             "judge_model": judge_name,
+                            "judge_prompt_version": JUDGE_PROMPT_VERSION,
+                            "judge_contract_id": contract_id,
                             "status": "error" if outcome.error else "ok",
                             "response_present": outcome.response_text is not None,
                             "response_empty": not bool(response_text.strip()),
@@ -3244,6 +3254,7 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
                             "diagnostics": outcome.diagnostics,
                             "saved_at": datetime.now(timezone.utc).isoformat(),
                         },
+                        contract_id,
                     )
                 except OSError as exc:
                     artifact_error = f"could not save judge response artifact: {exc}"
@@ -3313,7 +3324,8 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
                 artifact_error = None
                 try:
                     save_judge_response(
-                        output_dir, target_name, runner, plugin_id, judge_name, ""
+                        output_dir, target_name, runner, plugin_id, judge_name, "",
+                        contract_id,
                     )
                     save_judge_response_metadata(
                         output_dir, target_name, runner, plugin_id, judge_name,
@@ -3322,12 +3334,15 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
                             "runner": runner,
                             "plugin": plugin_id,
                             "judge_model": judge_name,
+                            "judge_prompt_version": JUDGE_PROMPT_VERSION,
+                            "judge_contract_id": contract_id,
                             "status": "exception",
                             "response_present": False,
                             "response_empty": True,
                             "error": f"{type(exc).__name__}: {exc}",
                             "saved_at": datetime.now(timezone.utc).isoformat(),
                         },
+                        contract_id,
                     )
                 except OSError as artifact_exc:
                     artifact_error = f"could not save judge failure artifact: {artifact_exc}"
@@ -3356,6 +3371,8 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
                     "confidence": None,
                     "rationale": None,
                     "criteria": [],
+                    "judge_prompt_version": JUDGE_PROMPT_VERSION,
+                    "judge_contract_id": contract_id,
                     "error": (
                         f"judge input failed: {type(exc).__name__}: {exc}"
                         + (f"; {artifact_error}" if artifact_error else "")

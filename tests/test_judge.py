@@ -11,6 +11,7 @@ from benchmark.core import (
     JudgeResult,
     build_judge_prompt,
     confidence_weighted_consensus,
+    judge_contract_id,
     judge_response,
     parse_judge_response,
     prepare_judge_sidecar,
@@ -105,6 +106,10 @@ class TestJudgeCore(unittest.TestCase):
         self.assertIn("semantic score", prompt.lower())
         self.assertIn("Keep the rationale under approximately 2000 characters", prompt)
         self.assertIn("make it non-empty", prompt)
+
+    def test_judge_contract_id_changes_with_plugin_guidance(self):
+        self.assertNotEqual(judge_contract_id(FakePlugin()), judge_contract_id(GuidedPlugin()))
+        self.assertEqual(judge_contract_id(FakePlugin()), judge_contract_id(FakePlugin()))
 
     def test_judge_schema_uses_llama_compatible_integer_score(self):
         score = JUDGE_RESPONSE_SCHEMA["properties"]["score"]
@@ -227,6 +232,11 @@ class TestJudgeCore(unittest.TestCase):
                 tmp, "model", "http", "rate-limiter", "judge/model", '{"score": 90}'
             )
             self.assertTrue(path.endswith("rate-limiter.judge.judge_model.txt"))
+            versioned_path = save_judge_response(
+                tmp, "model", "http", "rate-limiter", "judge/model", '{"score": 91}',
+                "judge-contract-v1:abc",
+            )
+            self.assertIn("judge-contract-v1_abc", versioned_path)
             with open(path, encoding="utf-8") as handle:
                 self.assertEqual(handle.read(), '{"score": 90}')
 
@@ -238,6 +248,8 @@ class TestJudgeCore(unittest.TestCase):
                 item = json.load(handle)
             self.assertEqual(item["target"], "model")
             self.assertEqual(item["response"], "Response")
+            self.assertEqual(item["judge_prompt_version"], "judge-v7")
+            self.assertEqual(item["judge_contract_id"], judge_contract_id(FakePlugin()))
             self.assertEqual(len(item["response_sha256"]), 64)
 
     def test_judge_response_metadata_is_persisted_next_to_raw_artifact(self):

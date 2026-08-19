@@ -105,6 +105,33 @@ JUDGE_DEFAULT_REQUEST_PARAMS = {
 }
 JUDGE_CONFIDENCE_WEIGHTS = {"high": 1.0, "medium": 0.6, "low": 0.3}
 
+
+def judge_instructions_version(plugin) -> str:
+    """Return a stable version for a plugin's optional judge guidance."""
+    value = getattr(plugin, "judge_instructions_version", "1.0.0")
+    return str(value) if value is not None else "1.0.0"
+
+
+def judge_contract_id(plugin) -> str:
+    """Return the deterministic identity of one plugin judge contract."""
+    getter = getattr(plugin, "get_judge_instructions", None)
+    instructions = getter() if callable(getter) else ""
+    if not isinstance(instructions, str):
+        instructions = ""
+    contract = {
+        "schema": "judge-contract-v1",
+        "prompt_version": JUDGE_PROMPT_VERSION,
+        "response_schema": JUDGE_RESPONSE_SCHEMA,
+        "plugin_id": plugin.id,
+        "plugin_version": plugin.version,
+        "judge_instructions_version": judge_instructions_version(plugin),
+        "judge_instructions": instructions,
+    }
+    digest = hashlib.sha256(
+        json.dumps(contract, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    return f"judge-contract-v1:{digest}"
+
 SCHEMA_SENTINEL_SCHEMA = {
     "type": "object",
     "additionalProperties": False,
@@ -677,6 +704,9 @@ def prepare_judge_sidecar(path, plugin, prompt, response_text, *, target, runner
         "response": response_text,
         "response_sha256": hashlib.sha256(response_text.encode("utf-8")).hexdigest(),
         "max_score": plugin.max_score,
+        "judge_prompt_version": JUDGE_PROMPT_VERSION,
+        "judge_instructions_version": judge_instructions_version(plugin),
+        "judge_contract_id": judge_contract_id(plugin),
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
     os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -695,20 +725,25 @@ def judge_sidecar_path(judge_input_dir, target, runner, plugin_id):
     )
 
 
-def judge_response_path(output_dir, target, runner, plugin_id, judge_model):
-    """Return the response artifact path for one judge model's raw output."""
+def judge_response_path(output_dir, target, runner, plugin_id, judge_model,
+                        contract_id=None):
+    """Return the response artifact path for one judge contract's output."""
+    suffix = sanitize_filename(judge_model)
+    if contract_id:
+        suffix += f".{sanitize_filename(contract_id)}"
     return os.path.join(
         output_dir,
         runner,
         "responses",
         sanitize_filename(target),
-        f"{plugin_id}.judge.{sanitize_filename(judge_model)}.txt",
+        f"{plugin_id}.judge.{suffix}.txt",
     )
 
 
-def save_judge_response(output_dir, target, runner, plugin_id, judge_model, text):
+def save_judge_response(output_dir, target, runner, plugin_id, judge_model, text,
+                        contract_id=None):
     """Persist a judge's raw response beside the benchmark response artifacts."""
-    path = judge_response_path(output_dir, target, runner, plugin_id, judge_model)
+    path = judge_response_path(output_dir, target, runner, plugin_id, judge_model, contract_id)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     tmp = f"{path}.tmp"
     with open(tmp, "w", encoding="utf-8") as handle:
@@ -719,21 +754,26 @@ def save_judge_response(output_dir, target, runner, plugin_id, judge_model, text
     return path
 
 
-def judge_response_metadata_path(output_dir, target, runner, plugin_id, judge_model):
+def judge_response_metadata_path(output_dir, target, runner, plugin_id, judge_model,
+                                 contract_id=None):
     """Return the metadata path paired with one raw judge response."""
-    response_path = judge_response_path(output_dir, target, runner, plugin_id, judge_model)
+    response_path = judge_response_path(
+        output_dir, target, runner, plugin_id, judge_model, contract_id,
+    )
     return response_path.removesuffix(".txt") + ".meta.json"
 
 
 def save_judge_response_metadata(output_dir, target, runner, plugin_id,
-                                 judge_model, metadata):
+                                 judge_model, metadata, contract_id=None):
     """Persist status/error metadata for every judge attempt.
 
     The metadata sidecar exists even when the judge transport produced no raw
     response, making a missing semantic answer distinguishable from a missing
     scheduler artifact.
     """
-    path = judge_response_metadata_path(output_dir, target, runner, plugin_id, judge_model)
+    path = judge_response_metadata_path(
+        output_dir, target, runner, plugin_id, judge_model, contract_id,
+    )
     os.makedirs(os.path.dirname(path), exist_ok=True)
     tmp = f"{path}.tmp"
     with open(tmp, "w", encoding="utf-8") as handle:
