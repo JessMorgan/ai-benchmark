@@ -77,7 +77,14 @@ def _thinking_budget_retry_instruction(token_budget):
 
 
 def _thinking_consumed_budget(diagnostics):
-    """Return whether a response appears to hit its budget while reasoning."""
+    """Return whether a response appears to hit its budget while reasoning.
+
+    A response whose reasoning consumed at least 80% of the generation
+    budget and still ended with ``finish_reason="length"`` is treated as
+    budget exhaustion. The 80% threshold (rather than 100%) accounts for
+    token estimates (e.g. characters/4) that undercount the real reasoning
+    stream, which is often truncated mid-generation.
+    """
     if not isinstance(diagnostics, dict):
         return False
     max_tokens = diagnostics.get("request_max_tokens")
@@ -88,7 +95,7 @@ def _thinking_consumed_budget(diagnostics):
         and not isinstance(max_tokens, bool)
         and isinstance(reasoning_tokens, (int, float))
         and not isinstance(reasoning_tokens, bool)
-        and reasoning_tokens >= max_tokens
+        and reasoning_tokens >= 0.8 * max_tokens
     )
 
 

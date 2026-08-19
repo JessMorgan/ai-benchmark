@@ -470,6 +470,51 @@ class TestJudgeCore(unittest.TestCase):
         self.assertIn("RETRY GUIDANCE", retry_prompt)
         self.assertIn("approximately 1024 tokens", retry_prompt)
 
+    def test_judge_retry_guidance_trips_above_80_percent_of_budget(self):
+        valid = '{"score": 75, "confidence": "medium", "rationale": "usable", "criteria": [{"id": "R1", "criterion": "The task is satisfied", "status": "met", "evidence": "The answer is usable."}]}'
+        # 81% of the 2048-token budget, estimated from characters/4.
+        first = mock.Mock(
+            error=None, text="not json", think_text="r" * (int(2048 * 0.81) * 4),
+            usage={}, finish_reason="length",
+        )
+        second = mock.Mock(
+            error=None, text=valid, think_text="r" * (512 * 4),
+            usage={}, finish_reason="stop",
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            sidecar = f"{tmp}/input.json"
+            prepare_judge_sidecar(sidecar, FakePlugin(), "Prompt", "Response", target="model", runner="http")
+            with mock.patch("benchmark.core.stream_request", side_effect=[first, second]) as request:
+                result = judge_response({}, "Local", "judge", sidecar, timeout=3,
+                                        token_levels=[2048])
+        self.assertEqual(result.score, 75)
+        self.assertEqual(request.call_count, 2)
+        self.assertIn("RETRY GUIDANCE", request.call_args_list[1].args[4])
+
+    def test_judge_retry_guidance_skips_below_80_percent_of_budget(self):
+        valid = '{"score": 75, "confidence": "medium", "rationale": "usable", "criteria": [{"id": "R1", "criterion": "The task is satisfied", "status": "met", "evidence": "The answer is usable."}]}'
+        # Just under 80% of the 2048-token budget: the estimate is too
+        # uncertain at this boundary to call it budget exhaustion.
+        first = mock.Mock(
+            error=None, text="not json", think_text="r" * (int(2048 * 0.79) * 4),
+            usage={}, finish_reason="length",
+        )
+        second = mock.Mock(
+            error=None, text=valid, think_text="r" * (512 * 4),
+            usage={}, finish_reason="stop",
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            sidecar = f"{tmp}/input.json"
+            prepare_judge_sidecar(sidecar, FakePlugin(), "Prompt", "Response", target="model", runner="http")
+            with mock.patch("benchmark.core.stream_request", side_effect=[first, second]) as request:
+                result = judge_response({}, "Local", "judge", sidecar, timeout=3,
+                                        token_levels=[2048])
+        self.assertEqual(result.score, 75)
+        self.assertEqual(request.call_count, 2)
+        retry_prompt = request.call_args_list[1].args[4]
+        self.assertNotIn("RETRY GUIDANCE", retry_prompt)
+        self.assertIn("Your previous response was invalid", retry_prompt)
+
 
 class TestJudgeResumeDiscovery(unittest.TestCase):
     def test_retained_completed_sidecar_is_eligible_on_resume(self):
