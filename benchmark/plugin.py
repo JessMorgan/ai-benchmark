@@ -216,6 +216,21 @@ class BenchmarkTaskPlugin(abc.ABC):
         """
         return None
 
+    @property
+    def judge_instructions_version(self) -> str:
+        """Version of this plugin's optional semantic-judge guidance."""
+        return "1.0.0"
+
+    def get_judge_instructions(self) -> str:
+        """Return optional plugin-specific guidance for semantic judges.
+
+        The shared judge protocol remains authoritative. This hook is for
+        concise domain interpretation guidance—such as tool-call semantics or
+        which distinctions are explicitly in scope—not a second hidden score
+        rubric. An empty string means the plugin has no additional guidance.
+        """
+        return ""
+
     def sanitize_for_judge(self, text: str) -> str:
         """Return ``text`` prepared for embedding in a judge prompt.
 

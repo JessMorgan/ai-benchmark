@@ -35,6 +35,15 @@ class FakePlugin:
         return "Produce a useful answer."
 
 
+class GuidedPlugin(FakePlugin):
+    @property
+    def judge_instructions_version(self):
+        return "2.0.0"
+
+    def get_judge_instructions(self):
+        return "Treat ordering as material only when TASK TEXT requires it."
+
+
 class TestJudgeCore(unittest.TestCase):
     def test_failed_votes_are_excluded_from_consensus(self):
         result = confidence_weighted_consensus([
@@ -80,6 +89,14 @@ class TestJudgeCore(unittest.TestCase):
             '"status": "partial", "evidence": "One required item is absent."}]}'
         )
         self.assertEqual(parsed.criteria[0]["status"], "partial")
+
+    def test_plugin_specific_judge_guidance_is_optional_and_delimited(self):
+        default_prompt = build_judge_prompt(FakePlugin(), "Do this", "Done")
+        guided_prompt = build_judge_prompt(GuidedPlugin(), "Do this", "Done")
+        self.assertNotIn("PLUGIN-SPECIFIC EVALUATION GUIDANCE", default_prompt)
+        self.assertIn("PLUGIN-SPECIFIC EVALUATION GUIDANCE", guided_prompt)
+        self.assertIn("Treat ordering as material only", guided_prompt)
+        self.assertIn("does not", guided_prompt)
 
     def test_build_prompt_blinds_deterministic_score(self):
         prompt = build_judge_prompt(FakePlugin(), "Do this", "Done well")

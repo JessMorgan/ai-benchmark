@@ -138,6 +138,13 @@ class MyTaskPlugin(BenchmarkTaskPlugin):
     def get_temperature(self, global_config):
         return global_config.get("my-task_temperature", 0.2)
 
+    @property
+    def judge_instructions_version(self):
+        return "1.0.0"
+
+    def get_judge_instructions(self):
+        return ""
+
     def evaluate(self, response_text):
         s = 0.0
         if "def " in response_text:

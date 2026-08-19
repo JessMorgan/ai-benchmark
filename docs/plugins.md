@@ -63,6 +63,11 @@ class BenchmarkTaskPlugin(abc.ABC):
 
     def get_response_schema(self) -> dict | None: ...  # default: None
 
+    @property
+    def judge_instructions_version(self) -> str: ...  # default: "1.0.0"
+
+    def get_judge_instructions(self) -> str: ...  # default: ""
+
     def sanitize_for_judge(self, text: str) -> str: ...  # default: identity
 
     def evaluate(self, response_text: str) -> EvaluationResult: ...
@@ -79,6 +84,13 @@ its semantic record-processing task. Use `data-transformation` in all new and ex
 records response-schema validity and request compatibility separately from the
 plugin's primary score; it does not imply that a successful response proves
 provider-side enforcement.
+
+`judge_instructions_version` and `get_judge_instructions` are optional hooks
+for concise, domain-specific semantic-judge guidance. The shared judge
+protocol remains authoritative; plugin guidance must not add hidden scoring
+requirements or override the task. The instruction version is kept separate
+from the plugin's benchmark version so judge guidance can evolve without
+necessarily rerunning deterministic benchmark tasks.
 
 `sanitize_for_judge` is an optional hook applied by the semantic judge
 pipeline (`build_judge_prompt` in `benchmark/core.py`) to both the task text
