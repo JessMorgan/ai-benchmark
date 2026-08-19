@@ -503,6 +503,47 @@ class TestPluginCellBlock(unittest.TestCase):
         self.assertNotIn("⚖️", block)
         self.assertNotIn("❌", block)
 
+    def test_judge_marker_slots_use_terminal_width_for_all_rows(self):
+        """Checkmarks and scales occupy display-width slots, not code-point slots.
+
+        A checkmark is a two-column glyph while ``⚖️1`` is three display
+        columns. Padding these slots with ``str.ljust`` shifts the token/time/
+        TPS columns on rows containing a checkmark.
+        """
+        def row(votes_list):
+            return {
+                "running_pids": [],
+                "rate-limiter_score": 95,
+                "judge_models": ["judge-a", "judge-b"],
+                "rate-limiter_judge_votes": votes_list,
+                "rate-limiter_total_tokens": 120,
+                "rate-limiter_response_time": 0.4,
+                "rate-limiter_tps": 300.0,
+            }
+
+        valid_a = {"model": "judge-a", "score": 90, "confidence": "high"}
+        valid_b = {"model": "judge-b", "score": 92, "confidence": "high"}
+        failed_b = {"model": "judge-b", "score": None, "error": "timeout"}
+        rows = [
+            row([valid_a, valid_b]),  # checkmark
+            row([valid_a]),           # scales plus count
+            row([failed_b]),          # failure plus count
+        ]
+        slots = ai_benchmark._plugin_judge_alignment(rows, "rate-limiter")
+        blocks = [
+            ai_benchmark._plugin_cell_block("rate-limiter", item, self.p_streaming, None, slots)
+            for item in rows
+        ]
+        token_columns = [
+            ai_benchmark._display_width(block[:block.index("120")])
+            for block in blocks
+        ]
+        self.assertEqual(token_columns, [token_columns[0]] * len(token_columns))
+        self.assertEqual(
+            [ai_benchmark._display_width(block) for block in blocks],
+            [ai_benchmark.PLUGIN_BLOCK_WIDTH] * len(blocks),
+        )
+
     def test_completed_three_judges_show_checkmark(self):
         s = {
             "running_pids": [],

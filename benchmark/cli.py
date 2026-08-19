@@ -853,9 +853,9 @@ def _plugin_cell_block(pid, s, p, sleeping_lookup=None, judge_slots=None):
             score_w, scale_w, fail_w = judge_slots
             sc = f"{score:>{score_w}.0f}"
             if scale_w:
-                sc += (scale if scale else "").ljust(scale_w)
+                sc += _pad_display_width(scale if scale else "", scale_w)
             if fail_w:
-                sc += (fail if fail else "").ljust(fail_w)
+                sc += _pad_display_width(fail if fail else "", fail_w)
         else:
             sc = f"{score:.0f}{scale}{fail}"
     else:
