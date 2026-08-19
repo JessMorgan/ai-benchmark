@@ -1,14 +1,15 @@
-"""Normalized one-attempt execution for benchmark transports.
+"""Reusable transport normalization and logical-attempt execution.
 
-This module deliberately does not own semantic retries, scoring, or state
-persistence. It executes one prompt through HTTP or OpenCode and returns the
-same result shape for both transports.
+This module owns one-attempt HTTP/OpenCode normalization and the bounded retry
+engine. Scoring, judge parsing, and state persistence remain caller-owned.
 """
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import time
-from dataclasses import dataclass
+from collections.abc import Callable
+from dataclasses import dataclass, replace
 from typing import Any, Literal
 
 from .http import NonStreamResult, StreamResult, nonstream_request, stream_request
@@ -75,6 +76,71 @@ class TransportResult:
     stream_fallback_error: str | None = None
 
 
+@dataclass(frozen=True)
+class RetryPolicy:
+    """Controls which classifications may start a second logical attempt."""
+
+    max_attempts: int = 2
+    retry_on_transport_error: bool = True
+    retry_on_token_limit: bool = True
+    retry_on_repetition: bool = True
+    retry_on_json_error: bool = False
+    retry_on_timeout: bool = False
+
+
+BENCHMARK_RETRY_POLICY = RetryPolicy(
+    retry_on_transport_error=True,
+    retry_on_token_limit=True,
+    retry_on_repetition=True,
+)
+
+JUDGE_RETRY_POLICY = RetryPolicy(
+    retry_on_transport_error=False,
+    retry_on_token_limit=False,
+    retry_on_repetition=False,
+    retry_on_json_error=True,
+    retry_on_timeout=False,
+)
+
+
+@dataclass
+class TaskAttempt:
+    """One logical attempt, including the prompt that was actually sent."""
+
+    result: TransportResult
+    attempt_number: int
+    prompt_altered: str
+    retry_reason: str | None
+    request_prompt: str
+
+
+@dataclass
+class TaskExecution:
+    """Complete bounded execution and its default selected attempt."""
+
+    attempts: list[TaskAttempt]
+    selected: TaskAttempt | None
+    retry_reasons: list[str]
+
+    @property
+    def attempt_count(self) -> int:
+        return len(self.attempts)
+
+    @property
+    def retry_count(self) -> int:
+        return max(0, len(self.attempts) - 1)
+
+    @property
+    def retry_reason(self) -> str | None:
+        return self.selected.retry_reason if self.selected is not None else None
+
+    def select(self, attempt: TaskAttempt) -> None:
+        """Allow a caller's evaluator to replace the transport default."""
+        if attempt not in self.attempts:
+            raise ValueError("cannot select an attempt outside this execution")
+        self.selected = attempt
+
+
 def classify_empty_reason(text: str, think_text: str = "", finish_reason: str | None = None,
                           error: str | None = None) -> str | None:
     """Classify an empty response without conflating it with transport failure."""
@@ -131,6 +197,8 @@ def _response_reasoning_tokens(response: Any) -> int:
             if isinstance(value, (int, float)) and not isinstance(value, bool):
                 return int(value)
     thinking = getattr(response, "think_text", "") or ""
+    if not isinstance(thinking, str):
+        return 0
     return int(len(thinking) / 4) if thinking else 0
 
 
@@ -153,6 +221,67 @@ def _json_object_fallback_params(request_params: dict | None) -> dict | None:
     fallback = dict(request_params)
     fallback["response_format"] = {"type": "json_object"}
     return fallback
+
+
+def _retry_prompt_alteration(nature: str, thinking_tokens: int | None,
+                             max_tokens: int) -> tuple[str, str]:
+    """Return the benchmark retry label and prompt guidance for a response."""
+    if nature == "repetition_abort":
+        return (
+            "avoid_repetition",
+            (
+                "\n\nRETRY GUIDANCE: Do not repeat phrases, paragraphs, code blocks, "
+                "or reasoning loops from the previous attempt. Produce new, "
+                "task-relevant content and finish the requested answer."
+            ),
+        )
+    if nature != "token_limit":
+        return "none", ""
+    budget = max(1, int(max_tokens))
+    if thinking_tokens is not None and thinking_tokens >= 0.8 * budget:
+        return (
+            "thinking_50_percent",
+            (
+                "\n\nRETRY GUIDANCE: Limit internal thinking or reasoning to approximately "
+                f"{max(1, budget // 2)} tokens (about half of the {budget}-token "
+                "generation budget). Reserve the remaining budget for the required "
+                "final answer. Do not spend the whole retry budget thinking."
+            ),
+        )
+    if thinking_tokens is not None and thinking_tokens > 0.5 * budget:
+        return (
+            "thinking_30_percent",
+            (
+                "\n\nRETRY GUIDANCE: Limit internal thinking or reasoning to approximately "
+                f"{max(1, int(budget * 0.3))} tokens (about 30% of the {budget}-token "
+                "generation budget). Reserve most of the budget for the required "
+                "final answer."
+            ),
+        )
+    return (
+        "response_under_budget",
+        (
+            "\n\nRETRY GUIDANCE: Complete the required answer while keeping the total "
+            f"response just below the {budget}-token generation limit. Be concise "
+            "enough to finish before the limit."
+        ),
+    )
+
+
+def _thinking_consumed_budget(diagnostics: dict[str, Any] | None) -> bool:
+    """Return whether reasoning consumed at least 80% of a length-limited budget."""
+    if not isinstance(diagnostics, dict):
+        return False
+    max_tokens = diagnostics.get("request_max_tokens")
+    reasoning_tokens = diagnostics.get("response_reasoning_tokens")
+    return (
+        diagnostics.get("response_finish_reason") == "length"
+        and isinstance(max_tokens, (int, float))
+        and not isinstance(max_tokens, bool)
+        and isinstance(reasoning_tokens, (int, float))
+        and not isinstance(reasoning_tokens, bool)
+        and reasoning_tokens >= 0.8 * max_tokens
+    )
 
 
 def _is_streaming_rejection(error: str | None) -> bool:
@@ -221,22 +350,38 @@ def _normalize(request: TransportRequest, *, text: str, think_text: str,
 def _normalize_stream(request: TransportRequest, response: StreamResult, started: float,
                       *, stream_fallback_used: bool = False,
                       stream_fallback_error: str | None = None) -> TransportResult:
-    first = response.first_tok
-    ended = response.stream_end or time.time()
+    first = getattr(response, "first_tok", None)
+    if isinstance(first, bool) or not isinstance(first, (int, float)):
+        first = None
+    ended = getattr(response, "stream_end", None)
+    if isinstance(ended, bool) or not isinstance(ended, (int, float)) or not ended:
+        ended = time.time()
     generation = ended - first if first is not None else ended - started
-    text = response.text or ""
-    repeating = is_repeating(text) or "repetition" in str(response.error or "").lower()
+    text = getattr(response, "text", "") or ""
+    if not isinstance(text, str):
+        text = ""
+    think_text = getattr(response, "think_text", "") or ""
+    if not isinstance(think_text, str):
+        think_text = ""
+    error = getattr(response, "error", None)
+    if not isinstance(error, str):
+        error = None
+    finish_reason = getattr(response, "finish_reason", None)
+    if not isinstance(finish_reason, str):
+        finish_reason = None
+    usage = getattr(response, "usage", {}) or {}
+    repeating = is_repeating(text) or "repetition" in str(error or "").lower()
     return _normalize(
         request,
         text=text,
-        think_text=response.think_text or "",
-        error=response.error,
-        finish_reason=response.finish_reason,
+        think_text=think_text,
+        error=error,
+        finish_reason=finish_reason,
         response_time=ended - started,
         gen_time=generation,
-        stream_ok=response.error is None and first is not None,
+        stream_ok=error is None and first is not None,
         repeating=repeating,
-        usage=getattr(response, "usage", {}) or {},
+        usage=usage,
         stream_fallback_used=stream_fallback_used,
         stream_fallback_error=stream_fallback_error,
     )
@@ -407,6 +552,104 @@ def _execute_opencode(request: TransportRequest, *, run_process_fn=None) -> Tran
         stream_ok=False,
         repeating=is_repeating(response.text or ""),
         usage={},
+    )
+
+
+def execute_task(
+    request: TransportRequest,
+    *,
+    retry_policy: RetryPolicy,
+    base_prompt: str,
+    prompt_alterer: Callable[[str, int | None, int], tuple[str, str]] | None = None,
+    json_error_prompt_alterer: Callable[[TransportResult], str | None] | None = None,
+    attempt_callback: Callable[[int], None] | None = None,
+    stream_request_fn=None,
+    nonstream_request_fn=None,
+    run_process_fn=None,
+) -> TaskExecution:
+    """Execute a bounded sequence of logical attempts.
+
+    Transport-level retries (429 backoff, for example) remain inside the
+    request functions and do not create another ``TaskAttempt``. This engine
+    only decides whether a completed transport leg warrants the caller's one
+    policy retry. Scoring and JSON parsing stay with the caller.
+    """
+    max_attempts = max(1, int(retry_policy.max_attempts))
+    attempts: list[TaskAttempt] = []
+    retry_reasons: list[str] = []
+    request_prompt = base_prompt
+    prompt_altered = "none"
+    retry_reason: str | None = None
+
+    for attempt_number in range(1, max_attempts + 1):
+        if request.stop_event is not None and request.stop_event.is_set():
+            break
+        if attempt_callback is not None:
+            # Live observers are advisory and must not affect execution.
+            with contextlib.suppress(Exception):
+                attempt_callback(attempt_number)
+        log_label = request.log_label
+        if "{attempt}" in log_label:
+            log_label = log_label.replace("{attempt}", str(attempt_number))
+        else:
+            log_label = f"{log_label} (attempt {attempt_number})"
+        attempt_request = replace(request, prompt=request_prompt, log_label=log_label)
+        result = execute_transport(
+            attempt_request,
+            stream_request_fn=stream_request_fn,
+            nonstream_request_fn=nonstream_request_fn,
+            run_process_fn=run_process_fn,
+        )
+        attempt = TaskAttempt(
+            result=result,
+            attempt_number=attempt_number,
+            prompt_altered=prompt_altered,
+            retry_reason=retry_reason,
+            request_prompt=request_prompt,
+        )
+        attempts.append(attempt)
+        if attempt_number >= max_attempts:
+            break
+
+        next_alteration = "none"
+        instruction = ""
+        nature = result.response_nature
+        if (
+            (nature == "transport_error" and retry_policy.retry_on_transport_error)
+            or (nature == "timeout" and retry_policy.retry_on_timeout)
+        ):
+            retry_reason = nature
+        elif (
+            (nature == "token_limit" and retry_policy.retry_on_token_limit)
+            or (nature == "repetition_abort" and retry_policy.retry_on_repetition)
+        ):
+            alter = prompt_alterer or _retry_prompt_alteration
+            next_alteration, instruction = alter(
+                nature, result.thinking_tokens, request.max_tokens,
+            )
+            retry_reason = nature if next_alteration != "none" else None
+        elif (
+            retry_policy.retry_on_json_error
+            and json_error_prompt_alterer is not None
+            and not result.error
+        ):
+            json_instruction = json_error_prompt_alterer(result)
+            if json_instruction:
+                next_alteration = "json_error"
+                instruction = json_instruction
+                retry_reason = "json_error"
+
+        if retry_reason is None:
+            break
+        retry_reasons.append(retry_reason)
+        prompt_altered = next_alteration
+        request_prompt = base_prompt + instruction
+
+    selected = attempts[-1] if attempts else None
+    return TaskExecution(
+        attempts=attempts,
+        selected=selected,
+        retry_reasons=retry_reasons,
     )
 
 

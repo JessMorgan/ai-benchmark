@@ -50,11 +50,14 @@ This document describes the high-level design of AI Benchmark.
 4. **Plugin Execution**
    - `_run_plugins()` uses `ThreadPoolExecutor` with `plugin_thread_limit` workers.
    - Each plugin task calls `_run_plugin_task()`.
-   - HTTP tasks call the normalized one-attempt `execute_transport()` layer,
-     which selects `stream_request()`/`nonstream_request()` and owns provider
-     schema/stream fallback; OpenCode is normalized through the same layer.
+   - HTTP and OpenCode tasks call `execute_task()`, the shared logical-attempt
+     engine, which invokes the normalized one-attempt `execute_transport()`
+     layer. The transport layer selects `stream_request()`/`nonstream_request()`
+     and owns provider schema/stream fallback; OpenCode is normalized through
+     the same layer.
    - OpenCode tasks call the subprocess adapter with `opencode run --pure --format json --thinking`, capture stdout/stderr separately, extract the final assistant answer and reasoning from the NDJSON event stream, and score the answer as the response.
-   - Each HTTP/OpenCode task uses one scalar `max_tokens` budget and at most one benchmark-level retry. Attempt metadata records `response_nature`, `retry_reason`, `prompt_altered`, token breakdown, failure cause, and the selected attempt; timeout and cancellation are terminal and mark time truncation/cancellation instead of retrying. Provider-level 429 backoff and schema fallbacks remain separate diagnostics.
+   - Each HTTP/OpenCode task uses one scalar `max_tokens` budget and at most one benchmark-level retry through `BENCHMARK_RETRY_POLICY`. Attempt metadata records `response_nature`, `retry_reason`, `prompt_altered`, token breakdown, failure cause, and the selected attempt; timeout and cancellation are terminal and mark time truncation/cancellation instead of retrying. Provider-level 429 backoff and schema fallbacks remain separate diagnostics.
+   - Judges use the same `execute_task()` engine with `JUDGE_RETRY_POLICY`: only invalid parsed JSON can trigger the logical retry, while transport failures, token limits, repetition, timeout, and cancellation remain terminal. Judge-specific parsing and thinking-budget guidance stay in `core.py`.
 
 ### Retry layers
 
@@ -64,12 +67,16 @@ The benchmark has separate transport, task-attempt, and judge-attempt layers. A 
 Benchmark task cell
 
   _run_plugin_task()                         Judge cell
-  up to 2 logical attempts                  judge_response()
-          │                                  up to 2 attempts for invalid JSON
+  execute_task()                             execute_task()
+  BENCHMARK_RETRY_POLICY                     JUDGE_RETRY_POLICY
+  up to 2 logical attempts                   up to 2 attempts for invalid JSON
           │                                          │
           ▼                                          ▼
-  stream_request() /                      stream_request()
-  nonstream_request()                              │
+  execute_transport()                       execute_transport()
+          │                                  (streaming HTTP)
+          ▼                                          │
+  stream_request() /                               ▼
+  nonstream_request()                         stream_request()
           │                                        │
           └──────────────┬─────────────────────────┘
                          ▼
@@ -162,10 +169,12 @@ The defaults are based on observed healthy benchmark streams: they emit `step_st
 ## API Request Flow
 
 ```
-_run_plugin_task
-    ├── stream_request (if plugin.supports_streaming)
-    │       └── fallback to nonstream_request on error
-    └── nonstream_request (if not streaming)
+_run_plugin_task / judge_response
+    └── execute_task (policy-bounded logical attempts)
+            └── execute_transport (one normalized attempt)
+                    ├── stream_request (if supported)
+                    │       └── fallback to nonstream_request on explicit rejection
+                    └── nonstream_request (if not streaming)
 ```
 
 Both request functions:

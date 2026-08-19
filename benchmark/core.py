@@ -45,7 +45,15 @@ from .plugin import (
     serialize_rubric,
 )
 from .state import BenchmarkState  # noqa: F401
-from .transport import TransportRequest, TransportResult, execute_transport
+from .transport import (
+    BENCHMARK_RETRY_POLICY,
+    JUDGE_RETRY_POLICY,
+    TransportRequest,
+    TransportResult,
+    _retry_prompt_alteration,
+    _thinking_consumed_budget,
+    execute_task,
+)
 
 PRELOAD_PROMPT = "Reply with the single word OK."
 PRELOAD_DEFAULT_TIMEOUT = 300
@@ -86,29 +94,6 @@ def _thinking_budget_retry_instruction(token_budget):
         f"reasoning to approximately {thinking_budget} tokens (half of the "
         f"{budget}-token generation budget). Reserve the remaining budget for "
         "the required final answer. Do not spend the whole retry budget thinking."
-    )
-
-
-def _thinking_consumed_budget(diagnostics):
-    """Return whether a response appears to hit its budget while reasoning.
-
-    A response whose reasoning consumed at least 80% of the generation
-    budget and still ended with ``finish_reason="length"`` is treated as
-    budget exhaustion. The 80% threshold (rather than 100%) accounts for
-    token estimates (e.g. characters/4) that undercount the real reasoning
-    stream, which is often truncated mid-generation.
-    """
-    if not isinstance(diagnostics, dict):
-        return False
-    max_tokens = diagnostics.get("request_max_tokens")
-    reasoning_tokens = diagnostics.get("response_reasoning_tokens")
-    return (
-        diagnostics.get("response_finish_reason") == "length"
-        and isinstance(max_tokens, (int, float))
-        and not isinstance(max_tokens, bool)
-        and isinstance(reasoning_tokens, (int, float))
-        and not isinstance(reasoning_tokens, bool)
-        and reasoning_tokens >= 0.8 * max_tokens
     )
 
 
@@ -1097,78 +1082,94 @@ def judge_response(source_config, judge_source, judge_api_model, sidecar,
         with contextlib.suppress(Exception):
             progress_callback(content_delta, thinking_delta)
 
-    def report_attempt(attempt_number):
-        if attempt_callback is None:
-            return
-        # Attempt transitions are observational only; a broken live-state
-        # observer must never terminate a judge request.
-        with contextlib.suppress(Exception):
-            attempt_callback(attempt_number)
-
-    retry_guidance = ""
     # The prompt is built by the current code path, so use the versions that
     # actually govern this request rather than stale metadata in a retained
     # sidecar created by an older benchmark run.
     prompt_version = JUDGE_PROMPT_VERSION
     instructions_version = judge_instructions_version(plugin)
-    for attempt in range(2):
-        report_attempt(attempt + 1)
-        request_prompt = prompt if attempt == 0 else (
-            prompt + "\n\nYour previous response was invalid. Return only the required JSON schema."
-            + retry_guidance
-        )
-        judge_observer = TaskObserver(
-            pid=f"judge:{item['plugin']}",
-            on_chunk=report_progress,
-            on_think_chunk=lambda delta: report_progress("", delta),
-        )
-        response = stream_request(
-            source_config, timeout, judge_api_model, judge_source, request_prompt,
-            budget, log_path=log_path,
-            log_label=(
-                f"Judge {item['target']} / {item['plugin']} "
-                f"(streaming attempt {attempt + 1}, "
-                f"prompt_version={prompt_version}, "
-                f"judge_instructions_version={instructions_version})"
-            ),
-            temperature=temperature, drop_params=drop_params or [],
-            request_params=request_params,
-            stop_event=stop_event,
-            observer=judge_observer,
-            pid=f"judge:{item['plugin']}",
-        )
-        diagnostics = _judge_response_diagnostics(response, request_params, budget)
-        if response.error:
-            # Preserve partial streamed content for cancellation/transport
-            # diagnostics, while still treating the attempt as unsuccessful.
-            return JudgeResult(
-                error=response.error,
-                response_text=response.text or None,
-                terminal_429=_is_exhausted_429(response.error),
-                diagnostics=diagnostics,
-            )
-        parsed = parse_judge_response(response.text)
-        diagnostics["response_json_valid"] = parsed.error is None
+    judge_observer = TaskObserver(
+        pid=f"judge:{item['plugin']}",
+        on_chunk=report_progress,
+        on_think_chunk=lambda delta: report_progress("", delta),
+    )
+    judge_request = TransportRequest(
+        prompt=prompt,
+        max_tokens=budget,
+        source_config=source_config,
+        api_model=judge_api_model,
+        source=judge_source,
+        timeout=timeout,
+        temperature=temperature,
+        drop_params=drop_params or [],
+        request_params=request_params,
+        stop_event=stop_event,
+        observer=judge_observer,
+        pid=f"judge:{item['plugin']}",
+        log_path=log_path,
+        log_label=(
+            f"Judge {item['target']} / {item['plugin']} "
+            f"(streaming attempt {{attempt}}, "
+            f"prompt_version={prompt_version}, "
+            f"judge_instructions_version={instructions_version})"
+        ),
+        supports_streaming=True,
+    )
+
+    def json_error_prompt_alterer(result: TransportResult):
+        parsed = parse_judge_response(result.text)
         if parsed.error is None:
-            return JudgeResult(
-                score=parsed.score,
-                confidence=parsed.confidence,
-                rationale=parsed.rationale,
-                response_text=response.text,
-                diagnostics=diagnostics,
-                criteria=parsed.criteria,
-            )
-        if _thinking_consumed_budget(diagnostics):
-            retry_guidance = _thinking_budget_retry_instruction(budget)
-        parsed = JudgeResult(
+            return None
+        diagnostics = _judge_response_diagnostics(result, request_params, budget)
+        guidance = (
+            _thinking_budget_retry_instruction(budget)
+            if _thinking_consumed_budget(diagnostics) else ""
+        )
+        return (
+            "\n\nYour previous response was invalid. Return only the required JSON schema."
+            + guidance
+        )
+
+    execution = execute_task(
+        judge_request,
+        retry_policy=JUDGE_RETRY_POLICY,
+        base_prompt=prompt,
+        json_error_prompt_alterer=json_error_prompt_alterer,
+        attempt_callback=attempt_callback,
+        stream_request_fn=stream_request,
+    )
+    if execution.selected is None:
+        return JudgeResult(error="cancelled" if stop_event and stop_event.is_set() else "no judge attempt")
+    result = execution.selected.result
+    diagnostics = _judge_response_diagnostics(result, request_params, budget)
+    if result.error:
+        # Preserve partial streamed content for cancellation/transport
+        # diagnostics, while still treating the attempt as unsuccessful.
+        diagnostics["response_json_valid"] = False
+        return JudgeResult(
+            error=result.error,
+            response_text=result.text or None,
+            terminal_429=_is_exhausted_429(result.error),
+            diagnostics=diagnostics,
+        )
+    parsed = parse_judge_response(result.text)
+    diagnostics["response_json_valid"] = parsed.error is None
+    if parsed.error is None:
+        return JudgeResult(
+            score=parsed.score,
             confidence=parsed.confidence,
             rationale=parsed.rationale,
-            error=parsed.error,
-            response_text=response.text,
+            response_text=result.text,
             diagnostics=diagnostics,
             criteria=parsed.criteria,
         )
-    return parsed
+    return JudgeResult(
+        confidence=parsed.confidence,
+        rationale=parsed.rationale,
+        error=parsed.error,
+        response_text=result.text,
+        diagnostics=diagnostics,
+        criteria=parsed.criteria,
+    )
 
 
 def _overall_score(result, active_plugins):
@@ -1246,49 +1247,6 @@ def response_nature(*, text, error, finish_reason, repeating=False, cancelled=Fa
         return "empty"
     return "completed"
 
-
-def _retry_prompt_alteration(nature, thinking_tokens, max_tokens):
-    """Return the retry alteration enum and instruction for one attempt."""
-    if nature == "repetition_abort":
-        return (
-            "avoid_repetition",
-            (
-                "\n\nRETRY GUIDANCE: Do not repeat phrases, paragraphs, code blocks, "
-                "or reasoning loops from the previous attempt. Produce new, "
-                "task-relevant content and finish the requested answer."
-            )
-        )
-    if nature != "token_limit":
-        return "none", ""
-    budget = max(1, int(max_tokens))
-    if thinking_tokens is not None and thinking_tokens >= 0.8 * budget:
-        return (
-            "thinking_50_percent",
-            (
-                f"\n\nRETRY GUIDANCE: Limit internal thinking or reasoning to approximately "
-                f"{max(1, budget // 2)} tokens (about half of the {budget}-token "
-                "generation budget). Reserve the remaining budget for the required "
-                "final answer. Do not spend the whole retry budget thinking."
-            )
-        )
-    if thinking_tokens is not None and thinking_tokens > 0.5 * budget:
-        return (
-            "thinking_30_percent",
-            (
-                f"\n\nRETRY GUIDANCE: Limit internal thinking or reasoning to approximately "
-                f"{max(1, int(budget * 0.3))} tokens (about 30% of the {budget}-token "
-                "generation budget). Reserve most of the budget for the required "
-                "final answer."
-            )
-        )
-    return (
-        "response_under_budget",
-        (
-            f"\n\nRETRY GUIDANCE: Complete the required answer while keeping the total "
-            f"response just below the {budget}-token generation limit. Be concise "
-            "enough to finish before the limit."
-        )
-    )
 
 
 def _response_reasoning_tokens(response):
@@ -2417,64 +2375,56 @@ def _run_plugin_task(target_name, api_model, source, plugin, source_config, time
     def on_retry():
         state.start_plugin_run(target_name, pid)
 
-    def execute_once(request_prompt, attempt_number) -> TransportResult:
-        # Retry orchestration remains in this function for Level 1; the
-        # transport module owns only one normalized attempt.
+    def on_chunk(delta):
+        state.mark_first_chunk_seen(target_name, pid, ts=time.time())
+        state.add_bytes_received(target_name, pid, len(delta))
+
+    def on_think_chunk(delta):
+        state.mark_first_chunk_seen(target_name, pid, ts=time.time())
+        state.add_thinking_bytes_received(target_name, pid, len(delta))
+
+    task_observer = TaskObserver(
+        model_name=target_name,
+        pid=pid,
+        on_chunk=on_chunk,
+        on_think_chunk=on_think_chunk,
+        on_retry=on_retry,
+    )
+
+    request = TransportRequest(
+        prompt=base_prompt,
+        max_tokens=budget,
+        source_config=source_config,
+        api_model=api_model,
+        source=source,
+        timeout=timeout,
+        temperature=temperature,
+        system_prompt=system_prompt,
+        drop_params=drop_params,
+        request_params=request_params,
+        session_seed=session_seed,
+        log_path=log_file,
+        log_label=f"{plugin.name} (attempt {{attempt}})",
+        pid=pid,
+        stop_event=stop_event,
+        observer=task_observer,
+        max_content_tokens=max_content_tokens,
+        max_thinking_tokens=max_thinking_tokens,
+        repetition_guard=repetition_guard,
+        transport=runner,
+        supports_streaming=plugin.supports_streaming,
+        opencode_config_path=opencode_config_path,
+        opencode_model=opencode_model,
+        opencode_agent=opencode_agent,
+        opencode_binary=opencode_binary,
+        opencode_output_dir=output_dir,
+        opencode_no_output_grace=resolve_opencode_timeout(source_config, source),
+        opencode_target_key=artifact_target,
+        opencode_plugin_id=pid,
+    )
+
+    def on_attempt(attempt_number):
         state.set_plugin_attempt(target_name, pid, attempt_number)
-
-        def on_chunk(delta):
-            state.mark_first_chunk_seen(target_name, pid, ts=time.time())
-            state.add_bytes_received(target_name, pid, len(delta))
-
-        def on_think_chunk(delta):
-            state.mark_first_chunk_seen(target_name, pid, ts=time.time())
-            state.add_thinking_bytes_received(target_name, pid, len(delta))
-
-        task_observer = TaskObserver(
-            model_name=target_name,
-            pid=pid,
-            on_chunk=on_chunk,
-            on_think_chunk=on_think_chunk,
-            on_retry=on_retry,
-        )
-
-        request = TransportRequest(
-            prompt=request_prompt,
-            max_tokens=budget,
-            source_config=source_config,
-            api_model=api_model,
-            source=source,
-            timeout=timeout,
-            temperature=temperature,
-            system_prompt=system_prompt,
-            drop_params=drop_params,
-            request_params=request_params,
-            session_seed=session_seed,
-            log_path=log_file,
-            log_label=f"{plugin.name} (attempt {attempt_number})",
-            pid=pid,
-            stop_event=stop_event,
-            observer=task_observer,
-            max_content_tokens=max_content_tokens,
-            max_thinking_tokens=max_thinking_tokens,
-            repetition_guard=repetition_guard,
-            transport=runner,
-            supports_streaming=plugin.supports_streaming,
-            opencode_config_path=opencode_config_path,
-            opencode_model=opencode_model,
-            opencode_agent=opencode_agent,
-            opencode_binary=opencode_binary,
-            opencode_output_dir=output_dir,
-            opencode_no_output_grace=resolve_opencode_timeout(source_config, source),
-            opencode_target_key=artifact_target,
-            opencode_plugin_id=pid,
-        )
-        return execute_transport(
-            request,
-            stream_request_fn=stream_request,
-            nonstream_request_fn=nonstream_request,
-            run_process_fn=run_process,
-        )
 
     def evaluate(text):
         try:
@@ -2483,27 +2433,29 @@ def _run_plugin_task(target_name, api_model, source, plugin, source_config, time
         except Exception as exc:  # noqa: BLE001 - retain evaluator failures as metadata
             return "fail", [], {}, f"plugin.evaluate raised {type(exc).__name__}: {exc}", traceback.format_exc()
 
+    execution = execute_task(
+        request,
+        retry_policy=BENCHMARK_RETRY_POLICY,
+        base_prompt=base_prompt,
+        prompt_alterer=_retry_prompt_alteration,
+        attempt_callback=on_attempt,
+        stream_request_fn=stream_request,
+        nonstream_request_fn=nonstream_request,
+        run_process_fn=run_process,
+    )
+    if not execution.attempts:
+        return PluginTaskResult(None, "No benchmark attempt was executed")
+
     attempts: list[dict[str, Any]] = []
     bodies = {}
-    request_prompt = base_prompt
-    retry_reason = None
-    current_alteration = "none"
-    for attempt_number in (1, 2):
-        if stop_event and stop_event.is_set():
-            if not attempts:
-                return PluginTaskResult(None, "Cancelled")
-            break
-        raw = execute_once(request_prompt, attempt_number)
+    for index, task_attempt in enumerate(execution.attempts):
+        raw = task_attempt.result
         text = raw.text
         think_text = raw.think_text
         schema_fallback_used = schema_fallback_used or raw.schema_fallback_used
         if raw.schema_fallback_error:
             schema_fallback_error = raw.schema_fallback_error
-        nature = response_nature(
-            text=text, error=raw.error, finish_reason=raw.finish_reason,
-            repeating=raw.repeating,
-            cancelled=bool(stop_event and stop_event.is_set()),
-        )
+        nature = raw.response_nature
         thinking_tokens = raw.thinking_tokens
         if raw.error and not text.strip():
             score, rubric, diagnostics = "fail", [], {}
@@ -2525,11 +2477,11 @@ def _run_plugin_task(target_name, api_model, source, plugin, source_config, time
             )
         elif attempt_failure_cause is None and nature not in {"completed", "empty"}:
             attempt_failure_cause = nature
-        attempts.append({
-            "attempt": attempt_number,
+        attempt_record = {
+            "attempt": task_attempt.attempt_number,
             "max_tokens": budget,
-            "prompt_altered": current_alteration,
-            "retry_reason": retry_reason,
+            "prompt_altered": task_attempt.prompt_altered,
+            "retry_reason": task_attempt.retry_reason,
             "response_nature": nature,
             "finish_reason": raw.finish_reason,
             "error": raw.error,
@@ -2543,9 +2495,7 @@ def _run_plugin_task(target_name, api_model, source, plugin, source_config, time
             "truncated": raw.finish_reason == "length",
             "truncated_due_to_time": nature == "timeout",
             "repeating": raw.repeating,
-            "empty_reason": classify_empty_reason(
-                text, think_text, raw.finish_reason, raw.error,
-            ),
+            "empty_reason": raw.empty_reason,
             "score": score,
             "rubric": rubric,
             "diagnostics": diagnostics,
@@ -2553,26 +2503,14 @@ def _run_plugin_task(target_name, api_model, source, plugin, source_config, time
             "score_traceback": score_traceback,
             "usable": usable,
             "selected": False,
-            "prompt_sha256": hashlib.sha256(request_prompt.encode("utf-8")).hexdigest(),
-            "response_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
-        })
-        bodies[attempt_number] = (request_prompt, text, think_text)
-        if attempt_number == 2:
-            break
-        alteration, instruction = _retry_prompt_alteration(
-            nature, thinking_tokens, budget,
-        )
-        transport_retry = nature == "transport_error"
-        should_retry = transport_retry or alteration != "none"
-        if not should_retry or stop_event and stop_event.is_set():
-            break
-        attempts[-1]["retry_scheduled"] = True
-        retry_reason = nature
-        current_alteration = "none" if transport_retry else alteration
-        request_prompt = base_prompt if transport_retry else base_prompt + instruction
+            "prompt_sha256": raw.prompt_sha256,
+            "response_sha256": raw.response_sha256,
+        }
+        if index + 1 < len(execution.attempts):
+            attempt_record["retry_scheduled"] = True
+        attempts.append(attempt_record)
+        bodies[task_attempt.attempt_number] = (task_attempt.request_prompt, text, think_text)
 
-    if not attempts:
-        return PluginTaskResult(None, "No benchmark attempt was executed")
     usable_attempts = [attempt for attempt in attempts if attempt["usable"]]
     pool = usable_attempts or attempts
     selected = max(
@@ -2585,6 +2523,11 @@ def _run_plugin_task(target_name, api_model, source, plugin, source_config, time
         ),
     )
     selected["selected"] = True
+    selected_task_attempt = next(
+        attempt for attempt in execution.attempts
+        if attempt.attempt_number == selected["attempt"]
+    )
+    execution.select(selected_task_attempt)
     selected_prompt, selected_text, selected_think = bodies[selected["attempt"]]
     selected_nature = selected["response_nature"]
     selected_error = selected["error"]
