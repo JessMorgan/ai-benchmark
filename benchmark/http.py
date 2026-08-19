@@ -23,6 +23,8 @@ from typing import Any
 
 import requests
 
+from .observer import TaskObserver
+
 
 @dataclass(frozen=True)
 class PostRequestResult:
@@ -864,6 +866,7 @@ def stream_request(source_config, timeout, model, source, prompt, max_tokens=204
                    log_path=None, log_label=None, session_seed=0, temperature=None,
                    drop_params=None, stop_event=None, system_prompt=None,
                    request_params=None,
+                   observer: TaskObserver | None = None,
                    on_chunk: Callable[[str], None] | None = None,
                    on_think_chunk: Callable[[str], None] | None = None,
                    pid: str | None = None,
@@ -892,6 +895,13 @@ def stream_request(source_config, timeout, model, source, prompt, max_tokens=204
     itself. Defaults are off so preload/judge/utility callers are
     unaffected; the benchmark task path opts in with per-source config.
     """
+    if observer is None:
+        observer = TaskObserver(
+            pid=pid or "",
+            on_chunk=on_chunk,
+            on_think_chunk=on_think_chunk,
+            on_retry=on_retry,
+        )
     start = time.time()
     first_tok = None
     text = ""
@@ -925,7 +935,7 @@ def stream_request(source_config, timeout, model, source, prompt, max_tokens=204
                                    stream=True, system_prompt=system_prompt,
                                    request_params=request_params)
     with _post_request_context(source_config, source, body, timeout, True, log_path, log_label,
-                               stop_event=stop_event, pid=pid, on_retry=on_retry) as request:
+                               stop_event=stop_event, pid=pid, on_retry=observer.retry) as request:
         if request.error:
             return StreamResult(text, think_text, first_tok, time.time(),
                                 request.error, finish_reason, usage)
@@ -955,9 +965,7 @@ def stream_request(source_config, timeout, model, source, prompt, max_tokens=204
                         if first_tok is None:
                             first_tok = time.time()
                         text += chunk
-                        if on_chunk is not None:
-                            with contextlib.suppress(Exception):
-                                on_chunk(chunk)
+                        observer.chunk(chunk)
                         guard_error = guards.check(text, "")
                         if guard_error:
                             error = guard_error
@@ -1004,12 +1012,10 @@ def stream_request(source_config, timeout, model, source, prompt, max_tokens=204
             # still produces one observer call with the joined delta,
             # which keeps the callback rate proportional to wall-clock
             # arrivals rather than choice array sizes.
-            if on_chunk is not None and len(text) > prev_text_len:
+            if len(text) > prev_text_len:
                 delta = text[prev_text_len:]
                 prev_text_len = len(text)
-                with contextlib.suppress(Exception):
-                    # A buggy observer must not abort the stream read.
-                    on_chunk(delta)
+                observer.chunk(delta)
             # Parallel reasoning / thinking callback. The thinking
             # counter increments independently of the content counter so
             # a deepseek-r1 / Qwen3 / o1-style stream that emits 2 000
@@ -1022,12 +1028,10 @@ def stream_request(source_config, timeout, model, source, prompt, max_tokens=204
             # branch is a no-op for them. Same exception-swallowing
             # contract as ``on_chunk`` so a buggy observer cannot
             # abort the stream read.
-            if on_think_chunk is not None and len(think_text) > prev_think_len:
+            if len(think_text) > prev_think_len:
                 think_delta = think_text[prev_think_len:]
                 prev_think_len = len(think_text)
-                with contextlib.suppress(Exception):
-                    # A buggy observer must not abort the stream read.
-                    on_think_chunk(think_delta)
+                observer.think_chunk(think_delta)
             guard_error = guards.check(text, think_text)
             if guard_error:
                 error = guard_error
@@ -1066,6 +1070,7 @@ def nonstream_request(source_config, timeout, model, source, prompt, max_tokens=
                       log_path=None, log_label=None, session_seed=0, temperature=None,
                       drop_params=None, stop_event=None, system_prompt=None,
                       request_params=None,
+                      observer: TaskObserver | None = None,
                       pid: str | None = None,
                       on_retry: Callable[[], None] | None = None,
                       max_content_tokens=None, max_thinking_tokens=None,
@@ -1085,6 +1090,8 @@ def nonstream_request(source_config, timeout, model, source, prompt, max_tokens=
     are off so preload/judge/utility callers are unaffected; the benchmark
     task path opts in with per-source config.
     """
+    if observer is None:
+        observer = TaskObserver(pid=pid or "", on_retry=on_retry)
     start = time.time()
     error = None
     text = ""
@@ -1118,7 +1125,7 @@ def nonstream_request(source_config, timeout, model, source, prompt, max_tokens=
                                    request_params=request_params)
     raw_resp_text = None
     with _post_request_context(source_config, source, body, timeout, False, log_path, log_label,
-                               stop_event=stop_event, pid=pid, on_retry=on_retry) as request:
+                               stop_event=stop_event, pid=pid, on_retry=observer.retry) as request:
         if request.error:
             return NonStreamResult(text, think_text, usage, time.time() - start,
                                     request.error, finish_reason)

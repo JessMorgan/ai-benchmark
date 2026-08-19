@@ -254,10 +254,9 @@ class TestJudgeCore(unittest.TestCase):
         self.assertIn("prompt_version=judge-v8", log_label)
         self.assertIn("judge_instructions_version=1.0.0", log_label)
         self.assertNotIn("unknown", log_label)
-        self.assertIn("on_chunk", request.call_args.kwargs)
-        self.assertIn("on_think_chunk", request.call_args.kwargs)
-        request.call_args.kwargs["on_chunk"]("abcd")
-        request.call_args.kwargs["on_think_chunk"]("efgh")
+        observer = request.call_args.kwargs["observer"]
+        observer.chunk("abcd")
+        observer.think_chunk("efgh")
         self.assertEqual(progress.call_args_list, [
             mock.call("abcd", ""),
             mock.call("", "efgh"),

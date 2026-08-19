@@ -808,7 +808,7 @@ class TestDropParams(unittest.TestCase):
         def fake_stream_request(source_config, timeout, model, source, prompt, max_tokens=2048,
                                 log_path=None, log_label=None, session_seed=0, temperature=None,
                                 drop_params=None, stop_event=None, system_prompt=None,
-                                on_chunk=None, on_think_chunk=None, pid=None, on_retry=None,
+                                observer=None, on_chunk=None, on_think_chunk=None, pid=None, on_retry=None,
                                 max_content_tokens=None, max_thinking_tokens=None,
                                 repetition_guard=False):
             # Simulate two SSE deltas; the closure should fire once per delta.
@@ -827,7 +827,9 @@ class TestDropParams(unittest.TestCase):
             # increment is exercised in
             # ``tests/test_tui_cells.test_in_flight_streaming_plugin_thinking_only_shows_think_tok``.
             for delta in ["Hello, ", "world"]:
-                if on_chunk is not None:
+                if observer is not None:
+                    observer.chunk(delta)
+                elif on_chunk is not None:
                     on_chunk(delta)
             return StreamResult("Hello, world", "", 1.0, 1.5, None, "stop", {})
 
@@ -2328,11 +2330,12 @@ class TestTokenLimitRetry(unittest.TestCase):
         def streaming_side(*args, **kwargs):
             captured.append(args[5] if len(args) > 5 else kwargs.get("max_tokens", -1))
             prompts.append(args[4])
+            observer = kwargs["observer"]
             if len(captured) == 1:
-                kwargs["on_think_chunk"]("r" * 40)
+                observer.think_chunk("r" * 40)
                 return truncated
-            kwargs["on_think_chunk"]("s" * 8)
-            kwargs["on_chunk"]("c" * 12)
+            observer.think_chunk("s" * 8)
+            observer.chunk("c" * 12)
             return retry
 
         with mock.patch.object(

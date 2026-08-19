@@ -23,6 +23,7 @@ from .http import (  # noqa: F401
     nonstream_request,
     stream_request,
 )
+from .observer import TaskObserver
 from .opencode import (
     OPENCODE_BINARY,
     OPENCODE_NO_OUTPUT_GRACE,
@@ -1115,6 +1116,11 @@ def judge_response(source_config, judge_source, judge_api_model, sidecar,
             prompt + "\n\nYour previous response was invalid. Return only the required JSON schema."
             + retry_guidance
         )
+        judge_observer = TaskObserver(
+            pid=f"judge:{item['plugin']}",
+            on_chunk=report_progress,
+            on_think_chunk=lambda delta: report_progress("", delta),
+        )
         response = stream_request(
             source_config, timeout, judge_api_model, judge_source, request_prompt,
             budget, log_path=log_path,
@@ -1127,8 +1133,7 @@ def judge_response(source_config, judge_source, judge_api_model, sidecar,
             temperature=temperature, drop_params=drop_params or [],
             request_params=request_params,
             stop_event=stop_event,
-            on_chunk=report_progress,
-            on_think_chunk=lambda delta: report_progress("", delta),
+            observer=judge_observer,
             pid=f"judge:{item['plugin']}",
         )
         diagnostics = _judge_response_diagnostics(response, request_params, budget)
@@ -1779,7 +1784,9 @@ def _run_plugin_task_legacy(target_name, api_model, source, plugin, source_confi
     request_params = get_request_params(global_cfg or {}) if callable(get_request_params) else {}
     if not isinstance(request_params, dict):
         request_params = {}
-    request_params_kwargs = {"request_params": request_params} if request_params else {}
+    request_params_kwargs: dict[str, Any] = (
+        {"request_params": request_params} if request_params else {}
+    )
     schema_fallback_used = False
     schema_fallback_error = None
     schema_request_applied = runner == "http" and (
@@ -2409,6 +2416,12 @@ def _run_plugin_task(target_name, api_model, source, plugin, source_config, time
     def on_retry():
         state.start_plugin_run(target_name, pid)
 
+    observer = TaskObserver(
+        model_name=target_name,
+        pid=pid,
+        on_retry=on_retry,
+    )
+
     def request_nonstream(request_prompt, label):
         """Perform a non-streaming request, including the grammar fallback."""
         nonlocal schema_fallback_used, schema_fallback_error, request_params
@@ -2416,7 +2429,7 @@ def _run_plugin_task(target_name, api_model, source, plugin, source_config, time
             "log_path": log_file, "log_label": label,
             "session_seed": session_seed, "temperature": temperature,
             "drop_params": drop_params, "stop_event": stop_event,
-            "system_prompt": system_prompt, "pid": pid, "on_retry": on_retry,
+            "system_prompt": system_prompt, "pid": pid, "observer": observer,
             "max_content_tokens": max_content_tokens,
             "max_thinking_tokens": max_thinking_tokens,
             "repetition_guard": repetition_guard,
@@ -2440,7 +2453,7 @@ def _run_plugin_task(target_name, api_model, source, plugin, source_config, time
                 "log_label": f"{label} (JSON-object schema fallback)",
                 "session_seed": session_seed, "temperature": temperature,
                 "drop_params": drop_params, "stop_event": stop_event,
-                "system_prompt": system_prompt, "pid": pid, "on_retry": on_retry,
+                "system_prompt": system_prompt, "pid": pid, "observer": observer,
                 "max_content_tokens": max_content_tokens,
                 "max_thinking_tokens": max_thinking_tokens,
                 "repetition_guard": repetition_guard,
@@ -2490,16 +2503,20 @@ def _run_plugin_task(target_name, api_model, source, plugin, source_config, time
                 "drop_params": drop_params,
                 "stop_event": stop_event,
                 "system_prompt": system_prompt,
-                "on_chunk": lambda delta: (
-                    state.mark_first_chunk_seen(target_name, pid, ts=time.time()),
-                    state.add_bytes_received(target_name, pid, len(delta)),
-                ),
-                "on_think_chunk": lambda delta: (
-                    state.mark_first_chunk_seen(target_name, pid, ts=time.time()),
-                    state.add_thinking_bytes_received(target_name, pid, len(delta)),
+                "observer": TaskObserver(
+                    model_name=target_name,
+                    pid=pid,
+                    on_chunk=lambda delta: (
+                        state.mark_first_chunk_seen(target_name, pid, ts=time.time()),
+                        state.add_bytes_received(target_name, pid, len(delta)),
+                    ),
+                    on_think_chunk=lambda delta: (
+                        state.mark_first_chunk_seen(target_name, pid, ts=time.time()),
+                        state.add_thinking_bytes_received(target_name, pid, len(delta)),
+                    ),
+                    on_retry=on_retry,
                 ),
                 "pid": pid,
-                "on_retry": on_retry,
                 "max_content_tokens": max_content_tokens,
                 "max_thinking_tokens": max_thinking_tokens,
                 "repetition_guard": repetition_guard,
