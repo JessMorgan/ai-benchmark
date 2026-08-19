@@ -235,13 +235,25 @@ class TestJudgeCore(unittest.TestCase):
                 sidecar, FakePlugin(), "Prompt", "Response",
                 target="model", runner="http",
             )
+            # Simulate a retained sidecar created before version metadata was
+            # added; the request log should still report the versions used by
+            # the current prompt builder.
+            with open(sidecar, encoding="utf-8") as handle:
+                legacy_item = json.load(handle)
+            legacy_item.pop("judge_prompt_version", None)
+            legacy_item.pop("judge_instructions_version", None)
+            with open(sidecar, "w", encoding="utf-8") as handle:
+                json.dump(legacy_item, handle)
             with mock.patch("benchmark.core.stream_request", return_value=response) as request:
                 result = judge_response(
                     {}, "Local", "judge", sidecar, timeout=3,
                     progress_callback=progress,
                 )
         self.assertEqual(result.score, 75)
-        self.assertIn("prompt_version=judge-v8", request.call_args.kwargs["log_label"])
+        log_label = request.call_args.kwargs["log_label"]
+        self.assertIn("prompt_version=judge-v8", log_label)
+        self.assertIn("judge_instructions_version=1.0.0", log_label)
+        self.assertNotIn("unknown", log_label)
         self.assertIn("on_chunk", request.call_args.kwargs)
         self.assertIn("on_think_chunk", request.call_args.kwargs)
         request.call_args.kwargs["on_chunk"]("abcd")
