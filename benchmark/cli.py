@@ -3272,6 +3272,44 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
         judge_temperature = (cfg.get("judge", {}).get("temperature", 0.0)
                              if isinstance(cfg.get("judge"), dict) else 0.0)
         judge_request_params = resolve_judge_request_params(cfg)
+        # Top-level flush throttle; ``judge.flush_*`` remains a fallback for
+        # configs written against the earlier judge-only keys. ``None`` is
+        # the "unset" sentinel so an explicit ``0`` (flush every change)
+        # survives the fallback chain.
+        flush_interval = cfg.get("flush_interval_seconds")
+        if flush_interval is None and isinstance(cfg.get("judge"), dict):
+            flush_interval = cfg["judge"].get("flush_interval_seconds")
+        if flush_interval is None:
+            flush_interval = FLUSH_INTERVAL_SECONDS
+        flush_votes = cfg.get("flush_votes")
+        if flush_votes is None and isinstance(cfg.get("judge"), dict):
+            flush_votes = cfg["judge"].get("flush_votes")
+        if flush_votes is None:
+            flush_votes = FLUSH_MAX_VOTES
+        # Throttle state persistence across the whole run: completed judge
+        # votes and completed benchmark tasks accumulate in memory, and the
+        # full state snapshot flushes at most every ``flush_interval_seconds``
+        # seconds or ``flush_votes`` changes, whichever comes first. The
+        # flush runs on a dedicated background thread (``flusher``) so
+        # workers never stall on the GIL-bound serialization or queue behind
+        # ``persistence_lock``; it persists only the state snapshot, never
+        # the reports. The final save on drain/shutdown persists the tail,
+        # so no changes are lost on normal exit.
+        flush_gate = _FlushGate(
+            interval=flush_interval, max_changes=flush_votes,
+        )
+
+        def flush_state():
+            # Flush only the state snapshot here; report files (CSV/HTML/
+            # Markdown/PDF) are rebuilt once at the end of the run or when
+            # the app is stopped, not on every flush cadence.
+            with persistence_lock:
+                state.save_state(state_file, plugin_versions=plugin_versions)
+
+        flusher = _BackgroundFlusher(
+            flush_state, name="state-flusher",
+        )
+        flusher.start()
 
         def enqueue_judge(sidecar, target_name, runner, plugin_id):
             latest = {
@@ -3544,9 +3582,9 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
                     else:
                         run_info["judge_counts"]["failed"] += 1
                     run_info["judge_counts"]["votes"] += 1
-                with persistence_lock:
-                    state.save_state(state_file, plugin_versions=plugin_versions)
-                    _save_outputs(state, output_dir, active_plugins)
+                if flush_gate.changed():
+                    flusher.request_flush()
+                    flush_gate.reset()
             except Exception as exc:  # noqa: BLE001 - isolate one judge job failure
                 # Preserve a per-attempt diagnostic even when the sidecar,
                 # transport, parser, or unexpected processing path fails
@@ -3653,9 +3691,9 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
                     run_info["judge_counts"]["failed"] += 1
                 # Failed attempts do not advance completed progress and remain
                 # eligible for retry on resume.
-                with persistence_lock:
-                    state.save_state(state_file, plugin_versions=plugin_versions)
-                    _save_outputs(state, output_dir, active_plugins)
+                if flush_gate.changed():
+                    flusher.request_flush()
+                    flush_gate.reset()
 
         judge_pools = {
             source: SourceJudgeWorkerPool(
@@ -3736,9 +3774,9 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
             model_active_plugins = [p for p in active_plugins if p.id not in model_blacklist]
             target_info = targets[model_name]
             if not _ensure_preloaded(model_name, target_info, phase_runner):
-                with persistence_lock:
-                    state.save_state(state_file, plugin_versions=plugin_versions)
-                    _save_outputs(state, output_dir, active_plugins)
+                if flush_gate.changed():
+                    flusher.request_flush()
+                    flush_gate.reset()
                 return False
             state_key = model_name if phase_runner == "http" else f"{model_name} [opencode]"
             phase_output_dir = http_output_dir if phase_runner == "http" else opencode_output_dir
@@ -3766,12 +3804,14 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
                       opencode_binary=opencode_binary,
                       display_name=model_name, config_target_name=model_name)
             # OpenCode and HTTP pipeline workers can finish different targets
-            # concurrently. Serialize persistence because save_state uses a
-            # shared .tmp path and report generation writes shared output
-            # files; the in-memory BenchmarkState itself remains thread-safe.
-            with persistence_lock:
-                state.save_state(state_file, plugin_versions=plugin_versions)
-                _save_outputs(state, output_dir, active_plugins)
+            # concurrently. Persistence is throttled through the shared flush
+            # gate and serialized on the background flusher thread, which
+            # owns ``persistence_lock``; the in-memory BenchmarkState itself
+            # remains thread-safe. Reports are rebuilt once at the end of the
+            # run.
+            if flush_gate.changed():
+                flusher.request_flush()
+                flush_gate.reset()
 
         peak_lock = threading.Lock()
 
@@ -3899,6 +3939,13 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
         # timeout keeps the terminal tidy if it happens to finish quickly.
         if tui_thread is not None:
             tui_thread.join(timeout=0.5)
+
+        # Drain any in-flight or pending background flush before the
+        # guaranteed final snapshot, so the two never interleave state
+        # writes. All judge votes are already in memory at this point
+        # (``finish_judge()``/``stop_judge_workers()`` drained the queues),
+        # so the final save below persists the complete tail.
+        flusher.stop()
 
         with persistence_lock:
             # This final snapshot is serialized with all worker saves. Keep

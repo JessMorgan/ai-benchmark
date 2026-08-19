@@ -8,9 +8,16 @@ import tempfile
 import threading
 import time
 import unittest
+from types import SimpleNamespace
 from typing import ClassVar
 from unittest import mock
 
+from benchmark.cli import (
+    _TUI_REFRESH_SECONDS,
+    _BackgroundFlusher,
+    _BenchmarkTUIApp,
+    _FlushGate,
+)
 from benchmark.http import NonStreamResult, StreamResult
 from benchmark.plugin import PluginTaskResult
 from benchmark.state import BenchmarkState
@@ -2432,6 +2439,248 @@ class TestTokenLimitRetry(unittest.TestCase):
             task_result.result["rate-limiter_prompt_altered"],
             "response_under_budget",
         )
+
+
+class TestFlushGate(unittest.TestCase):
+    """The judge-vote persistence throttle."""
+
+    def test_not_due_until_max_changes_reached(self):
+        gate = _FlushGate(interval=3600.0, max_changes=5)
+        for _ in range(4):
+            self.assertFalse(gate.changed())
+        self.assertTrue(gate.changed())
+
+    def test_due_after_interval_elapses(self):
+        gate = _FlushGate(interval=0.05, max_changes=1000)
+        self.assertFalse(gate.changed())
+        time.sleep(0.1)
+        self.assertTrue(gate.changed())
+
+    def test_reset_starts_fresh_cadence(self):
+        gate = _FlushGate(interval=3600.0, max_changes=3)
+        self.assertFalse(gate.changed())
+        self.assertFalse(gate.changed())
+        self.assertTrue(gate.changed())
+        gate.reset()
+        self.assertFalse(gate.changed())
+        self.assertFalse(gate.changed())
+
+    def test_count_trigger_wins_before_interval(self):
+        gate = _FlushGate(interval=0.05, max_changes=3)
+        self.assertFalse(gate.changed())
+        self.assertFalse(gate.changed())
+        # The count trigger fires before the 0.05 s interval elapses.
+        self.assertTrue(gate.changed())
+
+    def test_interval_trigger_wins_before_count(self):
+        gate = _FlushGate(interval=0.05, max_changes=1000)
+        self.assertFalse(gate.changed())
+        time.sleep(0.1)
+        # The interval trigger fires before the 1000-change cap.
+        self.assertTrue(gate.changed())
+
+    def test_invalid_values_fall_back_to_defaults(self):
+        gate = _FlushGate(interval="bogus", max_changes=None)
+        self.assertEqual(gate.interval, 60.0)
+        self.assertEqual(gate.max_changes, 10)
+
+    def test_zero_interval_flushes_every_change(self):
+        gate = _FlushGate(interval=0.0, max_changes=1000)
+        self.assertTrue(gate.changed())
+
+
+class TestBackgroundFlusher(unittest.TestCase):
+    """The dedicated thread that serializes judge-state flushes."""
+
+    def test_single_request_triggers_one_flush(self):
+        calls = []
+        done = threading.Event()
+
+        def flush_fn():
+            calls.append(1)
+            done.set()
+
+        flusher = _BackgroundFlusher(flush_fn)
+        flusher.start()
+        flusher.request_flush()
+        self.assertTrue(done.wait(timeout=5))
+        flusher.stop(timeout=5)
+        self.assertEqual(len(calls), 1)
+
+    def test_requests_during_flush_coalesce(self):
+        started = threading.Event()
+        release = threading.Event()
+        calls = []
+
+        def flush_fn():
+            calls.append(1)
+            started.set()
+            release.wait(timeout=5)
+
+        flusher = _BackgroundFlusher(flush_fn)
+        flusher.start()
+        flusher.request_flush()
+        self.assertTrue(started.wait(timeout=5))
+        # Both requests arrive while the first flush is in flight; they must
+        # coalesce into a single follow-up flush, not one save each.
+        flusher.request_flush()
+        flusher.request_flush()
+        release.set()
+        flusher.stop(timeout=5)
+        self.assertEqual(len(calls), 2)
+
+    def test_request_flush_never_blocks(self):
+        started = threading.Event()
+        release = threading.Event()
+
+        def flush_fn():
+            started.set()
+            release.wait(timeout=5)
+
+        flusher = _BackgroundFlusher(flush_fn)
+        flusher.start()
+        flusher.request_flush()
+        self.assertTrue(started.wait(timeout=5))
+        # With a flush in flight, request_flush must return immediately.
+        flusher.request_flush()
+        release.set()
+        flusher.stop(timeout=5)
+
+    def test_stop_without_pending_exits_without_flushing(self):
+        calls = []
+        flusher = _BackgroundFlusher(lambda: calls.append(1))
+        flusher.start()
+        flusher.stop(timeout=5)
+        self.assertEqual(calls, [])
+
+    def test_stop_drains_pending_request(self):
+        calls = []
+        flusher = _BackgroundFlusher(lambda: calls.append(1))
+        flusher.start()
+        flusher.request_flush()
+        flusher.stop(timeout=5)
+        self.assertEqual(calls, [1])
+
+    def test_flush_error_does_not_kill_thread(self):
+        calls = []
+
+        def flush_fn():
+            calls.append(1)
+            if len(calls) == 1:
+                raise RuntimeError("boom")
+
+        flusher = _BackgroundFlusher(flush_fn)
+        flusher.start()
+        flusher.request_flush()
+        deadline = time.monotonic() + 5
+        while len(calls) < 1 and time.monotonic() < deadline:
+            time.sleep(0.01)
+        # The failed flush must not kill the loop: a second request flushes.
+        flusher.request_flush()
+        flusher.stop(timeout=5)
+        self.assertEqual(len(calls), 2)
+
+
+class _TUIStubState:
+    """Minimal stand-in for BenchmarkState as seen by the TUI refresh loop."""
+
+    def __init__(self):
+        self.revision = 0
+        self.live = False
+        self.activities = []
+
+    def has_live_work(self):
+        return self.live
+
+    def judge_activity_snapshot(self):
+        return self.activities
+
+
+class TestTUIAdaptiveRefresh(unittest.TestCase):
+    """The live TUI rebuilds only when its displayed frame actually changes."""
+
+    def _make_app(self, state, height=50, width=200):
+        app = _BenchmarkTUIApp.__new__(_BenchmarkTUIApp)
+        app._state = state
+        app._stop_event = threading.Event()
+        app._last_frame_key = None
+        app._scroll_y = 0
+        app._scroll_x = 0
+        app._sync_rows = mock.MagicMock()
+        # Argument values for the mocked ``_build_frame_lines`` call; they are
+        # evaluated at the call site even though the mock ignores them.
+        app._active_plugins = []
+        app._source_abbrevs = {}
+        app._frozen_hdr = ""
+        app._plugin_hdr = ""
+        app._num_sources = 1
+        app._model_thread_limits = None
+        app._session_seed = None
+        # ``size`` is a read-only Textual property; stub it at class level
+        # with a mutable box so tests can simulate a terminal resize.
+        size_box = SimpleNamespace(height=height, width=width)
+        patcher = mock.patch.object(
+            _BenchmarkTUIApp, "size",
+            new_callable=mock.PropertyMock, return_value=size_box,
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        app._size_box = size_box
+        return app
+
+    @mock.patch("benchmark.cli._build_frame_lines", return_value=[("row", None)])
+    def test_unchanged_frame_is_skipped(self, build):
+        app = self._make_app(_TUIStubState())
+        app._refresh()
+        app._refresh()
+        app._refresh()
+        self.assertEqual(build.call_count, 1)
+        self.assertEqual(app._sync_rows.call_count, 1)
+
+    @mock.patch("benchmark.cli._build_frame_lines", return_value=[("row", None)])
+    def test_mutation_triggers_rebuild(self, build):
+        state = _TUIStubState()
+        app = self._make_app(state)
+        app._refresh()
+        state.revision = 1
+        app._refresh()
+        self.assertEqual(build.call_count, 2)
+
+    @mock.patch("benchmark.cli._build_frame_lines", return_value=[("row", None)])
+    def test_live_content_keeps_ticking(self, build):
+        state = _TUIStubState()
+        app = self._make_app(state)
+        app._refresh()
+        state.live = True
+        # Live elapsed/countdown content rebuilds every tick despite an
+        # unchanged revision (elapsed seconds advance over time).
+        app._refresh()
+        app._refresh()
+        self.assertEqual(build.call_count, 3)
+
+    @mock.patch("benchmark.cli._build_frame_lines", return_value=[("row", None)])
+    def test_scroll_and_resize_trigger_rebuild(self, build):
+        state = _TUIStubState()
+        app = self._make_app(state)
+        app._refresh()
+        app._scroll_y = 3
+        app._refresh()
+        app._size_box.height = 40
+        app._size_box.width = 180
+        app._refresh()
+        self.assertEqual(build.call_count, 3)
+
+    @mock.patch("benchmark.cli._build_frame_lines")
+    def test_stop_event_exits_without_building(self, build):
+        app = self._make_app(_TUIStubState())
+        app.exit = mock.MagicMock()
+        app._stop_event.set()
+        app._refresh()
+        app.exit.assert_called_once()
+        build.assert_not_called()
+
+    def test_refresh_capped_at_two_fps(self):
+        self.assertEqual(_TUI_REFRESH_SECONDS, 0.5)
 
 
 if __name__ == "__main__":
