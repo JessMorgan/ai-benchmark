@@ -920,6 +920,56 @@ class TestNonStreamingPluginRetry(unittest.TestCase):
         self.assertEqual(response_format["type"], "json_schema")
         self.assertEqual(response_format["json_schema"]["name"], "data_transformation_result")
 
+    def test_run_plugin_task_falls_back_to_json_object_after_grammar_failure(self):
+        """A llama.cpp grammar compiler failure gets one local-validation fallback."""
+        plugin = self._nonstreaming_plugin()
+        source_config = {
+            "Local": {
+                "api_url": "http://localhost:11434/chat/completions",
+                "headers": {},
+            }
+        }
+        fallback_response = {
+            "records": [{
+                "order_id": "O-201", "customer": "Alice", "total": 1, "rank": 1,
+            }],
+            "summary": {"count": 1, "total": 1, "top_order_id": "O-201"},
+        }
+        grammar_error = NonStreamResult(
+            "", "", {}, 0.1,
+            "HTTP 500: Failed to initialize samplers: std::exception", None,
+        )
+        valid_json = NonStreamResult(
+            json.dumps(fallback_response), "", {}, 0.1, None, "stop",
+        )
+        state = self.module.BenchmarkState({"dummy-model": "Local"}, [plugin.id])
+
+        with mock.patch.object(
+            self.module, "nonstream_request", side_effect=[grammar_error, valid_json],
+        ) as request:
+            task_result = self.module._run_plugin_task(
+                "dummy-model", "dummy-model", "Local", plugin, source_config,
+                timeout=1, token_levels=[100], session_seed=12345,
+                log_file=None, global_cfg={}, state=state,
+            )
+
+        self.assertIsNone(task_result.error)
+        self.assertEqual(request.call_count, 2)
+        self.assertEqual(
+            request.call_args_list[1].kwargs["request_params"]["response_format"],
+            {"type": "json_object"},
+        )
+        self.assertTrue(task_result.result["data-transformation_schema_fallback_used"])
+        self.assertEqual(
+            task_result.result["data-transformation_schema_request_status"],
+            "schema_fallback_json_object_valid",
+        )
+        self.assertIn(
+            "Failed to initialize samplers",
+            task_result.result["data-transformation_schema_fallback_error"],
+        )
+        self.assertTrue(task_result.result["data-transformation_response_schema_valid"])
+
     def test_run_plugin_task_nonstreaming_429_retry_fires_on_retry(self):
         """End-to-end: a 429 retry on a non-streaming plugin still
         fires ``state.start_plugin_run`` again -- not just at plugin

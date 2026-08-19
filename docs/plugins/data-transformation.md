@@ -43,9 +43,18 @@ therefore still score poorly.
 
 The evaluator independently validates JSON and the request schema. Per-cell
 metadata records `schema_requested`, `schema_request_status`,
-`response_schema_valid`, and `schema_enforcement_verified`. A normal valid
-response cannot prove provider-side enforcement; use the separate
-`--schema-sentinel` tool for that operational check.
+`response_schema_valid`, `schema_enforcement_verified`,
+`schema_fallback_used`, and `schema_fallback_error`. A normal valid response
+cannot prove provider-side enforcement; use the separate `--schema-sentinel`
+tool for that operational check.
+
+If a provider returns a grammar-sampler initialization error while compiling
+the strict schema, the benchmark retries that cell once with JSON-object mode.
+The response is still validated locally against the full schema and semantic
+rubric, and the metadata status becomes
+`schema_fallback_json_object_valid` (or an invalid/failed variant). This lets
+Nanbeige-like llama.cpp builds participate without treating server grammar
+support as model-quality failure.
 
 Use the plugin ID in all configurations:
 

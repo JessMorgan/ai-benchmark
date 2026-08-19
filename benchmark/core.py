@@ -316,6 +316,30 @@ def _schema_probe_error_status(error):
     return "schema_transport_error"
 
 
+def _is_schema_grammar_error(error):
+    """Return whether a provider failed while compiling a response grammar."""
+    lowered = str(error or "").lower()
+    compiler_markers = (
+        "failed to initialize samplers",
+        "grammar sampler",
+        "failed to parse grammar",
+        "error initializing grammar",
+    )
+    return any(marker in lowered for marker in compiler_markers)
+
+
+def _json_object_fallback_params(request_params):
+    """Replace a JSON-schema response format with provider JSON mode."""
+    if not isinstance(request_params, dict):
+        return None
+    response_format = request_params.get("response_format")
+    if not isinstance(response_format, dict) or response_format.get("type") != "json_schema":
+        return None
+    fallback = copy.deepcopy(request_params)
+    fallback["response_format"] = {"type": "json_object"}
+    return fallback
+
+
 def run_schema_sentinel(source_config, source, api_model, *, timeout=120,
                         session_seed=0, drop_params=None):
     """Probe whether a source accepts and appears to enforce JSON schemas.
@@ -411,7 +435,8 @@ def resolve_judge_request_params(cfg):
 
 
 def _schema_request_metadata(plugin, request_params=None, *, response_schema_valid=None,
-                             error=None, request_applied=True):
+                             error=None, request_applied=True, schema_fallback_used=False,
+                             schema_fallback_error=None):
     """Return non-scoring metadata for a plugin's structured-output contract.
 
     A completed valid response does not prove that the provider enforced the
@@ -433,6 +458,8 @@ def _schema_request_metadata(plugin, request_params=None, *, response_schema_val
             "schema_request_status": "schema_not_requested",
             "response_schema_valid": None,
             "schema_enforcement_verified": None,
+            "schema_fallback_used": False,
+            "schema_fallback_error": None,
         }
     if not request_applied:
         return {
@@ -440,8 +467,19 @@ def _schema_request_metadata(plugin, request_params=None, *, response_schema_val
             "schema_request_status": "schema_not_applied_by_runner",
             "response_schema_valid": None,
             "schema_enforcement_verified": False,
+            "schema_fallback_used": False,
+            "schema_fallback_error": None,
         }
-    if error:
+    if schema_fallback_used:
+        if error:
+            status = "schema_fallback_json_object_failed"
+        elif response_schema_valid is True:
+            status = "schema_fallback_json_object_valid"
+        elif response_schema_valid is False:
+            status = "schema_fallback_json_object_invalid"
+        else:
+            status = "schema_fallback_json_object_unknown"
+    elif error:
         lowered = str(error).lower()
         schema_words = ("schema", "grammar", "response_format", "structured output", "format")
         if ("http 400" in lowered or "http 422" in lowered) and any(word in lowered for word in schema_words):
@@ -461,6 +499,8 @@ def _schema_request_metadata(plugin, request_params=None, *, response_schema_val
         "schema_request_status": status,
         "response_schema_valid": response_schema_valid,
         "schema_enforcement_verified": False,
+        "schema_fallback_used": schema_fallback_used,
+        "schema_fallback_error": schema_fallback_error,
     }
 
 
@@ -1564,6 +1604,8 @@ def _run_plugin_task(target_name, api_model, source, plugin, source_config, time
     if not isinstance(request_params, dict):
         request_params = {}
     request_params_kwargs = {"request_params": request_params} if request_params else {}
+    schema_fallback_used = False
+    schema_fallback_error = None
     schema_request_applied = runner == "http" and (
         not isinstance(cfg, dict)
         or cfg.get("api_protocol") not in {"1min", "chatplayground"}
@@ -1577,10 +1619,50 @@ def _run_plugin_task(target_name, api_model, source, plugin, source_config, time
         failed_metadata = _schema_request_metadata(
             plugin, request_params, error=error,
             request_applied=schema_request_applied,
+            schema_fallback_used=schema_fallback_used,
+            schema_fallback_error=schema_fallback_error,
         )
         return PluginTaskResult({
             f"{pid}_{key}": value for key, value in failed_metadata.items()
         }, error)
+
+    def nonstream_request_with_schema_fallback(max_tokens, log_label):
+        """Retry once in JSON-object mode after a grammar compiler failure."""
+        nonlocal schema_fallback_used, schema_fallback_error
+        result = nonstream_request(
+            source_config, timeout, api_model, source, prompt, max_tokens,
+            log_path=log_file,
+            log_label=log_label,
+            session_seed=session_seed, temperature=temperature,
+            drop_params=drop_params, stop_event=stop_event,
+            system_prompt=system_prompt, **request_params_kwargs,
+            pid=pid, on_retry=on_retry,
+            max_content_tokens=max_content_tokens,
+            max_thinking_tokens=max_thinking_tokens,
+            repetition_guard=repetition_guard,
+        )
+        fallback_params = (
+            _json_object_fallback_params(request_params)
+            if result.error and _is_schema_grammar_error(result.error)
+            else None
+        )
+        if fallback_params is None:
+            return result
+        schema_fallback_used = True
+        schema_fallback_error = result.error
+        request_params_kwargs["request_params"] = fallback_params
+        return nonstream_request(
+            source_config, timeout, api_model, source, prompt, max_tokens,
+            log_path=log_file,
+            log_label=f"{log_label} (JSON-object schema fallback)",
+            session_seed=session_seed, temperature=temperature,
+            drop_params=drop_params, stop_event=stop_event,
+            system_prompt=system_prompt, request_params=fallback_params,
+            pid=pid, on_retry=on_retry,
+            max_content_tokens=max_content_tokens,
+            max_thinking_tokens=max_thinking_tokens,
+            repetition_guard=repetition_guard,
+        )
 
     text = ""
     response_time = 0.0
@@ -1785,17 +1867,10 @@ def _run_plugin_task(target_name, api_model, source, plugin, source_config, time
                     finish_reason = sfr
                     stream_ok = False
                 else:
-                    nonstream_result = nonstream_request(
-                        source_config, timeout, api_model, source, prompt, max_tok,
-                        log_path=log_file,
-                        log_label=f"{plugin.name} (Non-Streaming, attempt {attempt + 1})",
-                        session_seed=session_seed, temperature=temperature,
-                        drop_params=drop_params, stop_event=stop_event,
-                        system_prompt=system_prompt, **request_params_kwargs,
-                        pid=pid, on_retry=on_retry,
-                        max_content_tokens=max_content_tokens,
-                        max_thinking_tokens=max_thinking_tokens,
-                        repetition_guard=repetition_guard)
+                    nonstream_result = nonstream_request_with_schema_fallback(
+                        max_tok,
+                        f"{plugin.name} (Non-Streaming, attempt {attempt + 1})",
+                    )
                     text = nonstream_result.text
                     think_text = nonstream_result.think_text
                     ns_time = nonstream_result.gen_time
@@ -1815,17 +1890,10 @@ def _run_plugin_task(target_name, api_model, source, plugin, source_config, time
                 truncated = (sfr == "length")
                 finish_reason = sfr
         else:
-            nonstream_result = nonstream_request(
-                source_config, timeout, api_model, source, prompt, max_tok,
-                log_path=log_file,
-                log_label=f"{plugin.name} (attempt {attempt + 1})",
-                session_seed=session_seed, temperature=temperature,
-                drop_params=drop_params, stop_event=stop_event,
-                system_prompt=system_prompt, **request_params_kwargs,
-                pid=pid, on_retry=on_retry,
-                max_content_tokens=max_content_tokens,
-                max_thinking_tokens=max_thinking_tokens,
-                repetition_guard=repetition_guard)
+            nonstream_result = nonstream_request_with_schema_fallback(
+                max_tok,
+                f"{plugin.name} (attempt {attempt + 1})",
+            )
             text = nonstream_result.text
             think_text = nonstream_result.think_text
             gen_time = nonstream_result.gen_time
@@ -2040,6 +2108,8 @@ def _run_plugin_task(target_name, api_model, source, plugin, source_config, time
         response_schema_valid=diagnostics.get("response_schema_valid")
         if isinstance(diagnostics, dict) else None,
         request_applied=schema_request_applied,
+        schema_fallback_used=schema_fallback_used,
+        schema_fallback_error=schema_fallback_error,
     )
 
     if save_responses and output_dir:
@@ -2389,7 +2459,9 @@ def _run_plugins(target_name, api_model, source, state, active_plugins, plugins_
                      f"{pid}_schema_requested": result.get(f"{pid}_schema_requested"),
                      f"{pid}_schema_request_status": result.get(f"{pid}_schema_request_status"),
                      f"{pid}_response_schema_valid": result.get(f"{pid}_response_schema_valid"),
-                     f"{pid}_schema_enforcement_verified": result.get(f"{pid}_schema_enforcement_verified")})
+                     f"{pid}_schema_enforcement_verified": result.get(f"{pid}_schema_enforcement_verified"),
+                     f"{pid}_schema_fallback_used": result.get(f"{pid}_schema_fallback_used"),
+                     f"{pid}_schema_fallback_error": result.get(f"{pid}_schema_fallback_error")})
         # A judge can finish between this plugin's state update and the
         # eventual model-level result append. Queue this plugin immediately;
         # ``BenchmarkState.add_result`` merges any judge fields written during
