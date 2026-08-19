@@ -463,7 +463,7 @@ class TestJudgeCore(unittest.TestCase):
             prepare_judge_sidecar(sidecar, FakePlugin(), "Prompt", "Response", target="model", runner="http")
             with mock.patch("benchmark.core.stream_request", side_effect=[first, second]) as request:
                 result = judge_response({}, "Local", "judge", sidecar, timeout=3,
-                                        token_levels=[2048])
+                                        max_tokens=2048)
         self.assertEqual(result.score, 75)
         self.assertEqual(request.call_count, 2)
         retry_prompt = request.call_args_list[1].args[4]
@@ -486,7 +486,7 @@ class TestJudgeCore(unittest.TestCase):
             prepare_judge_sidecar(sidecar, FakePlugin(), "Prompt", "Response", target="model", runner="http")
             with mock.patch("benchmark.core.stream_request", side_effect=[first, second]) as request:
                 result = judge_response({}, "Local", "judge", sidecar, timeout=3,
-                                        token_levels=[2048])
+                                        max_tokens=2048)
         self.assertEqual(result.score, 75)
         self.assertEqual(request.call_count, 2)
         self.assertIn("RETRY GUIDANCE", request.call_args_list[1].args[4])
@@ -508,7 +508,7 @@ class TestJudgeCore(unittest.TestCase):
             prepare_judge_sidecar(sidecar, FakePlugin(), "Prompt", "Response", target="model", runner="http")
             with mock.patch("benchmark.core.stream_request", side_effect=[first, second]) as request:
                 result = judge_response({}, "Local", "judge", sidecar, timeout=3,
-                                        token_levels=[2048])
+                                        max_tokens=2048)
         self.assertEqual(result.score, 75)
         self.assertEqual(request.call_count, 2)
         retry_prompt = request.call_args_list[1].args[4]

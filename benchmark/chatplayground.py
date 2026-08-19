@@ -378,7 +378,7 @@ def generate_config(source_cfg: dict | None = None, models: list[str] | None = N
     return {
         "output_dir": "benchmark-results",
         "timeout": 600,
-        "token_levels": [16384],
+        "max_tokens": 16384,
         "plugins_whitelist": [],
         "plugins_blacklist": [],
         "sources": {"ChatPlayground": _complete_source_config(source_cfg)},

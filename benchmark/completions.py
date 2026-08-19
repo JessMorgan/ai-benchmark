@@ -65,8 +65,8 @@ def build_parser(prog=None, plugin_ids=None):
                               help='Override output directory from config')
     config_group.add_argument('--timeout', type=int, default=None,
                               help='Override request timeout in seconds from config')
-    config_group.add_argument('--token-levels', type=int, nargs='+', default=None,
-                              help='Override token levels (e.g. --token-levels 4096 8192 16384)')
+    config_group.add_argument('--max-tokens', type=int, default=None,
+                              help='Override the scalar max-token budget (e.g. --max-tokens 4096)')
     config_group.add_argument('--temperature', type=float, default=None,
                               help='Default temperature for all plugins (overrides config; individual --plugin-temperature takes priority)')
     config_group.add_argument('--plugin-temperature', type=str, nargs='+', default=None,

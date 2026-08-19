@@ -61,10 +61,12 @@ class MarkdownOutputPlugin(BenchmarkOutputPlugin):
             else:
                 header = "| # | Model | Load (s) |"
         for p in active_plugins:
-            header += f" {p.name} Resp (s) | {p.name} TPS | {p.name} Think Tok | {p.name} Cont Tok | {p.name} Total Tok | {p.name} Score (0–100) |"
+            header += (f" {p.name} Resp (s) | {p.name} TPS | {p.name} Think Tok | "
+                       f"{p.name} Cont Tok | {p.name} Total Tok | {p.name} Score (0–100) |")
             if judge_enabled:
                 header += f" {p.name} Judge (0–100) | {p.name} Judge Confidence | {p.name} Judge Error | {p.name} Judge Votes |"
-            header += f" {p.name} Reason |"
+            header += (f" {p.name} Reason | {p.name} Attempts | {p.name} Retry | "
+                       f"{p.name} Prompt Altered | {p.name} Nature | {p.name} Failure |")
             if output_dir:
                 header += f" {p.name} Response |"
         header += " Overall Score (0–100) | Scored Plugins | Time | Mode |"
@@ -99,7 +101,12 @@ class MarkdownOutputPlugin(BenchmarkOutputPlugin):
                             f"{r.get(f'{p.id}_judge_confidence', '-')} | "
                             f"{r.get(f'{p.id}_judge_error', '')} | "
                             f"{len(r.get(f'{p.id}_judge_votes', []))} votes | ")
-                row += f"{empty_reason} |"
+                row += (f"{empty_reason} | "
+                        f"{r.get(f'{p.id}_attempt_count','-')} | "
+                        f"{', '.join(r.get(f'{p.id}_retry_reasons', []) or []) or '-'} | "
+                        f"{r.get(f'{p.id}_prompt_altered','-')} | "
+                        f"{r.get(f'{p.id}_response_nature','-')} | "
+                        f"{r.get(f'{p.id}_failure_cause','-')} |")
                 if output_dir:
                     runner_prefix = f"{runner}/" if runner in ("http", "opencode") else ""
                     rel_path = f"{runner_prefix}responses/{sanitize_filename(r['model'])}/{p.id}.txt"

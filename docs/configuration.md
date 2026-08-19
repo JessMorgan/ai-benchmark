@@ -8,8 +8,8 @@ All benchmark configuration lives in a single file (default: `benchmark-config.j
 |---|---|---|---|
 | `output_dir` | string | `benchmark-results` | Directory for reports, logs, and state |
 | `timeout` | integer | `600` | API request timeout in seconds |
-| `token_levels` | list[int] | `[16384]` | Max-token limits tried in ascending order |
-| `model_token_levels` | object | `{}` | Per-target max-token overrides; keys are target names or `"{source}/{api_model}"` |
+| `max_tokens` | integer | `16384` | One generation budget; each task may retry once with the same budget |
+| `model_max_tokens` | object | `{}` | Per-target max-token overrides; keys are target names or `"{source}/{api_model}"` |
 | `plugin_thread_limit` | integer | `1` | Top-level fallback for `sources.*.plugin_thread_limit` |
 | `model_thread_limit` | positive integer | `1` | Top-level fallback for per-source target/model concurrency; zero is invalid |
 | `preload` | boolean | `false` | Per-source model warm-up is opt-in; use `--no-preload` to disable all preload probes for a run |
@@ -68,7 +68,7 @@ format to 1min.ai's native shape. The runner:
 
 1min.ai's chat endpoint has no system-message field and no
 `max_tokens`/`temperature`/`seed` parameters. A supplied agent system prompt is
-folded into the user prompt, and generation knobs (`token_levels`, temperature,
+folded into the user prompt, and generation knobs (`max_tokens`, temperature,
 `seed`, `drop_params`, and judge `request_params`) are ignored for 1min sources.
 HTTP 429 retry/backoff still applies. The OpenCode runner and `/v1/models`
 discovery are OpenAI-shaped and do not consult `api_protocol`.
@@ -129,7 +129,7 @@ Behavior and limitations:
 - The answer is **buffered** — there is no per-token streaming, so
   `{pid}_ttft`/`{pid}_tps` are not meaningful for these sources.
 - A supplied agent system prompt is folded into the user prompt (the chat UI
-  has no separate system field); `token_levels`, temperature, `seed`,
+  has no separate system field); `max_tokens`, temperature, `seed`,
   `drop_params`, and judge `request_params` are ignored.
 - Browser operations are serialized under a module lock and one logged-in
   session is reused across plugin tasks, so keep `model_thread_limit` and
@@ -304,8 +304,7 @@ the thinking-truncation auto-escalation (the abort is an error, not a
 `thinking-truncation` classification). The watchdog applies to the HTTP
 benchmark task path only — preload probes and judge requests do not use the
 benchmark task watchdog (although judge requests are streamed and honor the
-shared shutdown cancellation), and the OpenCode subprocess runner is
-unaffected.
+shared shutdown cancellation). OpenCode has its own subprocess timeout and loop guards; those outcomes feed the shared attempt metadata but do not use the HTTP stream watchdog.
 
 ### Environment Variable Expansion
 
@@ -373,9 +372,9 @@ The value is the source name from the `sources` section.
 |---|---|---|
 | `source` | string | Source name from `sources` |
 | `drop_params` | list[string] | Request body keys to omit for this model |
-| `token_levels` | list[int] | (optional) Per-model max-token limits, beat the global `token_levels` |
+| `max_tokens` | integer | (optional) Per-model generation budget, beats the global `max_tokens` |
 
-## Per-Model Token Levels
+## Per-Model Generation Budget
 
 Thinking-capable models (deepseek-r1/qwen/o1-class) can consume their entire `max_tokens` budget inside `reasoning_content` before a single content token lands, yielding an empty response that scores 0 (see `empty-content-investigation.md`). Give those models a larger budget with a per-target override:
 
@@ -383,23 +382,29 @@ Thinking-capable models (deepseek-r1/qwen/o1-class) can consume their entire `ma
 "models": {
   "qwen3.5:9b-32k": {
     "source": "Gaming PC",
-    "token_levels": [32768]
+    "max_tokens": 32768
   }
 }
 ```
 
-Or keep the `models` map simple and use the top-level `model_token_levels` map, keyed by target name or `"{source}/{api_model}"`:
+Or keep the `models` map simple and use the top-level `model_max_tokens` map, keyed by target name or `"{source}/{api_model}"`:
 
 ```json
 {
-  "model_token_levels": {
-    "qwen3.5:9b-32k": [32768],
-    "Gaming PC/deepseek-v4-flash-free": [32768]
+  "model_max_tokens": {
+    "qwen3.5:9b-32k": 32768,
+    "Gaming PC/deepseek-v4-flash-free": 32768
   }
 }
 ```
 
-Precedence: per-target `token_levels` inside the model/agent entry > `model_token_levels` map (matched by target name, then `{source}/{api_model}`) > global `token_levels` / `--token-levels`. The same budget is applied to the target's OpenCode legs via the generated config's `limit.output`.
+Precedence: per-target `max_tokens` inside the model/agent entry > `model_max_tokens` map (matched by target name, then `{source}/{api_model}`) > global `max_tokens` / `--max-tokens`. The same budget is applied to the target's OpenCode legs via the generated config's `limit.output`.
+
+### One-retry policy and attempt metadata
+
+Each benchmark task makes at most one benchmark-level retry and reuses the same scalar budget. Transport errors retry with the original prompt. A token-limit response retries with one of `thinking_50_percent`, `thinking_30_percent`, or `response_under_budget`, selected from observed thinking usage; a repetition abort retries with `avoid_repetition`. Timeouts and cancellation do not retry.
+
+The selected attempt is projected into the plugin result fields, while every attempt is retained in `{plugin}_attempts` and in the response `.meta.json`. The machine-readable summary includes `{plugin}_attempt_count`, `{plugin}_retry_count`, `{plugin}_retry_reasons`, `{plugin}_selected_attempt`, `{plugin}_prompt_altered`, `{plugin}_response_nature`, `{plugin}_truncated_due_to_time`, and `{plugin}_failure_cause`. The CSV includes these fields plus the complete attempt history as JSON, allowing reports to distinguish model behavior from transport, timeout, repetition, or evaluator failures without parsing logs.
 
 ## Semantic Judge Request Parameters
 
@@ -412,7 +417,7 @@ thinking behavior:
 
 ```yaml
 judge:
-  token_levels: [4096]
+  max_tokens: 4096
   request_params:
     response_format:
       type: json_schema
@@ -501,7 +506,7 @@ failure, or an invalid response. Native 1min.ai and ChatPlayground protocols
 are reported as `schema_not_supported_by_source` because they do not use the
 OpenAI `response_format` request field.
 
-`judge.token_levels` controls the total `max_tokens` cap for judge generation;
+`judge.max_tokens` controls the total `max_tokens` cap for judge generation;
 the default is `4096`. It is independent of any provider-specific thinking
 setting an operator adds to `judge.request_params`.
 
@@ -575,22 +580,11 @@ underlying evidence is comparable. This prevents an API/schema incompatibility
 from being mislabeled as a reasoning failure while still making an unusable
 model/source combination visible.
 
-## Automatic Thinking-Truncation Escalation
+## Thinking-truncation handling
 
-Even without per-model config, the benchmark **auto-retries** once when a streaming HTTP plugin produces an empty response classified as `thinking-truncation` (empty content + large `reasoning_content` + `finish_reason="length"` — the budget was consumed by thinking).
 
-The retry uses a doubled `max_tokens` budget, capped at 131072:
+When a streaming response reaches `finish_reason="length"` after spending most of its budget on reasoning, the shared one-retry policy retries with the same `max_tokens` value and adds `prompt_altered: "thinking_50_percent"`. Responses that consume between half and 80% of the budget use `thinking_30_percent`; responses with little or unavailable thinking use `response_under_budget`. The selected response and the original thinking-truncation attempt remain available in the per-plugin metadata and attempt history. The benchmark does not silently double the configured budget.
 
-| First attempt | Auto-retry |
-|---|---|
-| 16384 (default) | 32768 |
-| 32768 | 65536 |
-| 65536 | 131072 |
-| 131072+ | No retry (already at cap) |
-
-This catches deepseek/qwen/o1-class models whose thinking phase exceeds the default budget without requiring any config changes. The retry result replaces the truncated one and is re-classified (may still be `thinking-truncation` if even the doubled budget is insufficient, but that's now a correctly diagnosed silent 0 rather than a silent 0).
-
-The auto-escalation is **cheap**: it applies at most once per leg, only for HTTP streaming plugins, and only when the response was genuinely empty. It does not apply to non-streaming plugins (which have their own truncation retry loop) or to OpenCode legs.
 
 ## Agents
 
@@ -691,7 +685,7 @@ agents:
 {
   "output_dir": "benchmark-results",
   "timeout": 600,
-  "token_levels": [16384],
+  "max_tokens": 16384,
   "rate-limiter_temperature": 0.2,
   "moe-dense_temperature": 0.7,
   "plugins_whitelist": [],
@@ -730,6 +724,6 @@ If a key appears in both `models` and `agents`, the benchmark exits with an erro
 
 ## Notes
 
-- `token_levels` are tried in order. If a response is truncated, the next level is used.
-- Empty responses are classified (`empty_reason` in `meta.json`, `{pid}_Empty_Reason` in `results.csv`, and a `Reason` column in `results.html`/`results.md`): `error`, `thinking-truncation` (budget consumed by reasoning — auto-retried with doubled budget), `thinking-only`, `max-tokens`, or `empty`.
+- `max_tokens` is one scalar generation budget. A task may make at most one benchmark retry with the same budget; token exhaustion, transport errors, repetition aborts, timeout, cancellation, the selected attempt, and any prompt alteration are recorded in per-plugin metadata and attempt history.
+- Empty responses are classified (`empty_reason` in `meta.json`, `{pid}_Empty_Reason` in `results.csv`, and a `Reason` column in `results.html`/`results.md`): `error`, `thinking-truncation` (budget consumed by reasoning — retried with the same budget and thinking guidance), `thinking-only`, `max-tokens`, or `empty`.
 - `plugin_thread_limit` controls how many plugins run concurrently for each model against a given source. Set to `1` for sequential execution or `0` for maximum parallelism. Define it per-source or as a top-level fallback.

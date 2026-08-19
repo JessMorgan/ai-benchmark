@@ -56,7 +56,7 @@ All configuration lives in a JSON file (default: `benchmark-config.json`):
 {
   "output_dir": "benchmark-results",
   "timeout": 600,
-  "token_levels": [16384],
+  "max_tokens": 16384,
   "plugins_whitelist": [],
   "plugins_blacklist": [],
   "sources": {
@@ -74,14 +74,14 @@ All configuration lives in a JSON file (default: `benchmark-config.json`):
 |---|---|
 | `output_dir` | Directory for results and logs |
 | `timeout` | API request timeout in seconds |
-| `token_levels` | Max-token limits tried on truncation (ascending order) |
-| `model_token_levels` | Per-target max-token overrides keyed by target or `source/api_model` |
+| `max_tokens` | One generation budget; each task may make at most one policy-controlled retry using the same budget |
+| `model_max_tokens` | Scalar per-target max-token overrides keyed by target or `source/api_model` |
 | `model_thread_limit` | Positive top-level fallback for concurrent target pipelines per source |
 | `plugin_thread_limit` | Top-level fallback for concurrent plugins within one target |
 | `plugins_whitelist` | List of plugin IDs to run (empty = all) |
 | `plugins_blacklist` | List of plugin IDs to skip (empty = none) |
 | `sources` | Named API endpoints with URL, headers, and optional per-source settings such as `opencode_timeout`, `preload`, `model_thread_limit`, `api_protocol`, and `max_429_retries` |
-| `models` | Map of model name → source name, or model name → object with `source`, `drop_params`, and optional `token_levels` |
+| `models` | Map of model name → source name, or model name → object with `source`, `drop_params`, and optional `max_tokens` |
 | `agents` | Optional named targets with a model, source, and system prompt |
 
 ### Per-model configuration
@@ -110,7 +110,7 @@ The extended form allows per-model settings such as dropping specific API parame
 |---|---|
 | `source` | Source name from the `sources` section |
 | `drop_params` | List of request body keys to omit (e.g. `seed`, `temperature`) |
-| `token_levels` | Optional per-target max-token limits; takes precedence over global levels |
+| `max_tokens` | Optional scalar per-target generation budget; takes precedence over the global value |
 
 **API keys** use `${VAR}` or `${VAR:default}` env-var syntax:
 ```json
@@ -185,7 +185,7 @@ python ai-benchmark.py [options]  # repository launcher
 | `--scripted` | Continue non-interactively instead of prompting on resume/plugin changes |
 | `--out DIR` | Override the output directory from config |
 | `--timeout SEC` | Override API request timeout |
-| `--token-levels N [N ...]` | Override token levels (e.g. `--token-levels 4096 8192 16384`) |
+| `--max-tokens N` | Override the scalar generation budget (the retry reuses this value) |
 | `--temperature VAL` | Default plugin temperature |
 | `--plugin-temperature ID=VAL [...]` | Override selected plugin temperatures |
 | `--plugin-thread-limit N` | Max plugin workers per target; `0` means one per plugin |
@@ -228,7 +228,7 @@ The runner dynamically generates and retains `<output_dir>/opencode/opencode.gen
 
 OpenCode and HTTP artifacts are separated under `<output_dir>/opencode/` and `<output_dir>/http/`. Markdown, CSV, HTML, and PDF reports include runner metadata. Resume matching is runner-aware, so an HTTP result is never reused for an OpenCode task. With `--runner both`, each source has one execution slot and runs a per-target pipeline: OpenCode for a target finishes before its HTTP comparison starts, and the source then advances to the next target. OpenCode and HTTP never overlap on the same source; already-completed OpenCode targets flow directly to HTTP on resume.
 
-Before scheduling any work the runner resolves and preflights the CLI: `opencode run --help` must advertise the `--pure`/`--model`/`--format`/`--agent`/`--thinking` options and the `json` format choice. A previously auto-installed copy under `.tools/opencode/` is reused when it still passes the preflight; the resolved binary path is recorded in `run-info.json` as `opencode_binary`. Each task is invoked as `opencode run --pure --model <slugified-source>/<api_model> --format json --thinking --agent benchmark-<target> <prompt>`; `--pure` prevents external OpenCode plugins from changing the benchmark environment, tools, prompts, or event stream, and `--thinking` makes OpenCode emit the model's `reasoning` NDJSON events so thinking content is preserved alongside the final answer. Every target registers an agent in the generated config so OpenCode never falls back to its built-in default agent prompt: agent personas keep their explicit system prompt, while plain model targets get a **neutral agent** (no "answer concisely" instruction, all tool permissions denied) so small function-calling-tuned models receive the same plain "answer the prompt" contract the HTTP runner provides instead of a tool-fixation prompt. The adapter parses the NDJSON event stream and scores the final assistant answer. Reasoning captured from the OpenCode runner lands in the same per-plugin sidecars the HTTP runner writes (`{plugin}.think.txt` plus a `<thinking>…</thinking>`-wrapped `{plugin}.txt`) when `--save-responses` is used. Generated configs always set both `limit.context` (inferred from the model id's `-NNk`/`-NNm` suffix) and `limit.output` (from `token_levels`), because OpenCode rejects provider models whose `limit` omits `context`.
+Before scheduling any work the runner resolves and preflights the CLI: `opencode run --help` must advertise the `--pure`/`--model`/`--format`/`--agent`/`--thinking` options and the `json` format choice. A previously auto-installed copy under `.tools/opencode/` is reused when it still passes the preflight; the resolved binary path is recorded in `run-info.json` as `opencode_binary`. Each task is invoked as `opencode run --pure --model <slugified-source>/<api_model> --format json --thinking --agent benchmark-<target> <prompt>`; `--pure` prevents external OpenCode plugins from changing the benchmark environment, tools, prompts, or event stream, and `--thinking` makes OpenCode emit the model's `reasoning` NDJSON events so thinking content is preserved alongside the final answer. Every target registers an agent in the generated config so OpenCode never falls back to its built-in default agent prompt: agent personas keep their explicit system prompt, while plain model targets get a **neutral agent** (no "answer concisely" instruction, all tool permissions denied) so small function-calling-tuned models receive the same plain "answer the prompt" contract the HTTP runner provides instead of a tool-fixation prompt. The adapter parses the NDJSON event stream and scores the final assistant answer. Reasoning captured from the OpenCode runner lands in the same per-plugin sidecars the HTTP runner writes (`{plugin}.think.txt` plus a `<thinking>…</thinking>`-wrapped `{plugin}.txt`) when `--save-responses` is used. Generated configs always set both `limit.context` (inferred from the model id's `-NNk`/`-NNm` suffix) and `limit.output` (from `max_tokens`), because OpenCode rejects provider models whose `limit` omits `context`.
 
 OpenCode's agent loop has no internal liveness detection, so a stalled or looping task would otherwise burn the full benchmark timeout silently. `run_process()` enforces three data-backed loop guards that kill the subprocess early and surface an actionable error instead (partial stdout is retained): a **staleness fast-fail** (`sources.<name>.opencode_timeout`, 300 s by default, with no output on stdout or stderr — catches silent hangs and mid-stream/tool-round-trip stalls), a **step budget** (50 `step_finish` events — catches reasoning/tool planning loops), and a **text-repetition guard** (same non-trivial text event 5× — catches canned-continuation loops). Set a source's `opencode_timeout` to `0` to disable the staleness guard; the outer benchmark timeout still applies.
 

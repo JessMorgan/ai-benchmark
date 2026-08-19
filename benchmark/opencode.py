@@ -23,7 +23,7 @@ import threading
 import time
 import urllib.request
 import zipfile
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -601,7 +601,7 @@ def generate_config(
     path: str | os.PathLike[str],
     *,
     timeout: float | None = None,
-    token_levels: Sequence[int] | None = None,
+    max_tokens: int | None = None,
     benchmark_config: Mapping[str, Any] | None = None,
     plugin_temperatures: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -612,6 +612,12 @@ def generate_config(
     ``is_agent``.  The returned config is also written as an exact artifact;
     callers should treat it as credential-bearing data.
     """
+    if (max_tokens is not None
+            and (isinstance(max_tokens, bool)
+                 or not isinstance(max_tokens, int)
+                 or max_tokens <= 0)):
+        raise ValueError("max_tokens must be a positive integer scalar")
+
     providers: dict[str, Any] = {}
     agents: dict[str, Any] = {}
     agent_ids: dict[str, str] = {}
@@ -643,14 +649,19 @@ def generate_config(
         model_options: dict[str, Any] = {"name": api_model}
         # OpenCode requires both ``context`` and ``output`` inside ``limit``;
         # writing only ``output`` makes the whole config fail validation.
-        # Per-target ``token_levels`` (resolved by ``resolve_targets``) beat
-        # the global list so thinking-heavy models get a bigger output budget
-        # exactly where the operator asked for it.
-        per_target_levels = info.get("token_levels")
-        effective_levels = per_target_levels or token_levels
+        # Per-target scalar ``max_tokens`` beats the global budget.
+        per_target_max_tokens = info.get("max_tokens")
+        if (per_target_max_tokens is not None
+                and (isinstance(per_target_max_tokens, bool)
+                     or not isinstance(per_target_max_tokens, int)
+                     or per_target_max_tokens <= 0)):
+            raise ValueError(
+                f"Target {target_key!r} max_tokens must be a positive integer scalar"
+            )
+        effective_max_tokens = per_target_max_tokens or max_tokens or 16384
         model_options["limit"] = {
             "context": _model_context_limit(api_model),
-            "output": max(effective_levels) if effective_levels else 16384,
+            "output": int(effective_max_tokens),
         }
         providers[provider_id]["models"][api_model] = model_options
 
@@ -710,7 +721,7 @@ def generate_config(
         unsupported.append("per-plugin temperature overrides")
     unsupported.append("HTTP streaming/TTFT telemetry")
     projection = {
-        "translated": ["source api_url/baseURL", "authorization and custom headers", "resolved api_model", "timeout", "token_levels"],
+        "translated": ["source api_url/baseURL", "authorization and custom headers", "resolved api_model", "timeout", "max_tokens"],
         "unsupported": unsupported,
         "note": "Unsupported HTTP-only fields are not fabricated in OpenCode results.",
     }

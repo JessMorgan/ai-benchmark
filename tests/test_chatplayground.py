@@ -158,7 +158,7 @@ class TestConfigHelpers(unittest.TestCase):
             cfg = cp.generate_config(_cfg())
 
         self.assertEqual(cfg["output_dir"], "benchmark-results")
-        self.assertEqual(cfg["token_levels"], [16384])
+        self.assertEqual(cfg["max_tokens"], 16384)
         source = cfg["sources"]["ChatPlayground"]
         self.assertEqual(source["api_protocol"], "chatplayground")
         # Browser-safe scheduler defaults are applied automatically.

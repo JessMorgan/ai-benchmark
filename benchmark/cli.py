@@ -2518,9 +2518,12 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
     if args.timeout is not None:
         timeout = args.timeout
 
-    token_levels = cfg.get("token_levels", [16384])
-    if args.token_levels is not None:
-        token_levels = args.token_levels
+    max_tokens = cfg.get("max_tokens", 16384)
+    if args.max_tokens is not None:
+        max_tokens = args.max_tokens
+    if isinstance(max_tokens, bool) or not isinstance(max_tokens, int) or max_tokens <= 0:
+        print("❌ max_tokens must be a positive integer scalar.", file=sys.stderr)
+        sys.exit(1)
 
     whitelist = args.plugins_whitelist or cfg.get("plugins_whitelist") or None
     blacklist = args.plugins_blacklist or cfg.get("plugins_blacklist") or None
@@ -2610,7 +2613,7 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
                 targets,
                 os.path.join(opencode_output_dir, "opencode.generated.json"),
                 timeout=timeout,
-                token_levels=token_levels,
+                max_tokens=max_tokens,
                 benchmark_config=cfg,
                 plugin_temperatures=cfg.get("plugin_temperatures"),
             )
@@ -2825,7 +2828,7 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
                     _targets_for_runner(targets, state_models, "opencode"),
                     os.path.join(opencode_output_dir, "opencode.generated.json"),
                     timeout=timeout,
-                    token_levels=token_levels,
+                    max_tokens=max_tokens,
                     benchmark_config=cfg,
                     plugin_temperatures=cfg.get("plugin_temperatures"),
                 )
@@ -3108,8 +3111,13 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
 
         judge_effective_timeout = (cfg.get("judge", {}).get("timeout", timeout)
                                    if isinstance(cfg.get("judge"), dict) else timeout)
-        judge_token_levels = (cfg.get("judge", {}).get("token_levels", [JUDGE_DEFAULT_MAX_TOKENS])
-                               if isinstance(cfg.get("judge"), dict) else [JUDGE_DEFAULT_MAX_TOKENS])
+        judge_max_tokens = (cfg.get("judge", {}).get("max_tokens", JUDGE_DEFAULT_MAX_TOKENS)
+                            if isinstance(cfg.get("judge"), dict) else JUDGE_DEFAULT_MAX_TOKENS)
+        if (isinstance(judge_max_tokens, bool)
+                or not isinstance(judge_max_tokens, int)
+                or judge_max_tokens <= 0):
+            print("❌ judge.max_tokens must be a positive integer scalar.", file=sys.stderr)
+            sys.exit(1)
         judge_temperature = (cfg.get("judge", {}).get("temperature", 0.0)
                              if isinstance(cfg.get("judge"), dict) else 0.0)
         judge_request_params = resolve_judge_request_params(cfg)
@@ -3254,7 +3262,7 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
                         targets[judge_name]["api_model"],
                         sidecar,
                         timeout=judge_effective_timeout,
-                        token_levels=judge_token_levels,
+                        max_tokens=judge_max_tokens,
                         temperature=judge_temperature,
                         request_params=judge_request_params,
                         drop_params=(raw_targets.get(judge_name, {}).get("drop_params", [])
@@ -3588,12 +3596,10 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
             if phase_runner == "opencode":
                 mapped = opencode_model_name(target_info["source"], target_info["api_model"])
                 agent_id = opencode_agent_ids.get(model_name)
-            # Per-target ``token_levels`` (model/agent dict or the
-            # ``model_token_levels`` map, resolved by ``resolve_targets``)
-            # beat the global config/CLI value for this target's legs.
-            effective_token_levels = target_info.get("token_levels") or token_levels
+            # Per-target scalar ``max_tokens`` beats the global config/CLI value.
+            effective_max_tokens = target_info.get("max_tokens") or max_tokens
             run_model(state_key, target_info["source"], state, model_active_plugins,
-                      source_config, timeout, effective_token_levels, phase_output_dir,
+                      source_config, timeout, effective_max_tokens, phase_output_dir,
                       session_seed=session_seed, global_cfg=cfg, stop_event=stop_event,
                       save_responses=args.save_responses,
                       judge_input_dir=judge_input_dir,

@@ -133,7 +133,7 @@ class TestOpenCodeConfig(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             path = os.path.join(tmpdir, "opencode.generated.json")
             generated = generate_config(self.sources, self.targets, path,
-                                        timeout=30, token_levels=[100, 200])
+                                        timeout=30, max_tokens=100)
             with open(path, encoding="utf-8") as handle:
                 on_disk = json.load(handle)
 
@@ -155,7 +155,7 @@ class TestOpenCodeConfig(unittest.TestCase):
     def test_model_limit_contains_context_and_output(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             path = os.path.join(tmpdir, "opencode.generated.json")
-            generate_config(self.sources, self.targets, path, token_levels=[100])
+            generate_config(self.sources, self.targets, path, max_tokens=100)
             with open(path, encoding="utf-8") as handle:
                 on_disk = json.load(handle)
             limits = {
@@ -165,26 +165,26 @@ class TestOpenCodeConfig(unittest.TestCase):
             }
             self.assertEqual(limits["model-a"], {"context": 131072, "output": 100})
 
-    def test_model_limit_uses_per_target_token_levels(self):
-        """A target's resolved ``token_levels`` beats the global list for its
+    def test_model_limit_uses_per_target_max_tokens(self):
+        """A target's resolved ``max_tokens`` beats the global budget for its
         OpenCode output budget (thinking-heavy models get a bigger cap)."""
         targets = {
             "thinker": {
                 "source": "Local Server",
                 "api_model": "thinker-model",
                 "is_agent": False,
-                "token_levels": [32768],
+                "max_tokens": 32768,
             },
             "plain": {
                 "source": "Local Server",
                 "api_model": "plain-model",
                 "is_agent": False,
-                "token_levels": None,
+                "max_tokens": None,
             },
         }
         with tempfile.TemporaryDirectory() as tmpdir:
             path = os.path.join(tmpdir, "opencode.generated.json")
-            generate_config(self.sources, targets, path, token_levels=[100])
+            generate_config(self.sources, targets, path, max_tokens=100)
             with open(path, encoding="utf-8") as handle:
                 on_disk = json.load(handle)
             limits = {
@@ -726,7 +726,7 @@ class TestOpenCodeLoopGuards(unittest.TestCase):
         with mock.patch("benchmark.core.run_process", return_value=process_result) as run:
             run_model(
                 target_key, "Local", state, [plugin], source_config,
-                timeout=5, token_levels=[100], output_dir="/tmp/opencode-test",
+                timeout=5, max_tokens=100, output_dir="/tmp/opencode-test",
                 global_cfg={}, runner="opencode", api_model="model-a",
                 opencode_config_path="/tmp/config.json",
                 opencode_model="local/model-a", display_name="model-a",
@@ -750,7 +750,7 @@ class TestOpenCodeLoopGuards(unittest.TestCase):
             run_model(
                 target_key, "Local", state, [plugin],
                 {"Local": {"plugin_thread_limit": 1}},
-                timeout=5, token_levels=[100], output_dir="/tmp/opencode-test",
+                timeout=5, max_tokens=100, output_dir="/tmp/opencode-test",
                 global_cfg={}, runner="opencode", api_model="model-a",
                 opencode_config_path="/tmp/config.json",
                 opencode_model="local/model-a", display_name="model-a",
@@ -874,7 +874,7 @@ class TestRunnerAwareExecution(unittest.TestCase):
         with mock.patch("benchmark.core.run_process", return_value=process_result):
             run_model(
                 target_key, "Local", state, [plugin], source_config,
-                timeout=5, token_levels=[100], output_dir="/tmp/opencode-test",
+                timeout=5, max_tokens=100, output_dir="/tmp/opencode-test",
                 global_cfg={}, runner="opencode", api_model="model-a",
                 opencode_config_path="/tmp/config.json",
                 opencode_model="local/model-a", display_name="model-a",
@@ -908,7 +908,7 @@ class TestRunnerAwareExecution(unittest.TestCase):
         ):
             run_model(
                 target_key, "Local", state, [plugin], source_config,
-                timeout=5, token_levels=[100], output_dir=tmpdir,
+                timeout=5, max_tokens=100, output_dir=tmpdir,
                 global_cfg={}, runner="opencode", api_model="model-a",
                 opencode_config_path="/tmp/config.json",
                 opencode_model="local/model-a", display_name="model-a",
@@ -947,7 +947,7 @@ class TestRunnerAwareExecution(unittest.TestCase):
         ):
             run_model(
                 target_key, "Local", state, [plugin], source_config,
-                timeout=5, token_levels=[100], output_dir=tmpdir,
+                timeout=5, max_tokens=100, output_dir=tmpdir,
                 global_cfg={}, runner="opencode", api_model="model-a",
                 opencode_config_path="/tmp/config.json",
                 opencode_model="local/model-a", display_name="model-a",
@@ -988,7 +988,7 @@ class TestRunnerAwareExecution(unittest.TestCase):
         with mock.patch("benchmark.core.run_process", return_value=process_result) as run:
             run_model(
                 target_key, "Local", state, [plugin], source_config,
-                timeout=5, token_levels=[100], output_dir="/tmp/opencode-test",
+                timeout=5, max_tokens=100, output_dir="/tmp/opencode-test",
                 global_cfg={}, runner="opencode", api_model="model-a",
                 opencode_config_path="/tmp/config.json",
                 opencode_model="local/model-a",
@@ -1017,7 +1017,7 @@ class TestRunnerAwareExecution(unittest.TestCase):
         with mock.patch("benchmark.core.run_process", return_value=process_result) as run:
             run_model(
                 target_key, "Local", state, [plugin], source_config,
-                timeout=5, token_levels=[100], output_dir="/tmp/opencode-test",
+                timeout=5, max_tokens=100, output_dir="/tmp/opencode-test",
                 global_cfg={}, runner="opencode", api_model="model-a",
                 opencode_config_path="/tmp/config.json",
                 opencode_model="local/model-a",

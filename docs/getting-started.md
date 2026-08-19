@@ -47,7 +47,7 @@ Example:
 {
   "output_dir": "benchmark-results",
   "timeout": 600,
-  "token_levels": [16384],
+  "max_tokens": 16384,
   "sources": {
     "Local Server": {
       "api_url": "http://localhost:11434/chat/completions",

@@ -18,12 +18,14 @@ from benchmark.core import (
     BenchmarkState,
     PreloadResult,
     _expand_env,
+    _retry_prompt_alteration,
     _run_plugin_task,
     _source_abbrev,
     _unique_source_abbrevs,
     dump_default_config,
     generate_config_from_api,
     get_target_plugins_blacklist,
+    load_config,
     load_dotenv_file,
     preload_model,
     resolve_model_sources,
@@ -152,23 +154,23 @@ class TestResolveHelpers(unittest.TestCase):
         models = {"a": "S1", "b": {"source": "S2"}, "c": 123}
         self.assertEqual(resolve_model_sources(models), {"a": "S1", "b": "S2", "c": "Default"})
 
-    def test_resolve_targets_normalizes_token_levels_forms(self):
+    def test_resolve_targets_normalizes_max_tokens_forms(self):
         cfg = {
-            "models": {"m1": {"source": "S", "token_levels": [4096]}, "m2": "S"},
-            "model_token_levels": {"m1": [8192], "m2": 16384},
+            "models": {"m1": {"source": "S", "max_tokens": 4096}, "m2": "S"},
+            "model_max_tokens": {"m1": 8192, "m2": 16384},
         }
         targets = resolve_targets(cfg)
-        self.assertEqual(targets["m1"]["token_levels"], [4096])  # per-target dict wins
-        self.assertEqual(targets["m2"]["token_levels"], [16384])  # int form
+        self.assertEqual(targets["m1"]["max_tokens"], 4096)  # per-target dict wins
+        self.assertEqual(targets["m2"]["max_tokens"], 16384)  # int form
 
-    def test_resolve_targets_rejects_bad_token_levels(self):
+    def test_resolve_targets_rejects_bad_max_tokens(self):
         cfg = {
-            "models": {"m1": {"source": "S", "token_levels": [4096]}},
-            "model_token_levels": {"m1": "not-a-list", "m2": [True], "m3": [4096, "x"]},
+            "models": {"m1": {"source": "S", "max_tokens": 4096}},
+            "model_max_tokens": {"m1": "not-an-int", "m2": True, "m3": "4096,8192"},
         }
         targets = resolve_targets(cfg)
         # Bad value -> falls back to per-target dict (4096) or None.
-        self.assertEqual(targets["m1"]["token_levels"], [4096])
+        self.assertEqual(targets["m1"]["max_tokens"], 4096)
 
     def test_resolve_targets_non_str_non_dict_model_defaults(self):
         targets = resolve_targets({"models": {"m1": 42}})
@@ -244,6 +246,37 @@ class TestPreload(unittest.TestCase):
         self.assertEqual(thinking, 32768)
 
 
+class TestMaxTokenPolicy(unittest.TestCase):
+    def test_retry_alteration_bands(self):
+        self.assertEqual(
+            _retry_prompt_alteration("token_limit", 80, 100)[0],
+            "thinking_50_percent",
+        )
+        self.assertEqual(
+            _retry_prompt_alteration("token_limit", 51, 100)[0],
+            "thinking_30_percent",
+        )
+        self.assertEqual(
+            _retry_prompt_alteration("token_limit", 50, 100)[0],
+            "response_under_budget",
+        )
+        self.assertEqual(
+            _retry_prompt_alteration("transport_error", 99, 100),
+            ("none", ""),
+        )
+
+    def test_load_config_rejects_legacy_token_levels_anywhere(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "config.json")
+            with open(path, "w", encoding="utf-8") as handle:
+                json.dump({
+                    "max_tokens": 4096,
+                    "judge": {"token_levels": [4096]},
+                }, handle)
+            with self.assertRaisesRegex(ValueError, "judge.token_levels"):
+                load_config(path)
+
+
 class TestDumpDefaultConfig(unittest.TestCase):
     def test_dump_default_config_prints_valid_json(self):
         buffer = io.StringIO()
@@ -278,7 +311,7 @@ class TestRunPluginTaskGuards(unittest.TestCase):
 
     def test_unknown_http_source(self):
         result = _run_plugin_task(
-            "m", "model", "Nope", _FakePlugin(), {"S": {}}, 1, [100],
+            "m", "model", "Nope", _FakePlugin(), {"S": {}}, 1, 100,
             0, None, {}, self._state(),
         )
         self.assertIsNotNone(result.error)
@@ -286,7 +319,7 @@ class TestRunPluginTaskGuards(unittest.TestCase):
 
     def test_unknown_runner(self):
         result = _run_plugin_task(
-            "m", "model", "S", _FakePlugin(), {"S": {}}, 1, [100],
+            "m", "model", "S", _FakePlugin(), {"S": {}}, 1, 100,
             0, None, {}, self._state(), runner="janky",
         )
         self.assertIsNotNone(result.error)
@@ -297,7 +330,7 @@ class TestRunPluginTaskGuards(unittest.TestCase):
         stop = threading.Event()
         stop.set()
         result = _run_plugin_task(
-            "m", "model", "S", _FakePlugin(), {"S": {}}, 1, [100],
+            "m", "model", "S", _FakePlugin(), {"S": {}}, 1, 100,
             0, None, {}, self._state(), stop_event=stop,
         )
         self.assertIsNotNone(result.error)
@@ -305,7 +338,7 @@ class TestRunPluginTaskGuards(unittest.TestCase):
 
     def test_opencode_missing_config(self):
         result = _run_plugin_task(
-            "m", "model", "S", _FakePlugin(), {"S": {}}, 1, [100],
+            "m", "model", "S", _FakePlugin(), {"S": {}}, 1, 100,
             0, None, {}, self._state(), runner="opencode",
         )
         self.assertIsNotNone(result.error)
@@ -325,7 +358,7 @@ class TestRunPluginTaskGuards(unittest.TestCase):
                                "repetition_guard": False}}
         with mock.patch("benchmark.core.stream_request", side_effect=fake_stream):
             _run_plugin_task(
-                "m", "model", "S", _FakePlugin(), source_config, 1, [100],
+                "m", "model", "S", _FakePlugin(), source_config, 1, 100,
                 0, None, {}, self._state(),
             )
         self.assertEqual(captured["max_content_tokens"], 1024)
@@ -338,7 +371,7 @@ class TestRunModelGuards(unittest.TestCase):
         plugins = [_FakePlugin()]
         state = BenchmarkState({"m": "S"}, [p.id for p in plugins])
         run_model("m", "Missing", state, plugins, {"S": {}}, 1,
-                  [100], "/tmp/out", session_seed=0)
+                  100, "/tmp/out", session_seed=0)
         snap = state.snapshot()["m"]
         self.assertEqual(snap["status"], "failed")
         self.assertIn("Unknown source", snap["error"])
@@ -353,7 +386,7 @@ class TestRunModelGuards(unittest.TestCase):
             mock.patch("benchmark.core.nonstream_request", return_value=NonStreamResult("", "", {}, 0.1, "boom", None)),
         ):
             run_model("m", "S", state, plugins, source_config, 1,
-                      [100], "/tmp/out", session_seed=0)
+                      100, "/tmp/out", session_seed=0)
         snap = state.snapshot()["m"]
         self.assertIn(snap["status"], ("completed", "failed"))
 
@@ -364,7 +397,7 @@ class TestRunModelGuards(unittest.TestCase):
         stop = threading.Event()
         stop.set()
         run_model("m", "S", state, plugins, {"S": {"api_url": "http://x", "headers": {}}},
-                  1, [100], "/tmp/out", session_seed=0, stop_event=stop)
+                  1, 100, "/tmp/out", session_seed=0, stop_event=stop)
         snap = state.snapshot()["m"]
         self.assertEqual(snap["status"], "failed")
         self.assertEqual(snap["error"], "Cancelled")

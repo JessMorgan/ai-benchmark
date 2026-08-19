@@ -389,7 +389,7 @@ class TestGenerateConfigUnsupported(unittest.TestCase):
                 {"S": {"api_url": "http://x/v1/chat/completions",
                        "headers": {}}},
                 targets, Path(tmpdir) / "oc.json",
-                timeout=60, token_levels=[4096],
+                timeout=60, max_tokens=4096,
                 benchmark_config={"seed": 42, "retry_on_429": True},
                 plugin_temperatures={"rate-limiter": 0.2},
             )

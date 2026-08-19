@@ -85,60 +85,58 @@ class TestResolveTargets(unittest.TestCase):
         with self.assertRaises(ValueError):
             resolve_targets(cfg)
 
-    def test_resolve_targets_per_model_token_levels(self):
-        """Per-target token_levels resolve from (1) the model dict entry,
-        (2) the top-level model_token_levels map keyed by target name, and
+    def test_resolve_targets_per_model_max_tokens(self):
+        """Per-target max_tokens resolve from (1) the model dict entry,
+        (2) the top-level model_max_tokens map keyed by target name, and
         (3) the map keyed by "{source}/{api_model}" — in that precedence."""
         cfg = {
             "models": {
-                "inline-model": {"source": "S1", "token_levels": [32768]},
+                "inline-model": {"source": "S1", "max_tokens": 32768},
                 "by-name": "S2",
                 "by-source-model": "S1",
                 "plain": "S2",
             },
-            "model_token_levels": {
-                "by-name": [65536],
-                "S1/by-source-model": [4096],
+            "model_max_tokens": {
+                "by-name": 65536,
+                "S1/by-source-model": 4096,
             },
         }
         targets = resolve_targets(cfg)
-        self.assertEqual(targets["inline-model"]["token_levels"], [32768])
-        self.assertEqual(targets["by-name"]["token_levels"], [65536])
-        self.assertEqual(targets["by-source-model"]["token_levels"], [4096])
-        self.assertIsNone(targets["plain"]["token_levels"])
+        self.assertEqual(targets["inline-model"]["max_tokens"], 32768)
+        self.assertEqual(targets["by-name"]["max_tokens"], 65536)
+        self.assertEqual(targets["by-source-model"]["max_tokens"], 4096)
+        self.assertIsNone(targets["plain"]["max_tokens"])
 
-    def test_resolve_targets_agent_token_levels(self):
-        """Agents accept the same per-target token_levels override."""
+    def test_resolve_targets_agent_max_tokens(self):
+        """Agents accept the same per-target max_tokens override."""
         cfg = {
             "agents": {
                 "agent-a": {
                     "model": "gpt-4",
                     "source": "OpenAI",
                     "system_prompt": "You are a coder.",
-                    "token_levels": [16384],
+                    "max_tokens": 16384,
                 }
             }
         }
         targets = resolve_targets(cfg)
-        self.assertEqual(targets["agent-a"]["token_levels"], [16384])
+        self.assertEqual(targets["agent-a"]["max_tokens"], 16384)
 
-    def test_resolve_targets_token_levels_normalizes_and_rejects_garbage(self):
-        """A scalar int is coerced to a one-element list; a string or empty
-        list is treated as unset rather than crashing or splintering into
-        per-character levels."""
+    def test_resolve_targets_max_tokens_normalizes_and_rejects_garbage(self):
+        """A positive scalar is retained; invalid scalar forms are treated as unset."""
         cfg = {
             "models": {
-                "scalar-model": {"source": "S1", "token_levels": 32768},
-                "bad-model": {"source": "S1", "token_levels": "32768"},
-                "empty-model": {"source": "S1", "token_levels": []},
-                "bool-model": {"source": "S1", "token_levels": True},
+                "scalar-model": {"source": "S1", "max_tokens": 32768},
+                "bad-model": {"source": "S1", "max_tokens": "32768"},
+                "empty-model": {"source": "S1", "max_tokens": []},
+                "bool-model": {"source": "S1", "max_tokens": True},
             }
         }
         targets = resolve_targets(cfg)
-        self.assertEqual(targets["scalar-model"]["token_levels"], [32768])
-        self.assertIsNone(targets["bad-model"]["token_levels"])
-        self.assertIsNone(targets["empty-model"]["token_levels"])
-        self.assertIsNone(targets["bool-model"]["token_levels"])
+        self.assertEqual(targets["scalar-model"]["max_tokens"], 32768)
+        self.assertIsNone(targets["bad-model"]["max_tokens"])
+        self.assertIsNone(targets["empty-model"]["max_tokens"])
+        self.assertIsNone(targets["bool-model"]["max_tokens"])
 
 
 class TestModelPreload(unittest.TestCase):
@@ -307,7 +305,7 @@ class TestAgentMetadata(unittest.TestCase):
         with mock.patch.object(self.module, "_run_plugin_task", side_effect=fake_run_plugin_task):
             self.module.run_model(
                 "my-agent", "Local", state, plugins, source_config,
-                timeout=1, token_levels=[100], output_dir="/tmp/benchmark-test",
+                timeout=1, max_tokens=100, output_dir="/tmp/benchmark-test",
                 session_seed=12345, global_cfg={},
                 api_model="underlying-model",
                 system_prompt="You are a coding agent.",
@@ -341,7 +339,7 @@ class TestAgentMetadata(unittest.TestCase):
         with mock.patch.object(self.module, "_run_plugin_task", side_effect=fake_run_plugin_task):
             self.module.run_model(
                 "dummy-model", "Local", state, plugins, source_config,
-                timeout=1, token_levels=[100], output_dir="/tmp/benchmark-test",
+                timeout=1, max_tokens=100, output_dir="/tmp/benchmark-test",
                 session_seed=0, global_cfg={},
             )
 
@@ -364,7 +362,8 @@ class TestAgentHTTPRequest(unittest.TestCase):
                            drop_params=None, stop_event=None, system_prompt=None,
                            pid=None, on_retry=None,
                            max_content_tokens=None, max_thinking_tokens=None,
-                           repetition_guard=False):
+                           repetition_guard=False, on_chunk=None,
+                           on_think_chunk=None, **kwargs):
             captured["body"] = {
                 "model": model,
                 "messages": [],
@@ -372,16 +371,16 @@ class TestAgentHTTPRequest(unittest.TestCase):
             if system_prompt:
                 captured["body"]["messages"].append({"role": "system", "content": system_prompt})
             captured["body"]["messages"].append({"role": "user", "content": prompt})
-            return NonStreamResult("ok", "", {}, 0.1, None, "stop")
+            return StreamResult("ok", "", 1.0, 1.1, None, "stop", {})
 
         state = module.BenchmarkState({"my-agent": "Local"}, ["rate-limiter"])
         with (
-            mock.patch.object(module, "nonstream_request", side_effect=fake_nonstream),
-            mock.patch.object(module, "stream_request", return_value=StreamResult("", "", None, 0, "no tokens", None, {})),
+            mock.patch.object(module, "stream_request", side_effect=fake_nonstream),
+            mock.patch.object(module, "nonstream_request", return_value=NonStreamResult("", "", {}, 0.1, "not called", None)),
         ):
             module._run_plugin_task(
                 "my-agent", "underlying-model", "Local", plugins[0], source_config,
-                timeout=1, token_levels=[100], session_seed=12345,
+                timeout=1, max_tokens=100, session_seed=12345,
                 log_file=None, global_cfg={}, state=state,
                 system_prompt="You are a coding agent.",
             )

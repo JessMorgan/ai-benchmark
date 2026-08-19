@@ -1,6 +1,6 @@
 # Max-token handling and retry redesign
 
-**Status:** Planned; not implemented by this document
+**Status:** Implemented (design record)
 
 ## Goal
 

@@ -1054,7 +1054,7 @@ def _judge_response_diagnostics(response, request_params, max_tokens):
 
 
 def judge_response(source_config, judge_source, judge_api_model, sidecar,
-                   *, timeout, token_levels=None, temperature=0.0,
+                   *, timeout, max_tokens=None, temperature=0.0,
                    drop_params=None, request_params=None, stop_event=None, log_path=None,
                    plugin=None, progress_callback: Callable[[str, str], None] | None = None):
     """Run one streaming judge request, retrying once when its JSON is invalid."""
@@ -1068,8 +1068,12 @@ def judge_response(source_config, judge_source, judge_api_model, sidecar,
             "name": item["plugin_name"], "max_score": item["max_score"],
         })()
     prompt = build_judge_prompt(plugin, item["prompt"], item["response"])
-    budgets = list(token_levels or [JUDGE_DEFAULT_MAX_TOKENS])
-    budgets = [int(budget) for budget in budgets if budget > 0] or [JUDGE_DEFAULT_MAX_TOKENS]
+    try:
+        budget = int(max_tokens if max_tokens is not None else JUDGE_DEFAULT_MAX_TOKENS)
+    except (TypeError, ValueError):
+        budget = JUDGE_DEFAULT_MAX_TOKENS
+    if budget <= 0:
+        budget = JUDGE_DEFAULT_MAX_TOKENS
 
     def report_progress(content_delta="", thinking_delta=""):
         if progress_callback is None:
@@ -1092,7 +1096,7 @@ def judge_response(source_config, judge_source, judge_api_model, sidecar,
         )
         response = stream_request(
             source_config, timeout, judge_api_model, judge_source, request_prompt,
-            budgets[0], log_path=log_path,
+            budget, log_path=log_path,
             log_label=(
                 f"Judge {item['target']} / {item['plugin']} "
                 f"(streaming attempt {attempt + 1}, "
@@ -1106,7 +1110,7 @@ def judge_response(source_config, judge_source, judge_api_model, sidecar,
             on_think_chunk=lambda delta: report_progress("", delta),
             pid=f"judge:{item['plugin']}",
         )
-        diagnostics = _judge_response_diagnostics(response, request_params, budgets[0])
+        diagnostics = _judge_response_diagnostics(response, request_params, budget)
         if response.error:
             # Preserve partial streamed content for cancellation/transport
             # diagnostics, while still treating the attempt as unsuccessful.
@@ -1128,7 +1132,7 @@ def judge_response(source_config, judge_source, judge_api_model, sidecar,
                 criteria=parsed.criteria,
             )
         if _thinking_consumed_budget(diagnostics):
-            retry_guidance = _thinking_budget_retry_instruction(budgets[0])
+            retry_guidance = _thinking_budget_retry_instruction(budget)
         parsed = JudgeResult(
             confidence=parsed.confidence,
             rationale=parsed.rationale,
@@ -1196,6 +1200,84 @@ def is_repeating(text, min_seq=80, repeats=3):
         return False
     tail = text[-min_seq:]
     return text.count(tail) >= repeats
+
+
+def response_nature(*, text, error, finish_reason, repeating=False, cancelled=False):
+    """Classify the machine-observable end of one benchmark attempt."""
+    lowered = str(error or "").lower()
+    if cancelled or "cancelled" in lowered or "canceled" in lowered:
+        return "cancelled"
+    if any(marker in lowered for marker in ("timeout", "timed out", "readtimeout")):
+        return "timeout"
+    if repeating or "repetition" in lowered or "repeated" in lowered:
+        return "repetition_abort"
+    if finish_reason == "length" or "token limit" in lowered or "budget exceeded" in lowered:
+        return "token_limit"
+    if error:
+        return "transport_error"
+    if not text or not text.strip():
+        return "empty"
+    return "completed"
+
+
+def _retry_prompt_alteration(nature, thinking_tokens, max_tokens):
+    """Return the retry alteration enum and instruction for one attempt."""
+    if nature == "repetition_abort":
+        return (
+            "avoid_repetition",
+            (
+                "\n\nRETRY GUIDANCE: Do not repeat phrases, paragraphs, code blocks, "
+                "or reasoning loops from the previous attempt. Produce new, "
+                "task-relevant content and finish the requested answer."
+            )
+        )
+    if nature != "token_limit":
+        return "none", ""
+    budget = max(1, int(max_tokens))
+    if thinking_tokens is not None and thinking_tokens >= 0.8 * budget:
+        return (
+            "thinking_50_percent",
+            (
+                f"\n\nRETRY GUIDANCE: Limit internal thinking or reasoning to approximately "
+                f"{max(1, budget // 2)} tokens (about half of the {budget}-token "
+                "generation budget). Reserve the remaining budget for the required "
+                "final answer. Do not spend the whole retry budget thinking."
+            )
+        )
+    if thinking_tokens is not None and thinking_tokens > 0.5 * budget:
+        return (
+            "thinking_30_percent",
+            (
+                f"\n\nRETRY GUIDANCE: Limit internal thinking or reasoning to approximately "
+                f"{max(1, int(budget * 0.3))} tokens (about 30% of the {budget}-token "
+                "generation budget). Reserve most of the budget for the required "
+                "final answer."
+            )
+        )
+    return (
+        "response_under_budget",
+        (
+            f"\n\nRETRY GUIDANCE: Complete the required answer while keeping the total "
+            f"response just below the {budget}-token generation limit. Be concise "
+            "enough to finish before the limit."
+        )
+    )
+
+
+def _response_reasoning_tokens(response):
+    """Prefer provider reasoning usage, falling back to the char/4 estimate."""
+    usage = getattr(response, "usage", {})
+    if not isinstance(usage, dict):
+        usage = {}
+    details = usage.get("completion_tokens_details") or usage.get("completion_token_details")
+    containers = (usage, details if isinstance(details, dict) else {})
+    for container in containers:
+        for key in ("reasoning_tokens", "thinking_tokens"):
+            value = container.get(key)
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                return int(value)
+    thinking = getattr(response, "think_text", "") or ""
+    return int(count_tokens(thinking)) if thinking else None
 
 
 def _source_abbrev(name):
@@ -1287,6 +1369,25 @@ def load_config(path):
         else:
             data = json.load(f)
     data = _expand_env(data)
+    legacy_paths = []
+
+    def find_legacy(value, path="config"):
+        if isinstance(value, dict):
+            for key, child in value.items():
+                if key in {"token_levels", "model_token_levels"}:
+                    legacy_paths.append(f"{path}.{key}")
+                find_legacy(child, f"{path}.{key}")
+        elif isinstance(value, list):
+            for index, child in enumerate(value):
+                find_legacy(child, f"{path}[{index}]")
+
+    find_legacy(data)
+    if legacy_paths:
+        raise ValueError(
+            "Removed token configuration key(s): "
+            + ", ".join(legacy_paths)
+            + ". Use scalar max_tokens instead."
+        )
     return data
 
 
@@ -1334,51 +1435,37 @@ def resolve_targets(cfg):
     - ``is_agent``: whether this target is an agent
     - ``drop_params``: per-target params to drop from API requests
     - ``plugins_blacklist``: per-target plugins to skip
-    - ``token_levels``: per-target max-token override (``None`` = use the
-      global ``token_levels`` / ``--token-levels``)
+    - ``max_tokens``: per-target max-token override (``None`` = use the
+      global ``max_tokens`` / ``--max-tokens``)
     """
     models = cfg.get("models", {})
     agents = cfg.get("agents", {})
+    if "token_levels" in cfg or "model_token_levels" in cfg:
+        raise ValueError("Removed token_levels configuration; use scalar max_tokens instead")
     # Per-target max-token overrides for thinking-heavy models whose entire
     # ``max_tokens`` budget can be consumed by ``reasoning_content`` before a
     # single content token lands (see ``empty-content-investigation.md``).
-    # Keys are target names or ``"{source}/{api_model}"``; values are
-    # token-level lists that beat the global ``token_levels`` for that target.
-    model_token_levels = cfg.get("model_token_levels") or {}
+    # Keys are target names or ``"{source}/{api_model}"``; scalar values beat
+    # the global ``max_tokens`` for that target.
+    model_max_tokens = cfg.get("model_max_tokens") or {}
     targets = {}
 
-    def _normalize_token_levels(levels):
-        """Coerce a configured token-levels value to a list of ints.
+    def _normalize_max_tokens(value):
+        """Coerce one configured positive max-token value to an int."""
+        if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+            return None
+        return value
 
-        Accepts a single int (``32768``) or a list/tuple of ints
-        (``[32768]``). Anything else — strings, floats, empty lists, or
-        non-numeric members — returns None so a config typo can neither
-        crash target resolution (``list(32768)`` would raise TypeError)
-        nor splinter a string into per-character levels that flow into
-        ``max_tok`` / OpenCode's output budget.
-        """
-        if levels is None:
-            return None
-        if isinstance(levels, bool) or not isinstance(levels, (int, list, tuple)):
-            return None
-        if isinstance(levels, int):
-            return [levels]
-        try:
-            normalized = [int(v) for v in levels]
-        except (TypeError, ValueError):
-            return None
-        return normalized or None
-
-    def _resolve_target_token_levels(name, source, api_model, val):
-        """Return per-target token levels, or None to fall back to global."""
+    def _resolve_target_max_tokens(name, source, api_model, val):
+        """Return a per-target scalar max-token override, if configured."""
         if isinstance(val, dict):
-            levels = _normalize_token_levels(val.get("token_levels"))
-            if levels:
-                return levels
+            value = _normalize_max_tokens(val.get("max_tokens"))
+            if value is not None:
+                return value
         for key in (name, f"{source}/{api_model}"):
-            levels = _normalize_token_levels(model_token_levels.get(key))
-            if levels:
-                return levels
+            value = _normalize_max_tokens(model_max_tokens.get(key))
+            if value is not None:
+                return value
         return None
     for name, val in models.items():
         if isinstance(val, dict):
@@ -1427,12 +1514,10 @@ def resolve_targets(cfg):
             "drop_params": val.get("drop_params", []),
             "plugins_blacklist": val.get("plugins_blacklist", []),
         }
-    # Populate per-target ``token_levels`` after both loops so the resolution
-    # helper sees every configured form (inline dict key, ``model_token_levels``
-    # map keyed by target name, and keyed by ``"{source}/{api_model}"``).
+    # Populate per-target ``max_tokens`` after both loops.
     for name, info in targets.items():
         val = models[name] if name in models else agents.get(name)
-        info["token_levels"] = _resolve_target_token_levels(
+        info["max_tokens"] = _resolve_target_max_tokens(
             name, info["source"], info["api_model"], val)
     return targets
 
@@ -1478,14 +1563,14 @@ def dump_default_config():
     cfg = {
         "output_dir": "benchmark-output-dir",
         "timeout": 1200,
-        "token_levels": [16384],
+        "max_tokens": 16384,
         "judge": {
-            "token_levels": [JUDGE_DEFAULT_MAX_TOKENS],
+            "max_tokens": JUDGE_DEFAULT_MAX_TOKENS,
             "request_params": copy.deepcopy(JUDGE_DEFAULT_REQUEST_PARAMS),
         },
         # Per-target max-token overrides for thinking models; keys are target
-        # names or "{source}/{api_model}", values beat the global token_levels.
-        "model_token_levels": {},
+        # names or "{source}/{api_model}", values beat the global max_tokens.
+        "model_max_tokens": {},
         "model_thread_limit": 1,
         "rate-limiter_temperature": 0.2,
         "moe-dense_temperature": 0.7,
@@ -1584,7 +1669,7 @@ def dump_default_config():
             "example-model-3": {
                 "source": "Local Server 2",
                 "drop_params": ["seed"],
-                "token_levels": [32768]
+                "max_tokens": 32768
             }
         },
         "agents": {
@@ -1612,7 +1697,7 @@ def generate_config_from_api(base_url, api_key=None):
     return {
         "output_dir": "benchmark-results",
         "timeout": 600,
-        "token_levels": [16384],
+        "max_tokens": 16384,
         "plugins_whitelist": [],
         "plugins_blacklist": [],
         "sources": {
@@ -1627,8 +1712,8 @@ def generate_config_from_api(base_url, api_key=None):
 
 # ─── Model execution ─────────────────────────────────────────────────────────
 
-def _run_plugin_task(target_name, api_model, source, plugin, source_config, timeout,
-                     token_levels, session_seed, log_file, global_cfg, state,
+def _run_plugin_task_legacy(target_name, api_model, source, plugin, source_config, timeout,
+                     max_tokens, session_seed, log_file, global_cfg, state,
                      stop_event=None, save_responses=False, output_dir=None,
                      judge_input_dir=None, judge_enqueue=None,
                      system_prompt=None, is_agent=False, runner="http",
@@ -1822,9 +1907,9 @@ def _run_plugin_task(target_name, api_model, source, plugin, source_config, time
         output_tokens = int(count_tokens(text))
         if gen_time > 0:
             tps = round(output_tokens / gen_time, 2)
-        token_levels = []
+        max_tokens = []
 
-    for attempt, max_tok in enumerate(token_levels):
+    for attempt, max_tok in enumerate(max_tokens):
         if stop_event and stop_event.is_set():
             return PluginTaskResult(None, "Cancelled")
         attempt_start = time.time()
@@ -1989,7 +2074,7 @@ def _run_plugin_task(target_name, api_model, source, plugin, source_config, time
             if len(text.strip()) < 50:
                 pass
 
-            if attempt < len(token_levels) - 1:
+            if attempt < len(max_tokens) - 1:
                 pass
 
     # Classify why a completed HTTP response produced no content tokens so the
@@ -2012,9 +2097,9 @@ def _run_plugin_task(target_name, api_model, source, plugin, source_config, time
         # Use the last ``max_tok`` from the exhausted attempt (or the
         # max configured level) as the base. Never exceed a hard cap of
         # 2× the initial budget to avoid unbounded resource burn.
-        base = max(token_levels) if token_levels else 16384
+        base = max(max_tokens) if max_tokens else 16384
         escalated = min(base * 2, 131072)
-        if escalated > base or (not token_levels):
+        if escalated > base or (not max_tokens):
             # Retry with the doubled budget. The retry uses the same
             # prompt/temperature/seed/stop_event as the original, and
             # replaces the empty text/think_text left by the truncated
@@ -2247,8 +2332,442 @@ def _run_plugin_task(target_name, api_model, source, plugin, source_config, time
     return PluginTaskResult(result, None)
 
 
+
+def _run_plugin_task(target_name, api_model, source, plugin, source_config, timeout,
+                     max_tokens, session_seed, log_file, global_cfg, state,
+                     stop_event=None, save_responses=False, output_dir=None,
+                     judge_input_dir=None, judge_enqueue=None,
+                     system_prompt=None, is_agent=False, runner="http",
+                     opencode_config_path=None, opencode_model=None,
+                     opencode_agent=None, opencode_binary=None,
+                     artifact_target_name=None,
+                     config_target_name=None) -> PluginTaskResult:
+    """Run one benchmark cell with one scalar budget and at most one policy retry.
+
+    Transport retries preserve the prompt. Token-limit and repetition retries
+    append a machine-readable, purpose-specific instruction. Timeouts and
+    cancellation are terminal and retain any partial response.
+    """
+    pid = plugin.id
+    cfg = source_config.get(source)
+    if runner == "http" and cfg is None:
+        return PluginTaskResult(None, f"Unknown source '{source}' — not in SOURCE_CONFIG")
+    if runner not in {"http", "opencode"}:
+        return PluginTaskResult(None, f"Unknown runner {runner!r}")
+    if stop_event and stop_event.is_set():
+        return PluginTaskResult(None, "Cancelled")
+    try:
+        budget = int(max_tokens)
+    except (TypeError, ValueError):
+        return PluginTaskResult(None, f"Invalid max_tokens value: {max_tokens!r}")
+    if budget <= 0:
+        return PluginTaskResult(None, f"Invalid max_tokens value: {max_tokens!r}")
+
+    guard_values = resolve_stream_guards(source_config, source)
+    max_content_tokens, max_thinking_tokens, repetition_guard = guard_values
+    base_prompt = plugin.get_prompt()
+    temperature = plugin.get_temperature(global_cfg or {})
+    config_target_name = config_target_name or target_name
+    artifact_target = artifact_target_name or config_target_name
+    raw_model_cfg = ((global_cfg or {}).get("models", {}).get(config_target_name)
+                     or (global_cfg or {}).get("agents", {}).get(config_target_name))
+    drop_params = raw_model_cfg.get("drop_params", []) if isinstance(raw_model_cfg, dict) else []
+    get_request_params = getattr(plugin, "get_request_params", None)
+    request_params = get_request_params(global_cfg or {}) if callable(get_request_params) else {}
+    if not isinstance(request_params, dict):
+        request_params = {}
+    schema_fallback_used = False
+    schema_fallback_error = None
+    schema_request_applied = runner == "http" and (
+        not isinstance(cfg, dict) or cfg.get("api_protocol") not in {"1min", "chatplayground"}
+    )
+
+    def on_retry():
+        state.start_plugin_run(target_name, pid)
+
+    def request_nonstream(request_prompt, label):
+        """Perform a non-streaming request, including the grammar fallback."""
+        nonlocal schema_fallback_used, schema_fallback_error, request_params
+        request_kwargs = {
+            "log_path": log_file, "log_label": label,
+            "session_seed": session_seed, "temperature": temperature,
+            "drop_params": drop_params, "stop_event": stop_event,
+            "system_prompt": system_prompt, "pid": pid, "on_retry": on_retry,
+            "max_content_tokens": max_content_tokens,
+            "max_thinking_tokens": max_thinking_tokens,
+            "repetition_guard": repetition_guard,
+        }
+        if request_params:
+            request_kwargs["request_params"] = request_params
+        result = nonstream_request(
+            source_config, timeout, api_model, source, request_prompt, budget,
+            **request_kwargs,
+        )
+        fallback_params = (
+            _json_object_fallback_params(request_params)
+            if result.error and _is_schema_grammar_error(result.error) else None
+        )
+        if fallback_params is not None:
+            schema_fallback_used = True
+            schema_fallback_error = result.error
+            request_params = fallback_params
+            fallback_kwargs = {
+                "log_path": log_file,
+                "log_label": f"{label} (JSON-object schema fallback)",
+                "session_seed": session_seed, "temperature": temperature,
+                "drop_params": drop_params, "stop_event": stop_event,
+                "system_prompt": system_prompt, "pid": pid, "on_retry": on_retry,
+                "max_content_tokens": max_content_tokens,
+                "max_thinking_tokens": max_thinking_tokens,
+                "repetition_guard": repetition_guard,
+            }
+            if request_params:
+                fallback_kwargs["request_params"] = request_params
+            result = nonstream_request(
+                source_config, timeout, api_model, source, request_prompt, budget,
+                **fallback_kwargs,
+            )
+        return result
+
+    def execute_once(request_prompt, attempt_number):
+        started = time.time()
+        if runner == "opencode":
+            if not opencode_config_path or not opencode_model:
+                return {
+                    "text": "", "think_text": "", "error": "OpenCode runner is missing generated config or model mapping",
+                    "finish_reason": None, "response_time": 0.0, "gen_time": 0.0,
+                    "stream_ok": False, "repeating": False, "usage": {},
+                }
+            response = run_process(
+                request_prompt, config_path=opencode_config_path, model=opencode_model,
+                timeout=timeout, binary=opencode_binary or OPENCODE_BINARY,
+                agent=opencode_agent, output_dir=output_dir, target_key=artifact_target,
+                plugin_id=pid, stop_event=stop_event,
+                no_output_grace=resolve_opencode_timeout(source_config, source),
+            )
+            text = response.text or ""
+            think_text = response.think_text or ""
+            return {
+                "text": text, "think_text": think_text, "error": response.error,
+                "finish_reason": None, "response_time": round(response.elapsed, 1),
+                "gen_time": response.elapsed, "stream_ok": False,
+                "repeating": is_repeating(text), "usage": {},
+            }
+        if plugin.supports_streaming:
+            stream_kwargs = {
+                "log_path": log_file,
+                "log_label": f"{plugin.name} (Streaming, attempt {attempt_number})",
+                "session_seed": session_seed,
+                "temperature": temperature,
+                "drop_params": drop_params,
+                "stop_event": stop_event,
+                "system_prompt": system_prompt,
+                "on_chunk": lambda delta: (
+                    state.mark_first_chunk_seen(target_name, pid, ts=time.time()),
+                    state.add_bytes_received(target_name, pid, len(delta)),
+                ),
+                "on_think_chunk": lambda delta: (
+                    state.mark_first_chunk_seen(target_name, pid, ts=time.time()),
+                    state.add_thinking_bytes_received(target_name, pid, len(delta)),
+                ),
+                "pid": pid,
+                "on_retry": on_retry,
+                "max_content_tokens": max_content_tokens,
+                "max_thinking_tokens": max_thinking_tokens,
+                "repetition_guard": repetition_guard,
+            }
+            if request_params:
+                stream_kwargs["request_params"] = request_params
+            response = stream_request(
+                source_config, timeout, api_model, source, request_prompt, budget,
+                **stream_kwargs,
+            )
+            first = response.first_tok
+            stream_end = response.stream_end or time.time()
+            gen_time = stream_end - first if first else stream_end - started
+            return {
+                "text": response.text or "", "think_text": response.think_text or "",
+                "error": response.error, "finish_reason": response.finish_reason,
+                "response_time": round(stream_end - started, 1),
+                "gen_time": max(0.0, gen_time),
+                "stream_ok": response.error is None and first is not None,
+                "repeating": is_repeating(response.text or "") or "repetition" in str(response.error or "").lower(),
+                "usage": getattr(response, "usage", {}) or {},
+            }
+        response = request_nonstream(request_prompt, f"{plugin.name} (attempt {attempt_number})")
+        return {
+            "text": response.text or "", "think_text": response.think_text or "",
+            "error": response.error, "finish_reason": response.finish_reason,
+            "response_time": round(response.gen_time, 1), "gen_time": response.gen_time,
+            "stream_ok": False, "repeating": is_repeating(response.text or ""),
+            "usage": getattr(response, "usage", {}) or {},
+        }
+
+    def evaluate(text):
+        try:
+            value = plugin.evaluate(text)
+            return normalize_score(value.score, plugin.max_score), serialize_rubric(value.rubric), value.diagnostics or {}, None, None
+        except Exception as exc:  # noqa: BLE001 - retain evaluator failures as metadata
+            return "fail", [], {}, f"plugin.evaluate raised {type(exc).__name__}: {exc}", traceback.format_exc()
+
+    attempts: list[dict[str, Any]] = []
+    bodies = {}
+    request_prompt = base_prompt
+    retry_reason = None
+    current_alteration = "none"
+    for attempt_number in (1, 2):
+        if stop_event and stop_event.is_set():
+            if not attempts:
+                return PluginTaskResult(None, "Cancelled")
+            break
+        raw = execute_once(request_prompt, attempt_number)
+        text = raw["text"]
+        think_text = raw["think_text"]
+        nature = response_nature(
+            text=text, error=raw["error"], finish_reason=raw["finish_reason"],
+            repeating=raw["repeating"],
+            cancelled=bool(stop_event and stop_event.is_set()),
+        )
+        thinking_tokens = _response_reasoning_tokens(type("Response", (), {
+            "usage": raw["usage"], "think_text": think_text,
+        })()) or 0
+        if raw["error"] and not text.strip():
+            score, rubric, diagnostics = "fail", [], {}
+            score_error, score_traceback = None, None
+        else:
+            score, rubric, diagnostics, score_error, score_traceback = evaluate(text)
+        if score_error is not None:
+            nature = "plugin_error"
+        usable = (
+            bool(text.strip())
+            and nature not in {"timeout", "cancelled", "transport_error"}
+            and score_error is None
+        )
+        attempt_failure_cause = raw["error"] or score_error
+        if attempt_failure_cause is None and nature == "token_limit":
+            attempt_failure_cause = (
+                f"finish_reason:{raw['finish_reason']}"
+                if raw["finish_reason"] else "token_limit"
+            )
+        elif attempt_failure_cause is None and nature not in {"completed", "empty"}:
+            attempt_failure_cause = nature
+        attempts.append({
+            "attempt": attempt_number,
+            "max_tokens": budget,
+            "prompt_altered": current_alteration,
+            "retry_reason": retry_reason,
+            "response_nature": nature,
+            "finish_reason": raw["finish_reason"],
+            "error": raw["error"],
+            "failure_cause": attempt_failure_cause,
+            "response_time": raw["response_time"],
+            "gen_time": raw["gen_time"],
+            "output_tokens": int(count_tokens(text)),
+            "thinking_tokens": thinking_tokens,
+            "total_tokens": int(count_tokens(text)) + thinking_tokens,
+            "stream_ok": raw["stream_ok"],
+            "truncated": raw["finish_reason"] == "length",
+            "truncated_due_to_time": nature == "timeout",
+            "repeating": raw["repeating"],
+            "empty_reason": classify_empty_reason(
+                text, think_text, raw["finish_reason"], raw["error"],
+            ),
+            "score": score,
+            "rubric": rubric,
+            "diagnostics": diagnostics,
+            "score_error": score_error,
+            "score_traceback": score_traceback,
+            "usable": usable,
+            "selected": False,
+            "prompt_sha256": hashlib.sha256(request_prompt.encode("utf-8")).hexdigest(),
+            "response_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
+        })
+        bodies[attempt_number] = (request_prompt, text, think_text)
+        if attempt_number == 2:
+            break
+        alteration, instruction = _retry_prompt_alteration(
+            nature, thinking_tokens, budget,
+        )
+        transport_retry = nature == "transport_error"
+        should_retry = transport_retry or alteration != "none"
+        if not should_retry or stop_event and stop_event.is_set():
+            break
+        attempts[-1]["retry_scheduled"] = True
+        retry_reason = nature
+        current_alteration = "none" if transport_retry else alteration
+        request_prompt = base_prompt if transport_retry else base_prompt + instruction
+
+    if not attempts:
+        return PluginTaskResult(None, "No benchmark attempt was executed")
+    usable_attempts = [attempt for attempt in attempts if attempt["usable"]]
+    pool = usable_attempts or attempts
+    selected = max(
+        pool,
+        key=lambda attempt: (
+            attempt["score"]
+            if isinstance(attempt["score"], (int, float))
+            and not isinstance(attempt["score"], bool) else -1,
+            -attempt["attempt"],
+        ),
+    )
+    selected["selected"] = True
+    selected_prompt, selected_text, selected_think = bodies[selected["attempt"]]
+    selected_nature = selected["response_nature"]
+    selected_error = selected["error"]
+    score = selected["score"]
+    rubric = selected["rubric"]
+    diagnostics = selected["diagnostics"]
+    score_error = selected["score_error"]
+    response_time = selected["response_time"]
+    gen_time = selected["gen_time"]
+    output_tokens = selected["output_tokens"]
+    thinking_tokens = selected["thinking_tokens"]
+    total_tokens = selected["total_tokens"]
+    tps = round(output_tokens / gen_time, 2) if gen_time > 0 else None
+    empty_reason = selected["empty_reason"]
+    stream_ok = selected["stream_ok"]
+    truncated = selected["truncated"]
+    repeating = selected["repeating"]
+    selected_alteration = selected["prompt_altered"]
+    selected_retry_reason = selected["retry_reason"]
+    attempt_history = [
+        {key: value for key, value in attempt.items()
+         if key != "score_traceback"}
+        for attempt in attempts
+    ]
+    schema_metadata = _schema_request_metadata(
+        plugin, request_params,
+        response_schema_valid=diagnostics.get("response_schema_valid")
+        if isinstance(diagnostics, dict) else None,
+        request_applied=schema_request_applied,
+        schema_fallback_used=schema_fallback_used,
+        schema_fallback_error=schema_fallback_error,
+        error=selected_error or score_error,
+    )
+
+    if judge_input_dir:
+        sidecar = judge_sidecar_path(judge_input_dir, artifact_target, runner, pid)
+        try:
+            prepare_judge_sidecar(
+                sidecar, plugin, selected_prompt, selected_text,
+                target=artifact_target, state_key=target_name, runner=runner,
+            )
+        except OSError:
+            pass
+
+    meta = {
+        "plugin": pid,
+        "plugin_version": plugin.version,
+        "target": artifact_target,
+        "model": api_model,
+        "runner": runner,
+        "opencode_model": opencode_model,
+        "is_agent": is_agent,
+        "system_prompt": system_prompt,
+        "score": score,
+        "score_schema": SCORE_SCHEMA,
+        "rubric": rubric,
+        "diagnostics": diagnostics,
+        **{key: value for key, value in schema_metadata.items()},
+        "response_time": response_time,
+        "output_tokens": output_tokens,
+        "thinking_tokens": thinking_tokens,
+        "total_tokens": total_tokens,
+        "tps": tps,
+        "seed": session_seed,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "max_tokens": budget,
+        "attempt_count": len(attempts),
+        "retry_count": max(0, len(attempts) - 1),
+        "retried": len(attempts) > 1,
+        "retry_reasons": [
+            attempt["retry_reason"] for attempt in attempts
+            if attempt.get("retry_reason") is not None
+        ],
+        "selected_attempt": selected["attempt"],
+        "retry_reason": selected_retry_reason,
+        "prompt_altered": selected_alteration,
+        "response_nature": selected_nature,
+        "finish_reason": selected["finish_reason"],
+        "truncated": truncated,
+        "truncated_due_to_time": selected["truncated_due_to_time"],
+        "failure_cause": selected["failure_cause"],
+        "attempts": attempt_history,
+        "think_text": selected_think,
+    }
+    if score_error:
+        meta["error"] = score_error
+        meta["traceback"] = selected.get("score_traceback")
+    if selected_error:
+        meta["error"] = selected_error
+        meta["stream_error"] = selected_error
+    if empty_reason is not None:
+        meta["empty_reason"] = empty_reason
+
+    if save_responses and output_dir:
+        responses_dir = os.path.join(output_dir, "responses", sanitize_filename(artifact_target))
+        os.makedirs(responses_dir, exist_ok=True)
+        files = {
+            f"{pid}.prompt.txt": selected_prompt,
+            f"{pid}.content.txt": selected_text,
+            f"{pid}.txt": (
+                f"<thinking>\n{selected_think}\n</thinking>\n\n{selected_text}"
+                if selected_think else selected_text
+            ),
+        }
+        if selected_think:
+            files[f"{pid}.think.txt"] = selected_think
+        for filename, content in files.items():
+            try:
+                with open(os.path.join(responses_dir, filename), "w", encoding="utf-8") as handle:
+                    handle.write(content)
+            except OSError:
+                pass
+        try:
+            with open(os.path.join(responses_dir, f"{pid}.meta.json"), "w", encoding="utf-8") as handle:
+                json.dump(meta, handle, indent=2, default=str)
+        except OSError:
+            pass
+
+    result = {
+        **{f"{pid}_{key}": value for key, value in schema_metadata.items()},
+        f"{pid}_score": score,
+        f"{pid}_rubric": rubric,
+        f"{pid}_diagnostics": diagnostics,
+        f"{pid}_response_time": response_time,
+        f"{pid}_output_tokens": output_tokens,
+        f"{pid}_thinking_tokens": thinking_tokens,
+        f"{pid}_total_tokens": total_tokens,
+        f"{pid}_tps": tps,
+        f"{pid}_truncated": truncated,
+        f"{pid}_repeating": repeating,
+        f"{pid}_stream_ok": stream_ok,
+        f"{pid}_empty_reason": empty_reason,
+        f"{pid}_max_tokens": budget,
+        f"{pid}_attempt_count": len(attempts),
+        f"{pid}_retry_count": max(0, len(attempts) - 1),
+        f"{pid}_retried": len(attempts) > 1,
+        f"{pid}_retry_reasons": [
+            attempt["retry_reason"] for attempt in attempts
+            if attempt.get("retry_reason") is not None
+        ],
+        f"{pid}_selected_attempt": selected["attempt"],
+        f"{pid}_retry_reason": selected_retry_reason,
+        f"{pid}_prompt_altered": selected_alteration,
+        f"{pid}_response_nature": selected_nature,
+        f"{pid}_finish_reason": selected["finish_reason"],
+        f"{pid}_truncated_due_to_time": selected["truncated_due_to_time"],
+        f"{pid}_failure_cause": selected["failure_cause"],
+        f"{pid}_attempts": attempt_history,
+    }
+    task_error = score_error
+    if selected_nature in {"transport_error", "cancelled"} and not selected_text.strip():
+        task_error = selected_error or score_error or selected_nature
+    return PluginTaskResult(result, task_error)
+
+
 def run_model(model_name, source, state, active_plugins, source_config, timeout,
-              token_levels, output_dir, session_seed=0, global_cfg=None,
+              max_tokens, output_dir, session_seed=0, global_cfg=None,
               stop_event=None, save_responses=False, api_model=None,
               judge_input_dir=None, judge_enqueue=None,
               judge_model=None, judge_models=None, judge_prompt_version=None,
@@ -2346,6 +2865,14 @@ def run_model(model_name, source, state, active_plugins, source_config, timeout,
             r[f"{pid}_tps"] = source_row.get(f"{pid}_tps")
             r[f"{pid}_stream_ok"] = source_row.get(f"{pid}_stream_ok", True)
             r[f"{pid}_empty_reason"] = source_row.get(f"{pid}_empty_reason")
+            for key in (
+                "max_tokens", "attempt_count", "retry_count", "retried",
+                "retry_reasons", "selected_attempt", "retry_reason",
+                "prompt_altered", "response_nature", "finish_reason",
+                "truncated", "truncated_due_to_time", "repeating",
+                "failure_cause", "attempts",
+            ):
+                r[f"{pid}_{key}"] = source_row.get(f"{pid}_{key}")
             source_contract = source_row.get(f"{pid}_judge_selected_contract")
             current_contract = active_judge_contracts.get(pid)
             projection_matches = (
@@ -2409,7 +2936,7 @@ def run_model(model_name, source, state, active_plugins, source_config, timeout,
     state.update(target_name, attempt_start=time.monotonic())
 
     _run_plugins(target_name, api_model, source, state, active_plugins, plugins_to_run,
-                 source_config, timeout, token_levels, output_dir,
+                 source_config, timeout, max_tokens, output_dir,
                  session_seed, global_cfg, r, start,
                  max_workers=plugin_thread_limit,
                  stop_event=stop_event,
@@ -2428,7 +2955,7 @@ def run_model(model_name, source, state, active_plugins, source_config, timeout,
 
 
 def _run_plugins(target_name, api_model, source, state, active_plugins, plugins_to_run,
-                 source_config, timeout, token_levels, output_dir,
+                 source_config, timeout, max_tokens, output_dir,
                  session_seed, global_cfg, r, start, max_workers,
                  stop_event=None, save_responses=False, judge_input_dir=None,
                  judge_enqueue=None,
@@ -2472,7 +2999,7 @@ def _run_plugins(target_name, api_model, source, state, active_plugins, plugins_
         state.start_plugin_run(target_name, pid)
         try:
             task_result = _run_plugin_task(target_name, api_model, source, plugin, source_config,
-                                           timeout, token_levels, session_seed, log_file,
+                                           timeout, max_tokens, session_seed, log_file,
                                            global_cfg or {}, state=state,
                                            stop_event=model_stop_event,
                                            save_responses=save_responses,
@@ -2524,6 +3051,21 @@ def _run_plugins(target_name, api_model, source, state, active_plugins, plugins_
                         f"{pid}_thinking_tokens": result.get(f"{pid}_thinking_tokens"),
                         f"{pid}_total_tokens": result.get(f"{pid}_total_tokens"),
                      f"{pid}_empty_reason": result.get(f"{pid}_empty_reason"),
+                     f"{pid}_max_tokens": result.get(f"{pid}_max_tokens"),
+                     f"{pid}_attempt_count": result.get(f"{pid}_attempt_count"),
+                     f"{pid}_retry_count": result.get(f"{pid}_retry_count"),
+                     f"{pid}_retried": result.get(f"{pid}_retried"),
+                     f"{pid}_retry_reasons": result.get(f"{pid}_retry_reasons"),
+                     f"{pid}_selected_attempt": result.get(f"{pid}_selected_attempt"),
+                     f"{pid}_retry_reason": result.get(f"{pid}_retry_reason"),
+                     f"{pid}_prompt_altered": result.get(f"{pid}_prompt_altered"),
+                     f"{pid}_response_nature": result.get(f"{pid}_response_nature"),
+                     f"{pid}_finish_reason": result.get(f"{pid}_finish_reason"),
+                     f"{pid}_truncated": result.get(f"{pid}_truncated"),
+                     f"{pid}_truncated_due_to_time": result.get(f"{pid}_truncated_due_to_time"),
+                     f"{pid}_repeating": result.get(f"{pid}_repeating"),
+                     f"{pid}_failure_cause": result.get(f"{pid}_failure_cause"),
+                     f"{pid}_attempts": result.get(f"{pid}_attempts"),
                      f"{pid}_schema_requested": result.get(f"{pid}_schema_requested"),
                      f"{pid}_schema_request_status": result.get(f"{pid}_schema_request_status"),
                      f"{pid}_response_schema_valid": result.get(f"{pid}_response_schema_valid"),

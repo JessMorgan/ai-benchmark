@@ -84,6 +84,13 @@ class HTMLOutputPlugin(BenchmarkOutputPlugin):
                               f'<td class="judge-error">{html_lib.escape(str(judge_error))}</td>'
                               f'<td class="judge-votes">{len(r.get(f"{p.id}_judge_votes", []))}</td>')
                 cells += empty_cell
+                cells += (
+                    f'<td>{r.get(f"{p.id}_attempt_count", "-")}</td>'
+                    f'<td>{html_lib.escape(", ".join(r.get(f"{p.id}_retry_reasons", []) or []) or "-")}</td>'
+                    f'<td>{html_lib.escape(str(r.get(f"{p.id}_prompt_altered", "-")))}</td>'
+                    f'<td>{html_lib.escape(str(r.get(f"{p.id}_response_nature", "-")))}</td>'
+                    f'<td>{html_lib.escape(str(r.get(f"{p.id}_failure_cause", "-")))}</td>'
+                )
             overall = r.get("overall_score_100", tot)
             scored_plugins = r.get("overall_scored_plugins", _scored_plugin_count(r, active_plugins))
             cells += (f'<td><strong>{overall if overall is not None else "-"}</strong></td>'
@@ -187,7 +194,10 @@ class HTMLOutputPlugin(BenchmarkOutputPlugin):
                 header_cells += (f"<th>{p.name} Judge (0–100)</th>"
                                  f"<th>{p.name} Judge Confidence</th><th>{p.name} Judge Error</th>"
                                  f"<th>{p.name} Judge Votes</th>")
-            header_cells += f"<th>{p.name} Reason</th>"
+            header_cells += (f"<th>{p.name} Reason</th>"
+                             f"<th>{p.name} Attempts</th><th>{p.name} Retry</th>"
+                             f"<th>{p.name} Prompt Altered</th><th>{p.name} Nature</th>"
+                             f"<th>{p.name} Failure</th>")
         header_cells += "<th>Overall Score (0–100)</th><th>Scored Plugins</th><th>Time</th><th>Mode</th><th>Status</th>"
 
         seed_html = f"<br><strong>Seed:</strong> {session_seed}" if session_seed is not None else ""

@@ -56,7 +56,7 @@ class TestCLIArgs(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0)
         cfg = json.loads(result.stdout)
-        self.assertEqual(cfg["judge"]["token_levels"], [4096])
+        self.assertEqual(cfg["judge"]["max_tokens"], 4096)
         response_format = cfg["judge"]["request_params"]["response_format"]
         self.assertEqual(response_format["type"], "json_schema")
         self.assertEqual(response_format["json_schema"]["name"], "benchmark_judge_result")
@@ -174,7 +174,7 @@ class TestCLIArgs(unittest.TestCase):
         ):
             self.assertIn(heading, help_text)
         for option in (
-            "--restart", "--config", "--out", "--timeout", "--token-levels",
+            "--restart", "--config", "--out", "--timeout", "--max-tokens",
             "--temperature", "--plugin-temperature", "--plugin-thread-limit",
             "--plugins-whitelist", "--plugins-blacklist", "--list-plugins",
             "--generate-shell-completion", "--dump-default-config", "--schema-sentinel",
@@ -208,7 +208,7 @@ class TestCLIArgs(unittest.TestCase):
         expected_groups = {
             "General:": ("--help", "--restart", "--scripted", "--seed"),
             "Benchmark configuration:": (
-                "--config", "--out", "--timeout", "--token-levels",
+                "--config", "--out", "--timeout", "--max-tokens",
                 "--temperature", "--plugin-temperature", "--plugin-thread-limit",
                 "--plugins-whitelist", "--plugins-blacklist", "--no-rerun-failed",
             ),
@@ -279,7 +279,7 @@ class TestPluginExecutionMode(unittest.TestCase):
         ):
                 self.module.run_model(
                     "dummy-model", "Local", state, plugins, source_config,
-                    timeout=1, token_levels=[100], output_dir="/tmp/benchmark-test",
+                    timeout=1, max_tokens=100, output_dir="/tmp/benchmark-test",
                     session_seed=0, global_cfg={},
                 )
 
@@ -298,7 +298,7 @@ class TestPluginExecutionMode(unittest.TestCase):
         ):
             self.module.run_model(
                 "dummy-model", "Local", state, plugins, source_config,
-                timeout=1, token_levels=[100], output_dir="/tmp/benchmark-test",
+                timeout=1, max_tokens=100, output_dir="/tmp/benchmark-test",
                 session_seed=0, global_cfg={},
             )
 
@@ -317,7 +317,7 @@ class TestPluginExecutionMode(unittest.TestCase):
         ):
             self.module.run_model(
                 "dummy-model", "Local", state, plugins, source_config,
-                timeout=1, token_levels=[100], output_dir="/tmp/benchmark-test",
+                timeout=1, max_tokens=100, output_dir="/tmp/benchmark-test",
                 session_seed=0, global_cfg={},
             )
 
@@ -352,7 +352,7 @@ class TestPartialPluginFailure(unittest.TestCase):
         with mock.patch.object(self.module, "_run_plugin_task", side_effect=fake_run_plugin_task):
             self.module.run_model(
                 "dummy-model", "Local", state, plugins, source_config,
-                timeout=1, token_levels=[100], output_dir="/tmp/benchmark-test",
+                timeout=1, max_tokens=100, output_dir="/tmp/benchmark-test",
                 session_seed=0, global_cfg={},
             )
 
@@ -410,7 +410,7 @@ class TestPartialPluginFailure(unittest.TestCase):
         with mock.patch.object(self.module, "_run_plugin_task", side_effect=fake_run_plugin_task):
             self.module.run_model(
                 "dummy-model", "Local", state, plugins, source_config,
-                timeout=1, token_levels=[100], output_dir="/tmp/benchmark-test",
+                timeout=1, max_tokens=100, output_dir="/tmp/benchmark-test",
                 session_seed=0, global_cfg={},
             )
 
@@ -465,7 +465,7 @@ class TestPartialPluginFailure(unittest.TestCase):
         with mock.patch.object(self.module, "_run_plugin_task", side_effect=fake_run_plugin_task):
             self.module.run_model(
                 "dummy-model", "Local", state, plugins, source_config,
-                timeout=1, token_levels=[100], output_dir="/tmp/benchmark-test",
+                timeout=1, max_tokens=100, output_dir="/tmp/benchmark-test",
                 session_seed=0, global_cfg={},
             )
 
@@ -503,7 +503,7 @@ class TestConsecutive429CircuitBreaker(unittest.TestCase):
         ):
             self.module.run_model(
                 "dummy-model", "Local", state, self.plugins, source_config,
-                timeout=1, token_levels=[100], output_dir=output_dir,
+                timeout=1, max_tokens=100, output_dir=output_dir,
                 session_seed=0, global_cfg={},
             )
         return state
@@ -576,7 +576,7 @@ class TestSaveResponses(unittest.TestCase):
         ):
             self.module.run_model(
                 "dummy-model", "Local", state, plugins, source_config,
-                timeout=1, token_levels=[100], output_dir=tmpdir,
+                timeout=1, max_tokens=100, output_dir=tmpdir,
                 session_seed=12345, global_cfg={},
                 save_responses=True,
             )
@@ -662,7 +662,7 @@ class TestSaveResponses(unittest.TestCase):
         ):
             self.module.run_model(
                 "dummy-model", "Local", state, plugins, source_config,
-                timeout=1, token_levels=[100], output_dir=tmpdir,
+                timeout=1, max_tokens=100, output_dir=tmpdir,
                 session_seed=12345, global_cfg={},
                 save_responses=True,
             )
@@ -704,7 +704,7 @@ class TestSaveResponses(unittest.TestCase):
         ):
             self.module.run_model(
                 "dummy-model", "Local", state, plugins, source_config,
-                timeout=1, token_levels=[100], output_dir=tmpdir,
+                timeout=1, max_tokens=100, output_dir=tmpdir,
                 session_seed=0, global_cfg={},
                 save_responses=False,
             )
@@ -783,7 +783,7 @@ class TestDropParams(unittest.TestCase):
         with mock.patch("requests.post", side_effect=fake_post):
             self.module._run_plugin_task(
                 "dummy-model", "dummy-model", "Local", plugins[0], source_config,
-                timeout=1, token_levels=[100], session_seed=12345,
+                timeout=1, max_tokens=100, session_seed=12345,
                 log_file=None, global_cfg=global_cfg, state=state,
             )
 
@@ -829,7 +829,7 @@ class TestDropParams(unittest.TestCase):
         ):
             task_result = self.module._run_plugin_task(
                 "dummy-model", "dummy-model", "Local", plugins[0], source_config,
-                timeout=1, token_levels=[100], session_seed=12345,
+                timeout=1, max_tokens=100, session_seed=12345,
                 log_file=None, global_cfg={}, state=state,
             )
 
@@ -908,7 +908,7 @@ class TestNonStreamingPluginRetry(unittest.TestCase):
             # before the call site below.
             task_result = self.module._run_plugin_task(
                 "dummy-model", "dummy-model", "Local", plugin, source_config,
-                timeout=1, token_levels=[100], session_seed=12345,
+                timeout=1, max_tokens=100, session_seed=12345,
                 log_file=None, global_cfg={}, state=state,
             )
 
@@ -949,7 +949,7 @@ class TestNonStreamingPluginRetry(unittest.TestCase):
         ) as request:
             task_result = self.module._run_plugin_task(
                 "dummy-model", "dummy-model", "Local", plugin, source_config,
-                timeout=1, token_levels=[100], session_seed=12345,
+                timeout=1, max_tokens=100, session_seed=12345,
                 log_file=None, global_cfg={}, state=state,
             )
 
@@ -1041,7 +1041,7 @@ class TestNonStreamingPluginRetry(unittest.TestCase):
         ):
             task_result = self.module._run_plugin_task(
                 "dummy-model", "dummy-model", "Local", plugin, source_config,
-                timeout=5, token_levels=[100], session_seed=12345,
+                timeout=5, max_tokens=100, session_seed=12345,
                 log_file=None, global_cfg={}, state=state,
             )
 
@@ -1089,7 +1089,7 @@ class TestEmptyReasonClassification(unittest.TestCase):
         ):
             return self.module._run_plugin_task(
                 "dummy-model", "dummy-model", "Local", plugin, source_config,
-                timeout=1, token_levels=[16384], session_seed=12345,
+                timeout=1, max_tokens=16384, session_seed=12345,
                 log_file=None, global_cfg={}, state=state,
                 output_dir=output_dir, save_responses=save_responses,
             )
@@ -1129,9 +1129,10 @@ class TestEmptyReasonClassification(unittest.TestCase):
         task_result = self._run_streaming_leg(
             StreamResult("", "planning tool calls...", 1.0, 2.0,
                          "litellm.APIConnectionError: EOF", None, {}))
-        self.assertIsNone(task_result.error)
+        self.assertEqual(task_result.error, "litellm.APIConnectionError: EOF")
         self.assertEqual(task_result.result["rate-limiter_empty_reason"], "error")
         self.assertFalse(task_result.result["rate-limiter_stream_ok"])
+        self.assertEqual(task_result.result["rate-limiter_attempt_count"], 2)
 
     def test_nonempty_response_has_no_classification(self):
         task_result = self._run_streaming_leg(
@@ -1170,7 +1171,7 @@ class TestEmptyReasonClassification(unittest.TestCase):
         })
         self.module.run_model(
             "dummy-model", "Local", state, plugins, source_config,
-            timeout=1, token_levels=[100], output_dir="/tmp/benchmark-test",
+            timeout=1, max_tokens=100, output_dir="/tmp/benchmark-test",
             session_seed=0, global_cfg={},
         )
         result = state.latest_results()[0]
@@ -1199,7 +1200,7 @@ class TestSeedCLI(unittest.TestCase):
         with mock.patch("requests.post", side_effect=fake_post):
             self.module._run_plugin_task(
                 "dummy-model", "dummy-model", "Local", plugins[0], source_config,
-                timeout=1, token_levels=[100], session_seed=42,
+                timeout=1, max_tokens=100, session_seed=42,
                 log_file=None, global_cfg={}, state=state,
             )
 
@@ -1741,7 +1742,7 @@ class TestConfigFallback(unittest.TestCase):
                     targets, state_models, "opencode"
                 ),
                 os.path.join(tmpdir, "opencode.generated.json"),
-                token_levels=[100],
+                max_tokens=100,
             )
             projected_models = {
                 name
@@ -2157,7 +2158,7 @@ class TestRetryResetsStartTimestamp(unittest.TestCase):
         ):
             self.module.run_model(
                 "dummy-model", "Local", state, plugins, source_config,
-                timeout=5, token_levels=[100], output_dir=tmpdir,
+                timeout=5, max_tokens=100, output_dir=tmpdir,
                 session_seed=0, global_cfg={},
             )
 
@@ -2233,7 +2234,7 @@ class TestStreamPartialTextKept(unittest.TestCase):
         ):
             task_result = self.module._run_plugin_task(
                 "dummy-model", "dummy-model", "Local", plugin, source_config,
-                timeout=1, token_levels=[100], session_seed=12345,
+                timeout=1, max_tokens=100, session_seed=12345,
                 log_file=None, global_cfg={}, state=state,
             )
 
@@ -2247,6 +2248,9 @@ class TestStreamPartialTextKept(unittest.TestCase):
         # doesn't fire ``on_chunk``).
         self.assertEqual(task_result.result["rate-limiter_output_tokens"], 10000)
         self.assertFalse(task_result.result["rate-limiter_stream_ok"])
+        self.assertEqual(task_result.result["rate-limiter_response_nature"], "timeout")
+        self.assertTrue(task_result.result["rate-limiter_truncated_due_to_time"])
+        self.assertEqual(task_result.result["rate-limiter_attempt_count"], 1)
         # Truncation semantics are NOT the bug here -- the kimi-dev
         # operator observation is about output_tokens collapsing to 1,
         # not about the truncation flag. The conditional ``sfr ->
@@ -2256,11 +2260,9 @@ class TestStreamPartialTextKept(unittest.TestCase):
         # (empty) nonstream response and recorded 1 token.
         mock_nonstream.assert_not_called()
 
-    def test_stream_failure_with_no_content_falls_back_to_nonstream(self):
-        """When streaming failed at connect time (no first chunk, no
-        text), the non-stream fallback IS still called -- the
-        pre-fix path remains for genuinely-empty streaming failures.
-        """
+    def test_stream_failure_with_no_content_retries_stream_without_prompt_change(self):
+        """A transport failure gets one unchanged streaming retry; it does
+        not create a hidden non-stream benchmark attempt."""
         plugin = self._streaming_plugin()
         source_config = {
             "Local": {
@@ -2270,37 +2272,41 @@ class TestStreamPartialTextKept(unittest.TestCase):
         }
         state = self.module.BenchmarkState({"dummy-model": "Local"}, [plugin.id])
 
-        # 3 000 chars from a successful nonstream retry -> 750 tokens.
-        nonstream_text = "x" * 3000
+        prompts = []
         with (
-            mock.patch.object( self.module, "stream_request", return_value=StreamResult("", "", None, 1.0, "connection refused", None, {}), ),
-            mock.patch.object( self.module, "nonstream_request", return_value=NonStreamResult(nonstream_text, "", {}, 0.1, None, "stop"), ) as mock_nonstream,
+            mock.patch.object(
+                self.module, "stream_request",
+                side_effect=lambda *args, **kwargs: (
+                    prompts.append(args[4])
+                    or StreamResult("", "", None, 1.0, "connection refused", None, {})
+                ),
+            ) as mock_stream,
+            mock.patch.object(self.module, "nonstream_request") as mock_nonstream,
         ):
             task_result = self.module._run_plugin_task(
                 "dummy-model", "dummy-model", "Local", plugin, source_config,
-                timeout=1, token_levels=[100], session_seed=12345,
+                timeout=1, max_tokens=100, session_seed=12345,
                 log_file=None, global_cfg={}, state=state,
             )
 
-        self.assertIsNone(task_result.error)
-        self.assertEqual(task_result.result["rate-limiter_output_tokens"], 750)
+        self.assertEqual(task_result.error, "connection refused")
+        self.assertEqual(task_result.result["rate-limiter_output_tokens"], 0)
         self.assertFalse(task_result.result["rate-limiter_stream_ok"])
-        mock_nonstream.assert_called_once()
+        self.assertEqual(mock_stream.call_count, 2)
+        self.assertEqual(prompts[0], prompts[1])
+        mock_nonstream.assert_not_called()
 
 
-class TestThinkingAutoEscalation(unittest.TestCase):
-    """Auto-retry for thinking-truncation: when a streaming HTTP leg classifies
-    as thinking-truncation (empty content, large think_text, finish_reason=
-    'length'), the runner retries once with a doubled max_tokens budget."""
+class TestTokenLimitRetry(unittest.TestCase):
+    """Token-limit responses get one same-budget retry with targeted guidance."""
 
     @classmethod
     def setUpClass(cls):
         cls.module = load_benchmark_module()
         cls.plugins = discover_plugins()
 
-    def test_thinking_truncation_triggers_escalation_with_doubled_budget(self):
-        """thinking-truncation on the first attempt must call stream_request
-        a second time with a doubled max_tokens (16384 -> 32768)."""
+    def test_thinking_truncation_retries_with_same_budget_and_thinking_guidance(self):
+        """A thinking-heavy token-limit response retries without increasing the budget."""
         plugin = next(p for p in self.plugins if p.id == "rate-limiter")
         source_config = {
             "Local": {"api_url": "http://localhost:11434/chat/completions", "headers": {}}
@@ -2323,18 +2329,21 @@ class TestThinkingAutoEscalation(unittest.TestCase):
         ):
             task_result = self.module._run_plugin_task(
                 "dummy-model", "dummy-model", "Local", plugin, source_config,
-                timeout=1, token_levels=[16384], session_seed=12345,
+                timeout=1, max_tokens=16384, session_seed=12345,
                 log_file=None, global_cfg={}, state=state,
             )
         self.assertIsNone(task_result.error)
         self.assertEqual(len(captured), 2, "thinking-truncation must trigger a retry")
         self.assertEqual(captured[0], 16384)
-        self.assertEqual(captured[1], 32768)
+        self.assertEqual(captured[1], 16384)
         self.assertIn("RETRY GUIDANCE", prompts[1])
-        self.assertIn("approximately 16384 tokens", prompts[1])
+        self.assertIn("approximately 8192 tokens", prompts[1])
+        result = task_result.result
+        self.assertEqual(result["rate-limiter_prompt_altered"], "thinking_50_percent")
+        self.assertEqual(result["rate-limiter_selected_attempt"], 2)
 
-    def test_escalation_only_for_thinking_truncation(self):
-        """A non-thinking empty leg (max-tokens classification) must not escalate."""
+    def test_token_limit_without_thinking_retries_with_response_budget_guidance(self):
+        """Every token-limit response retries, even when no thinking was observed."""
         plugin = next(p for p in self.plugins if p.id == "rate-limiter")
         source_config = {
             "Local": {"api_url": "http://localhost:11434/chat/completions", "headers": {}}
@@ -2352,13 +2361,20 @@ class TestThinkingAutoEscalation(unittest.TestCase):
         ):
             task_result = self.module._run_plugin_task(
                 "dummy-model", "dummy-model", "Local", plugin, source_config,
-                timeout=1, token_levels=[16384], session_seed=12345,
+                timeout=1, max_tokens=16384, session_seed=12345,
                 log_file=None, global_cfg={}, state=state,
             )
         self.assertIsNone(task_result.error)
-        self.assertEqual(len(captured), 1, "max-tokens must not trigger a retry")
+        self.assertEqual(len(captured), 2, "every token-limit response gets one retry")
+        self.assertEqual(
+            task_result.result["rate-limiter_attempts"][1]["prompt_altered"],
+            "response_under_budget",
+        )
+        # Both attempts were unusable, so the first (unmodified) response is
+        # selected; the attempt history still records the retry alteration.
+        self.assertEqual(task_result.result["rate-limiter_prompt_altered"], "none")
 
-    def test_escalation_unnecessary_for_nonempty(self):
+    def test_retry_unnecessary_for_non_token_limited_response(self):
         """A non-empty response (even with think text) must not escalate."""
         plugin = next(p for p in self.plugins if p.id == "rate-limiter")
         source_config = {
@@ -2377,14 +2393,14 @@ class TestThinkingAutoEscalation(unittest.TestCase):
         ):
             task_result = self.module._run_plugin_task(
                 "dummy-model", "dummy-model", "Local", plugin, source_config,
-                timeout=1, token_levels=[16384], session_seed=12345,
+                timeout=1, max_tokens=16384, session_seed=12345,
                 log_file=None, global_cfg={}, state=state,
             )
         self.assertIsNone(task_result.error)
         self.assertEqual(len(captured), 1, "non-empty must not trigger a retry")
 
-    def test_escalation_hits_max_cap(self):
-        """The doubled budget must not exceed 131072."""
+    def test_same_budget_retry_does_not_increase_large_budget(self):
+        """A large budget is still reused unchanged on the retry."""
         plugin = next(p for p in self.plugins if p.id == "rate-limiter")
         source_config = {
             "Local": {"api_url": "http://localhost:11434/chat/completions", "headers": {}}
@@ -2405,13 +2421,17 @@ class TestThinkingAutoEscalation(unittest.TestCase):
         ):
             task_result = self.module._run_plugin_task(
                 "dummy-model", "dummy-model", "Local", plugin, source_config,
-                timeout=1, token_levels=[65536], session_seed=12345,
+                timeout=1, max_tokens=65536, session_seed=12345,
                 log_file=None, global_cfg={}, state=state,
             )
         self.assertIsNone(task_result.error)
         self.assertEqual(len(captured), 2)
         self.assertEqual(captured[0], 65536)
-        self.assertEqual(captured[1], 131072)
+        self.assertEqual(captured[1], 65536)
+        self.assertEqual(
+            task_result.result["rate-limiter_prompt_altered"],
+            "response_under_budget",
+        )
 
 
 if __name__ == "__main__":

@@ -26,7 +26,7 @@ ignored, and real environment variables take precedence over file values. See
 | `--scripted` | Continue non-interactively instead of prompting on resume/plugin changes |
 | `--out DIR` | Override the output directory from config |
 | `--timeout SEC` | Override API request timeout |
-| `--token-levels N [N ...]` | Override token levels (e.g. `--token-levels 4096 8192 16384`) |
+| `--max-tokens N` | Override the scalar generation budget; a policy retry reuses this value |
 | `--temperature VAL` | Default temperature for all plugins (overrides config) |
 | `--plugin-temperature ID=VAL [ID=VAL ...]` | Override per-plugin temperatures (highest priority) |
 | `--plugin-thread-limit N` | Max concurrent plugins per model (`0` = one per plugin) |
@@ -94,10 +94,10 @@ python ai-benchmark.py --plugins-blacklist moe-dense
 python ai-benchmark.py --seed 42
 ```
 
-### Override token levels
+### Override the generation budget
 
 ```sh
-python ai-benchmark.py --token-levels 4096 8192 16384
+python ai-benchmark.py --max-tokens 16384
 ```
 
 ### Override all plugin temperatures
@@ -175,7 +175,7 @@ OpenCode mode generates and retains `<output_dir>/opencode/opencode.generated.js
 
 Startup preflight validates the OpenCode CLI before any work is scheduled: `opencode run --help` must advertise the `--model`/`--format`/`--agent`/`--pure`/`--thinking` options and `--format` must list `json` as a choice. An on-PATH binary that fails this check is replaced by a fresh `.tools/opencode/` install automatically (unless `--no-install-opencode`); the resolved binary path is recorded in `run-info.json` as `opencode_binary`. An unsupported CLI fails fast with a clear error instead of failing every task at runtime.
 
-Each OpenCode task is invoked as `opencode run --pure --model <slugified-source>/<api_model> --format json --thinking --agent benchmark-<target> <prompt>`. Every target registers an agent in the generated config: agent personas keep their explicit system prompt, while plain model targets register a **neutral agent** whose prompt has no conciseness instruction and whose permission map denies every tool family — so small function-calling-tuned models see no tool definitions and receive the same plain "answer the prompt" contract as HTTP (OpenCode's built-in default "answer concisely <4 lines" prompt never applies). The adapter uses the `json` event-stream format (the only machine-readable choice; `plain` is not a valid value) and extracts the final assistant answer from the NDJSON `text` events (and `reasoning` events into the `think_text` sidecars), so the scored response is the model's final answer without TUI/ANSI noise. Generated configs set both `limit.context` (inferred from the model id's `-NNk`/`-NNm` suffix, e.g. `-128k`) and `limit.output` (from `token_levels`), because OpenCode rejects provider models whose `limit` omits `context`.
+Each OpenCode task is invoked as `opencode run --pure --model <slugified-source>/<api_model> --format json --thinking --agent benchmark-<target> <prompt>`. Every target registers an agent in the generated config: agent personas keep their explicit system prompt, while plain model targets register a **neutral agent** whose prompt has no conciseness instruction and whose permission map denies every tool family — so small function-calling-tuned models see no tool definitions and receive the same plain "answer the prompt" contract as HTTP (OpenCode's built-in default "answer concisely <4 lines" prompt never applies). The adapter uses the `json` event-stream format (the only machine-readable choice; `plain` is not a valid value) and extracts the final assistant answer from the NDJSON `text` events (and `reasoning` events into the `think_text` sidecars), so the scored response is the model's final answer without TUI/ANSI noise. Generated configs set both `limit.context` (inferred from the model id's `-NNk`/`-NNm` suffix, e.g. `-128k`) and `limit.output` (from `max_tokens`), because OpenCode rejects provider models whose `limit` omits `context`.
 
 OpenCode's agent loop has no internal liveness detection, so stalled/looping tasks would otherwise burn the full benchmark timeout silently. Each subprocess therefore runs three data-backed loop guards that kill it early with an actionable error (partial stdout retained): a **staleness fast-fail** (`sources.<name>.opencode_timeout`, 300 s by default, with no output on stdout or stderr — silent hangs and mid-stream/tool round-trip stalls), a **step budget** (50 `step_finish` events — reasoning/tool planning loops), and a **text-repetition guard** (same non-trivial text event 5× — canned-continuation loops). Set a source's `opencode_timeout` to `0` to disable the staleness guard; the outer benchmark timeout still applies.
 

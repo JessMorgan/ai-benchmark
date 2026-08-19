@@ -59,7 +59,7 @@ class TestNewPluginContinue(unittest.TestCase):
             with mock.patch.object(self.module, "_run_plugin_task", side_effect=fake_run_plugin_task):
                 self.module.run_model(
                     "dummy-model", "Local", loaded, plugins, source_config,
-                    timeout=1, token_levels=[100], output_dir=tmpdir,
+                    timeout=1, max_tokens=100, output_dir=tmpdir,
                     session_seed=0, global_cfg={},
                 )
 
@@ -111,7 +111,7 @@ class TestNewPluginContinue(unittest.TestCase):
                 for name in models:
                     self.module.run_model(
                         name, "Src1", loaded, plugins, source_config,
-                        timeout=1, token_levels=[100], output_dir=tmpdir,
+                        timeout=1, max_tokens=100, output_dir=tmpdir,
                         session_seed=0, global_cfg={},
                     )
 
@@ -212,7 +212,7 @@ class TestNewPluginContinue(unittest.TestCase):
             with mock.patch.object(self.module, "_run_plugin_task", side_effect=fake_run_plugin_task):
                 self.module.run_model(
                     "dummy-model", "Local", loaded, plugins, source_config,
-                    timeout=1, token_levels=[100], output_dir=tmpdir,
+                    timeout=1, max_tokens=100, output_dir=tmpdir,
                     session_seed=0, global_cfg={},
                 )
 
