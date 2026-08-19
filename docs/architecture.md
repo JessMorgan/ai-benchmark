@@ -97,7 +97,8 @@ Judges do not use `_run_plugin_task()`. Their `judge_response()` loop retries on
    - Results are stored in `BenchmarkState`.
 
 6. **Output Generation**
-   - After all models complete, `_save_outputs()` generates reports.
+   - Once at the end of the run (or when the app is stopped), `_save_outputs()`
+     generates the CSV/HTML/Markdown/PDF reports from the final state.
    - `gen_pdf()` is called separately for PDF output.
 
 ## State Management
@@ -108,7 +109,9 @@ Judges do not use `_run_plugin_task()`. Their `judge_response()` loop retries on
 - `results`: list of result dicts
 - `_log`: recent error log entries
 
-State is saved to `benchmark_state.json` after each model and on shutdown. The saved state stores model sources as plain strings; dict-valued model entries from the config are resolved to their source string before being written.
+State persistence is throttled to keep the full-state write (which deep-copies the entire state) off the hot path: completed judge votes and completed benchmark tasks accumulate in memory and flush at most every `flush_interval_seconds` seconds or `flush_votes` changes (defaults 60 s / 10). The flush itself runs on a dedicated background thread (`_BackgroundFlusher`): `request_flush()` is non-blocking, requests that arrive mid-flush coalesce into one follow-up, and the serialization (deepcopy + JSON dump) happens under the shared `persistence_lock` on that thread, so workers never stall on the GIL or queue behind the lock. The flush persists only the state snapshot — report files are regenerated once at the end of the run or when the app is stopped, never per change. The final save on drain/shutdown (`raise_on_error=True`, after the flusher has been stopped and drained) persists the tail, so a crash loses at most one interval of changes, which re-run on resume. The saved state stores model sources as plain strings; dict-valued model entries from the config are resolved to their source string before being written.
+
+Every state mutation bumps a monotonic `revision` counter. The live TUI polls it and rebuilds its frame only when something displayed actually changed — revision bumped, terminal resized, operator scrolled, or live elapsed/countdown content (streaming seconds, judge-activity elapsed, 429 sleeps) is ticking — capped at 2 fps (`_TUI_REFRESH_SECONDS = 0.5`). An idle run rebuilds nothing, so the ~0.1 s frame build for 108 models × 18 plugins no longer runs on every 0.2 s tick.
 
 ## OpenCode Runner
 

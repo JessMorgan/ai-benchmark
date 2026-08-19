@@ -77,12 +77,24 @@ per dispatch):
 | `_bytes_received`, `_first_chunk_seen`, `_first_tok_ts`, `_start_ts` | runtime | Live TUI; reset on `start_plugin_run` |
 
 `state.results` is the list of result dicts; `latest_results()` keeps the
-LAST entry per model.
+LAST entry per model. Every mutation bumps `state.revision`; the live TUI
+polls it and rebuilds its frame only when something displayed changed
+(mutation, resize, scroll, or a live elapsed/countdown tick), capped at
+2 fps (`_TUI_REFRESH_SECONDS = 0.5` in `benchmark/cli.py`).
 
 ## Output directory (per run)
 
 - `results.md`, `results.csv`, `results.html`, `results.pdf` — final reports.
-- `benchmark_state.json` — resume state.
+- `benchmark_state.json` — resume state. State flushes at most every
+  `flush_interval_seconds` (default 60 s) or `flush_votes` (default 10)
+  completed changes (judge votes + benchmark tasks) — the hot path no
+  longer rewrites the full state. The flush runs on a dedicated background
+  thread (`_BackgroundFlusher` in `benchmark/cli.py`), so workers never
+  stall on the GIL-bound serialization; a final save on drain/shutdown
+  persists the tail, so a crash loses at most one interval of changes
+  (re-run on resume). The flush persists only the state snapshot — report
+  files (`results.csv`/`.html`/`.md`/`.pdf`) are regenerated once at the
+  end of the run or when the app is stopped.
 - `run-info.json` — run metadata; **includes `backoff_429`
   (`{total_retries, per_plugin: {pid: {retries, total_sleep_time}}}`)**
   for post-run 429 analysis (see `_inject_429_stats` in `benchmark.cli`).

@@ -3961,12 +3961,14 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
             )
 
 
+        # Reports are generated exactly once here, whether the run completed
+        # or was stopped early, so the artifacts on disk always match the
+        # final in-memory state.
+        _save_outputs(state, output_dir, active_plugins)
         if interrupted:
             done = state.completed
             print(f"✅ Saved state ({done}/{total} done). Re-run without --restart to continue.\n",
                   file=sys.stderr)
-        else:
-            _save_outputs(state, output_dir, active_plugins)
         final_results = state.latest_results()
         ok_count = len([r for r in final_results if r["status"] == "ok"])
         print(f"\n{'='*70}")
