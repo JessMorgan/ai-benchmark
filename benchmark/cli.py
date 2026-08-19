@@ -566,7 +566,12 @@ def _judge_votes(state, pid):
     return {
         vote.get("model")
         for vote in (state.get(f"{pid}_judge_votes") or [])
-        if is_successful_judge_vote(vote) and vote.get("model") in configured
+        if is_successful_judge_vote(vote)
+        and vote.get("model") in configured
+        and (
+            state.get(f"{pid}_judge_selected_contract") is None
+            or vote.get("judge_contract_id") == state.get(f"{pid}_judge_selected_contract")
+        )
     }
 
 
@@ -578,6 +583,10 @@ def _judge_failed_count(pid, state):
         for vote in (state.get(f"{pid}_judge_votes") or [])
         if isinstance(vote, dict)
         and vote.get("model") in configured
+        and (
+            state.get(f"{pid}_judge_selected_contract") is None
+            or vote.get("judge_contract_id") == state.get(f"{pid}_judge_selected_contract")
+        )
         and not is_successful_judge_vote(vote)
     })
 
@@ -2631,6 +2640,7 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
             {plugin.id: judge_contract_id(plugin) for plugin in active_plugins}
             if judge_models else {}
         ),
+        "judge_projection": "active-contract" if judge_models else None,
         "judge_status": "disabled" if not judge_models else "pending",
         "judge_counts": {"queued": 0, "completed": 0, "failed": 0, "votes": 0},
         "preload": {
@@ -3324,6 +3334,7 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
                     rationale=consensus["rationale"],
                     criteria=consensus.get("criteria", []),
                     consensus_by_contract=consensus_by_contract,
+                    selected_contract=contract_id,
                     error=consensus["error"],
                     input_sha256=item.get("response_sha256"),
                     votes=prior_all_votes,
@@ -3439,6 +3450,7 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
                 state.update_judge_result(
                     state_key, runner, plugin_id,
                     error=failure_vote["error"],
+                    selected_contract=contract_id,
                     votes=prior_all_votes,
                     status="failed" if all_judges_finished else "running",
                     complete=(

@@ -510,7 +510,11 @@ criterion reports are persisted in each plugin's `*_judge_votes` and
 `*_judge_criteria` state fields, exposed as `{plugin}_Judge_Criteria_JSON` in
 CSV, rendered in the Markdown/HTML/PDF detailed sections, and summarized in
 `run-info.json` under `judge_criteria`. They are diagnostic and do not create a
-second score.
+second score. The legacy per-plugin fields such as `{plugin}_judge_score` are
+an explicit projection of the active contract, recorded as
+`{plugin}_judge_selected_contract`; historical contracts remain available in
+`{plugin}_judge_consensus_by_contract` and the versioned vote list. The run
+metadata identifies this policy as `judge_projection: "active-contract"`.
 
 The default `response_format` uses the standard OpenAI-compatible `json_schema`
 form, which combines JSON mode with the expected judge-result schema. The judge

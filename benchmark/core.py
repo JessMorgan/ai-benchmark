@@ -2124,6 +2124,10 @@ def run_model(model_name, source, state, active_plugins, source_config, timeout,
     display_name = display_name or target_name
     config_target_name = config_target_name or display_name
     api_model = api_model or target_name
+    active_judge_contracts = {
+        plugin.id: judge_contract_id(plugin)
+        for plugin in active_plugins
+    } if judge_models or judge_model else {}
 
     r = {
         "score_schema": SCORE_SCHEMA,
@@ -2137,6 +2141,7 @@ def run_model(model_name, source, state, active_plugins, source_config, timeout,
         "system_prompt": system_prompt,        "judge_model": judge_model,
         "judge_models": list(judge_models or ([judge_model] if judge_model else [])),
         "judge_prompt_version": judge_prompt_version,
+        "judge_contracts": active_judge_contracts,
         "judge_status": "disabled" if not (judge_models or judge_model) else "pending",
 
         "status": "ok",
@@ -2151,6 +2156,10 @@ def run_model(model_name, source, state, active_plugins, source_config, timeout,
         target_name,
         status="queued",
         judge_models=list(judge_models or ([judge_model] if judge_model else [])),
+        **{
+            f"{pid}_judge_selected_contract": contract
+            for pid, contract in active_judge_contracts.items()
+        },
     )
 
     cfg = source_config.get(source)
@@ -2199,13 +2208,35 @@ def run_model(model_name, source, state, active_plugins, source_config, timeout,
             r[f"{pid}_tps"] = source_row.get(f"{pid}_tps")
             r[f"{pid}_stream_ok"] = source_row.get(f"{pid}_stream_ok", True)
             r[f"{pid}_empty_reason"] = source_row.get(f"{pid}_empty_reason")
-            r[f"{pid}_judge_score"] = source_row.get(f"{pid}_judge_score")
-            r[f"{pid}_judge_confidence"] = source_row.get(f"{pid}_judge_confidence")
-            r[f"{pid}_judge_rationale"] = source_row.get(f"{pid}_judge_rationale")
-            r[f"{pid}_judge_error"] = source_row.get(f"{pid}_judge_error")
+            source_contract = source_row.get(f"{pid}_judge_selected_contract")
+            current_contract = active_judge_contracts.get(pid)
+            projection_matches = (
+                not active_judge_contracts or source_contract == current_contract
+            )
+            r[f"{pid}_judge_score"] = (
+                source_row.get(f"{pid}_judge_score") if projection_matches else None
+            )
+            r[f"{pid}_judge_confidence"] = (
+                source_row.get(f"{pid}_judge_confidence") if projection_matches else None
+            )
+            r[f"{pid}_judge_rationale"] = (
+                source_row.get(f"{pid}_judge_rationale") if projection_matches else None
+            )
+            r[f"{pid}_judge_error"] = (
+                source_row.get(f"{pid}_judge_error") if projection_matches else None
+            )
             r[f"{pid}_judge_input_sha256"] = source_row.get(f"{pid}_judge_input_sha256")
             r[f"{pid}_judge_votes"] = source_row.get(f"{pid}_judge_votes", [])
-            r[f"{pid}_judge_complete"] = source_row.get(f"{pid}_judge_complete", False)
+            r[f"{pid}_judge_criteria"] = (
+                source_row.get(f"{pid}_judge_criteria", []) if projection_matches else []
+            )
+            r[f"{pid}_judge_consensus_by_contract"] = source_row.get(
+                f"{pid}_judge_consensus_by_contract", {}
+            )
+            r[f"{pid}_judge_selected_contract"] = current_contract
+            r[f"{pid}_judge_complete"] = (
+                source_row.get(f"{pid}_judge_complete", False) if projection_matches else False
+            )
             for key in ("schema_requested", "schema_request_status", "response_schema_valid",
                         "schema_enforcement_verified"):
                 r[f"{pid}_{key}"] = source_row.get(f"{pid}_{key}")

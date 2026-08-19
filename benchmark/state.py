@@ -402,6 +402,7 @@ class BenchmarkState:
                 self._model_info[name][f"{pid}_judge_rationale"] = None
                 self._model_info[name][f"{pid}_judge_criteria"] = []
                 self._model_info[name][f"{pid}_judge_consensus_by_contract"] = {}
+                self._model_info[name][f"{pid}_judge_selected_contract"] = None
                 self._model_info[name][f"{pid}_judge_error"] = None
                 self._model_info[name][f"{pid}_judge_input_sha256"] = None
                 self._model_info[name][f"{pid}_judge_votes"] = []
@@ -854,7 +855,8 @@ class BenchmarkState:
 
     def update_judge_result(self, state_key, runner, plugin_id, *, score=None,
                             confidence=None, rationale=None, criteria=None,
-                            consensus_by_contract=None, error=None,
+                            consensus_by_contract=None, selected_contract=None,
+                            error=None,
                             input_sha256=None, votes=None, status=None,
                             complete=None):
         """Persist one judge outcome in live model info and latest result.
@@ -871,6 +873,8 @@ class BenchmarkState:
         }
         if consensus_by_contract is not None:
             fields[f"{plugin_id}_judge_consensus_by_contract"] = consensus_by_contract
+        if selected_contract is not None:
+            fields[f"{plugin_id}_judge_selected_contract"] = selected_contract
         if input_sha256 is not None:
             fields[f"{plugin_id}_judge_input_sha256"] = input_sha256
         if votes is not None:
@@ -1064,6 +1068,7 @@ class BenchmarkState:
                         state._model_info[name].setdefault(f"{pid}_judge_rationale", None)
                         state._model_info[name].setdefault(f"{pid}_judge_criteria", [])
                         state._model_info[name].setdefault(f"{pid}_judge_consensus_by_contract", {})
+                        state._model_info[name].setdefault(f"{pid}_judge_selected_contract", None)
                         state._model_info[name].setdefault(f"{pid}_judge_error", None)
                         state._model_info[name].setdefault(f"{pid}_judge_input_sha256", None)
                         state._model_info[name].setdefault(f"{pid}_judge_votes", [])
@@ -1096,6 +1101,7 @@ class BenchmarkState:
             for pid in plugin_ids:
                 result.setdefault(f"{pid}_judge_criteria", [])
                 result.setdefault(f"{pid}_judge_consensus_by_contract", {})
+                result.setdefault(f"{pid}_judge_selected_contract", None)
                 if f"{pid}_judge_complete" not in result:
                     result[f"{pid}_judge_complete"] = bool(
                         result.get(f"{pid}_judge_votes")
@@ -1105,6 +1111,7 @@ class BenchmarkState:
             for pid in plugin_ids:
                 info.setdefault(f"{pid}_judge_criteria", [])
                 info.setdefault(f"{pid}_judge_consensus_by_contract", {})
+                info.setdefault(f"{pid}_judge_selected_contract", None)
         for name, info in state._model_info.items():
             if info.get("status") == "completed":
                 continue

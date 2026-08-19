@@ -624,9 +624,16 @@ class TestJudgeStateAndReports(unittest.TestCase):
             "model": "model", "state_key": "model", "runner": "http", "status": "ok",
             f"{self.plugin.id}_score": 80,
         })
-        state.update_judge_result("model", "http", self.plugin.id, score=91, confidence="high", rationale="good")
+        state.update_judge_result(
+            "model", "http", self.plugin.id, score=91, confidence="high",
+            rationale="good", selected_contract="judge-contract-v1:current",
+        )
         self.assertEqual(len(state.results), 1)
         self.assertEqual(state.latest_results()[0][f"{self.plugin.id}_judge_score"], 91)
+        self.assertEqual(
+            state.latest_results()[0][f"{self.plugin.id}_judge_selected_contract"],
+            "judge-contract-v1:current",
+        )
 
     def test_html_and_markdown_render_judge_columns(self):
         result = {
