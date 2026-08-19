@@ -335,6 +335,11 @@ class BenchmarkState:
         self.results = []
         self._model_info = {}
         self._log = []
+        # Monotonic counter bumped by every state mutation. The live TUI
+        # polls ``revision`` to skip rebuilding its frame when nothing it
+        # displays has changed since the last tick; a constant frame costs
+        # no CPU or terminal output.
+        self._revision = 0
         self.plugin_ids = list(plugin_ids)
         self.session_seed = session_seed
         self.runner = runner
@@ -469,8 +474,35 @@ class BenchmarkState:
                 # carry-over from a previous dispatch.
                 self._model_info[name][f"{pid}_thinking_bytes_received"] = 0
 
+    def _mark_changed(self):
+        """Bump the revision counter; must be called under ``self._lock``."""
+        self._revision += 1
+
+    @property
+    def revision(self):
+        """Monotonic counter bumped on every state mutation.
+
+        Read without the lock: a plain integer attribute is GIL-atomic, and
+        the TUI polls it every refresh tick, so lock-free reads keep the
+        polling path cheap. A stale read only delays one repaint.
+        """
+        return self._revision
+
+    def has_live_work(self):
+        """True when any model is mid-task or preloading.
+
+        The live TUI uses this to keep time-based elements (streaming
+        seconds, preload elapsed) ticking even between state mutations.
+        """
+        with self._lock:
+            return any(
+                info.get("running_pids") or info.get("preloading")
+                for info in self._model_info.values()
+            )
+
     def update(self, model_name, **kwargs):
         with self._lock:
+            self._mark_changed()
             self._model_info[model_name].update(kwargs)
 
     def start_plugin_run(self, model_name, pid):
@@ -486,6 +518,7 @@ class BenchmarkState:
         stale streaming byte count from the previous dispatch.
         """
         with self._lock:
+            self._mark_changed()
             info = self._model_info[model_name]
             cur = list(info.get("running_pids") or [])
             if pid not in cur:
@@ -556,6 +589,7 @@ class BenchmarkState:
         if not n_bytes:
             return
         with self._lock:
+            self._mark_changed()
             info = self._model_info[model_name]
             if not info.get(f"{pid}_first_chunk_seen"):
                 raise RuntimeError(
@@ -599,6 +633,7 @@ class BenchmarkState:
         if not n_bytes:
             return
         with self._lock:
+            self._mark_changed()
             info = self._model_info[model_name]
             if not info.get(f"{pid}_first_chunk_seen"):
                 raise RuntimeError(
@@ -645,6 +680,7 @@ class BenchmarkState:
         without coupling to the bytes-accumulation path.
         """
         with self._lock:
+            self._mark_changed()
             info = self._model_info[model_name]
             flag_key = f"{pid}_first_chunk_seen"
             was_false = not info[flag_key]
@@ -664,6 +700,7 @@ class BenchmarkState:
         ``running_pids=[]`` -- an unambiguous, momentary snapshot.
         """
         with self._lock:
+            self._mark_changed()
             info = self._model_info[model_name]
             cur = [p for p in (info.get("running_pids") or []) if p != pid]
             info["running_pids"] = cur
@@ -671,6 +708,7 @@ class BenchmarkState:
 
     def add_result(self, result):
         with self._lock:
+            self._mark_changed()
             # Judge workers may finish a plugin after its score is published
             # but before the enclosing model result row is appended. Carry the
             # per-plugin judge fields from live model_info into this new row so
@@ -745,6 +783,7 @@ class BenchmarkState:
     def set_judge_progress(self, progress):
         """Replace live per-judge progress shown by the TUI footer."""
         with self._lock:
+            self._mark_changed()
             self._judge_progress = {
                 model: dict(values) for model, values in (progress or {}).items()
             }
@@ -752,6 +791,7 @@ class BenchmarkState:
     def update_judge_progress(self, model, **values):
         """Update one judge model's live progress counters."""
         with self._lock:
+            self._mark_changed()
             current = dict(self._judge_progress.get(model, {}))
             current.update(values)
             self._judge_progress[model] = current
@@ -759,6 +799,7 @@ class BenchmarkState:
     def increment_judge_progress(self, model, *, expected=0, completed=0, failed=0):
         """Atomically increment a judge's expected, completed, and failed counts."""
         with self._lock:
+            self._mark_changed()
             current = dict(self._judge_progress.get(model, {}))
             current["expected"] = current.get("expected", 0) + expected
             current["completed"] = current.get("completed", 0) + completed
@@ -777,6 +818,7 @@ class BenchmarkState:
         unchanged because the cell was already part of the judge's workload.
         """
         with self._lock:
+            self._mark_changed()
             current = dict(self._judge_progress.get(model, {}))
             current["completed"] = max(
                 0,
@@ -797,6 +839,7 @@ class BenchmarkState:
     def set_judge_selected(self, judge_model, selected):
         """Mark whether a judge runner is selected for work on its source."""
         with self._lock:
+            self._mark_changed()
             if selected:
                 self._judge_selected.add(judge_model)
             else:
@@ -810,6 +853,7 @@ class BenchmarkState:
     def start_judge_activity(self, judge_model, target, plugin):
         """Register one currently executing judge request for the live TUI."""
         with self._lock:
+            self._mark_changed()
             activity_id = self._next_judge_activity_id
             self._next_judge_activity_id += 1
             self._judge_activity[activity_id] = {
@@ -827,6 +871,7 @@ class BenchmarkState:
                                thinking_tokens=None, content_tokens=None):
         """Update live total, thinking, and content tokens for one judge."""
         with self._lock:
+            self._mark_changed()
             activity = self._judge_activity.get(activity_id)
             if activity is None:
                 return
@@ -844,12 +889,14 @@ class BenchmarkState:
     def clear_judge_queued(self, target, plugin):
         """Clear the transient queued marker for a judgeable plugin."""
         with self._lock:
+            self._mark_changed()
             if target in self._model_info:
                 self._model_info[target][f"{plugin}_judge_queued"] = False
 
     def finish_judge_activity(self, activity_id):
         """Remove one completed judge request from the live TUI."""
         with self._lock:
+            self._mark_changed()
             self._judge_activity.pop(activity_id, None)
 
     def judge_activity_snapshot(self):
@@ -902,6 +949,7 @@ class BenchmarkState:
             if complete:
                 fields[f"{plugin_id}_judge_queued"] = False
         with self._lock:
+            self._mark_changed()
             if state_key in self._model_info:
                 self._model_info[state_key].update(fields)
             for result in reversed(self.results):
@@ -914,6 +962,7 @@ class BenchmarkState:
         """Refresh the active judge identities on live and persisted rows."""
         models = list(dict.fromkeys(judge_models or []))
         with self._lock:
+            self._mark_changed()
             for info in self._model_info.values():
                 info["judge_models"] = list(models)
             for result in self.results:
@@ -942,6 +991,7 @@ class BenchmarkState:
             "judge_queued": False,
         }
         with self._lock:
+            self._mark_changed()
             current_results = {}
             for result in reversed(self.results):
                 identity = (
@@ -982,6 +1032,7 @@ class BenchmarkState:
 
     def log(self, model_name, msg):
         with self._lock:
+            self._mark_changed()
             self._log.append((time.time(), model_name, msg))
             if len(self._log) > 100:
                 self._log = self._log[-100:]

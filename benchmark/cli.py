@@ -1036,14 +1036,19 @@ def _build_live_indicators(s, active_plugins, *, now=None):
 
 
 # ---------------------------------------------------------------------------
-# Textual live TUI (primary renderer). A Textual App re-renders the whole
-# frame on every tick via a timer, delegating resize, keyboard input, and
-# screen writes to Textual so stale or partially-drawn rows cannot
-# accumulate. Non-interactive terminals fall back to the plain-text loop
-# above.
+# Textual live TUI (primary renderer). A Textual App re-renders the frame
+# adaptively via a timer capped at ``_TUI_REFRESH_SECONDS`` (2 fps): the
+# frame is rebuilt only when the state revision changed, the terminal
+# resized, the operator scrolled, or live elapsed/countdown content is
+# ticking, delegating resize, keyboard input, and screen writes to Textual
+# so stale or partially-drawn rows cannot accumulate. Non-interactive
+# terminals fall back to the plain-text loop above.
 # ---------------------------------------------------------------------------
 
-_TUI_REFRESH_SECONDS = 0.2
+# Maximum refresh rate for the live TUI (2 fps). The frame is only rebuilt
+# when something it displays actually changed (state revision, resize,
+# scroll, or a live elapsed/countdown tick), so an idle run costs no CPU.
+_TUI_REFRESH_SECONDS = 0.5
 
 # Style names emitted by ``_build_frame_lines`` and mapped to Rich styles by
 # ``_frame_lines_to_text``. Plain strings keep the frame builder headlessly
@@ -1456,12 +1461,15 @@ class _FrameRow(Static):  # pragma: no cover - live interactive loop
 
 
 class _BenchmarkTUIApp(App):  # pragma: no cover - live interactive loop
-    """Textual app that re-renders the benchmark status frame each tick.
+    """Textual app that re-renders the benchmark status frame adaptively.
 
-    The frame is rebuilt every tick but delivered to one ``_FrameRow`` widget
-    per line; each row repaints only the cells that changed, so an idle frame
-    produces no terminal output and a ticking clock/elapsed timer rewrites a
-    handful of cells instead of the whole screen.
+    The frame is rebuilt at most every ``_TUI_REFRESH_SECONDS`` (2 fps), and
+    only when something it displays actually changed: the state revision
+    bumped, the terminal resized, the operator scrolled, or live elapsed/
+    countdown content is ticking. An idle run rebuilds nothing. Each rebuilt
+    frame is delivered to one ``_FrameRow`` widget per line; each row repaints
+    only the cells that changed, so a repeated frame produces no terminal
+    output.
     """
 
     BINDINGS: ClassVar[list[tuple[str, str, str]]] = [
@@ -1496,6 +1504,7 @@ class _BenchmarkTUIApp(App):  # pragma: no cover - live interactive loop
         self._scroll_y = 0
         self._scroll_x = 0
         self._rows: list[_FrameRow] = []
+        self._last_frame_key = None
 
     def on_mount(self) -> None:
         self.set_interval(_TUI_REFRESH_SECONDS, self._refresh)
@@ -1534,10 +1543,38 @@ class _BenchmarkTUIApp(App):  # pragma: no cover - live interactive loop
     def _max_col_offset(self) -> int:
         return max(0, _display_width(self._plugin_hdr) - self._visible_cols())
 
+    def _frame_key(self):
+        """Identity of the frame's static inputs (excludes ticking content)."""
+        return (
+            self._state.revision,
+            self.size.height, self.size.width,
+            self._scroll_y, self._scroll_x,
+        )
+
+    def _live_content(self) -> bool:
+        """True when time-based frame elements are ticking.
+
+        Elapsed/countdown fields (streaming seconds, judge-activity elapsed,
+        preload seconds, 429 sleeps) change over time even when no state
+        mutation occurs. While any are visible the frame is rebuilt every
+        tick (capped by ``_TUI_REFRESH_SECONDS``) so they stay live; when the
+        run is fully idle the frame is skipped entirely.
+        """
+        return (
+            self._state.has_live_work()
+            or bool(self._state.judge_activity_snapshot())
+            or bool((get_429_stats() or {}).get("sleeping"))
+        )
+
     def _refresh(self) -> None:
         if self._stop_event.is_set():
             self.exit()
             return
+        key = self._frame_key()
+        if key == self._last_frame_key and not self._live_content():
+            # Nothing the frame displays changed since the last tick.
+            return
+        self._last_frame_key = key
         lines = _build_frame_lines(
             self._state, self._active_plugins, self._source_abbrevs,
             self._frozen_hdr, self._plugin_hdr, self._num_sources,

@@ -50,6 +50,13 @@ class _FakeState:
     def recent_log(self, _n):
         return []
 
+    @property
+    def revision(self):
+        return 0
+
+    def has_live_work(self):
+        return bool(self.snapshot().get("model-b", {}).get("running_pids"))
+
 
 def _plugin():
     p = mock.MagicMock()
