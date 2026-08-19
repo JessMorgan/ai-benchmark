@@ -18,8 +18,10 @@ DATA_TRANSFORMATION_RESPONSE_SCHEMA = {
     "properties": {
         "records": {
             "type": "array",
-            "minItems": 1,
-            "maxItems": 5,
+            # Do not send minItems/maxItems to llama.cpp: bounded repetition
+            # of this nested object becomes ``{0,4}`` in its generated grammar
+            # and fails on some model builds. Cardinality is enforced locally
+            # in ``_schema_validation`` and by the semantic rubric.
             "items": {
                 "type": "object",
                 "additionalProperties": False,
@@ -107,7 +109,7 @@ class DataTransformationPlugin(BenchmarkTaskPlugin):
 
     @property
     def version(self):
-        return "1.0.1"
+        return "1.0.2"
 
     @property
     def name(self):
@@ -156,7 +158,11 @@ class DataTransformationPlugin(BenchmarkTaskPlugin):
             Draft202012Validator(DATA_TRANSFORMATION_RESPONSE_SCHEMA).iter_errors(data),
             key=lambda error: list(error.path),
         )
-        return not errors, [error.message for error in errors]
+        messages = [error.message for error in errors]
+        records = data.get("records") if isinstance(data, dict) else None
+        if isinstance(records, list) and not 1 <= len(records) <= 5:
+            messages.append("records must contain between 1 and 5 items")
+        return not messages, messages
 
     @staticmethod
     def _json_format_valid(text: str) -> bool:

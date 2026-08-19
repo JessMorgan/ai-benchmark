@@ -39,7 +39,7 @@ class TestCLIArgs(unittest.TestCase):
         self.assertIn("data-transformation", output)
         self.assertIn("Data Transformation", output)
         # Check a specific ID/name/version line
-        self.assertRegex(output, r"data-transformation\s+Data Transformation\s+1\.0\.1")
+        self.assertRegex(output, r"data-transformation\s+Data Transformation\s+1\.0\.2")
         # Footer hint helps users use the IDs
         self.assertIn("--plugins-whitelist", output)
         self.assertIn("--plugins-blacklist", output)

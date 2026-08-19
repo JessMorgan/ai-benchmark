@@ -32,8 +32,6 @@ SUPPORTED_SCHEMA_KEYWORDS = frozenset({
     "required",
     "additionalProperties",
     "items",
-    "minItems",
-    "maxItems",
     "enum",
     "pattern",
     "minimum",
@@ -157,6 +155,21 @@ def test_prompt_schema_numeric_bounds_target_llama_supported_integers(schema_nam
         "llama.cpp only grammar-enforces minimum/maximum for integer nodes; "
         "validate bounded fractional values after generation at: "
         + ", ".join(violations)
+    )
+
+
+@pytest.mark.parametrize("schema_name", sorted(SCHEMAS))
+def test_prompt_schema_has_no_bounded_arrays_for_llama_grammar(schema_name):
+    """Avoid bounded repetition of nested objects in llama.cpp grammars."""
+    violations = [
+        ".".join(path) or "<root>"
+        for path, node in _schema_nodes(SCHEMAS[schema_name])
+        if node.get("type") == "array"
+        and any(key in node for key in ("minItems", "maxItems"))
+    ]
+    assert violations == [], (
+        f"{schema_name} contains bounded arrays that may expand beyond llama.cpp "
+        "grammar limits at: " + ", ".join(violations)
     )
 
 

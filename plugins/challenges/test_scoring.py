@@ -44,6 +44,8 @@ def test_data_transformation_requests_strict_json_schema():
     schema_text = json.dumps(DATA_TRANSFORMATION_RESPONSE_SCHEMA)
     assert "minLength" not in schema_text
     assert "maxLength" not in schema_text
+    assert "minItems" not in schema_text
+    assert "maxItems" not in schema_text
     prompt = plugin("data-transformation").get_prompt()
     assert "filtered or superseded records" in prompt
     assert "Sort retained records" in prompt
@@ -56,6 +58,21 @@ def test_other_plugins_do_not_opt_into_response_schemas():
 
 def test_data_transformation_current_records_score_full():
     assert plugin("data-transformation").score(json.dumps(DATA_TRANSFORMATION_EXPECTED_OUTPUT)) == 22.0
+
+
+def test_data_transformation_cardinality_is_checked_locally():
+    plugin_instance = plugin("data-transformation")
+    too_few = json.loads(json.dumps(DATA_TRANSFORMATION_EXPECTED_OUTPUT))
+    too_few["records"] = []
+    too_many = json.loads(json.dumps(DATA_TRANSFORMATION_EXPECTED_OUTPUT))
+    too_many["records"].append({
+        "order_id": "O-210", "customer": "Test Person", "total": 55.0, "rank": 6,
+    })
+
+    for payload in (too_few, too_many):
+        result = plugin_instance.evaluate(json.dumps(payload))
+        assert result.diagnostics["response_schema_valid"] is False
+        assert "records must contain between 1 and 5 items" in result.diagnostics["response_schema_errors"]
 
 
 def test_data_transformation_filtered_or_superseded_record_loses_credit():

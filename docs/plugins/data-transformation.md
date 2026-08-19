@@ -3,7 +3,7 @@
 | Property | Value |
 |---|---|
 | ID | `data-transformation` |
-| Version | `1.0.1` |
+| Version | `1.0.2` |
 | Max Score | 22 |
 | Streaming | No |
 
@@ -21,8 +21,11 @@ The task requires the model to:
 5. Assign deterministic ranks.
 6. Compute count, total, and top-order summary fields.
 
-The request schema remains strict and provider-compatible, but schema
-compliance is worth only **one of 22 points**. The remaining points measure
+The request schema remains strict and provider-compatible. It deliberately
+leaves the `records` array unbounded at the provider boundary because some
+llama.cpp grammar builds cannot compile bounded repetition of nested objects.
+The evaluator still requires 1–5 records locally. Schema compliance is worth
+only **one of 22 points**. The remaining points measure
 selection/filtering, deduplication, normalization, sorting/ranking, and the
 derived summary. A schema-valid response containing the wrong records can
 therefore still score poorly.
