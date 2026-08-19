@@ -87,14 +87,16 @@ polls it and rebuilds its frame only when something displayed changed
 - `results.md`, `results.csv`, `results.html`, `results.pdf` — final reports.
 - `benchmark_state.json` — resume state. State flushes at most every
   `flush_interval_seconds` (default 60 s) or `flush_votes` (default 10)
-  completed changes (judge votes + benchmark tasks) — the hot path no
-  longer rewrites the full state. The flush runs on a dedicated background
-  thread (`_BackgroundFlusher` in `benchmark/cli.py`), so workers never
-  stall on the GIL-bound serialization; a final save on drain/shutdown
-  persists the tail, so a crash loses at most one interval of changes
-  (re-run on resume). The flush persists only the state snapshot — report
-  files (`results.csv`/`.html`/`.md`/`.pdf`) are regenerated once at the
-  end of the run or when the app is stopped.
+  completed changes (judge votes + benchmark tasks). The flush runs on a
+  dedicated background thread and compacts the append-only
+  `results.journal.jsonl`; journal events newer than the saved
+  `journal_sequence` are replayed on resume. Shutdown waits up to
+  `flush_shutdown_timeout_seconds` (default 10 s), then reports the timeout
+  and attempts a synchronous final save. State persistence is separate from
+  report generation, and failures are recorded in `run-info.json`.
+- `results.journal.jsonl` — compact append-only `result` and `judge` events;
+  successfully compacted events are removed after their state snapshot is
+  durable, while newer events remain for crash recovery.
 - `run-info.json` — run metadata; **includes `backoff_429`
   (`{total_retries, per_plugin: {pid: {retries, total_sleep_time}}}`)**
   for post-run 429 analysis (see `_inject_429_stats` in `benchmark.cli`).

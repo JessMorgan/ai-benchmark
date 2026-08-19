@@ -352,8 +352,13 @@ class BenchmarkState:
         # keep selected judges green across queue/transport gaps.
         self._judge_selected = set()
         self._next_judge_activity_id = 0
-        # Optional append-only result journal (see ``set_journal_path``).
+        # Optional append-only result/judge event journal (see
+        # ``set_journal_path``). The sequence is persisted in the state
+        # snapshot so a restart can replay only events written after that
+        # snapshot and compaction can safely discard older entries.
         self._journal_path = None
+        self._journal_sequence = 0
+        self._journal_failures = []
         for name, info in models.items():
             if isinstance(info, dict):
                 source = info.get("source", "Default")
@@ -747,46 +752,69 @@ class BenchmarkState:
                 else:
                     result.setdefault(key, value)
             self.results.append(result)
-            self._journal_append(result)
+            self._journal_append("result", result)
 
     def set_journal_path(self, path, truncate=False):
-        """Enable append-only result journaling to ``path``.
+        """Enable append-only result/judge event journaling to ``path``.
 
-        Every completed result is appended as one JSON line, so a crash that
-        truncates ``benchmark_state.json`` can still replay the completed
-        results. ``truncate`` starts a fresh journal (safe once the main state
-        file has been loaded successfully); it must be False when the state
-        file is corrupt and the journal is needed for recovery.
+        Each event is one compact JSON line. ``truncate`` starts a fresh
+        journal after a deliberate restart; normal resume preserves the file
+        so events written after the last state snapshot can be replayed.
         """
-        self._journal_path = path
-        if truncate and path:
-            try:
-                with open(path, "w", encoding="utf-8") as handle:
-                    handle.write("")
-            except OSError:
-                pass
+        with self._lock:
+            self._journal_path = path
+            if truncate and path:
+                try:
+                    with open(path, "w", encoding="utf-8") as handle:
+                        handle.write("")
+                    self._journal_sequence = 0
+                except OSError as exc:
+                    self._journal_failures.append(
+                        f"journal reset failed: {type(exc).__name__}: {exc}"
+                    )
 
-    def _journal_append(self, result):
-        """Best-effort append of one completed result to the journal."""
+    def _journal_append(self, event_type, data):
+        """Best-effort append of one compact event while the state lock is held."""
         if not self._journal_path:
             return
+        self._journal_sequence += 1
+        event = {
+            "seq": self._journal_sequence,
+            "type": event_type,
+            "data": copy.deepcopy(data),
+        }
+        # Keep result fields at the top level as well for operators and older
+        # tooling that treated each journal line as a result object. Judge
+        # events remain envelope-only because their payload is a field patch.
+        if event_type == "result" and isinstance(data, dict):
+            event.update(copy.deepcopy(data))
         try:
             with open(self._journal_path, "a", encoding="utf-8") as handle:
-                handle.write(json.dumps(result, default=str) + "\n")
+                handle.write(json.dumps(
+                    event, ensure_ascii=False, separators=(",", ":"), default=str,
+                ) + "\n")
                 handle.flush()
-        except OSError:
-            pass
+        except (OSError, TypeError, ValueError) as exc:
+            # The in-memory state remains authoritative during the run. The
+            # next snapshot still captures this event, while the failure is
+            # surfaced by the persistence flush path.
+            self._journal_failures.append(
+                f"journal append failed: {type(exc).__name__}: {exc}"
+            )
+
+    def consume_journal_failures(self):
+        """Return and clear journal write failures observed since the last call."""
+        with self._lock:
+            failures = list(self._journal_failures)
+            self._journal_failures.clear()
+            return failures
 
     @staticmethod
-    def replay_journal(path):
-        """Replay an append-only result journal into a list of results.
-
-        Returns ``[]`` when the journal is missing or unreadable. A partial
-        trailing line (crash mid-write) is tolerated and dropped.
-        """
+    def replay_journal_events(path):
+        """Replay structured events, tolerating legacy result-only journal lines."""
         if not path or not os.path.exists(path):
             return []
-        results = []
+        events = []
         try:
             with open(path, encoding="utf-8") as handle:
                 for line in handle:
@@ -794,12 +822,151 @@ class BenchmarkState:
                     if not line:
                         continue
                     try:
-                        results.append(json.loads(line))
+                        value = json.loads(line)
                     except json.JSONDecodeError:
+                        # A crash can leave a partial final line. Drop only
+                        # that line; earlier complete events remain useful.
                         continue
+                    if isinstance(value, dict) and value.get("type") in {"result", "judge"}:
+                        events.append(value)
+                    elif isinstance(value, dict) and "model" in value:
+                        # Compatibility with journals written before the event
+                        # envelope was introduced.
+                        events.append({"seq": None, "type": "result", "data": value})
         except OSError:
             return []
-        return results
+        return events
+
+    @staticmethod
+    def replay_journal(path):
+        """Replay result events into a list, preserving the legacy API."""
+        return [
+            event["data"] for event in BenchmarkState.replay_journal_events(path)
+            if event.get("type") == "result" and isinstance(event.get("data"), dict)
+        ]
+
+    @staticmethod
+    def apply_journal_events_to_data(data, events):
+        """Apply all journal events to a recovery data dictionary."""
+        if not isinstance(data, dict):
+            return data
+        data.setdefault("model_info", {})
+        data.setdefault("results", [])
+        highest_sequence = data.get("journal_sequence", 0)
+        for event in events or []:
+            sequence = event.get("seq") if isinstance(event, dict) else None
+            if isinstance(sequence, int):
+                highest_sequence = max(highest_sequence, sequence)
+            event_type = event.get("type") if isinstance(event, dict) else None
+            payload = event.get("data") if isinstance(event, dict) else None
+            if event_type == "result" and isinstance(payload, dict):
+                data["results"].append(copy.deepcopy(payload))
+                continue
+            if event_type != "judge" or not isinstance(payload, dict):
+                continue
+            state_key = payload.get("state_key")
+            runner = payload.get("runner", "http")
+            fields = payload.get("fields", {})
+            if not state_key or not isinstance(fields, dict):
+                continue
+            info = data["model_info"].get(state_key)
+            if isinstance(info, dict):
+                info.update(copy.deepcopy(fields))
+            for result in reversed(data["results"]):
+                if (
+                    result.get("state_key", result.get("model")) == state_key
+                    and result.get("runner", "http") == runner
+                ):
+                    result.update(copy.deepcopy(fields))
+                    break
+        data["journal_sequence"] = highest_sequence
+        return data
+
+    def replay_journal_tail(self, path):
+        """Apply journal events newer than the loaded state snapshot."""
+        events = self.replay_journal_events(path)
+        applied = 0
+        with self._lock:
+            for event in events:
+                sequence = event.get("seq")
+                if not isinstance(sequence, int) or sequence <= self._journal_sequence:
+                    continue
+                self._apply_journal_event_locked(event)
+                self._journal_sequence = sequence
+                applied += 1
+        return applied
+
+    def _apply_journal_event_locked(self, event):
+        """Apply one journal event; caller holds ``self._lock``."""
+        event_type = event.get("type")
+        data = event.get("data")
+        if event_type == "result" and isinstance(data, dict):
+            self.results.append(copy.deepcopy(data))
+            return
+        if event_type != "judge" or not isinstance(data, dict):
+            return
+        state_key = data.get("state_key")
+        runner = data.get("runner", "http")
+        fields = data.get("fields", {})
+        if not state_key or not isinstance(fields, dict):
+            return
+        if state_key in self._model_info:
+            self._model_info[state_key].update(copy.deepcopy(fields))
+        for result in reversed(self.results):
+            if (
+                result.get("state_key", result.get("model")) == state_key
+                and result.get("runner", "http") == runner
+            ):
+                result.update(copy.deepcopy(fields))
+                break
+
+    def compact_journal(self, state_path, plugin_versions=None, *, raise_on_error=False):
+        """Snapshot state and remove journal events included in that snapshot."""
+        with self._lock:
+            compact_through = self._journal_sequence
+        saved = self.save_state(
+            state_path, plugin_versions=plugin_versions, raise_on_error=raise_on_error,
+        )
+        if not saved:
+            return False
+        path = self._journal_path
+        if not path or not os.path.exists(path):
+            return True
+        try:
+            with self._lock:
+                retained = []
+                with open(path, encoding="utf-8") as handle:
+                    for line in handle:
+                        stripped = line.strip()
+                        if not stripped:
+                            continue
+                        try:
+                            event = json.loads(stripped)
+                        except json.JSONDecodeError:
+                            # Preserve an incomplete tail for the next recovery
+                            # pass rather than silently discarding it.
+                            retained.append(line)
+                            continue
+                        sequence = event.get("seq") if isinstance(event, dict) else None
+                        if isinstance(sequence, int) and sequence <= compact_through:
+                            continue
+                        retained.append(line)
+                tmp = path + ".compact.tmp"
+                with open(tmp, "w", encoding="utf-8") as handle:
+                    handle.writelines(retained)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                os.replace(tmp, path)
+            return True
+        except Exception:
+            try:
+                if os.path.exists(path + ".compact.tmp"):
+                    os.remove(path + ".compact.tmp")
+            except OSError:
+                pass
+            if raise_on_error:
+                raise
+            return False
 
     def set_judge_progress(self, progress):
         """Replace live per-judge progress shown by the TUI footer."""
@@ -995,6 +1162,12 @@ class BenchmarkState:
                 if result_key == state_key and result.get("runner", "http") == runner:
                     result.update(fields)
                     break
+            self._journal_append("judge", {
+                "state_key": state_key,
+                "runner": runner,
+                "plugin_id": plugin_id,
+                "fields": fields,
+            })
 
     def set_judge_models(self, judge_models):
         """Refresh the active judge identities on live and persisted rows."""
@@ -1107,6 +1280,7 @@ class BenchmarkState:
                 "session_seed": self.session_seed,
                 "runner": self.runner,
                 "judge_progress": self._judge_progress,
+                "journal_sequence": self._journal_sequence,
                 "score_schema": SCORE_SCHEMA,
             })
         tmp = path + ".tmp"
@@ -1250,6 +1424,9 @@ class BenchmarkState:
                         ):
                             state._model_info[name]["status"] = "pending"
         state.results = data.get("results", [])
+        state._journal_sequence = data.get("journal_sequence", 0)
+        if not isinstance(state._journal_sequence, int) or state._journal_sequence < 0:
+            state._journal_sequence = 0
         state._judge_progress = data.get("judge_progress", {})
         for result in state.results:
             for pid in plugin_ids:

@@ -1062,6 +1062,53 @@ class TestResultJournal(unittest.TestCase):
                 self.module.BenchmarkState.replay_journal(journal), []
             )
 
+    def test_judge_updates_append_compact_events(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            journal = os.path.join(tmp, "results.journal.jsonl")
+            state = self._state(journal)
+            state.add_result({"model": "model-a", "status": "ok"})
+            state.update_judge_result(
+                "model-a", "http", "fake", score=8, confidence="high",
+                rationale="good", votes=[{"model": "judge", "score": 8}],
+                status="complete", complete=True,
+            )
+            events = self.module.BenchmarkState.replay_journal_events(journal)
+            self.assertEqual([event["type"] for event in events], ["result", "judge"])
+            self.assertEqual(events[1]["data"]["fields"]["fake_judge_score"], 8)
+            with open(journal, encoding="utf-8") as handle:
+                self.assertTrue(all("\\n" not in line[:-1] for line in handle))
+
+    def test_compact_journal_persists_and_removes_included_events(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            journal = os.path.join(tmp, "results.journal.jsonl")
+            state_file = os.path.join(tmp, "benchmark_state.json")
+            state = self._state(journal)
+            state.add_result({"model": "model-a", "status": "ok"})
+            state.compact_journal(state_file, raise_on_error=True)
+            self.assertEqual(self.module.BenchmarkState.replay_journal_events(journal), [])
+            with open(state_file, encoding="utf-8") as handle:
+                saved = json.load(handle)
+            self.assertEqual(saved["journal_sequence"], 1)
+            self.assertEqual(saved["results"][0]["model"], "model-a")
+
+    def test_resume_replays_result_and_judge_events_after_snapshot(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            journal = os.path.join(tmp, "results.journal.jsonl")
+            state_file = os.path.join(tmp, "benchmark_state.json")
+            state = self._state(journal)
+            state.add_result({"model": "model-a", "status": "ok"})
+            state.save_state(state_file)
+            state.update_judge_result(
+                "model-a", "http", "fake", score=9, confidence="medium",
+                rationale="updated", status="complete", complete=True,
+            )
+            resumed = self.module.BenchmarkState.load_state(
+                state_file, {"model-a": "Source1"}, ["fake"],
+            )
+            resumed.set_journal_path(journal)
+            self.assertEqual(resumed.replay_journal_tail(journal), 1)
+            self.assertEqual(resumed.latest_results()[0]["fake_judge_score"], 9)
+
     def test_resume_does_not_truncate_existing_journal(self):
         # Regression: resuming (load_state + re-attach the journal without
         # truncating) must preserve pre-resume results so a later crash can

@@ -2599,7 +2599,8 @@ class TestBackgroundFlusher(unittest.TestCase):
             if len(calls) == 1:
                 raise RuntimeError("boom")
 
-        flusher = _BackgroundFlusher(flush_fn)
+        failures = []
+        flusher = _BackgroundFlusher(flush_fn, failure_callback=failures.append)
         flusher.start()
         flusher.request_flush()
         deadline = time.monotonic() + 5
@@ -2607,8 +2608,26 @@ class TestBackgroundFlusher(unittest.TestCase):
             time.sleep(0.01)
         # The failed flush must not kill the loop: a second request flushes.
         flusher.request_flush()
-        flusher.stop(timeout=5)
+        self.assertTrue(flusher.stop(timeout=5))
         self.assertEqual(len(calls), 2)
+        self.assertEqual([str(error) for error in failures], ["boom"])
+        self.assertEqual([str(error) for error in flusher.failures], ["boom"])
+
+    def test_stop_reports_timeout_without_waiting_forever(self):
+        started = threading.Event()
+        release = threading.Event()
+
+        def flush_fn():
+            started.set()
+            release.wait(timeout=5)
+
+        flusher = _BackgroundFlusher(flush_fn)
+        flusher.start()
+        flusher.request_flush()
+        self.assertTrue(started.wait(timeout=5))
+        self.assertFalse(flusher.stop(timeout=0.01))
+        release.set()
+        self.assertTrue(flusher.stop(timeout=5))
 
 
 class _TUIStubState:

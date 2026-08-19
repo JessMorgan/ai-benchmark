@@ -109,7 +109,33 @@ Judges do not use `_run_plugin_task()`. Their `judge_response()` loop retries on
 - `results`: list of result dicts
 - `_log`: recent error log entries
 
-State persistence is throttled to keep the full-state write (which deep-copies the entire state) off the hot path: completed judge votes and completed benchmark tasks accumulate in memory and flush at most every `flush_interval_seconds` seconds or `flush_votes` changes (defaults 60 s / 10). The flush itself runs on a dedicated background thread (`_BackgroundFlusher`): `request_flush()` is non-blocking, requests that arrive mid-flush coalesce into one follow-up, and the serialization (deepcopy + JSON dump) happens under the shared `persistence_lock` on that thread, so workers never stall on the GIL or queue behind the lock. The flush persists only the state snapshot — report files are regenerated once at the end of the run or when the app is stopped, never per change. The final save on drain/shutdown (`raise_on_error=True`, after the flusher has been stopped and drained) persists the tail, so a crash loses at most one interval of changes, which re-run on resume. The saved state stores model sources as plain strings; dict-valued model entries from the config are resolved to their source string before being written.
+State persistence and report generation are deliberately separate stages:
+
+- **State snapshot persistence** writes `benchmark_state.json`, which is the
+  resume source of truth. Completed judge votes and benchmark tasks accumulate
+  in memory and are compacted at most every `flush_interval_seconds` seconds or
+  `flush_votes` changes (defaults 60 s / 10). `_BackgroundFlusher.request_flush()`
+  is non-blocking; requests arriving mid-flush coalesce, and the snapshot is
+  serialized under `persistence_lock` on the background thread.
+- **Event journaling** appends compact result and judge updates to
+  `results.journal.jsonl`. A successful state flush includes the journal events
+  in `benchmark_state.json` and removes only the included journal prefix. If a
+  process crashes after a snapshot but before compaction, startup replays the
+  journal tail whose sequence is newer than the snapshot. A partial final JSONL
+  line is ignored; a corrupt state can use the complete journal for recovery.
+- **Report generation** is not part of a persistence flush. `_save_outputs()`
+  reads the final in-memory state once after workers and persistence have been
+  drained, producing CSV/HTML/Markdown/PDF artifacts. Reports may therefore be
+  stale during a live run while `benchmark_state.json` and the journal remain
+  current.
+
+Shutdown waits up to `flush_shutdown_timeout_seconds` for the background flusher.
+If it does not stop, the run records and prominently prints a persistence failure
+then attempts a synchronous final state/journal compaction. Any background or
+final-save failure is recorded in `run-info.json` under `persistence_failures`;
+a completed report must not be interpreted as proof that the state was durable.
+The saved state stores model sources as plain strings; dict-valued model entries
+from the config are resolved to their source string before being written.
 
 Every state mutation bumps a monotonic `revision` counter. The live TUI polls it and rebuilds its frame only when something displayed actually changed — revision bumped, terminal resized, operator scrolled, or live elapsed/countdown content (streaming seconds, judge-activity elapsed, 429 sleeps) is ticking — capped at 2 fps (`_TUI_REFRESH_SECONDS = 0.5`). An idle run rebuilds nothing, so the ~0.1 s frame build for 108 models × 18 plugins no longer runs on every 0.2 s tick.
 

@@ -67,6 +67,9 @@ JUDGE_MAX_RATIONALE_CHARS = 2000
 # interval of changes (re-runnable on resume).
 FLUSH_INTERVAL_SECONDS = 60.0
 FLUSH_MAX_VOTES = 10
+# Maximum time the main thread waits for the background state flusher during
+# shutdown before reporting a failure and attempting a synchronous final save.
+PERSISTENCE_SHUTDOWN_TIMEOUT = 10.0
 
 
 def _thinking_budget_retry_instruction(token_budget):
@@ -1584,6 +1587,7 @@ def dump_default_config():
         "max_tokens": 16384,
         "flush_interval_seconds": FLUSH_INTERVAL_SECONDS,
         "flush_votes": FLUSH_MAX_VOTES,
+        "flush_shutdown_timeout_seconds": PERSISTENCE_SHUTDOWN_TIMEOUT,
         "judge": {
             "max_tokens": JUDGE_DEFAULT_MAX_TOKENS,
             "request_params": copy.deepcopy(JUDGE_DEFAULT_REQUEST_PARAMS),

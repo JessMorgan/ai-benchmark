@@ -16,6 +16,7 @@ All benchmark configuration lives in a single file (default: `benchmark-config.j
 | `preload_timeout` | integer | `300` | Maximum seconds for a source's warm-up probe; independent of the benchmark request `timeout` |
 | `flush_interval_seconds` | number | `60` | Maximum seconds between full-state snapshots; `0` flushes on every change |
 | `flush_votes` | integer | `10` | Flush after this many completed changes (judge votes + benchmark tasks) |
+| `flush_shutdown_timeout_seconds` | number | `10` | Maximum shutdown wait for the background state flusher before synchronous fallback |
 | `plugins_whitelist` | list[string] | `[]` | Run only these plugin IDs (empty = all) |
 | `plugins_blacklist` | list[string] | `[]` | Skip these plugin IDs (empty = none) |
 | `sources` | object | required | Named API endpoint definitions |
@@ -27,16 +28,23 @@ State persistence is throttled across the whole run: completed judge votes and
 completed benchmark tasks accumulate in memory, and the full state snapshot
 (`benchmark_state.json`) is flushed at most every `flush_interval_seconds`
 seconds (default `60`) or every `flush_votes` changes (default `10`), whichever
-comes first. The flush runs on a dedicated background thread, so workers never
-stall on the serialization, and requests that arrive mid-flush are coalesced
-into one follow-up save. It persists only the state snapshot — the
-CSV/HTML/Markdown/PDF report files are rebuilt once at the end of the run or
-when the app is stopped, never per change. A final flush on drain/shutdown
-always persists the tail, so a crash loses at most one interval of changes
-(those cells re-run on resume). Raise the values on very large runs where each
-full-state write is expensive; set `flush_interval_seconds: 0` to restore
-per-change persistence. The earlier judge-only keys `judge.flush_interval_seconds`
-and `judge.flush_votes` are still honored as fallbacks.
+comes first. Each flush also compacts the append-only `results.journal.jsonl`,
+which contains compact `result` and `judge` events. On resume, events newer than
+the snapshot's `journal_sequence` are replayed; this closes the crash window
+between writing the snapshot and truncating the journal. The flush runs on a
+dedicated background thread, so workers never stall on serialization, and
+requests that arrive mid-flush are coalesced into one follow-up save.
+
+State snapshots and reports are separate: CSV/HTML/Markdown/PDF files are
+rebuilt once at the end of the run or when the app is stopped, never per change.
+Shutdown waits up to `flush_shutdown_timeout_seconds` (default `10`) for the
+background flusher, then reports the timeout and attempts a synchronous final
+snapshot/journal compaction. Persistence failures are printed prominently and
+also recorded in `run-info.json` under `persistence_failures`. Raise the flush
+values on very large runs where each full-state write is expensive; set
+`flush_interval_seconds: 0` to restore per-change persistence. The earlier
+judge-only keys `judge.flush_interval_seconds` and `judge.flush_votes` are still
+honored as fallbacks.
 
 ## Sources
 

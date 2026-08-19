@@ -36,6 +36,7 @@ from benchmark.core import (
     FLUSH_MAX_VOTES,
     JUDGE_DEFAULT_MAX_TOKENS,
     JUDGE_PROMPT_VERSION,
+    PERSISTENCE_SHUTDOWN_TIMEOUT,
     BenchmarkState,
     PreloadResult,
     _apply_http_retry_default,
@@ -1943,15 +1944,18 @@ class _BackgroundFlusher:
     at most one is queued behind it. The flush persists only the state
     snapshot; report files are regenerated once at the end of the run.
 
-    ``stop()`` drains any pending request (one final flush) before exiting, so
-    callers can rely on the flusher for the tail; the benchmark additionally
-    performs a guaranteed final ``save_state(raise_on_error=True)`` on the
-    main thread after ``stop()``.
+    ``stop()`` drains any pending request (one final flush) before exiting.
+    The benchmark bounds that wait and performs a synchronous final state and
+    journal compaction on the main thread, reporting a shutdown timeout or
+    save failure prominently.
     """
 
-    def __init__(self, flush_fn, name="background-flusher"):
+    def __init__(self, flush_fn, name="background-flusher", failure_callback=None):
         self._flush_fn = flush_fn
+        self._failure_callback = failure_callback
         self._condition = threading.Condition()
+        self._failure_lock = threading.Lock()
+        self._failures = []
         self._pending = False
         self._stopped = False
         self._thread = threading.Thread(
@@ -1968,11 +1972,40 @@ class _BackgroundFlusher:
             self._condition.notify()
 
     def stop(self, timeout=None):
-        """Drain pending work (one final flush) and join the thread."""
+        """Drain pending work and join, returning False if the timeout expires."""
         with self._condition:
             self._stopped = True
             self._condition.notify()
         self._thread.join(timeout=timeout)
+        return not self._thread.is_alive()
+
+    @property
+    def failures(self):
+        """Return a snapshot of flush exceptions raised by the worker."""
+        with self._failure_lock:
+            return list(self._failures)
+
+    @property
+    def is_alive(self):
+        return self._thread.is_alive()
+
+    def _record_failure(self, exc):
+        with self._failure_lock:
+            self._failures.append(exc)
+        if self._failure_callback is not None:
+            try:
+                self._failure_callback(exc)
+                return
+            except Exception as callback_exc:  # noqa: BLE001 - reporting must not kill the worker
+                print(
+                    f"❌ Persistence failure reporter failed: {type(callback_exc).__name__}: "
+                    f"{callback_exc}",
+                    file=sys.stderr,
+                )
+        print(
+            f"❌ PERSISTENCE FLUSH FAILED: {type(exc).__name__}: {exc}",
+            file=sys.stderr,
+        )
 
     def _run(self):
         while True:
@@ -1986,10 +2019,7 @@ class _BackgroundFlusher:
             try:
                 self._flush_fn()
             except Exception as exc:  # noqa: BLE001 - keep the flusher alive
-                print(
-                    f"⚠️  Background state flush failed: {type(exc).__name__}: {exc}",
-                    file=sys.stderr,
-                )
+                self._record_failure(exc)
 
 
 def _resolve_judge_plugin_limit(source_config, source):
@@ -2843,6 +2873,7 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
         "judge_projection": "active-contract" if judge_models else None,
         "judge_status": "disabled" if not judge_models else "pending",
         "judge_counts": {"queued": 0, "completed": 0, "failed": 0, "votes": 0},
+        "persistence_failures": [],
         "preload": {
             "enabled_sources": [
                 name for name, src_cfg in source_config.items()
@@ -2884,9 +2915,18 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
                         # results: replay it into the recovery candidate so a
                         # crash loses at most the in-flight result, even when
                         # the byte-scanner cannot recover every row.
-                        journal_results = BenchmarkState.replay_journal(journal_path)
-                        if journal_results:
-                            recovery["data"]["results"] = journal_results
+                        journal_events = BenchmarkState.replay_journal_events(journal_path)
+                        journal_results = [
+                            event["data"] for event in journal_events
+                            if event.get("type") == "result"
+                            and isinstance(event.get("data"), dict)
+                        ]
+                        if journal_events:
+                            if journal_results:
+                                recovery["data"]["results"] = []
+                            BenchmarkState.apply_journal_events_to_data(
+                                recovery["data"], journal_events,
+                            )
                             recovery["candidate_bytes"] = None
                         backup = apply_state_recovery(state_file, recovery)
                         saved_state = recovery["data"]
@@ -2954,6 +2994,13 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
                         # state file is corrupt must still be able to replay
                         # pre-resume results from the journal.
                         state.set_journal_path(journal_path)
+                        replayed_events = state.replay_journal_tail(journal_path)
+                        if replayed_events:
+                            print(
+                                f"   Replayed {replayed_events} event(s) from the "
+                                "persistence journal after the last snapshot.",
+                                file=sys.stderr,
+                            )
                         # State may contain results from another runner; retain
                         # them because identity is carried per model/result.
                         resumed = True
@@ -3068,6 +3115,24 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
 
         errors_lock = threading.Lock()
         persistence_lock = threading.Lock()
+        persistence_failures_lock = threading.Lock()
+
+        def report_persistence_failure(stage, exc):
+            """Record and prominently report a durability failure."""
+            entry = {
+                "stage": stage,
+                "error": f"{type(exc).__name__}: {exc}",
+                "time": datetime.now(timezone.utc).isoformat(),
+            }
+            with persistence_failures_lock:
+                run_info["persistence_failures"].append(entry)
+            print(
+                f"\n❌ PERSISTENCE FAILURE ({stage})\n"
+                f"   {entry['error']}\n"
+                "   Benchmark results may need to be re-run; inspect the state/journal files.",
+                file=sys.stderr,
+            )
+
         preload_lock = threading.Lock()
         preloaded_ok = set()
         preload_failed = set()
@@ -3315,28 +3380,44 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
             flush_votes = cfg["judge"].get("flush_votes")
         if flush_votes is None:
             flush_votes = FLUSH_MAX_VOTES
+        shutdown_timeout = cfg.get("flush_shutdown_timeout_seconds")
+        if shutdown_timeout is None and isinstance(cfg.get("judge"), dict):
+            shutdown_timeout = cfg["judge"].get("flush_shutdown_timeout_seconds")
+        try:
+            shutdown_timeout = max(0.0, float(shutdown_timeout))
+        except (TypeError, ValueError):
+            shutdown_timeout = PERSISTENCE_SHUTDOWN_TIMEOUT
         # Throttle state persistence across the whole run: completed judge
         # votes and completed benchmark tasks accumulate in memory, and the
         # full state snapshot flushes at most every ``flush_interval_seconds``
-        # seconds or ``flush_votes`` changes, whichever comes first. The
-        # flush runs on a dedicated background thread (``flusher``) so
+        # seconds or ``flush_votes`` changes, whichever comes first. Each
+        # flush snapshots ``benchmark_state.json`` and compacts the event
+        # journal; report generation remains a separate final-stage operation.
+        # The flush runs on a dedicated background thread (``flusher``) so
         # workers never stall on the GIL-bound serialization or queue behind
-        # ``persistence_lock``; it persists only the state snapshot, never
-        # the reports. The final save on drain/shutdown persists the tail,
-        # so no changes are lost on normal exit.
+        # ``persistence_lock``.
         flush_gate = _FlushGate(
             interval=flush_interval, max_changes=flush_votes,
         )
 
         def flush_state():
-            # Flush only the state snapshot here; report files (CSV/HTML/
-            # Markdown/PDF) are rebuilt once at the end of the run or when
-            # the app is stopped, not on every flush cadence.
+            # Persistence flushes write the state snapshot and compact the
+            # append-only event journal. Report files (CSV/HTML/Markdown/PDF)
+            # are deliberately handled by the separate final output stage.
             with persistence_lock:
-                state.save_state(state_file, plugin_versions=plugin_versions)
+                state.compact_journal(
+                    state_file,
+                    plugin_versions=plugin_versions,
+                    raise_on_error=True,
+                )
+                journal_failures = state.consume_journal_failures()
+                if journal_failures:
+                    raise RuntimeError("; ".join(journal_failures))
 
         flusher = _BackgroundFlusher(
-            flush_state, name="state-flusher",
+            flush_state,
+            name="state-flusher",
+            failure_callback=lambda exc: report_persistence_failure("background flush", exc),
         )
         flusher.start()
 
@@ -3974,25 +4055,31 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
         if tui_thread is not None:
             tui_thread.join(timeout=0.5)
 
-        # Drain any in-flight or pending background flush before the
-        # guaranteed final snapshot, so the two never interleave state
-        # writes. All judge votes are already in memory at this point
-        # (``finish_judge()``/``stop_judge_workers()`` drained the queues),
-        # so the final save below persists the complete tail.
-        flusher.stop()
-
-        with persistence_lock:
-            # This final snapshot is serialized with all worker saves. Keep
-            # the historical benchmark_state.json.tmp path, but never let
-            # a final save race a judge worker's save. Unlike incremental
-            # saves, failure here must be visible: reporting a completed run
-            # without a durable final state would make judging progress
-            # appear lost on resume.
-            state.save_state(
-                state_file,
-                plugin_versions=plugin_versions,
-                raise_on_error=True,
+        # Drain pending state/journal work before the final snapshot, but do
+        # not wait forever if a filesystem operation is stuck. The synchronous
+        # final compaction below is the fallback and is always attempted.
+        if not flusher.stop(timeout=shutdown_timeout):
+            report_persistence_failure(
+                "background flush shutdown timeout",
+                TimeoutError(f"state flusher did not stop within {shutdown_timeout:g}s"),
             )
+
+        try:
+            with persistence_lock:
+                # This final snapshot is serialized with all worker saves and
+                # compacts the journal through the same sequence boundary.
+                # Reports are still generated separately below.
+                state.compact_journal(
+                    state_file,
+                    plugin_versions=plugin_versions,
+                    raise_on_error=True,
+                )
+                journal_failures = state.consume_journal_failures()
+                if journal_failures:
+                    raise RuntimeError("; ".join(journal_failures))
+        except Exception as exc:
+            report_persistence_failure("synchronous final state save", exc)
+            raise
 
 
         # Reports are generated exactly once here, whether the run completed
