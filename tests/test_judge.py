@@ -241,6 +241,7 @@ class TestJudgeCore(unittest.TestCase):
                     progress_callback=progress,
                 )
         self.assertEqual(result.score, 75)
+        self.assertIn("prompt_version=judge-v8", request.call_args.kwargs["log_label"])
         self.assertIn("on_chunk", request.call_args.kwargs)
         self.assertIn("on_think_chunk", request.call_args.kwargs)
         request.call_args.kwargs["on_chunk"]("abcd")

@@ -1073,6 +1073,7 @@ def judge_response(source_config, judge_source, judge_api_model, sidecar,
             progress_callback(content_delta, thinking_delta)
 
     retry_guidance = ""
+    prompt_version = str(item.get("judge_prompt_version") or "unknown")
     for attempt in range(2):
         request_prompt = prompt if attempt == 0 else (
             prompt + "\n\nYour previous response was invalid. Return only the required JSON schema."
@@ -1081,7 +1082,10 @@ def judge_response(source_config, judge_source, judge_api_model, sidecar,
         response = stream_request(
             source_config, timeout, judge_api_model, judge_source, request_prompt,
             budgets[0], log_path=log_path,
-            log_label=f"Judge {item['target']} / {item['plugin']} (streaming attempt {attempt + 1})",
+            log_label=(
+                f"Judge {item['target']} / {item['plugin']} "
+                f"(streaming attempt {attempt + 1}, prompt_version={prompt_version})"
+            ),
             temperature=temperature, drop_params=drop_params or [],
             request_params=request_params,
             stop_event=stop_event,
