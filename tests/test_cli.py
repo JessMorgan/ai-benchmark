@@ -2328,7 +2328,10 @@ class TestTokenLimitRetry(unittest.TestCase):
             captured.append(args[5] if len(args) > 5 else kwargs.get("max_tokens", -1))
             prompts.append(args[4])
             if len(captured) == 1:
+                kwargs["on_think_chunk"]("r" * 40)
                 return truncated
+            kwargs["on_think_chunk"]("s" * 8)
+            kwargs["on_chunk"]("c" * 12)
             return retry
 
         with mock.patch.object(
@@ -2348,6 +2351,16 @@ class TestTokenLimitRetry(unittest.TestCase):
         result = task_result.result
         self.assertEqual(result["rate-limiter_prompt_altered"], "thinking_50_percent")
         self.assertEqual(result["rate-limiter_selected_attempt"], 2)
+        self.assertEqual(result["rate-limiter_output_tokens"], int(self.module.count_tokens(retry.text)))
+        self.assertEqual(result["rate-limiter_thinking_tokens"], int(self.module.count_tokens(retry.think_text)))
+        self.assertEqual(
+            result["rate-limiter_total_tokens"],
+            result["rate-limiter_output_tokens"] + result["rate-limiter_thinking_tokens"],
+        )
+        snapshot = state.snapshot()["dummy-model"]
+        self.assertEqual(snapshot["rate-limiter_attempt"], 2)
+        self.assertEqual(snapshot["rate-limiter_bytes_received"], 12)
+        self.assertEqual(snapshot["rate-limiter_thinking_bytes_received"], 8)
 
     def test_token_limit_without_thinking_retries_with_response_budget_guidance(self):
         """Every token-limit response retries, even when no thinking was observed."""

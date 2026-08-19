@@ -1064,7 +1064,8 @@ def _judge_response_diagnostics(response, request_params, max_tokens):
 def judge_response(source_config, judge_source, judge_api_model, sidecar,
                    *, timeout, max_tokens=None, temperature=0.0,
                    drop_params=None, request_params=None, stop_event=None, log_path=None,
-                   plugin=None, progress_callback: Callable[[str, str], None] | None = None):
+                   plugin=None, progress_callback: Callable[[str, str], None] | None = None,
+                   attempt_callback: Callable[[int], None] | None = None):
     """Run one streaming judge request, retrying once when its JSON is invalid."""
     with open(sidecar, encoding="utf-8") as handle:
         item = json.load(handle)
@@ -1091,6 +1092,14 @@ def judge_response(source_config, judge_source, judge_api_model, sidecar,
         with contextlib.suppress(Exception):
             progress_callback(content_delta, thinking_delta)
 
+    def report_attempt(attempt_number):
+        if attempt_callback is None:
+            return
+        # Attempt transitions are observational only; a broken live-state
+        # observer must never terminate a judge request.
+        with contextlib.suppress(Exception):
+            attempt_callback(attempt_number)
+
     retry_guidance = ""
     # The prompt is built by the current code path, so use the versions that
     # actually govern this request rather than stale metadata in a retained
@@ -1098,6 +1107,7 @@ def judge_response(source_config, judge_source, judge_api_model, sidecar,
     prompt_version = JUDGE_PROMPT_VERSION
     instructions_version = judge_instructions_version(plugin)
     for attempt in range(2):
+        report_attempt(attempt + 1)
         request_prompt = prompt if attempt == 0 else (
             prompt + "\n\nYour previous response was invalid. Return only the required JSON schema."
             + retry_guidance
@@ -2440,6 +2450,10 @@ def _run_plugin_task(target_name, api_model, source, plugin, source_config, time
         return result
 
     def execute_once(request_prompt, attempt_number):
+        # Reset the live counters at the beginning of every logical attempt.
+        # Transport-level retries call ``on_retry`` separately and preserve
+        # this same attempt number while resetting their transient counters.
+        state.set_plugin_attempt(target_name, pid, attempt_number)
         started = time.time()
         if runner == "opencode":
             if not opencode_config_path or not opencode_model:
@@ -3082,6 +3096,13 @@ def _run_plugins(target_name, api_model, source, state, active_plugins, plugins_
                      f"{pid}_schema_enforcement_verified": result.get(f"{pid}_schema_enforcement_verified"),
                      f"{pid}_schema_fallback_used": result.get(f"{pid}_schema_fallback_used"),
                      f"{pid}_schema_fallback_error": result.get(f"{pid}_schema_fallback_error")})
+        # After the task finishes, retain the selected logical attempt as the
+        # final attempt marker. During execution this field tracks the live
+        # attempt; after completion it agrees with the per-attempt token
+        # counts stored in the result.
+        selected_attempt = result.get(f"{pid}_selected_attempt")
+        if selected_attempt is not None:
+            state.update(target_name, **{f"{pid}_attempt": selected_attempt})
         # A judge can finish between this plugin's state update and the
         # eventual model-level result append. Queue this plugin immediately;
         # ``BenchmarkState.add_result`` merges any judge fields written during

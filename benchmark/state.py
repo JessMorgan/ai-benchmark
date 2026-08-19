@@ -421,6 +421,7 @@ class BenchmarkState:
                 # break token usage down. ``None`` until the plugin runs.
                 self._model_info[name][f"{pid}_thinking_tokens"] = None
                 self._model_info[name][f"{pid}_total_tokens"] = None
+                self._model_info[name][f"{pid}_attempt"] = 0
                 # Empty-response classification (None when the response had
                 # content; otherwise one of "error", "thinking-truncation",
                 # "thinking-only", "max-tokens", "empty"). Mirrored from
@@ -525,6 +526,11 @@ class BenchmarkState:
                 cur.append(pid)
             info["running_pids"] = cur
             info["status"] = "running"
+            # The logical attempt is set by ``set_plugin_attempt`` at
+            # request start. Preserve it here because this method is also
+            # called by transport-level retry callbacks.
+            if not info.get(f"{pid}_attempt"):
+                info[f"{pid}_attempt"] = 1
             # Reset the per-plugin streaming byte counter AND the
             # first-chunk flag so a retry dispatch doesn't carry
             # forward either signal from the previous (now-finished)
@@ -549,6 +555,21 @@ class BenchmarkState:
             # rather than the model-level timer which grows for the
             # whole model. Reset on every dispatch so retries and
             # sequential plugins get a fresh zero point.
+            info[f"{pid}_start_ts"] = time.monotonic()
+
+    def set_plugin_attempt(self, model_name, pid, attempt):
+        """Set the logical attempt and reset its live token counters."""
+        with self._lock:
+            self._mark_changed()
+            info = self._model_info[model_name]
+            try:
+                info[f"{pid}_attempt"] = max(1, int(attempt))
+            except (TypeError, ValueError):
+                info[f"{pid}_attempt"] = 1
+            info[f"{pid}_bytes_received"] = 0
+            info[f"{pid}_first_chunk_seen"] = False
+            info[f"{pid}_first_tok_ts"] = 0
+            info[f"{pid}_thinking_bytes_received"] = 0
             info[f"{pid}_start_ts"] = time.monotonic()
 
     def add_bytes_received(self, model_name, pid, n_bytes):
@@ -860,12 +881,28 @@ class BenchmarkState:
                 "judge": judge_model,
                 "target": target,
                 "plugin": plugin,
+                "attempt": 1,
                 "tokens": 0,
                 "thinking_tokens": 0,
                 "content_tokens": 0,
                 "started": time.monotonic(),
             }
             return activity_id
+
+    def set_judge_activity_attempt(self, activity_id, attempt):
+        """Switch an active judge to a logical attempt and reset its counters."""
+        with self._lock:
+            self._mark_changed()
+            activity = self._judge_activity.get(activity_id)
+            if activity is None:
+                return
+            try:
+                activity["attempt"] = max(1, int(attempt))
+            except (TypeError, ValueError):
+                activity["attempt"] = 1
+            activity["tokens"] = 0
+            activity["thinking_tokens"] = 0
+            activity["content_tokens"] = 0
 
     def update_judge_activity(self, activity_id, *, tokens=None,
                                thinking_tokens=None, content_tokens=None):
@@ -908,6 +945,7 @@ class BenchmarkState:
                     "judge": activity["judge"],
                     "target": activity["target"],
                     "plugin": activity["plugin"],
+                    "attempt": activity.get("attempt", 1),
                     "tokens": activity.get("tokens", 0),
                     "thinking_tokens": activity.get("thinking_tokens", 0),
                     "content_tokens": activity.get("content_tokens", 0),
@@ -1194,6 +1232,7 @@ class BenchmarkState:
                         state._model_info[name].setdefault(f"{pid}_output_tokens", None)
                         state._model_info[name].setdefault(f"{pid}_thinking_tokens", None)
                         state._model_info[name].setdefault(f"{pid}_total_tokens", None)
+                        state._model_info[name].setdefault(f"{pid}_attempt", 0)
                     if state._model_info[name].get("status") == "completed":
                         state._model_info[name]["status"] = "pending"
                 elif info.get("status") == "completed":

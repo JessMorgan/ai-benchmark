@@ -269,14 +269,14 @@ class TestBuildFrameLinesAdvanced(unittest.TestCase):
             snapshot,
             judge_activities=[{
                 "judge": "judge-a", "target": "model-a",
-                "plugin": "rate-limiter", "elapsed": 3,
+                "plugin": "rate-limiter", "attempt": 2, "elapsed": 3,
                 "thinking_tokens": 123, "content_tokens": 45,
             }],
         )
         with mock.patch("benchmark.cli.get_active_request_count", return_value=1), \
                 mock.patch("benchmark.cli.get_429_stats", return_value={}):
             text = _frame_text(_render_lines(state, num_sources=4))
-        self.assertIn("model-a rate-limiter 3s thinking=123 content=45", text)
+        self.assertIn("model-a rate-limiter attempt=2 3s thinking=123 content=45", text)
 
     def test_live_judge_line_without_progress_has_no_counts(self):
         """A judge with no progress record shows only the activity cells."""

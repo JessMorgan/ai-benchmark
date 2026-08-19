@@ -31,6 +31,32 @@ class TestBenchmarkState(unittest.TestCase):
         self.assertEqual(activity["thinking_tokens"], 123)
         self.assertEqual(activity["content_tokens"], 45)
         self.assertEqual(activity["tokens"], 168)
+        self.assertEqual(activity["attempt"], 1)
+
+    def test_judge_activity_attempt_reset_uses_only_current_attempt_tokens(self):
+        state = self.module.BenchmarkState({"model-a": "Source1"}, ["fake"])
+        activity_id = state.start_judge_activity("judge", "model-a", "fake")
+        state.update_judge_activity(activity_id, thinking_tokens=100, content_tokens=20)
+        state.set_judge_activity_attempt(activity_id, 2)
+        activity = state.judge_activity_snapshot()[0]
+        self.assertEqual(activity["attempt"], 2)
+        self.assertEqual(activity["thinking_tokens"], 0)
+        self.assertEqual(activity["content_tokens"], 0)
+        self.assertEqual(activity["tokens"], 0)
+
+    def test_plugin_attempt_reset_uses_only_current_attempt_tokens(self):
+        state = self.module.BenchmarkState({"model-a": "Source1"}, ["fake"])
+        state.start_plugin_run("model-a", "fake")
+        state.set_plugin_attempt("model-a", "fake", 1)
+        state.mark_first_chunk_seen("model-a", "fake")
+        state.add_bytes_received("model-a", "fake", 40)
+        state.add_thinking_bytes_received("model-a", "fake", 20)
+        state.set_plugin_attempt("model-a", "fake", 2)
+        snapshot = state.snapshot()["model-a"]
+        self.assertEqual(snapshot["fake_attempt"], 2)
+        self.assertEqual(snapshot["fake_bytes_received"], 0)
+        self.assertEqual(snapshot["fake_thinking_bytes_received"], 0)
+        self.assertFalse(snapshot["fake_first_chunk_seen"])
 
     def test_judge_progress_tracks_failed_attempts(self):
         state = self.module.BenchmarkState({"model-a": "Source1"}, ["fake"])

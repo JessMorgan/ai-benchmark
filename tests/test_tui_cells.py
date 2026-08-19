@@ -669,6 +669,22 @@ class TestPluginCellBlock(unittest.TestCase):
         self.assertNotIn("[streaming]", leftover,
                          "cell should enrich to [streaming - N tok] when bytes accumulate")
 
+    def test_active_table_cell_shows_current_attempt(self):
+        s = {
+            "running_pids": ["rate-limiter"],
+            "rate-limiter_attempt": 2,
+            "rate-limiter_first_chunk_seen": True,
+            "rate-limiter_bytes_received": 64,
+        }
+        block = ai_benchmark._plugin_cell_block(
+            "rate-limiter", s, self.p_streaming, None,
+        )
+        self.assertIn("[streaming A2 - 16 tok]", block)
+        self.assertEqual(
+            ai_benchmark._display_width(block),
+            ai_benchmark.PLUGIN_BLOCK_WIDTH,
+        )
+
     def test_streaming_plugin_keeps_bare_streaming_before_first_byte(self):
         """If first_tok_ts is set but bytes_received is 0 (just
         landed first-tok event but no delta has accumulated yet),
@@ -1003,6 +1019,27 @@ class TestBuildLiveIndicators(unittest.TestCase):
         self.assertEqual(
             out,
             "[rate-limiter: 16 tok (4s)] [moe-dense: waiting 4s] [wireframes: 32 tok (4s)]",
+        )
+
+    def test_active_indicators_show_current_attempt(self):
+        s = {
+            "running_pids": ["rate-limiter", "data-transformation"],
+            "rate-limiter_attempt": 2,
+            "rate-limiter_first_tok_ts": 1000.0,
+            "rate-limiter_bytes_received": 64,
+            "rate-limiter_start_ts": 1000.0,
+            "data-transformation_attempt": 2,
+            "data-transformation_start_ts": 1000.0,
+        }
+        plugins = [
+            self._plugin("rate-limiter", streaming=True),
+            self._plugin("data-transformation", streaming=False),
+        ]
+        out = ai_benchmark._build_live_indicators(s, plugins, now=1004.0)
+        self.assertEqual(
+            out,
+            "[rate-limiter: A2 16 tok (4s)] "
+            "[data-transformation: A2 requested 4s]",
         )
 
     def test_user_example_output_two_streaming_six_waiting(self):

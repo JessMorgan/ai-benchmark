@@ -447,6 +447,27 @@ class TestJudgeCore(unittest.TestCase):
         self.assertEqual(result.score, 75)
         request.assert_called_once()
 
+    def test_judge_attempt_callback_reports_each_logical_attempt(self):
+        invalid = mock.Mock(error=None, text="not json", think_text="", usage={}, finish_reason="stop")
+        valid = mock.Mock(
+            error=None,
+            text='{"score": 75, "confidence": "medium", "rationale": "usable", "criteria": [{"id": "R1", "criterion": "The task is satisfied", "status": "met", "evidence": "The answer is usable."}]}',
+            think_text="answer",
+            usage={},
+            finish_reason="stop",
+        )
+        attempts = []
+        with tempfile.TemporaryDirectory() as tmp:
+            sidecar = f"{tmp}/input.json"
+            prepare_judge_sidecar(sidecar, FakePlugin(), "Prompt", "Response", target="model", runner="http")
+            with mock.patch("benchmark.core.stream_request", side_effect=[invalid, valid]):
+                result = judge_response(
+                    {}, "Local", "judge", sidecar, timeout=3,
+                    max_tokens=2048, attempt_callback=attempts.append,
+                )
+        self.assertEqual(result.score, 75)
+        self.assertEqual(attempts, [1, 2])
+
 
     def test_judge_retry_guides_thinking_budget_when_first_attempt_exhausts_it(self):
         valid = '{"score": 75, "confidence": "medium", "rationale": "usable", "criteria": [{"id": "R1", "criterion": "The task is satisfied", "status": "met", "evidence": "The answer is usable."}]}'

@@ -74,7 +74,7 @@ per dispatch):
 | `_stream_ok`, `_truncated`, `_repeating`, `_rubric` | both | Streaming + scoring flags |
 | `_empty_reason` | both | Empty-response classification (`None`/`error`/`thinking-truncation`/`thinking-only`/`max-tokens`/`empty`); surfaced in meta.json + CSV |
 | `_judge_votes`, `_judge_score`, `_judge_complete`, `_judge_error` | judge | Valid semantic-judge attempts, consensus, completion, and failure state |
-| `_bytes_received`, `_first_chunk_seen`, `_first_tok_ts`, `_start_ts` | runtime | Live TUI; reset on `start_plugin_run` |
+| `_attempt`, `_bytes_received`, `_first_chunk_seen`, `_first_tok_ts`, `_start_ts` | runtime | Live TUI; attempt and per-attempt token counters reset at each logical attempt |
 
 `state.results` is the list of result dicts; `latest_results()` keeps the
 LAST entry per model. Every mutation bumps `state.revision`; the live TUI

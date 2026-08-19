@@ -706,25 +706,25 @@ def _plugin_cell_block(pid, s, p, sleeping_lookup=None, judge_slots=None):
     When the plugin is in flight (``pid in running_pids``) OR
     the model is currently in a 429 backoff sleep, the block collapses
     to a single bracket-delimited status centred in the fixed-width cell:
-        ``[streaming - N tok]``     -- streaming-capable in flight, real
+        ``[streaming A<n> - N tok]`` -- streaming-capable in flight, real
                                         counter (first chunk seen; bytes > 0).
                                         ``N`` is chars // 4 so the live
                                         ticker matches the post-completion
                                         ``count_tokens(text)`` estimator.
-        ``[streaming - Ns]``       -- streaming-capable in flight, no first
+        ``[streaming A<n> - Ns]``  -- streaming-capable in flight, no first
                                         chunk yet, wait crossed the elapsed
                                         threshold (default 2s). Operator
                                         sees wall-clock seconds elapsed
                                         since dispatch; an estimate of the
                                         eventual token count would be
                                         misleading at this stage.
-        ``[streaming]``             -- streaming-capable in flight, no first
+        ``[streaming A<n>]``        -- streaming-capable in flight, no first
                                         chunk yet, fresh (<=2s). Bare
                                         bracket to avoid visual noise on
                                         quick plugins.
-        ``[requested - Ns]``       -- non-streaming-capable in flight, wait
+        ``[requested A<n> - Ns]``  -- non-streaming-capable in flight, wait
                                         crossed the elapsed threshold
-        ``[requested]``             -- non-streaming-capable in flight, fresh
+        ``[requested A<n>]``        -- non-streaming-capable in flight, fresh
         ``[429 sleeping Xs]``      -- model is mid-backoff (pauses the
                                         plugin task)
 
@@ -774,6 +774,14 @@ def _plugin_cell_block(pid, s, p, sleeping_lookup=None, judge_slots=None):
             remaining = max(0, PLUGIN_BLOCK_WIDTH - _display_width(text))
             return " " * (remaining // 2) + text + " " * (remaining - remaining // 2)
     if in_flight:
+        raw_attempt = s.get(f"{pid}_attempt")
+        attempt_label = ""
+        if raw_attempt not in (None, "", 0):
+            try:
+                attempt_label = f"A{max(1, int(raw_attempt))}"
+            except (TypeError, ValueError):
+                attempt_label = "A1"
+        attempt_segment = f" {attempt_label}" if attempt_label else ""
         if p.supports_streaming:
             first_chunk_seen = bool(s.get(f"{pid}_first_chunk_seen", False))
             bytes_received = s.get(f"{pid}_bytes_received", 0) or 0
@@ -787,7 +795,7 @@ def _plugin_cell_block(pid, s, p, sleeping_lookup=None, judge_slots=None):
                 # will report (modulo streaming-vs-final parsing
                 # edge cases). No ``~`` marker is needed because
                 # this byte-derived counter is genuinely real.
-                text = f"[streaming - {bytes_received // 4} tok]"
+                text = f"[streaming{attempt_segment} - {bytes_received // 4} tok]"
             elif first_chunk_seen and thinking_bytes:
                 # Thinking-phase-only cell: the SSE parse layer has
                 # recorded a first chunk (via ``mark_first_chunk_seen``)
@@ -808,7 +816,7 @@ def _plugin_cell_block(pid, s, p, sleeping_lookup=None, judge_slots=None):
                 # above) so the live number is the number the
                 # post-completion ``.think.txt`` file shows for
                 # length / 4.
-                text = f"[thinking - {thinking_bytes // 4} tok]"
+                text = f"[thinking{attempt_segment} - {thinking_bytes // 4} tok]"
             else:
                 # Pre-chunk state (no first chunk yet OR first
                 # chunk seen with bytes still 0, the rare
@@ -822,7 +830,7 @@ def _plugin_cell_block(pid, s, p, sleeping_lookup=None, judge_slots=None):
                 # module threshold (``_ELAPSED_THRESHOLD_S``);
                 # below the threshold we keep the bare bracket to
                 # avoid visual noise on quick responses.
-                text = f"[streaming{_elapsed_suffix(start_ts)}]"
+                text = f"[streaming{attempt_segment}{_elapsed_suffix(start_ts)}]"
         else:
             # Non-streaming-capable plugin in flight. ``[requested]``
             # conveys "we sent the request, awaiting the buffered
@@ -832,7 +840,7 @@ def _plugin_cell_block(pid, s, p, sleeping_lookup=None, judge_slots=None):
             # same ``_elapsed_suffix`` helper as the streaming
             # branch above). No token display for non-streaming --
             # the transport doesn't yield data until completion.
-            text = f"[requested{_elapsed_suffix(start_ts)}]"
+            text = f"[requested{attempt_segment}{_elapsed_suffix(start_ts)}]"
         remaining = max(0, PLUGIN_BLOCK_WIDTH - _display_width(text))
         return " " * (remaining // 2) + text + " " * (remaining - remaining // 2)
     # Standard 4-cell results layout -- widths sum to 9+6+6+6=27 with 3
@@ -979,11 +987,11 @@ def _build_live_indicators(s, active_plugins, *, now=None):
 
     Format:
       * Streaming plugin with first chunk + bytes:
-        ``"[<pid>: <N> tok (<e>s)]"``
+        ``"[<pid>: A<n> <N> tok (<e>s)]"``
       * Streaming plugin waiting for first chunk:
-        ``"[<pid>: waiting <e>s]"``
+        ``"[<pid>: A<n> waiting <e>s]"``
       * Non-streaming plugin:
-        ``"[<pid>: requested <e>s]"``
+        ``"[<pid>: A<n> requested <e>s]"``
 
     Non-streaming plugins are now included because the elapsed seconds
     since their request is observable and useful, even though the
@@ -1011,8 +1019,16 @@ def _build_live_indicators(s, active_plugins, *, now=None):
         ft = s.get(f"{pid}_first_tok_ts", 0) or 0
         bytes_received = s.get(f"{pid}_bytes_received", 0) or 0
         thinking_bytes = s.get(f"{pid}_thinking_bytes_received", 0) or 0
+        raw_attempt = s.get(f"{pid}_attempt")
+        attempt_label = ""
+        if raw_attempt not in (None, "", 0):
+            try:
+                attempt_label = f"A{max(1, int(raw_attempt))}"
+            except (TypeError, ValueError):
+                attempt_label = "A1"
+        attempt_prefix = f"{attempt_label} " if attempt_label else ""
         if plugin.supports_streaming and ft and bytes_received:
-            parts.append(f"[{pid}: {bytes_received // 4} tok ({elapsed}s)]")
+            parts.append(f"[{pid}: {attempt_prefix}{bytes_received // 4} tok ({elapsed}s)]")
         elif plugin.supports_streaming and ft and thinking_bytes:
             # Thinking-phase-only live indicator. Parallel to the
             # ``[thinking - N tok]`` cell form: a thinking-capable
@@ -1029,11 +1045,11 @@ def _build_live_indicators(s, active_plugins, *, now=None):
             # the first-chunk flag are zero (the "actually waiting
             # for the first byte" transient) or to
             # ``[<pid>: requested <e s>]`` for non-streaming plugins.
-            parts.append(f"[{pid}: thinking {thinking_bytes // 4} tok ({elapsed}s)]")
+            parts.append(f"[{pid}: {attempt_prefix}thinking {thinking_bytes // 4} tok ({elapsed}s)]")
         elif plugin.supports_streaming:
-            parts.append(f"[{pid}: waiting {elapsed}s]")
+            parts.append(f"[{pid}: {attempt_prefix}waiting {elapsed}s]")
         else:
-            parts.append(f"[{pid}: requested {elapsed}s]")
+            parts.append(f"[{pid}: {attempt_prefix}requested {elapsed}s]")
     return " ".join(parts)
 
 
@@ -1200,7 +1216,9 @@ def _build_frame_lines(state, active_plugins, source_abbrevs, frozen_hdr,
         if len(live_lines) >= live_height:
             break
         cells = " ".join(
-            f"[{activity['target']} {activity['plugin']} {activity['elapsed']}s "
+            f"[{activity['target']} {activity['plugin']} "
+            f"{('attempt=' + str(activity['attempt']) + ' ') if activity.get('attempt') is not None else ''}"
+            f"{activity['elapsed']}s "
             f"thinking={activity.get('thinking_tokens', 0)} "
             f"content={activity.get('content_tokens', 0)}]"
             for activity in activities
@@ -3431,6 +3449,10 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
                 )
                 progress_chars = [0, 0]
 
+                def judge_attempt(attempt_number):
+                    progress_chars[:] = [0, 0]
+                    state.set_judge_activity_attempt(activity_id, attempt_number)
+
                 def judge_progress(content_delta, thinking_delta):
                     progress_chars[0] += len(content_delta or "")
                     progress_chars[1] += len(thinking_delta or "")
@@ -3460,6 +3482,7 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
                         log_path=os.path.join(output_dir, f"judge-{judge_name}.log"),
                         plugin=plugin_obj,
                         progress_callback=judge_progress,
+                        attempt_callback=judge_attempt,
                     )
                 finally:
                     if outcome is not None and outcome.response_text is not None:
