@@ -56,9 +56,42 @@ PRELOAD_DEFAULT_TIMEOUT = 300
 # skipped the model for the whole benchmark. 256 tokens is comfortably past
 # typical reasoning preambles while keeping the probe cheap.
 PRELOAD_MAX_TOKENS = 256
-JUDGE_PROMPT_VERSION = "judge-v7"
+JUDGE_PROMPT_VERSION = "judge-v8"
 JUDGE_DEFAULT_MAX_TOKENS = 4096
 JUDGE_MAX_RATIONALE_CHARS = 2000
+
+
+def _thinking_budget_retry_instruction(token_budget):
+    """Return retry-only guidance reserving half the budget for the answer."""
+    try:
+        budget = max(1, int(token_budget))
+    except (TypeError, ValueError):
+        budget = JUDGE_DEFAULT_MAX_TOKENS
+    thinking_budget = max(1, budget // 2)
+    return (
+        "\n\nRETRY GUIDANCE: On this retry, limit your internal thinking or "
+        f"reasoning to approximately {thinking_budget} tokens (half of the "
+        f"{budget}-token generation budget). Reserve the remaining budget for "
+        "the required final answer. Do not spend the whole retry budget thinking."
+    )
+
+
+def _thinking_consumed_budget(diagnostics):
+    """Return whether a response appears to hit its budget while reasoning."""
+    if not isinstance(diagnostics, dict):
+        return False
+    max_tokens = diagnostics.get("request_max_tokens")
+    reasoning_tokens = diagnostics.get("response_reasoning_tokens")
+    return (
+        diagnostics.get("response_finish_reason") == "length"
+        and isinstance(max_tokens, (int, float))
+        and not isinstance(max_tokens, bool)
+        and isinstance(reasoning_tokens, (int, float))
+        and not isinstance(reasoning_tokens, bool)
+        and reasoning_tokens >= max_tokens
+    )
+
+
 JUDGE_RESPONSE_SCHEMA = {
     "type": "object",
     "additionalProperties": False,
@@ -1039,9 +1072,11 @@ def judge_response(source_config, judge_source, judge_api_model, sidecar,
         with contextlib.suppress(Exception):
             progress_callback(content_delta, thinking_delta)
 
+    retry_guidance = ""
     for attempt in range(2):
         request_prompt = prompt if attempt == 0 else (
             prompt + "\n\nYour previous response was invalid. Return only the required JSON schema."
+            + retry_guidance
         )
         response = stream_request(
             source_config, timeout, judge_api_model, judge_source, request_prompt,
@@ -1075,6 +1110,8 @@ def judge_response(source_config, judge_source, judge_api_model, sidecar,
                 diagnostics=diagnostics,
                 criteria=parsed.criteria,
             )
+        if _thinking_consumed_budget(diagnostics):
+            retry_guidance = _thinking_budget_retry_instruction(budgets[0])
         parsed = JudgeResult(
             confidence=parsed.confidence,
             rationale=parsed.rationale,
@@ -1980,8 +2017,9 @@ def _run_plugin_task(target_name, api_model, source, plugin, source_config, time
                 state.mark_first_chunk_seen(target_name, pid, ts=time.time())
                 state.add_thinking_bytes_received(target_name, pid, len(think_delta))
 
+            retry_prompt = prompt + _thinking_budget_retry_instruction(escalated)
             stream_result = stream_request(
-                source_config, timeout, api_model, source, prompt, escalated,
+                source_config, timeout, api_model, source, retry_prompt, escalated,
                 log_path=log_file,
                 log_label=f"{plugin.name} (Streaming, thinking-truncation retry, budget={escalated})",
                 session_seed=session_seed, temperature=temperature,

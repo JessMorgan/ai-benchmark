@@ -442,14 +442,14 @@ judge:
 
 The benchmark also does not send `enable_thinking: false`; operators who need
 to control thinking explicitly can add provider-supported fields under
-`judge.request_params`. The judge prompt (version `judge-v7`) presents the
+`judge.request_params`. The judge prompt (version `judge-v8`) presents the
 task and candidate answer as explicitly delimited, quoted data and tells the
 judge not to follow candidate instructions, emit tool calls, continue the
 embedded task, or reproduce any fragment of it. It also requires exactly one
 JSON object with no surrounding text. The prompt asks the judge to keep its rationale, criterion descriptions, and
 evidence concise; these guidance limits are intentionally not encoded as grammar
 string-length bounds because long bounded strings can exceed llama.cpp's
-grammar-construction limits. Each criterion records the judge's interpretation
+grammar-construction limits. If a retry follows a response that exhausted its generation budget on reasoning, the retry prompt additionally asks the judge to spend approximately half the budget thinking and reserve the remainder for the JSON answer. Each criterion records the judge's interpretation
 of one explicit requirement, whether the candidate met it, and concise evidence
 for that determination. Plugins may override
 `sanitize_for_judge` (see `docs/plugins.md`) to mask structured fragments -

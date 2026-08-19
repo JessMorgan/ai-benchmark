@@ -2309,9 +2309,11 @@ class TestThinkingAutoEscalation(unittest.TestCase):
         truncated = StreamResult("", "thinking... " * 5000, 1.0, 1.5, None, "length", {})
         retry = StreamResult("A real answer after a bigger budget.", "thinking...", 1.5, 2.5, None, "stop", {})
         captured = []
+        prompts = []
 
         def streaming_side(*args, **kwargs):
             captured.append(args[5] if len(args) > 5 else kwargs.get("max_tokens", -1))
+            prompts.append(args[4])
             if len(captured) == 1:
                 return truncated
             return retry
@@ -2328,6 +2330,8 @@ class TestThinkingAutoEscalation(unittest.TestCase):
         self.assertEqual(len(captured), 2, "thinking-truncation must trigger a retry")
         self.assertEqual(captured[0], 16384)
         self.assertEqual(captured[1], 32768)
+        self.assertIn("RETRY GUIDANCE", prompts[1])
+        self.assertIn("approximately 16384 tokens", prompts[1])
 
     def test_escalation_only_for_thinking_truncation(self):
         """A non-thinking empty leg (max-tokens classification) must not escalate."""

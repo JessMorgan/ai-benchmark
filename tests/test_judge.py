@@ -304,7 +304,7 @@ class TestJudgeCore(unittest.TestCase):
                 item = json.load(handle)
             self.assertEqual(item["target"], "model")
             self.assertEqual(item["response"], "Response")
-            self.assertEqual(item["judge_prompt_version"], "judge-v7")
+            self.assertEqual(item["judge_prompt_version"], "judge-v8")
             self.assertEqual(item["judge_contract_id"], judge_contract_id(FakePlugin()))
             self.assertEqual(len(item["response_sha256"]), 64)
 
@@ -433,6 +433,29 @@ class TestJudgeCore(unittest.TestCase):
                 result = judge_response({}, "Local", "judge", sidecar, timeout=3)
         self.assertEqual(result.score, 75)
         request.assert_called_once()
+
+
+    def test_judge_retry_guides_thinking_budget_when_first_attempt_exhausts_it(self):
+        valid = '{"score": 75, "confidence": "medium", "rationale": "usable", "criteria": [{"id": "R1", "criterion": "The task is satisfied", "status": "met", "evidence": "The answer is usable."}]}'
+        first = mock.Mock(
+            error=None, text="not json", think_text="r" * (2048 * 4),
+            usage={}, finish_reason="length",
+        )
+        second = mock.Mock(
+            error=None, text=valid, think_text="r" * (512 * 4),
+            usage={}, finish_reason="stop",
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            sidecar = f"{tmp}/input.json"
+            prepare_judge_sidecar(sidecar, FakePlugin(), "Prompt", "Response", target="model", runner="http")
+            with mock.patch("benchmark.core.stream_request", side_effect=[first, second]) as request:
+                result = judge_response({}, "Local", "judge", sidecar, timeout=3,
+                                        token_levels=[2048])
+        self.assertEqual(result.score, 75)
+        self.assertEqual(request.call_count, 2)
+        retry_prompt = request.call_args_list[1].args[4]
+        self.assertIn("RETRY GUIDANCE", retry_prompt)
+        self.assertIn("approximately 1024 tokens", retry_prompt)
 
 
 class TestJudgeResumeDiscovery(unittest.TestCase):
