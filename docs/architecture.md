@@ -61,7 +61,7 @@ This document describes the high-level design of AI Benchmark.
 
 ### Retry layers
 
-The benchmark has separate transport, task-attempt, and judge-attempt layers. A retry at an inner layer does not consume a retry at an outer layer unless the outer layer subsequently classifies the resulting error as retryable.
+The benchmark has separate transport, task-attempt, and judge-attempt layers. A retry at an inner layer does not consume a retry at an outer layer unless the outer layer subsequently classifies the resulting error as retryable. The synchronous callers use `execute_task()`; callers that need token-by-token access can use `execute_task_streaming()` without changing the normal path.
 
 ```text
 Benchmark task cell
@@ -181,6 +181,8 @@ _run_plugin_task / judge_response
                     │       └── fallback to nonstream_request on explicit rejection
                     └── nonstream_request (if not streaming)
 ```
+
+`execute_task_streaming()` starts the current attempt on a daemon worker, exposes content deltas through its `stream` iterator, and resolves `metadata_future` to the corresponding `TaskAttempt` after classification. If the retry policy schedules another logical attempt, `next_attempt` is linked before the first future resolves; `cancel()` propagates through the linked chain. Closing an iterator early requests cancellation, while transport-level retries remain inside the same attempt node.
 
 Both request functions:
 

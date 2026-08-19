@@ -9,6 +9,7 @@ from benchmark.transport import (
     RetryPolicy,
     TransportRequest,
     execute_task,
+    execute_task_streaming,
 )
 
 
@@ -90,6 +91,67 @@ class TestTransportRetry(unittest.TestCase):
 
         self.assertEqual(execution.attempt_count, 1)
         request.assert_called_once()
+
+    def test_streaming_execution_yields_content_and_resolves_metadata(self):
+        def fake_stream(*args, observer=None, **kwargs):
+            observer.chunk("hello ")
+            observer.chunk("world")
+            return StreamResult("hello world", "", 1.0, 2.0, None, "stop", {})
+
+        with mock.patch("benchmark.transport.stream_request", side_effect=fake_stream):
+            execution = execute_task_streaming(
+                self._request(),
+                retry_policy=RetryPolicy(max_attempts=1),
+                base_prompt="base prompt",
+            )
+            self.assertEqual(list(execution.stream), ["hello ", "world"])
+            attempt = execution.metadata_future.result(timeout=2)
+
+        self.assertEqual(attempt.attempt_number, 1)
+        self.assertEqual(attempt.result.text, "hello world")
+        self.assertIsNone(execution.next_attempt)
+
+    def test_streaming_execution_links_policy_retry(self):
+        responses = [
+            StreamResult("partial", "r" * 400, 1.0, 2.0, None, "length", {}),
+            StreamResult("answer", "", 1.0, 2.0, None, "stop", {}),
+        ]
+
+        def fake_stream(*args, observer=None, **kwargs):
+            response = responses.pop(0)
+            if response.text:
+                observer.chunk(response.text)
+            return response
+
+        with mock.patch("benchmark.transport.stream_request", side_effect=fake_stream):
+            execution = execute_task_streaming(
+                self._request(),
+                retry_policy=BENCHMARK_RETRY_POLICY,
+                base_prompt="base prompt",
+            )
+            self.assertEqual(list(execution.stream), ["partial"])
+            first = execution.metadata_future.result(timeout=2)
+            retry = execution.next_attempt
+            self.assertIsNotNone(retry)
+            self.assertEqual(first.attempt_number, 1)
+            self.assertEqual(list(retry.stream), ["answer"])
+            second = retry.metadata_future.result(timeout=2)
+
+        self.assertEqual(second.attempt_number, 2)
+        self.assertEqual(second.retry_reason, "token_limit")
+        self.assertIn("RETRY GUIDANCE", second.request_prompt)
+
+    def test_streaming_execution_cancel_sets_stop_event(self):
+        execution = execute_task_streaming(
+            self._request(),
+            retry_policy=RetryPolicy(max_attempts=1),
+            base_prompt="base prompt",
+            stream_request_fn=lambda *args, **kwargs: StreamResult(
+                "", "", None, 0, "cancelled", None, {},
+            ),
+        )
+        execution.cancel()
+        self.assertTrue(execution._stop_event.is_set())
 
     def test_selection_can_be_replaced_after_scoring(self):
         responses = [

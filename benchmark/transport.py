@@ -7,8 +7,11 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
+import queue
+import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from concurrent.futures import Future
 from dataclasses import dataclass, replace
 from typing import Any, Literal
 
@@ -139,6 +142,28 @@ class TaskExecution:
         if attempt not in self.attempts:
             raise ValueError("cannot select an attempt outside this execution")
         self.selected = attempt
+
+
+class StreamingTaskExecution:
+    """Live content plus metadata for one logical attempt.
+
+    ``next_attempt`` is populated before ``metadata_future`` resolves when the
+    shared retry policy schedules another logical attempt. Transport-level
+    retries remain inside the current future and do not create another node.
+    """
+
+    def __init__(self, stream: Iterator[str], metadata_future: Future[TaskAttempt],
+                 stop_event: threading.Event) -> None:
+        self.stream = stream
+        self.metadata_future = metadata_future
+        self.next_attempt: StreamingTaskExecution | None = None
+        self._stop_event = stop_event
+
+    def cancel(self) -> None:
+        """Request cancellation of the active transport and any retry."""
+        self._stop_event.set()
+        if self.next_attempt is not None:
+            self.next_attempt.cancel()
 
 
 def classify_empty_reason(text: str, think_text: str = "", finish_reason: str | None = None,
@@ -555,6 +580,46 @@ def _execute_opencode(request: TransportRequest, *, run_process_fn=None) -> Tran
     )
 
 
+def _retry_plan(
+    result: TransportResult,
+    *,
+    retry_policy: RetryPolicy,
+    max_tokens: int,
+    prompt_alterer: Callable[[str, int | None, int], tuple[str, str]] | None,
+    json_error_prompt_alterer: Callable[[TransportResult], str | None] | None,
+) -> tuple[str, str, str | None]:
+    """Return ``(prompt label, instruction, reason)`` for the next attempt."""
+    nature = result.response_nature
+    next_alteration = "none"
+    instruction = ""
+    reason: str | None = None
+    if (
+        (nature == "transport_error" and retry_policy.retry_on_transport_error)
+        or (nature == "timeout" and retry_policy.retry_on_timeout)
+    ):
+        reason = nature
+    elif (
+        (nature == "token_limit" and retry_policy.retry_on_token_limit)
+        or (nature == "repetition_abort" and retry_policy.retry_on_repetition)
+    ):
+        alter = prompt_alterer or _retry_prompt_alteration
+        next_alteration, instruction = alter(
+            nature, result.thinking_tokens, max_tokens,
+        )
+        reason = nature if next_alteration != "none" else None
+    elif (
+        retry_policy.retry_on_json_error
+        and json_error_prompt_alterer is not None
+        and not result.error
+    ):
+        json_instruction = json_error_prompt_alterer(result)
+        if json_instruction:
+            next_alteration = "json_error"
+            instruction = json_instruction
+            reason = "json_error"
+    return next_alteration, instruction, reason
+
+
 def execute_task(
     request: TransportRequest,
     *,
@@ -611,33 +676,13 @@ def execute_task(
         if attempt_number >= max_attempts:
             break
 
-        next_alteration = "none"
-        instruction = ""
-        nature = result.response_nature
-        if (
-            (nature == "transport_error" and retry_policy.retry_on_transport_error)
-            or (nature == "timeout" and retry_policy.retry_on_timeout)
-        ):
-            retry_reason = nature
-        elif (
-            (nature == "token_limit" and retry_policy.retry_on_token_limit)
-            or (nature == "repetition_abort" and retry_policy.retry_on_repetition)
-        ):
-            alter = prompt_alterer or _retry_prompt_alteration
-            next_alteration, instruction = alter(
-                nature, result.thinking_tokens, request.max_tokens,
-            )
-            retry_reason = nature if next_alteration != "none" else None
-        elif (
-            retry_policy.retry_on_json_error
-            and json_error_prompt_alterer is not None
-            and not result.error
-        ):
-            json_instruction = json_error_prompt_alterer(result)
-            if json_instruction:
-                next_alteration = "json_error"
-                instruction = json_instruction
-                retry_reason = "json_error"
+        next_alteration, instruction, retry_reason = _retry_plan(
+            result,
+            retry_policy=retry_policy,
+            max_tokens=request.max_tokens,
+            prompt_alterer=prompt_alterer,
+            json_error_prompt_alterer=json_error_prompt_alterer,
+        )
 
         if retry_reason is None:
             break
@@ -651,6 +696,123 @@ def execute_task(
         selected=selected,
         retry_reasons=retry_reasons,
     )
+
+
+def execute_task_streaming(
+    request: TransportRequest,
+    *,
+    retry_policy: RetryPolicy,
+    base_prompt: str,
+    prompt_alterer: Callable[[str, int | None, int], tuple[str, str]] | None = None,
+    json_error_prompt_alterer: Callable[[TransportResult], str | None] | None = None,
+    attempt_callback: Callable[[int], None] | None = None,
+    stream_request_fn=None,
+    nonstream_request_fn=None,
+    run_process_fn=None,
+    _attempt_number: int = 1,
+    _prompt_altered: str = "none",
+    _retry_reason: str | None = None,
+) -> StreamingTaskExecution:
+    """Start one live attempt and return before transport completion.
+
+    Content deltas are yielded from ``stream`` as the transport observer sees
+    them. The future resolves to the completed ``TaskAttempt``. If the policy
+    schedules another logical attempt, ``next_attempt`` points to its live
+    execution after the first future resolves.
+    """
+    stop_event = request.stop_event or threading.Event()
+    request = replace(request, stop_event=stop_event)
+    items: queue.Queue[str | object] = queue.Queue()
+    sentinel = object()
+    metadata: Future[TaskAttempt] = Future()
+
+    completed = False
+
+    def stream() -> Iterator[str]:
+        nonlocal completed
+        try:
+            while True:
+                item = items.get()
+                if item is sentinel:
+                    completed = True
+                    return
+                yield item  # type: ignore[misc]
+        finally:
+            if not completed:
+                stop_event.set()
+
+    execution = StreamingTaskExecution(stream(), metadata, stop_event)
+
+    def run() -> None:
+        try:
+            if attempt_callback is not None:
+                with contextlib.suppress(Exception):
+                    attempt_callback(_attempt_number)
+            log_label = request.log_label
+            if "{attempt}" in log_label:
+                log_label = log_label.replace("{attempt}", str(_attempt_number))
+            else:
+                log_label = f"{log_label} (attempt {_attempt_number})"
+            base_observer = request.observer or TaskObserver.noop()
+
+            def on_content(delta: str) -> None:
+                base_observer.chunk(delta)
+                items.put(delta)
+
+            observer = TaskObserver(
+                model_name=base_observer.model_name,
+                pid=base_observer.pid,
+                on_chunk=on_content,
+                on_think_chunk=base_observer.think_chunk,
+                on_retry=base_observer.retry,
+            )
+            result = execute_transport(
+                replace(request, log_label=log_label, observer=observer),
+                stream_request_fn=stream_request_fn,
+                nonstream_request_fn=nonstream_request_fn,
+                run_process_fn=run_process_fn,
+            )
+            attempt = TaskAttempt(
+                result=result,
+                attempt_number=_attempt_number,
+                prompt_altered=_prompt_altered,
+                retry_reason=_retry_reason,
+                request_prompt=request.prompt,
+            )
+            next_alteration, instruction, reason = _retry_plan(
+                result,
+                retry_policy=retry_policy,
+                max_tokens=request.max_tokens,
+                prompt_alterer=prompt_alterer,
+                json_error_prompt_alterer=json_error_prompt_alterer,
+            )
+            if (
+                reason is not None
+                and _attempt_number < max(1, int(retry_policy.max_attempts))
+                and not stop_event.is_set()
+            ):
+                execution.next_attempt = execute_task_streaming(
+                    replace(request, prompt=base_prompt + instruction),
+                    retry_policy=retry_policy,
+                    base_prompt=base_prompt,
+                    prompt_alterer=prompt_alterer,
+                    json_error_prompt_alterer=json_error_prompt_alterer,
+                    attempt_callback=attempt_callback,
+                    stream_request_fn=stream_request_fn,
+                    nonstream_request_fn=nonstream_request_fn,
+                    run_process_fn=run_process_fn,
+                    _attempt_number=_attempt_number + 1,
+                    _prompt_altered=next_alteration,
+                    _retry_reason=reason,
+                )
+            metadata.set_result(attempt)
+        except Exception as exc:  # noqa: BLE001 - surface worker failures via the future
+            metadata.set_exception(exc)
+        finally:
+            items.put(sentinel)
+
+    threading.Thread(target=run, name="transport-stream", daemon=True).start()
+    return execution
 
 
 def execute_transport(request: TransportRequest, *, stream_request_fn=None,
