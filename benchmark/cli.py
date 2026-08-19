@@ -1193,7 +1193,9 @@ def _build_frame_lines(state, active_plugins, source_abbrevs, frozen_hdr,
         if len(live_lines) >= live_height:
             break
         cells = " ".join(
-            f"[{activity['target']} {activity['plugin']} {activity['elapsed']}s]"
+            f"[{activity['target']} {activity['plugin']} {activity['elapsed']}s "
+            f"thinking={activity.get('thinking_tokens', 0)} "
+            f"content={activity.get('content_tokens', 0)}]"
             for activity in activities
         )
         prog = judge_progress.get(judge) or {}
@@ -3237,7 +3239,8 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
                     progress_chars[1] += len(thinking_delta or "")
                     state.update_judge_activity(
                         activity_id,
-                        tokens=(progress_chars[0] + progress_chars[1]) // 4,
+                        thinking_tokens=progress_chars[1] // 4,
+                        content_tokens=progress_chars[0] // 4,
                     )
 
                 outcome = None
@@ -3265,7 +3268,7 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
                     if outcome is not None and outcome.response_text is not None:
                         state.update_judge_activity(
                             activity_id,
-                            tokens=len(outcome.response_text) // 4,
+                            content_tokens=len(outcome.response_text) // 4,
                         )
                     state.finish_judge_activity(activity_id)
                 if outcome.terminal_429:

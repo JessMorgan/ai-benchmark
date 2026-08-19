@@ -19,6 +19,19 @@ class TestBenchmarkState(unittest.TestCase):
         cls.plugins = discover_plugins()
         cls.plugin_ids = [p.id for p in cls.plugins]
 
+    def test_judge_activity_tracks_thinking_and_content_tokens(self):
+        state = self.module.BenchmarkState({"model-a": "Source1"}, ["fake"])
+        activity_id = state.start_judge_activity(
+            "judge", "model-a", "fake",
+        )
+        state.update_judge_activity(
+            activity_id, thinking_tokens=123, content_tokens=45,
+        )
+        activity = state.judge_activity_snapshot()[0]
+        self.assertEqual(activity["thinking_tokens"], 123)
+        self.assertEqual(activity["content_tokens"], 45)
+        self.assertEqual(activity["tokens"], 168)
+
     def test_judge_progress_tracks_failed_attempts(self):
         state = self.module.BenchmarkState({"model-a": "Source1"}, ["fake"])
         state.set_judge_progress({"judge": {"completed": 2, "failed": 1, "expected": 3}})

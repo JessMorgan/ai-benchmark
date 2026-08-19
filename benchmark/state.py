@@ -817,16 +817,29 @@ class BenchmarkState:
                 "target": target,
                 "plugin": plugin,
                 "tokens": 0,
+                "thinking_tokens": 0,
+                "content_tokens": 0,
                 "started": time.monotonic(),
             }
             return activity_id
 
-    def update_judge_activity(self, activity_id, *, tokens=None):
-        """Update the live token count for one judge request."""
+    def update_judge_activity(self, activity_id, *, tokens=None,
+                               thinking_tokens=None, content_tokens=None):
+        """Update live total, thinking, and content tokens for one judge."""
         with self._lock:
             activity = self._judge_activity.get(activity_id)
-            if activity is not None and tokens is not None:
+            if activity is None:
+                return
+            if thinking_tokens is not None:
+                activity["thinking_tokens"] = max(0, int(thinking_tokens))
+            if content_tokens is not None:
+                activity["content_tokens"] = max(0, int(content_tokens))
+            if tokens is not None:
                 activity["tokens"] = max(0, int(tokens))
+            elif thinking_tokens is not None or content_tokens is not None:
+                activity["tokens"] = (
+                    activity["thinking_tokens"] + activity["content_tokens"]
+                )
 
     def clear_judge_queued(self, target, plugin):
         """Clear the transient queued marker for a judgeable plugin."""
@@ -848,6 +861,9 @@ class BenchmarkState:
                     "judge": activity["judge"],
                     "target": activity["target"],
                     "plugin": activity["plugin"],
+                    "tokens": activity.get("tokens", 0),
+                    "thinking_tokens": activity.get("thinking_tokens", 0),
+                    "content_tokens": activity.get("content_tokens", 0),
                     "elapsed": max(0, int(now - activity["started"])),
                 }
                 for activity in self._judge_activity.values()
