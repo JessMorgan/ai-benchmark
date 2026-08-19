@@ -251,6 +251,49 @@ sources:
 
 `opencode_timeout` must be a non-negative number. Invalid or negative values use the 300-second default. Set it to `0` to disable the inactivity guard for a source; the outer benchmark timeout still applies.
 
+### Pi runner
+
+Pi is an opt-in runner backed by the project-local `pi-worker/` Node adapter. It
+requires Node.js 22.19+ and an installed, pinned worker dependency tree:
+
+```sh
+npm --prefix pi-worker install
+```
+
+Select it with `--runner pi`, or include it in an explicit list such as
+`--runners http,pi`. The legacy `--runner both` mode remains the OpenCode-then-HTTP
+pipeline; explicit multi-runner lists run independent phases with separate state
+keys and output namespaces. Pi does not use model preloading because each cell
+creates an isolated SDK worker/session.
+
+Pi-specific target settings are deliberately allowlisted:
+
+```yaml
+models:
+  local-model:
+    source: Local
+    pi:
+      reasoning: true
+      tools: [read, grep]
+      permissions:
+        read: allow
+        grep: deny
+      max_tokens: 4096
+      max_tool_calls: 50
+      system_prompt: null
+      compat:
+        supportsDeveloperRole: false
+```
+
+`tools` accepts only `read`, `bash`, `edit`, `write`, `grep`, `find`, and `ls`;
+plain targets default to an empty list. Permissions are `allow` or `deny` and
+interactive approval is never requested. `pi.max_tokens` is a per-target scalar
+budget and follows the same one-retry policy as HTTP/OpenCode. Tool activity,
+permissions, SDK/worker versions, prompt alteration, response nature, and token
+estimates are recorded in the Pi result metadata. The adapter sends source URL,
+model ID, and configured headers through Pi's OpenAI-compatible provider mapping;
+credentials are not included in NDJSON events or diagnostic metadata.
+
 ### Per-Source Plugin Concurrency
 
 Each source can define `plugin_thread_limit` to control how many plugins run concurrently for models against that source. The top-level `plugin_thread_limit` is used as a fallback for sources that do not define their own value. The CLI `--plugin-thread-limit` overrides all sources.
@@ -423,7 +466,7 @@ Or keep the `models` map simple and use the top-level `model_max_tokens` map, ke
 }
 ```
 
-Precedence: per-target `max_tokens` inside the model/agent entry > `model_max_tokens` map (matched by target name, then `{source}/{api_model}`) > global `max_tokens` / `--max-tokens`. The same budget is applied to the target's OpenCode legs via the generated config's `limit.output`.
+Precedence: per-target `max_tokens` inside the model/agent entry > `pi.max_tokens` for Pi targets or the `model_max_tokens` map (matched by target name, then `{source}/{api_model}`) > global `max_tokens` / `--max-tokens`. The same scalar budget is applied to the target's OpenCode and Pi legs.
 
 ### One-retry policy and attempt metadata
 

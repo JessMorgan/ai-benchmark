@@ -19,6 +19,7 @@ to know what to grep first.
   - **`benchmark/outputs.py`** — `gen_markdown / gen_csv / gen_html / gen_pdf`.
   - **`benchmark/completions.py`** — `--generate-shell-completion`.
   - **`benchmark/opencode.py`** — the optional OpenCode subprocess runner.
+  - **`benchmark/pi.py`** — the optional isolated Pi SDK/Node worker runner; `pi-worker/` contains its pinned manifest and NDJSON adapter.
   - **`benchmark/chatplayground.py`** — subprocess-proxy adapter for ChatPlayground.ai sources (`api_protocol: "chatplayground"`, username/password login, buffered answers, UI model enumeration). **`benchmark/chatplayground_worker.py`** — the Playwright browser worker it spawns; the runner never imports Playwright (its sync API is not thread-safe, and running it in a model worker thread segfaulted the run).
 - **`plugins/challenges/`** — 18 task plugins; auto-discovered and metadata-validated. **`plugins/outputs/`** — md/csv/html/pdf output plugins.
 - **`scripts/recover_state_from_csv.py`** — explicit, dry-run-by-default recovery of historical `benchmark_state.json` files from `results.csv`; accepts known historical plugin subsets and rejects unknown score columns.
@@ -103,7 +104,7 @@ polls it and rebuilds its frame only when something displayed changed
 - `benchmark-config.{yaml,json}` — **copy of the input config persisted
   as a time capsule**; diff against the in-repo config to see what the
   operator actually ran.
-- `logs/<model>.log` — curl + response bodies (when `--save-responses`).
+- `logs/<model>.log` — curl + response bodies (when `--save-responses`); Pi additionally writes `pi/logs/<target>/<plugin>.stdout.ndjson` and `.stderr.txt`.
 - `responses/<model>/<plugin>.txt` — model output; `.prompt.txt` is the
   prompt; `.think.txt` and `<plugin>.meta.json` preserve reasoning and rubric
   diagnostics. Failed evaluations include `error`/`traceback` when

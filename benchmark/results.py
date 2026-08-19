@@ -75,6 +75,7 @@ def save_task_result(
     selected_error: str | None = None,
     api_model: str | None = None,
     opencode_model: str | None = None,
+    runner_metadata: dict[str, Any] | None = None,
     is_agent: bool = False,
     system_prompt: str | None = None,
     prepare_judge_sidecar_fn: Any = None,
@@ -92,6 +93,7 @@ def save_task_result(
     rubric = rubric or []
     diagnostics = diagnostics or {}
     schema_metadata = schema_metadata or {}
+    runner_metadata = runner_metadata or {}
     attempts = attempts or []
     target = artifact_target or model_name
     attempt_history = [
@@ -120,6 +122,7 @@ def save_task_result(
         "model": api_model,
         "runner": runner,
         "opencode_model": opencode_model,
+        "runner_metadata": runner_metadata,
         "is_agent": is_agent,
         "system_prompt": system_prompt,
         "score": score,
@@ -203,6 +206,7 @@ def save_task_result(
         f"{pid}_truncated_due_to_time": truncated_due_to_time,
         f"{pid}_failure_cause": failure_cause,
         f"{pid}_attempts": attempt_history,
+        f"{pid}_runner_metadata": runner_metadata,
     }
 
 

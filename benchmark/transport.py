@@ -12,12 +12,14 @@ import threading
 import time
 from collections.abc import Callable, Iterator
 from concurrent.futures import Future
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import Any, Literal
 
 from .http import NonStreamResult, StreamResult, nonstream_request, stream_request
 from .observer import TaskObserver
 from .opencode import OPENCODE_BINARY, run_process
+from .pi import PI_DEFAULT_NODE, PiProcessResult
+from .pi import run_process as run_pi_process
 
 
 @dataclass(frozen=True)
@@ -31,19 +33,22 @@ class TransportRequest:
     source: str
     timeout: float
     temperature: float | None = 0.0
+    reasoning: bool = False
+    prompt_altered: str = "none"
     system_prompt: str | None = None
     drop_params: list | None = None
     request_params: dict | None = None
     session_seed: int = 0
     log_path: str | None = None
     log_label: str = ""
+    attempt: int = 1
     pid: str = ""
     stop_event: Any = None
     observer: TaskObserver | None = None
     max_content_tokens: int | None = None
     max_thinking_tokens: int | None = None
     repetition_guard: int | bool | None = None
-    transport: Literal["http", "opencode"] = "http"
+    transport: Literal["http", "opencode", "pi"] = "http"
     supports_streaming: bool = True
     opencode_config_path: str | None = None
     opencode_model: str | None = None
@@ -53,6 +58,11 @@ class TransportRequest:
     opencode_no_output_grace: float | None = None
     opencode_target_key: str | None = None
     opencode_plugin_id: str | None = None
+    pi_node: str | None = None
+    pi_worker: str | None = None
+    pi_config: dict | None = None
+    pi_target_key: str | None = None
+    pi_plugin_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -77,6 +87,7 @@ class TransportResult:
     schema_fallback_error: str | None = None
     stream_fallback_used: bool = False
     stream_fallback_error: str | None = None
+    runner_metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -336,7 +347,8 @@ def _normalize(request: TransportRequest, *, text: str, think_text: str,
                schema_fallback_used: bool = False,
                schema_fallback_error: str | None = None,
                stream_fallback_used: bool = False,
-               stream_fallback_error: str | None = None) -> TransportResult:
+               stream_fallback_error: str | None = None,
+               runner_metadata: dict[str, Any] | None = None) -> TransportResult:
     text = text or ""
     think_text = think_text or ""
     usage = usage if isinstance(usage, dict) else {}
@@ -369,6 +381,7 @@ def _normalize(request: TransportRequest, *, text: str, think_text: str,
         schema_fallback_error=schema_fallback_error,
         stream_fallback_used=stream_fallback_used,
         stream_fallback_error=stream_fallback_error,
+        runner_metadata=runner_metadata or {},
     )
 
 
@@ -620,7 +633,57 @@ def _retry_plan(
     return next_alteration, instruction, reason
 
 
+def _execute_pi(request: TransportRequest) -> TransportResult:
+    """Execute one isolated Pi SDK worker attempt."""
+    response: PiProcessResult = run_pi_process(
+        request.prompt,
+        source_config=request.source_config,
+        source=request.source,
+        api_model=request.api_model,
+        max_tokens=request.max_tokens,
+        timeout=request.timeout,
+        system_prompt=request.system_prompt,
+        temperature=request.temperature,
+        reasoning=request.reasoning,
+        prompt_altered=request.prompt_altered,
+        attempt=request.attempt,
+        pi_config=request.pi_config,
+        node=request.pi_node or PI_DEFAULT_NODE,
+        worker=request.pi_worker,
+        output_dir=request.opencode_output_dir,
+        target_key=request.pi_target_key or request.source,
+        plugin_id=request.pi_plugin_id or request.pid or "plugin",
+        stop_event=request.stop_event,
+        observer=request.observer,
+    )
+    return _normalize(
+        request,
+        text=response.text,
+        think_text=response.think_text,
+        error=response.error,
+        finish_reason=response.finish_reason,
+        response_time=response.elapsed,
+        gen_time=response.elapsed,
+        stream_ok=response.error is None,
+        repeating=is_repeating(response.text),
+        usage=response.usage,
+        runner_metadata={
+            "runner": "pi",
+            "adapter_version": response.adapter_version,
+            "worker_version": response.worker_version,
+            "sdk_version": response.sdk_version,
+            "provider": response.provider,
+            "requested_tools": list(response.requested_tools),
+            "tools": list(response.tools),
+            "permissions": response.permissions,
+            "tool_called": response.tool_called,
+            "truncated": response.truncated,
+        },
+    )
+
+
 def execute_task(
+
     request: TransportRequest,
     *,
     retry_policy: RetryPolicy,
@@ -658,7 +721,13 @@ def execute_task(
             log_label = log_label.replace("{attempt}", str(attempt_number))
         else:
             log_label = f"{log_label} (attempt {attempt_number})"
-        attempt_request = replace(request, prompt=request_prompt, log_label=log_label)
+        attempt_request = replace(
+            request,
+            prompt=request_prompt,
+            log_label=log_label,
+            attempt=attempt_number,
+            prompt_altered=prompt_altered,
+        )
         result = execute_transport(
             attempt_request,
             stream_request_fn=stream_request_fn,
@@ -767,7 +836,13 @@ def execute_task_streaming(
                 on_retry=base_observer.retry,
             )
             result = execute_transport(
-                replace(request, log_label=log_label, observer=observer),
+                replace(
+                    request,
+                    log_label=log_label,
+                    observer=observer,
+                    attempt=_attempt_number,
+                    prompt_altered=_prompt_altered,
+                ),
                 stream_request_fn=stream_request_fn,
                 nonstream_request_fn=nonstream_request_fn,
                 run_process_fn=run_process_fn,
@@ -832,6 +907,8 @@ def execute_transport(request: TransportRequest, *, stream_request_fn=None,
         )
     if request.transport == "opencode":
         return _execute_opencode(request, run_process_fn=run_process_fn)
+    if request.transport == "pi":
+        return _execute_pi(request)
     return _normalize(
         request,
         text="",

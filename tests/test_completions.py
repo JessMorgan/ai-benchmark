@@ -47,7 +47,7 @@ class TestCompletionBranches(unittest.TestCase):
             len(COMMAND_NAMES),
         )
         self.assertEqual(
-            sum(1 for line in lines if "-l runner" in line),
+            sum(1 for line in lines if "-l runner " in line),
             len(COMMAND_NAMES),
         )
 

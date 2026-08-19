@@ -42,7 +42,9 @@ This document describes the high-level design of AI Benchmark.
 3. **Runner Scheduling and Worker Threads**
    - `--runner http` uses the existing direct OpenAI-compatible path.
    - `--runner opencode` generates one retained OpenCode config and starts one isolated `opencode run` process per target/plugin.
+   - `--runner pi` starts one isolated project-local Node/Pi SDK worker per target/plugin; the worker emits normalized NDJSON and is never shared across cells.
    - `--runner both` creates one worker per source. That worker runs each target as OpenCode then HTTP before advancing, so OpenCode and HTTP never overlap on the same source; sources still run concurrently with one another.
+   - `--runners` with another combination runs stable independent runner phases (for example HTTP then Pi), with a separate state key and artifact namespace for every `(target, runner)` pair.
    - Targets whose OpenCode state is already complete on resume are seeded directly into the HTTP queue.
    - Single-runner modes retain one source worker per source and run `run_model()` for each target in its queue.
    - State identities include the configured target and runner, preventing cross-runner resume reuse.
@@ -50,13 +52,15 @@ This document describes the high-level design of AI Benchmark.
 4. **Plugin Execution**
    - `_run_plugins()` uses `ThreadPoolExecutor` with `plugin_thread_limit` workers.
    - Each plugin task calls `_run_plugin_task()`.
-   - HTTP and OpenCode tasks call `execute_task()`, the shared logical-attempt
+   - HTTP, OpenCode, and Pi tasks call `execute_task()`, the shared logical-attempt
      engine, which invokes the normalized one-attempt `execute_transport()`
      layer. The transport layer selects `stream_request()`/`nonstream_request()`
      and owns provider schema/stream fallback; OpenCode is normalized through
-     the same layer.
+     the same layer. Pi is normalized from its isolated worker through the same
+     boundary, including tool/version metadata and partial output.
    - OpenCode tasks call the subprocess adapter with `opencode run --pure --format json --thinking`, capture stdout/stderr separately, extract the final assistant answer and reasoning from the NDJSON event stream, and score the answer as the response.
-   - Each HTTP/OpenCode task uses one scalar `max_tokens` budget and at most one benchmark-level retry through `BENCHMARK_RETRY_POLICY`. Attempt metadata records `response_nature`, `retry_reason`, `prompt_altered`, token breakdown, failure cause, and the selected attempt; timeout and cancellation are terminal and mark time truncation/cancellation instead of retrying. Provider-level 429 backoff and schema fallbacks remain separate diagnostics.
+   - Pi tasks send a structured request to a fresh Node worker, receive text/thinking/tool events, and retain raw stdout/stderr under the Pi output namespace.
+   - Each HTTP/OpenCode/Pi task uses one scalar `max_tokens` budget and at most one benchmark-level retry through `BENCHMARK_RETRY_POLICY`. Attempt metadata records `response_nature`, `retry_reason`, `prompt_altered`, token breakdown, failure cause, and the selected attempt; timeout and cancellation are terminal and mark time truncation/cancellation instead of retrying. Provider-level 429 backoff and schema fallbacks remain separate diagnostics.
    - Judges use the same `execute_task()` engine with `JUDGE_RETRY_POLICY`: only invalid parsed JSON can trigger the logical retry, while transport failures, token limits, repetition, timeout, and cancellation remain terminal. Judge-specific parsing and thinking-budget guidance stay in `core.py`.
 
 ### Retry layers
@@ -154,6 +158,25 @@ from the config are resolved to their source string before being written.
 Every state mutation bumps a monotonic `revision` counter. The live TUI polls it and rebuilds its frame only when something displayed actually changed — revision bumped, terminal resized, operator scrolled, or live elapsed/countdown content (streaming seconds, judge-activity elapsed, 429 sleeps) is ticking — capped at 2 fps (`_TUI_REFRESH_SECONDS = 0.5`). An idle run rebuilds nothing, so the ~0.1 s frame build for 108 models × 18 plugins no longer runs on every 0.2 s tick.
 
 Active benchmark cells and judge activities carry a logical attempt number. Their live thinking/content counters reset when the next logical attempt begins, so the TUI never presents tokens accumulated across retries as if they belonged to the current request. Completed benchmark result fields remain selected-attempt metrics; `total_tokens` is retained as the derived thinking-plus-content report value.
+
+## Pi Runner
+
+Pi support is intentionally isolated from the Python process and from other
+benchmark cells. `benchmark/pi.py` validates Node and the project-local worker,
+then launches `pi-worker/worker.mjs` with one JSON request on stdin. The worker
+registers the configured benchmark source as a temporary OpenAI-compatible Pi
+provider, creates one `Agent`, disables tools unless an explicit allowlist was
+configured, and emits the versioned `pi-worker-v1` event stream. Python owns
+scheduling, timeout/cancellation, retry classification, scoring, and state;
+JavaScript owns only SDK/session execution and event normalization. A process
+group is terminated on cancellation/timeout, while all partial text and
+thinking received before termination remains available to result artifacts.
+
+The worker's preflight mode verifies that the pinned SDK imports before a run.
+The normal benchmark path records adapter, worker, SDK, provider, requested-tool,
+permission, actual-tool, and prompt-alteration metadata. Pi's scalar budget and
+retry behavior therefore remain comparable with HTTP and OpenCode while its
+agent/tool activity remains explicitly visible in reports.
 
 ## OpenCode Runner
 

@@ -1411,6 +1411,75 @@ def resolve_model_sources(models):
     return resolved
 
 
+_PI_TOOL_NAMES = {"read", "bash", "edit", "write", "grep", "find", "ls"}
+_PI_CONFIG_KEYS = {
+    "tools", "permissions", "system_prompt", "reasoning", "thinking_budgets",
+    "max_tool_calls", "compat", "max_tokens",
+}
+
+
+def _resolve_pi_config(target_name, value):
+    """Validate the small, deterministic Pi configuration surface."""
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise ValueError(  # noqa: TRY004 - config validation uses ValueError in this project
+            f"Target '{target_name}' pi configuration must be an object"
+        )
+    unknown = sorted(set(value) - _PI_CONFIG_KEYS)
+    if unknown:
+        raise ValueError(
+            f"Target '{target_name}' pi configuration has unsupported key(s): {', '.join(unknown)}"
+        )
+    tools = value.get("tools", [])
+    if not isinstance(tools, list) or any(not isinstance(item, str) for item in tools):
+        raise ValueError(f"Target '{target_name}' pi.tools must be a list of strings")
+    unsupported = sorted(set(tools) - _PI_TOOL_NAMES)
+    if unsupported:
+        raise ValueError(
+            f"Target '{target_name}' pi.tools has unsupported tool(s): {', '.join(unsupported)}"
+        )
+    permissions = value.get("permissions", {})
+    if not isinstance(permissions, dict) or any(
+        not isinstance(key, str) or value not in {"allow", "deny"}
+        for key, value in permissions.items()
+    ):
+        raise ValueError(
+            f"Target '{target_name}' pi.permissions must map tool names to 'allow' or 'deny'"
+        )
+    unknown_permissions = sorted(set(permissions) - _PI_TOOL_NAMES)
+    if unknown_permissions:
+        raise ValueError(
+            f"Target '{target_name}' pi.permissions has unsupported tool(s): "
+            f"{', '.join(unknown_permissions)}"
+        )
+    system_prompt = value.get("system_prompt")
+    if system_prompt is not None and not isinstance(system_prompt, str):
+        raise ValueError(f"Target '{target_name}' pi.system_prompt must be a string or null")
+    reasoning = value.get("reasoning", False)
+    if not isinstance(reasoning, bool):
+        raise ValueError(  # noqa: TRY004 - config validation uses ValueError in this project
+            f"Target '{target_name}' pi.reasoning must be boolean"
+        )
+    max_tool_calls = value.get("max_tool_calls", 50)
+    if isinstance(max_tool_calls, bool) or not isinstance(max_tool_calls, int) or max_tool_calls < 0:
+        raise ValueError(f"Target '{target_name}' pi.max_tool_calls must be a non-negative integer")
+    max_tokens = value.get("max_tokens")
+    if max_tokens is not None and (
+        isinstance(max_tokens, bool) or not isinstance(max_tokens, int) or max_tokens <= 0
+    ):
+        raise ValueError(f"Target '{target_name}' pi.max_tokens must be a positive integer")
+    compat = value.get("compat", {})
+    if not isinstance(compat, dict):
+        raise ValueError(  # noqa: TRY004 - config validation uses ValueError in this project
+            f"Target '{target_name}' pi.compat must be an object"
+        )
+    thinking_budgets = value.get("thinking_budgets")
+    if thinking_budgets is not None and not isinstance(thinking_budgets, dict):
+        raise ValueError(f"Target '{target_name}' pi.thinking_budgets must be an object or null")
+    return copy.deepcopy(value)
+
+
 def resolve_targets(cfg):
     """Resolve models and agents into a unified target map.
 
@@ -1448,6 +1517,11 @@ def resolve_targets(cfg):
             value = _normalize_max_tokens(val.get("max_tokens"))
             if value is not None:
                 return value
+            pi_value = val.get("pi")
+            if isinstance(pi_value, dict):
+                value = _normalize_max_tokens(pi_value.get("max_tokens"))
+                if value is not None:
+                    return value
         for key in (name, f"{source}/{api_model}"):
             value = _normalize_max_tokens(model_max_tokens.get(key))
             if value is not None:
@@ -1505,6 +1579,10 @@ def resolve_targets(cfg):
         val = models[name] if name in models else agents.get(name)
         info["max_tokens"] = _resolve_target_max_tokens(
             name, info["source"], info["api_model"], val)
+        info["pi"] = _resolve_pi_config(
+            name,
+            val.get("pi", {}) if isinstance(val, dict) else {},
+        )
     return targets
 
 
@@ -1715,7 +1793,7 @@ def _run_plugin_task_legacy(target_name, api_model, source, plugin, source_confi
     cfg = source_config.get(source)
     if runner == "http" and cfg is None:
         return PluginTaskResult(None, f"Unknown source '{source}' — not in SOURCE_CONFIG")
-    if runner not in ("http", "opencode"):
+    if runner not in ("http", "opencode", "pi"):
         return PluginTaskResult(None, f"Unknown runner {runner!r}")
 
     # Per-source stream watchdog budgets: abort an HTTP request the moment
@@ -2331,6 +2409,7 @@ def _run_plugin_task(target_name, api_model, source, plugin, source_config, time
                      system_prompt=None, is_agent=False, runner="http",
                      opencode_config_path=None, opencode_model=None,
                      opencode_agent=None, opencode_binary=None,
+                     pi_node=None, pi_worker=None, pi_config=None,
                      artifact_target_name=None,
                      config_target_name=None) -> PluginTaskResult:
     """Run one benchmark cell with one scalar budget and at most one policy retry.
@@ -2343,7 +2422,7 @@ def _run_plugin_task(target_name, api_model, source, plugin, source_config, time
     cfg = source_config.get(source)
     if runner == "http" and cfg is None:
         return PluginTaskResult(None, f"Unknown source '{source}' — not in SOURCE_CONFIG")
-    if runner not in {"http", "opencode"}:
+    if runner not in {"http", "opencode", "pi"}:
         return PluginTaskResult(None, f"Unknown runner {runner!r}")
     if stop_event and stop_event.is_set():
         return PluginTaskResult(None, "Cancelled")
@@ -2400,6 +2479,7 @@ def _run_plugin_task(target_name, api_model, source, plugin, source_config, time
         source=source,
         timeout=timeout,
         temperature=temperature,
+        reasoning=bool((pi_config or {}).get("reasoning", False)),
         system_prompt=system_prompt,
         drop_params=drop_params,
         request_params=request_params,
@@ -2422,6 +2502,11 @@ def _run_plugin_task(target_name, api_model, source, plugin, source_config, time
         opencode_no_output_grace=resolve_opencode_timeout(source_config, source),
         opencode_target_key=artifact_target,
         opencode_plugin_id=pid,
+        pi_node=pi_node,
+        pi_worker=pi_worker,
+        pi_config=pi_config,
+        pi_target_key=artifact_target,
+        pi_plugin_id=pid,
     )
 
     def on_attempt(attempt_number):
@@ -2506,6 +2591,7 @@ def _run_plugin_task(target_name, api_model, source, plugin, source_config, time
             "selected": False,
             "prompt_sha256": raw.prompt_sha256,
             "response_sha256": raw.response_sha256,
+            "runner_metadata": raw.runner_metadata,
         }
         if index + 1 < len(execution.attempts):
             attempt_record["retry_scheduled"] = True
@@ -2548,6 +2634,7 @@ def _run_plugin_task(target_name, api_model, source, plugin, source_config, time
     repeating = selected["repeating"]
     selected_alteration = selected["prompt_altered"]
     selected_retry_reason = selected["retry_reason"]
+    runner_metadata = selected.get("runner_metadata", {})
     schema_metadata = _schema_request_metadata(
         plugin, request_params,
         response_schema_valid=diagnostics.get("response_schema_valid")
@@ -2605,6 +2692,7 @@ def _run_plugin_task(target_name, api_model, source, plugin, source_config, time
         selected_error=selected_error,
         api_model=api_model,
         opencode_model=opencode_model,
+        runner_metadata=runner_metadata,
         is_agent=is_agent,
         system_prompt=system_prompt,
         prepare_judge_sidecar_fn=prepare_judge_sidecar,
@@ -2620,7 +2708,8 @@ def run_model(model_name, source, state, active_plugins, source_config, timeout,
               judge_model=None, judge_models=None, judge_prompt_version=None,
               system_prompt=None, is_agent=False, runner="http",
               opencode_config_path=None, opencode_model=None,
-              opencode_agent=None, opencode_binary=None, display_name=None,
+              opencode_agent=None, opencode_binary=None,
+              pi_node=None, pi_worker=None, pi_config=None, display_name=None,
               config_target_name=None):
     """Run active plugins for one model or agent through a selected runner."""
     start = time.time()
@@ -2717,7 +2806,7 @@ def run_model(model_name, source, state, active_plugins, source_config, timeout,
                 "retry_reasons", "selected_attempt", "retry_reason",
                 "prompt_altered", "response_nature", "finish_reason",
                 "truncated", "truncated_due_to_time", "repeating",
-                "failure_cause", "attempts",
+                "failure_cause", "attempts", "runner_metadata",
             ):
                 r[f"{pid}_{key}"] = source_row.get(f"{pid}_{key}")
             source_contract = source_row.get(f"{pid}_judge_selected_contract")
@@ -2797,6 +2886,9 @@ def run_model(model_name, source, state, active_plugins, source_config, timeout,
                  opencode_model=opencode_model,
                  opencode_agent=opencode_agent,
                  opencode_binary=opencode_binary,
+                 pi_node=pi_node,
+                 pi_worker=pi_worker,
+                 pi_config=pi_config,
                  display_name=display_name,
                  config_target_name=config_target_name)
 
@@ -2808,6 +2900,7 @@ def _run_plugins(target_name, api_model, source, state, active_plugins, plugins_
                  judge_enqueue=None,
                  system_prompt=None, is_agent=False, runner="http", opencode_config_path=None,
                  opencode_model=None, opencode_agent=None, opencode_binary=None,
+                 pi_node=None, pi_worker=None, pi_config=None,
                  display_name=None, config_target_name=None):
     """Run plugins for one model using a thread pool of bounded size.
 
@@ -2860,6 +2953,9 @@ def _run_plugins(target_name, api_model, source, state, active_plugins, plugins_
                                            opencode_model=opencode_model,
                                            opencode_agent=opencode_agent,
                                            opencode_binary=opencode_binary,
+                                           pi_node=pi_node,
+                                           pi_worker=pi_worker,
+                                           pi_config=pi_config,
                                            artifact_target_name=display_name or target_name,
                                            config_target_name=config_target_name or display_name or target_name)
             result = task_result.result
@@ -2913,6 +3009,7 @@ def _run_plugins(target_name, api_model, source, state, active_plugins, plugins_
                      f"{pid}_repeating": result.get(f"{pid}_repeating"),
                      f"{pid}_failure_cause": result.get(f"{pid}_failure_cause"),
                      f"{pid}_attempts": result.get(f"{pid}_attempts"),
+                     f"{pid}_runner_metadata": result.get(f"{pid}_runner_metadata", {}),
                      f"{pid}_schema_requested": result.get(f"{pid}_schema_requested"),
                      f"{pid}_schema_request_status": result.get(f"{pid}_schema_request_status"),
                      f"{pid}_response_schema_valid": result.get(f"{pid}_response_schema_valid"),

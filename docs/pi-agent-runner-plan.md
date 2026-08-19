@@ -1,11 +1,11 @@
 # Pi-agent runner support plan
 
-**Status:** Planned; this document does not implement the runner
+**Status:** Implemented (initial isolated-worker runner); the compatibility smoke test remains opt-in because CI does not provide a real provider.
 
 ## Decisions captured
 
-- Target the TypeScript package/repository commonly published as
-  `@mariozechner/pi-coding-agent`.
+- Target the current package name `@earendil-works/pi-coding-agent` (the
+  repository formerly associated with `@mariozechner/pi-coding-agent`).
 - Use the Pi SDK through a small Node/TypeScript adapter subprocess.
 - Start one isolated adapter subprocess per model/plugin cell, rather than
   sharing a long-lived Pi session between benchmark tasks.

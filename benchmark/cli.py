@@ -82,6 +82,7 @@ from benchmark.opencode import (
     opencode_version,
     resolve_opencode_binary,
 )
+from benchmark.pi import pi_version, resolve_pi_worker, run_pi_probe
 from benchmark.plugin import SCORE_SCHEMA
 from benchmark.results import save_judge_result
 from benchmark.state import apply_state_recovery, prepare_state_recovery
@@ -193,17 +194,13 @@ def _eligible_judge_sidecars(judge_input_dir, targets, state, active_plugin_ids,
         runner = item.get("runner")
         plugin_id = item.get("plugin")
         state_key = item.get("state_key", target)
-        if runner not in {"http", "opencode"} or plugin_id not in active_plugin_ids:
+        if runner not in {"http", "opencode", "pi"} or plugin_id not in active_plugin_ids:
             continue
-        if runner == "http":
-            target_name = state_key
-            expected_state_key = target_name
-        else:
-            suffix = " [opencode]"
-            if not state_key.endswith(suffix):
-                continue
-            target_name = state_key[:-len(suffix)]
-            expected_state_key = state_key
+        suffix = _runner_suffix(runner)
+        if suffix and not state_key.endswith(suffix):
+            continue
+        target_name = state_key[:-len(suffix)] if suffix else state_key
+        expected_state_key = state_key
         if target_name not in targets or target != target_name:
             continue
 
@@ -413,7 +410,9 @@ def _active_source_target_counts(snap):
     for name, info in snap.items():
         if not (info.get("preloading") or info.get("running_pids")):
             continue
-        target_name = name.removesuffix(" [opencode]")
+        target_name = name
+        for runner_name in ("opencode", "pi"):
+            target_name = target_name.removesuffix(f" [{runner_name}]")
         key = (info.get("source", "?"), target_name)
         if key in seen:
             continue
@@ -1709,9 +1708,18 @@ def tui_main(state, stop_event, num_sources, active_plugins, session_seed=None,
     _fallback_tui_loop(state, stop_event, session_seed, model_thread_limits)
 
 
+def _runner_suffix(runner):
+    """Return the stable state/artifact suffix for a non-HTTP runner."""
+    return "" if runner == "http" else f" [{runner}]"
+
+
+def _runner_state_key(target_name, runner):
+    return f"{target_name}{_runner_suffix(runner)}"
+
+
 def _targets_for_runner(targets, state_models, runner):
     """Return targets with a saved/configured identity for ``runner``."""
-    suffix = " [opencode]" if runner == "opencode" else ""
+    suffix = _runner_suffix(runner)
     return {
         name: info
         for name, info in targets.items()
@@ -1731,9 +1739,9 @@ def _mark_preload_failed(state, model_name, result, phase_runner, runner_mode):
     """
     error = f"preload failed: {result.error or 'empty preload response'}"
     if runner_mode == "both" and phase_runner == "opencode":
-        keys = [model_name, f"{model_name} [opencode]"]
-    elif phase_runner == "opencode":
-        keys = [f"{model_name} [opencode]"]
+        keys = [model_name, _runner_state_key(model_name, phase_runner)]
+    elif phase_runner != "http":
+        keys = [_runner_state_key(model_name, phase_runner)]
     else:
         keys = [model_name]
     snapshot = state.snapshot()
@@ -1792,7 +1800,7 @@ def _build_runner_queues(targets, snapshot, runner_mode, source_config,
     phase_runner = runner_mode
     source_queues = {src: [] for src in {info["source"] for info in targets.values()}}
     for name, info in targets.items():
-        state_key = name if phase_runner == "http" else f"{name} [opencode]"
+        state_key = _runner_state_key(name, phase_runner)
         if needs_run(snapshot.get(state_key)):
             source_queues[info["source"]].append(name)
     return source_queues
@@ -2657,6 +2665,34 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
     source_config = cfg.get("sources", {})
     models = cfg.get("models", {})
 
+    if args.pi_probe:
+        targets_for_probe = resolve_targets(cfg)
+        timeout = args.timeout if args.timeout is not None else int(cfg.get("timeout", 600))
+        probe_results = []
+        try:
+            node, worker = resolve_pi_worker()
+            for target_name, target in targets_for_probe.items():
+                result = run_pi_probe(
+                    source_config,
+                    target["source"],
+                    target["api_model"],
+                    timeout=timeout,
+                    pi_config=target.get("pi", {}),
+                    node=node,
+                    worker=worker,
+                )
+                result["target"] = target_name
+                result["is_agent"] = target.get("is_agent", False)
+                probe_results.append(result)
+        except (RuntimeError, TypeError, ValueError) as exc:
+            probe_results.append({"passed": False, "error": f"{type(exc).__name__}: {exc}"})
+        print(json.dumps({
+            "probe": "pi-compatibility-v1",
+            "scores_affected": False,
+            "results": probe_results,
+        }, indent=2))
+        sys.exit(0)
+
     if args.schema_sentinel:
         targets_for_probe = resolve_targets(cfg)
         timeout = args.timeout if args.timeout is not None else int(cfg.get("timeout", 600))
@@ -2685,6 +2721,32 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
         sys.exit(1)
     targets = resolve_targets(cfg)
     runner_mode = args.runner
+    runner_sequence = ["opencode", "http"] if args.runner == "both" else [args.runner]
+    if args.runners:
+        requested_runners = [item.strip().lower() for item in args.runners.split(",") if item.strip()]
+        allowed_runners = {"http", "opencode", "pi"}
+        if not requested_runners or any(item not in allowed_runners for item in requested_runners):
+            print("❌ --runners must contain one or more of: http,opencode,pi.", file=sys.stderr)
+            sys.exit(1)
+        if len(set(requested_runners)) != len(requested_runners):
+            print("❌ --runners cannot contain duplicates.", file=sys.stderr)
+            sys.exit(1)
+        if len(requested_runners) == 1:
+            runner_mode = requested_runners[0]
+            runner_sequence = requested_runners
+        elif set(requested_runners) == {"http", "opencode"}:
+            # Preserve the historical pipeline semantics for this exact pair.
+            runner_mode = "both"
+            runner_sequence = ["opencode", "http"]
+        else:
+            # Explicit combinations run in stable canonical order. Unlike
+            # ``both``, these phases are independent runner legs and never
+            # overwrite each other's state or artifacts.
+            runner_mode = "multi"
+            runner_sequence = [
+                runner for runner in ("http", "opencode", "pi")
+                if runner in requested_runners
+            ]
     judge_models = list(dict.fromkeys(args.judge_models or []))
     unknown_judges = [name for name in judge_models if name not in models]
     if unknown_judges:
@@ -2696,7 +2758,9 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
         sys.exit(1)
     judge_model = judge_models[0] if judge_models else None
     opencode_binary = None
-    if runner_mode in ("opencode", "both"):
+    pi_node = None
+    pi_worker = None
+    if "opencode" in runner_sequence:
         try:
             opencode_binary = resolve_opencode_binary(
                 allow_install=not args.no_install_opencode,
@@ -2707,6 +2771,15 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
         version = opencode_version(opencode_binary)
         print(f"🤖 OpenCode binary: {opencode_binary}"
               + (f" (v{version})" if version else ""), file=sys.stderr)
+    if "pi" in runner_sequence:
+        try:
+            pi_node, pi_worker = resolve_pi_worker()
+        except RuntimeError as exc:
+            print(f"❌ Pi unavailable: {exc}", file=sys.stderr)
+            sys.exit(1)
+        print(f"🥧 Pi worker: {pi_worker}"
+              + (f" (Node {pi_version(pi_node)})" if pi_version(pi_node) else ""),
+              file=sys.stderr)
     output_dir = cfg.get("output_dir", "benchmark-results")
     if args.out:
         output_dir = args.out
@@ -2720,10 +2793,11 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
     # can resume and report the two executions independently.
     state_models = {}
     for target_name, target_info in targets.items():
-        if runner_mode in ("http", "both"):
-            state_models[target_name] = {**target_info, "runner": "http"}
-        if runner_mode in ("opencode", "both"):
-            state_models[f"{target_name} [opencode]"] = {**target_info, "runner": "opencode"}
+        for selected_runner in runner_sequence:
+            state_models[_runner_state_key(target_name, selected_runner)] = {
+                **target_info,
+                "runner": selected_runner,
+            }
 
     timeout = cfg.get("timeout", 600)
     if args.timeout is not None:
@@ -2812,12 +2886,17 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
     os.makedirs(output_dir, exist_ok=True)
     http_output_dir = os.path.join(output_dir, "http")
     opencode_output_dir = os.path.join(output_dir, "opencode")
-    if runner_mode in ("http", "both"):
+    pi_output_dir = os.path.join(output_dir, "pi")
+    if "http" in runner_sequence:
         os.makedirs(http_output_dir, exist_ok=True)
+    if "opencode" in runner_sequence:
+        os.makedirs(opencode_output_dir, exist_ok=True)
+    if "pi" in runner_sequence:
+        os.makedirs(pi_output_dir, exist_ok=True)
     opencode_config_path = None
     opencode_agent_ids = {}
     opencode_projection = None
-    if runner_mode in ("opencode", "both"):
+    if "opencode" in runner_sequence:
         try:
             generated = generate_opencode_config(
                 source_config,
@@ -2851,18 +2930,21 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
         "start_time": datetime.now(timezone.utc).isoformat(),
         "end_time": None,
         "status": "running",
-        "total_targets": len(targets) * (2 if runner_mode == "both" else 1),
+        "total_targets": len(targets) * len(runner_sequence),
         "completed_targets": 0,
         "worker_errors": 0,
         "session_seed": None,
         "active_plugins": [p.id for p in active_plugins],
         "runner": runner_mode,
+        "runners": runner_sequence,
         "score_schema": SCORE_SCHEMA,
         "model_thread_limit": model_thread_limits,
         "peak_active_models": {source: 0 for source in model_thread_limits},
         "opencode_config": opencode_config_path,
         "opencode_projection": opencode_projection,
         "opencode_binary": opencode_binary,
+        "pi_worker": pi_worker,
+        "pi_node": pi_node,
         "targets": list(targets.keys()),
         "judge_model": judge_model,
         "judge_models": judge_models,
@@ -2980,7 +3062,7 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
                         if restored_targets:
                             run_info["targets"] = list(targets)
                             run_info["total_targets"] = (
-                                len(state_models) if runner_mode == "both" else len(targets)
+                                len(state_models)
                             )
                             print(
                                 f"   Restored {len(restored_targets)} saved target(s) absent from current config.",
@@ -3046,7 +3128,7 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
         )
         state.set_active_judge_contracts(active_judge_contracts)
 
-        if restored_targets and runner_mode in ("opencode", "both"):
+        if restored_targets and "opencode" in runner_sequence:
             # OpenCode's generated projection is created before the state file
             # is loaded. Rebuild it after restoring removed targets so their
             # pending legs have valid agent/config entries when workers start.
@@ -3101,19 +3183,6 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
 
         total = state.total
 
-        def _join_workers(timeout=None):
-            """Wait for the current phase's source workers."""
-            if not source_threads:
-                return True
-            if timeout is None:
-                while any(t.is_alive() for t in source_threads.values()):
-                    for t in source_threads.values():
-                        t.join(timeout=0.2)
-                return True
-            for t in source_threads.values():
-                t.join(timeout=timeout / max(len(source_threads), 1))
-            return not any(t.is_alive() for t in source_threads.values())
-
         errors_lock = threading.Lock()
         persistence_lock = threading.Lock()
         persistence_failures_lock = threading.Lock()
@@ -3151,7 +3220,9 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
             """Mark both runner rows for a target as warming, when present."""
             keys = [target_name]
             if runner_mode == "both":
-                keys.append(f"{target_name} [opencode]")
+                keys.append(_runner_state_key(target_name, "opencode"))
+            elif runner_mode == "multi" or phase_runner != "http":
+                keys.append(_runner_state_key(target_name, phase_runner))
             now = time.monotonic() if enabled else 0
             snapshot = state.snapshot()
             for key in keys:
@@ -3169,7 +3240,9 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
 
         def _ensure_preloaded(model_name, target_info, phase_runner):
             """Warm a target once per source/model for this process."""
-            if not _preload_is_enabled(target_info["source"]):
+            # Pi has its own provider/session initialization in the isolated
+            # worker; never send a hidden HTTP warm-up request for a Pi leg.
+            if phase_runner == "pi" or not _preload_is_enabled(target_info["source"]):
                 return True
             key = (target_info["source"], target_info["api_model"])
             with preload_lock:
@@ -3234,7 +3307,13 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
                     if result.success:
                         preloaded_ok.add(key)
                         run_info["preload"]["succeeded"] += 1
-                        for state_key in (model_name, f"{model_name} [opencode]") if runner_mode == "both" else (model_name,):
+                        preload_state_keys = (
+                            (model_name, _runner_state_key(model_name, "opencode"))
+                            if runner_mode == "both"
+                            else (model_name,) if phase_runner == "http"
+                            else (_runner_state_key(model_name, phase_runner),)
+                        )
+                        for state_key in preload_state_keys:
                             if state_key in state.snapshot():
                                 state.update(
                                     state_key, preloading=False, preload_start_ts=0,
@@ -3889,8 +3968,12 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
                     flusher.request_flush()
                     flush_gate.reset()
                 return False
-            state_key = model_name if phase_runner == "http" else f"{model_name} [opencode]"
-            phase_output_dir = http_output_dir if phase_runner == "http" else opencode_output_dir
+            state_key = _runner_state_key(model_name, phase_runner)
+            phase_output_dir = (
+                http_output_dir if phase_runner == "http"
+                else opencode_output_dir if phase_runner == "opencode"
+                else pi_output_dir
+            )
             mapped = None
             agent_id = None
             if phase_runner == "opencode":
@@ -3913,6 +3996,8 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
                       opencode_config_path=opencode_config_path,
                       opencode_model=mapped, opencode_agent=agent_id,
                       opencode_binary=opencode_binary,
+                      pi_node=pi_node, pi_worker=pi_worker,
+                      pi_config=target_info.get("pi", {}),
                       display_name=model_name, config_target_name=model_name)
             # OpenCode and HTTP pipeline workers can finish different targets
             # concurrently. Persistence is throttled through the shared flush
@@ -3938,6 +4023,53 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
                 worker_errors += 1
             print(f"\\n❌ Worker exception ({model_name}, {phase_runner}): "
                   f"{type(exc).__name__}: {exc}", file=sys.stderr)
+
+        def run_single_runner_phase(phase_runner):
+            """Run one independent runner phase with source-local limits."""
+            nonlocal interrupted
+            snapshot = state.snapshot()
+            source_queues = _build_runner_queues(
+                targets, snapshot, phase_runner, source_config,
+                rerun_failed=not args.no_rerun_failed,
+            )
+            benchmark_limits = dict(model_thread_limits)
+            benchmark_sources = {
+                source for source, names in source_queues.items() if names
+            }
+            start_judge_if_async(benchmark_limits, benchmark_sources)
+            phase_threads = []
+            for source, model_names in source_queues.items():
+                if not model_names:
+                    continue
+
+                def worker(source=source, model_names=model_names):
+                    def run_one(model_name):
+                        try:
+                            run_target(model_name, phase_runner)
+                        except Exception as exc:  # noqa: BLE001 - isolate one target
+                            on_worker_error(model_name, phase_runner, exc)
+                    scheduler = SourceModelScheduler(
+                        source, benchmark_limits.get(source, 1), model_names, run_one,
+                        stop_event, on_worker_error, peak_callback=record_peak,
+                        on_complete=source_benchmark_complete,
+                    )
+                    scheduler.run_until_drained()
+
+                thread = threading.Thread(target=worker, args=(), daemon=True)
+                thread.start()
+                phase_threads.append(thread)
+            try:
+                for thread in phase_threads:
+                    thread.join()
+            except KeyboardInterrupt:
+                interrupted = True
+                run_info["status"] = "interrupted"
+                stop_event.set()
+                print("\\n\\n⚠️  Ctrl+C — saving state and shutting down...", file=sys.stderr)
+                close_active_requests()
+                stop_judge_workers()
+                for thread in phase_threads:
+                    thread.join(timeout=1.0)
 
         if runner_mode == "both":
             # Pipeline each source independently with one execution slot:
@@ -3975,54 +4107,16 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
                     stop_judge_workers()
                     for thread in pipeline_threads:
                         thread.join(timeout=1.0)
+        elif runner_mode == "multi":
+            # Explicit multi-runner mode uses independent, sequential phases.
+            # This keeps each source's model-slot accounting authoritative while
+            # preserving separate runner identities and resume behavior.
+            for phase_runner in runner_sequence:
+                if interrupted or stop_event.is_set():
+                    break
+                run_single_runner_phase(phase_runner)
         else:
-            # Preserve the original single-runner source workers. Only
-            # --runner both needs cross-runner coordination.
-            phase_runner = runner_mode
-            snapshot = state.snapshot()
-            source_queues = _build_runner_queues(
-                targets, snapshot, runner_mode, source_config,
-                rerun_failed=not args.no_rerun_failed,
-            )
-            benchmark_limits = dict(model_thread_limits)
-            benchmark_sources = {
-                source for source, names in source_queues.items() if names
-            }
-            start_judge_if_async(benchmark_limits, benchmark_sources)
-
-            source_threads = {}
-            for source, model_names in source_queues.items():
-                if not model_names:
-                    continue
-
-                def worker(source=source, model_names=model_names):
-                    def run_one(model_name):
-                        try:
-                            run_target(model_name, phase_runner)
-                        except Exception as exc:  # noqa: BLE001 - a worker crash is recorded per model
-                            on_worker_error(model_name, phase_runner, exc)
-                    scheduler = SourceModelScheduler(
-                        source, benchmark_limits.get(source, 1), model_names, run_one,
-                        stop_event, on_worker_error, peak_callback=record_peak,
-                        on_complete=source_benchmark_complete,
-                    )
-                    scheduler.run_until_drained()
-
-                thread = threading.Thread(target=worker, args=(), daemon=True)
-                thread.start()
-                source_threads[source] = thread
-
-            if source_threads:
-                try:
-                    _join_workers()
-                except KeyboardInterrupt:
-                    interrupted = True
-                    run_info["status"] = "interrupted"
-                    stop_event.set()
-                    print("\\n\\n⚠️  Ctrl+C — saving state and shutting down...", file=sys.stderr)
-                    close_active_requests()
-                    stop_judge_workers()
-                    _join_workers(timeout=1.0)
+            run_single_runner_phase(runner_mode)
 
         if tui_interrupt_event is not None and tui_interrupt_event.is_set() \
                 and not interrupted:

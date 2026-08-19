@@ -40,11 +40,13 @@ ignored, and real environment variables take precedence over file values. See
 | `--api-key KEY` | (with `--base-url`) API key for model discovery |
 | `--chatplayground-config` | Enumerate ChatPlayground.ai models from the web UI and print a ready-to-run config (uses `CHATPLAYGROUND_EMAIL`/`CHATPLAYGROUND_PASSWORD`) |
 | `--schema-sentinel` | Run a non-scoring structured-schema compatibility probe for every configured model and print JSON |
-| `--save-responses` | Save each model's plugin response text to the selected runner namespace under `<output_dir>/{http,opencode}/responses/` |
+| `--pi-probe` | Run the non-scoring Pi worker/provider compatibility probe and print JSON |
+| `--save-responses` | Save each model's plugin response text to the selected runner namespace under `<output_dir>/{http,opencode,pi}/responses/` |
 | `--seed INT` | Fixed random seed for all API requests |
 | `--no-rerun-failed` | Keep failed models as failed on resume (default re-runs them) |
 | `--retry-on-429` / `--no-retry-on-429` | Toggle HTTP-429 retry/backoff globally. Default is **ON**; pass `--no-retry-on-429` to opt out (sources with explicit `max_429_retries` are preserved). A model run is cancelled after two consecutive plugin tests exhaust their 429 retries. See [Configuration Reference](configuration.md#http-429-retry--backoff) for the per-source keys and migration notes. |
-| `--runner {http,opencode,both}` | Select the existing HTTP runner (default), the OpenCode CLI runner, or both. In `both`, each target pipelines OpenCode into HTTP. |
+| `--runner {http,opencode,pi,both}` | Select HTTP (default), OpenCode, Pi, or the legacy OpenCode-then-HTTP pipeline. |
+| `--runners RUNNERS` | Run an explicit comma-separated set such as `http,pi`; multi-runner phases use stable runner identities and independent resume state. |
 | `--judge-models MODEL [MODEL ...]` | Opt in to semantic judging with one or more configured model keys; their valid ratings are combined into a confidence-weighted consensus. Judge inputs are retained under `<output_dir>/judge-inputs/` and scores appear beside deterministic scores. |
 | `--build-judge-queue STATE_FILE` | Build a ranked JSON queue of cells selected by judge spread or deterministic/consensus deviation and exit |
 | `--judge-queue-output PATH` | Write the judge queue to this path instead of beside the state file |
@@ -171,7 +173,16 @@ OpenCode is resolved at startup: an on-PATH install that passes the capability c
 python ai-benchmark.py --runner both --save-responses
 ```
 
-OpenCode mode generates and retains `<output_dir>/opencode/opencode.generated.json` from the loaded benchmark sources. The file contains resolved authentication values, is written with restrictive permissions where supported, and should be treated as a secret-bearing artifact. OpenCode responses and logs are stored below `<output_dir>/opencode/`; HTTP artifacts are stored below `<output_dir>/http/`. Results include a runner column so the two variants remain distinguishable, and resume reuses results only for the same runner.
+OpenCode mode generates and retains `<output_dir>/opencode/opencode.generated.json` from the loaded benchmark sources. The file contains resolved authentication values, is written with restrictive permissions where supported, and should be treated as a secret-bearing artifact. OpenCode responses and logs are stored below `<output_dir>/opencode/`; HTTP artifacts are stored below `<output_dir>/http/`. Results include a runner column so the variants remain distinguishable, and resume reuses results only for the same runner.
+
+To run Pi through the project-local Node worker:
+
+```sh
+npm --prefix pi-worker install
+python ai-benchmark.py --runner pi --save-responses
+```
+
+Pi requires Node.js 22.19 or newer. Startup validates the worker syntax and imports the pinned `@earendil-works/pi-coding-agent` SDK before scheduling work. Each cell gets a fresh worker and a structured NDJSON request; the benchmark prompt is never passed as a command-line argument. Pi responses and raw worker diagnostics are stored below `<output_dir>/pi/`. Plain targets receive no tools by default. A target may explicitly configure a deterministic allowlist and permissions under `models.<name>.pi` or `agents.<name>.pi`; requested tools, actual tool calls, worker/SDK versions, retry metadata, and cancellation state are retained in result metadata. Use `--pi-probe` to run the worker/provider smoke request without creating benchmark state or affecting scores; it prints machine-readable diagnostic JSON.
 
 Startup preflight validates the OpenCode CLI before any work is scheduled: `opencode run --help` must advertise the `--model`/`--format`/`--agent`/`--pure`/`--thinking` options and `--format` must list `json` as a choice. An on-PATH binary that fails this check is replaced by a fresh `.tools/opencode/` install automatically (unless `--no-install-opencode`); the resolved binary path is recorded in `run-info.json` as `opencode_binary`. An unsupported CLI fails fast with a clear error instead of failing every task at runtime.
 

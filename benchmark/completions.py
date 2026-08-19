@@ -81,8 +81,10 @@ def build_parser(prog=None, plugin_ids=None):
                               help='Do not re-run models that failed in a previous session')
 
     execution_group = parser.add_argument_group('Execution')
-    execution_group.add_argument('--runner', choices=['http', 'opencode', 'both'], default='http',
-                                 help='Execution runner: http (default), opencode, or both (per-target OpenCode-to-HTTP pipeline)')
+    execution_group.add_argument('--runner', choices=['http', 'opencode', 'pi', 'both'], default='http',
+                                 help='Execution runner: http (default), opencode, pi, or both (per-target OpenCode-to-HTTP pipeline)')
+    execution_group.add_argument('--runners', type=str, default=None, metavar='RUNNERS',
+                                 help='Explicit comma-separated runner list (for example: http,pi); --runner both remains the legacy OpenCode-to-HTTP pipeline')
     execution_group.add_argument('--no-install-opencode', action='store_true',
                                  help='Do not auto-download OpenCode into .tools/opencode/ when it is missing or too old; fail with an error instead')
     execution_group.add_argument('--no-preload', action='store_true',
@@ -117,6 +119,8 @@ def build_parser(prog=None, plugin_ids=None):
                              help='Enumerate ChatPlayground.ai models from the web UI and print a ready-to-run config to stdout (uses CHATPLAYGROUND_EMAIL/PASSWORD env vars)')
     tools_group.add_argument('--schema-sentinel', action='store_true',
                              help='Run a non-scoring schema compatibility probe for every configured model and print JSON')
+    tools_group.add_argument('--pi-probe', action='store_true',
+                             help='Run the non-scoring Pi worker/provider compatibility probe and print JSON')
 
     output_group = parser.add_argument_group('Output')
     output_group.add_argument('--save-responses', action='store_true',
