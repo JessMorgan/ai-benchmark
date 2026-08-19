@@ -1,4 +1,5 @@
 """Tests for CLI argument handling and plugin execution modes."""
+import concurrent.futures
 import importlib.util
 import json
 import os
@@ -2500,6 +2501,22 @@ class TestFlushGate(unittest.TestCase):
     def test_zero_interval_flushes_every_change(self):
         gate = _FlushGate(interval=0.0, max_changes=1000)
         self.assertTrue(gate.changed())
+
+    def test_concurrent_changes_are_counted_without_lost_updates(self):
+        gate = _FlushGate(interval=3600.0, max_changes=100)
+        barrier = threading.Barrier(8)
+
+        def record_changes():
+            barrier.wait()
+            return [gate.changed() for _ in range(25)]
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+            results = list(executor.map(lambda _: record_changes(), range(8)))
+
+        # Exactly the changes at and after the threshold are due. A race in
+        # the counter could lose increments and make the threshold arrive
+        # late, producing fewer due decisions.
+        self.assertEqual(sum(result.count(True) for result in results), 101)
 
 
 class TestBackgroundFlusher(unittest.TestCase):

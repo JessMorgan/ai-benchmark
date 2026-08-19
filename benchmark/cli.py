@@ -1883,10 +1883,13 @@ class _FlushGate:
 
     ``changed()``/``reset()`` are called from judge cell workers without the
     ``persistence_lock`` (the save itself runs on the background flusher
-    thread, which owns the lock). A lost or duplicated due-decision is
-    harmless: ``_BackgroundFlusher.request_flush()`` coalesces duplicates, and
-    a lost request only defers the flush to the next cadence boundary (at most
-    ``interval`` seconds later), never losing votes.
+    thread, which owns the lock). The gate has its own lock so concurrent
+    workers cannot lose increments or observe partially updated cadence state;
+    ``_BackgroundFlusher.request_flush()`` still coalesces duplicate requests.
+
+    The lock only protects the small in-memory decision; it is never held
+    while state serialization or disk I/O runs.
+
     """
 
     def __init__(self, interval=60.0, max_changes=10):
@@ -1900,20 +1903,28 @@ class _FlushGate:
             self.max_changes = 10
         self._last_flush = time.monotonic()
         self._changes = 0
+        self._lock = threading.Lock()
 
     def changed(self):
         """Record one in-memory change; return True when a flush is due."""
-        self._changes += 1
-        return self._due()
+        with self._lock:
+            self._changes += 1
+            return self._due_locked()
 
-    def _due(self):
+    def _due_locked(self):
         return (self._changes >= self.max_changes
                 or time.monotonic() - self._last_flush >= self.interval)
 
+    def _due(self):
+        """Return whether a flush is due, for diagnostics and tests."""
+        with self._lock:
+            return self._due_locked()
+
     def reset(self):
         """Mark the current flush as completed, starting a fresh cadence."""
-        self._last_flush = time.monotonic()
-        self._changes = 0
+        with self._lock:
+            self._last_flush = time.monotonic()
+            self._changes = 0
 
 
 class _BackgroundFlusher:
