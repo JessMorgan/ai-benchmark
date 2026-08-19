@@ -54,6 +54,44 @@ This document describes the high-level design of AI Benchmark.
    - OpenCode tasks call the subprocess adapter with `opencode run --pure --format json --thinking`, capture stdout/stderr separately, extract the final assistant answer and reasoning from the NDJSON event stream, and score the answer as the response.
    - Each HTTP/OpenCode task uses one scalar `max_tokens` budget and at most one benchmark-level retry. Attempt metadata records `response_nature`, `retry_reason`, `prompt_altered`, token breakdown, failure cause, and the selected attempt; timeout and cancellation are terminal and mark time truncation/cancellation instead of retrying. Provider-level 429 backoff and schema fallbacks remain separate diagnostics.
 
+### Retry layers
+
+The benchmark has separate transport, task-attempt, and judge-attempt layers. A retry at an inner layer does not consume a retry at an outer layer unless the outer layer subsequently classifies the resulting error as retryable.
+
+```text
+Benchmark task cell
+
+  _run_plugin_task()                         Judge cell
+  up to 2 logical attempts                  judge_response()
+          │                                  up to 2 attempts for invalid JSON
+          │                                          │
+          ▼                                          ▼
+  stream_request() /                      stream_request()
+  nonstream_request()                              │
+          │                                        │
+          └──────────────┬─────────────────────────┘
+                         ▼
+                _post_request_context()
+                HTTP transport layer
+                         │
+                 HTTP 429 backoff/retry
+                 (max_429_retries per request)
+                         │
+          ┌──────────────┴──────────────┐
+          ▼                             ▼
+   task response classification     judge JSON parsing
+   transport/token/repetition/      valid → persist vote
+   timeout/cancellation             invalid → judge retry
+          │
+   transport/token/repetition
+   may trigger task retry
+   timeout/cancellation do not
+```
+
+For benchmark tasks, `_run_plugin_task()` owns one optional outer retry. A transport failure retries with the original prompt; token exhaustion or repetition adds retry guidance; timeout and cancellation are terminal and preserve partial output. Each logical HTTP attempt can itself contain the initial request plus the configured HTTP 429 retries. OpenCode has the same outer task policy, but replaces the HTTP transport with one isolated subprocess and its own timeout, staleness, step, and text-repetition guards.
+
+Judges do not use `_run_plugin_task()`. Their `judge_response()` loop retries only a received response that fails judge-JSON validation, adding thinking-budget guidance when the failed response consumed at least 80% of the judge budget on reasoning. Judge transport errors return a failed vote immediately after any inner HTTP 429 retries. Judge attempts and benchmark attempts therefore have different retry triggers, even though they share the HTTP transport layer.
+
 5. **Scoring**
    - Plugin `score()` evaluates the response.
    - Results are stored in `BenchmarkState`.
