@@ -488,7 +488,8 @@ class TestJudgeCore(unittest.TestCase):
         self.assertEqual(request.call_count, 2)
         retry_prompt = request.call_args_list[1].args[4]
         self.assertIn("RETRY GUIDANCE", retry_prompt)
-        self.assertIn("approximately 1024 tokens", retry_prompt)
+        self.assertIn("MUST keep internal thinking or reasoning below 768 tokens", retry_prompt)
+        self.assertIn("below 1536 total tokens", retry_prompt)
 
     def test_judge_retry_guidance_trips_above_80_percent_of_budget(self):
         valid = '{"score": 75, "confidence": "medium", "rationale": "usable", "criteria": [{"id": "R1", "criterion": "The task is satisfied", "status": "met", "evidence": "The answer is usable."}]}'

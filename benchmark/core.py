@@ -47,11 +47,13 @@ from .plugin import (
 from .results import save_task_result
 from .state import BenchmarkState  # noqa: F401
 from .transport import (
+    BENCHMARK_DEFAULT_MAX_TOKENS,
     BENCHMARK_RETRY_POLICY,
     JUDGE_RETRY_POLICY,
     TransportRequest,
     TransportResult,
     _retry_prompt_alteration,
+    _split_token_budget,
     _thinking_consumed_budget,
     execute_task,
 )
@@ -83,18 +85,14 @@ FLUSH_MAX_VOTES = 10
 PERSISTENCE_SHUTDOWN_TIMEOUT = 10.0
 
 
-def _thinking_budget_retry_instruction(token_budget):
+def _thinking_budget_retry_instruction(token_budget, fallback=JUDGE_DEFAULT_MAX_TOKENS):
     """Return retry-only guidance reserving half the budget for the answer."""
-    try:
-        budget = max(1, int(token_budget))
-    except (TypeError, ValueError):
-        budget = JUDGE_DEFAULT_MAX_TOKENS
-    thinking_budget = max(1, budget // 2)
+    reported, thinking_budget, answer_budget = _split_token_budget(token_budget, fallback)
     return (
-        "\n\nRETRY GUIDANCE: On this retry, limit your internal thinking or "
-        f"reasoning to approximately {thinking_budget} tokens (half of the "
-        f"{budget}-token generation budget). Reserve the remaining budget for "
-        "the required final answer. Do not spend the whole retry budget thinking."
+        "\n\nRETRY GUIDANCE: On this retry you MUST keep internal thinking or "
+        f"reasoning below {thinking_budget} tokens and the entire response below "
+        f"{reported} total tokens ({answer_budget} tokens are reserved for the "
+        "final answer). Exceeding either limit is considered a failure."
     )
 
 
@@ -107,20 +105,14 @@ def _judge_system_prompt(total_budget):
     expected gives it a chance to self-regulate, which is more effective
     than appending guidance to the user message after the fact.
     """
-    try:
-        real_budget = max(1, int(total_budget))
-    except (TypeError, ValueError):
-        real_budget = JUDGE_DEFAULT_MAX_TOKENS
-    # Report 75% of the real budget so the model self-regulates and
-    # leaves headroom for the actual generation limit.
-    budget = max(1, (real_budget * 3) // 4)
-    thinking_budget = max(1, budget // 2)
-    answer_budget = budget - thinking_budget
+    reported, thinking_budget, answer_budget = _split_token_budget(
+        total_budget, JUDGE_DEFAULT_MAX_TOKENS,
+    )
     return (
         "You are a benchmark semantic evaluator. Your response must be a single "
         "JSON object matching the requested schema — nothing else.\n\n"
         "TOKEN BUDGET:\n"
-        f"Total generation budget: {budget} tokens.\n"
+        f"Total generation budget: {reported} tokens.\n"
         f"Maximum internal thinking/reasoning: {thinking_budget} tokens.\n"
         f"Maximum final answer content: {answer_budget} tokens.\n\n"
         "Spend at most half of the budget on internal reasoning. The remaining "
@@ -2221,7 +2213,9 @@ def _run_plugin_task_legacy(target_name, api_model, source, plugin, source_confi
                 state.mark_first_chunk_seen(target_name, pid, ts=time.time())
                 state.add_thinking_bytes_received(target_name, pid, len(think_delta))
 
-            retry_prompt = prompt + _thinking_budget_retry_instruction(escalated)
+            retry_prompt = prompt + _thinking_budget_retry_instruction(
+                escalated, fallback=BENCHMARK_DEFAULT_MAX_TOKENS,
+            )
             stream_result = stream_request(
                 source_config, timeout, api_model, source, retry_prompt, escalated,
                 log_path=log_file,

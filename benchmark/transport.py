@@ -21,6 +21,29 @@ from .opencode import OPENCODE_BINARY, run_process
 from .pi import PI_DEFAULT_NODE, PiProcessResult
 from .pi import run_process as run_pi_process
 
+# Default generation budget for benchmark tasks when no explicit max_tokens
+# can be parsed. Deliberately separate from the judge default so benchmark
+# tasks never fall back to the (smaller) judging budget.
+BENCHMARK_DEFAULT_MAX_TOKENS = 16384
+
+
+def _split_token_budget(total_budget, fallback: int) -> tuple[int, int, int]:
+    """Return the reported, thinking, and answer budgets for a generation.
+
+    Report 75% of the real budget so the model self-regulates and leaves
+    headroom under the actual generation limit; reserve half of that for
+    internal thinking and the rest for the final answer. Falls back to
+    ``fallback`` when the budget cannot be parsed so each caller (judges vs
+    benchmark tasks) gets its own appropriate default.
+    """
+    try:
+        real_budget = max(1, int(total_budget))
+    except (TypeError, ValueError):
+        real_budget = fallback
+    reported = max(1, (real_budget * 3) // 4)
+    thinking_budget = max(1, reported // 2)
+    return reported, thinking_budget, reported - thinking_budget
+
 
 @dataclass(frozen=True)
 class TransportRequest:
@@ -273,33 +296,35 @@ def _retry_prompt_alteration(nature: str, thinking_tokens: int | None,
         )
     if nature != "token_limit":
         return "none", ""
-    budget = max(1, int(max_tokens))
-    if thinking_tokens is not None and thinking_tokens >= 0.8 * budget:
+    reported, thinking_budget, answer_budget = _split_token_budget(
+        max_tokens, BENCHMARK_DEFAULT_MAX_TOKENS,
+    )
+    if thinking_tokens is not None and thinking_tokens >= 0.8 * max_tokens:
         return (
             "thinking_50_percent",
             (
-                "\n\nRETRY GUIDANCE: Limit internal thinking or reasoning to approximately "
-                f"{max(1, budget // 2)} tokens (about half of the {budget}-token "
-                "generation budget). Reserve the remaining budget for the required "
-                "final answer. Do not spend the whole retry budget thinking."
+                "\n\nRETRY GUIDANCE: On this retry you MUST keep internal thinking or "
+                f"reasoning below {thinking_budget} tokens and the entire response "
+                f"below {reported} total tokens ({answer_budget} tokens are reserved "
+                "for the final answer). Exceeding either limit is considered a failure."
             ),
         )
-    if thinking_tokens is not None and thinking_tokens > 0.5 * budget:
+    if thinking_tokens is not None and thinking_tokens > 0.5 * max_tokens:
         return (
             "thinking_30_percent",
             (
-                "\n\nRETRY GUIDANCE: Limit internal thinking or reasoning to approximately "
-                f"{max(1, int(budget * 0.3))} tokens (about 30% of the {budget}-token "
-                "generation budget). Reserve most of the budget for the required "
-                "final answer."
+                "\n\nRETRY GUIDANCE: On this retry you MUST keep internal thinking or "
+                f"reasoning below {max(1, int(reported * 0.3))} tokens and the entire "
+                f"response below {reported} total tokens. Exceeding either limit is "
+                "considered a failure."
             ),
         )
     return (
         "response_under_budget",
         (
             "\n\nRETRY GUIDANCE: Complete the required answer while keeping the total "
-            f"response just below the {budget}-token generation limit. Be concise "
-            "enough to finish before the limit."
+            f"response below {reported} tokens. Exceeding the limit is considered "
+            "a failure."
         ),
     )
 

@@ -2351,7 +2351,8 @@ class TestTokenLimitRetry(unittest.TestCase):
         self.assertEqual(captured[0], 16384)
         self.assertEqual(captured[1], 16384)
         self.assertIn("RETRY GUIDANCE", prompts[1])
-        self.assertIn("approximately 8192 tokens", prompts[1])
+        self.assertIn("MUST keep internal thinking or reasoning below 6144 tokens", prompts[1])
+        self.assertIn("below 12288 total tokens", prompts[1])
         result = task_result.result
         self.assertEqual(result["rate-limiter_prompt_altered"], "thinking_50_percent")
         self.assertEqual(result["rate-limiter_selected_attempt"], 2)
