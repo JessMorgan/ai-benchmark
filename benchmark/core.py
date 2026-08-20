@@ -98,6 +98,38 @@ def _thinking_budget_retry_instruction(token_budget):
     )
 
 
+def _judge_system_prompt(total_budget):
+    """Return a system prompt that sets token budgets before the judge prompt.
+
+    Thinking models allocate most of their generation budget to
+    ``reasoning_content`` before emitting any final answer.  Telling the
+    model up-front how much thinking and how much answer content is
+    expected gives it a chance to self-regulate, which is more effective
+    than appending guidance to the user message after the fact.
+    """
+    try:
+        real_budget = max(1, int(total_budget))
+    except (TypeError, ValueError):
+        real_budget = JUDGE_DEFAULT_MAX_TOKENS
+    # Report 75% of the real budget so the model self-regulates and
+    # leaves headroom for the actual generation limit.
+    budget = max(1, (real_budget * 3) // 4)
+    thinking_budget = max(1, budget // 2)
+    answer_budget = budget - thinking_budget
+    return (
+        "You are a benchmark semantic evaluator. Your response must be a single "
+        "JSON object matching the requested schema — nothing else.\n\n"
+        "TOKEN BUDGET:\n"
+        f"Total generation budget: {budget} tokens.\n"
+        f"Maximum internal thinking/reasoning: {thinking_budget} tokens.\n"
+        f"Maximum final answer content: {answer_budget} tokens.\n\n"
+        "Spend at most half of the budget on internal reasoning. The remaining "
+        "half must be reserved for the final JSON answer. Do not exceed these "
+        "limits — a response whose thinking consumes the full budget is "
+        "considered a failure because no answer content can follow."
+    )
+
+
 JUDGE_RESPONSE_SCHEMA = {
     "type": "object",
     "additionalProperties": False,
@@ -1101,6 +1133,7 @@ def judge_response(source_config, judge_source, judge_api_model, sidecar,
         source=judge_source,
         timeout=timeout,
         temperature=temperature,
+        system_prompt=_judge_system_prompt(budget),
         drop_params=drop_params or [],
         request_params=request_params,
         stop_event=stop_event,
