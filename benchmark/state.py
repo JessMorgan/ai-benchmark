@@ -500,6 +500,14 @@ class BenchmarkState:
         """Replace the persistence adapter used by execution callers."""
         self._run_store = store
 
+    def start_run_store(self, identity, **metadata):
+        """Attach and initialize the configured persistence façade."""
+        self.run_store.start_run(identity, **metadata)
+
+    def close_run_store(self, timeout=None):
+        """Flush and close the configured persistence façade."""
+        return self.run_store.close(timeout=timeout)
+
     @property
     def revision(self):
         """Monotonic counter bumped on every state mutation.
@@ -526,6 +534,8 @@ class BenchmarkState:
         with self._lock:
             self._mark_changed()
             self._model_info[model_name].update(kwargs)
+        if self._run_store is not None:
+            self._run_store.update_model(model_name, **kwargs)
 
     def start_plugin_run(self, model_name, pid):
         """Atomically mark a plugin task as in-flight on this model.
@@ -769,6 +779,8 @@ class BenchmarkState:
                     result.setdefault(key, value)
             self.results.append(result)
             self._journal_append("result", result)
+        if self._run_store is not None and self._run_store.backend_name != "json":
+            self._run_store.record_result(result)
 
     def set_journal_path(self, path, truncate=False):
         """Enable append-only result/judge event journaling to ``path``.
@@ -1184,6 +1196,13 @@ class BenchmarkState:
                 "plugin_id": plugin_id,
                 "fields": fields,
             })
+        if self._run_store is not None and self._run_store.backend_name != "json":
+            self._run_store.record_judge_result(
+                state_key, runner, plugin_id, **{
+                    key.removeprefix(f"{plugin_id}_") if key.startswith(f"{plugin_id}_") else key: value
+                    for key, value in fields.items()
+                },
+            )
 
     def set_judge_models(self, judge_models):
         """Refresh the active judge identities on live and persisted rows."""

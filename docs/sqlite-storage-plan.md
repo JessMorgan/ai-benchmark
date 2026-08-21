@@ -670,9 +670,13 @@ faster ordering; format them at report boundaries.
 
 ### Stage 1 — backend abstraction
 
-- [x] Define `RunStore`, `PayloadStore`, `DebugLogStore`, and `ReportSource`.
-- [x] Wrap existing JSON persistence in `JsonRunStore`.
-- [x] Route task and judge callers through the interfaces.
+- [x] Define the shared `RunStore` run/session façade plus `PayloadStore`,
+      `DebugLogStore`, and `ReportSource`.
+- [x] Implement `JsonRunStore` without changing JSON behavior.
+- [x] Implement `SQLiteRunStore` over the background writer and normalized
+      benchmark/judge stores.
+- [x] Route current state result/judge mutation hooks through the façade.
+- [x] Provide common flush/close lifecycle methods with bounded shutdown.
 - [x] Preserve existing JSON behavior and tests.
 
 ### Stage 2 — SQLite schema and migrations
