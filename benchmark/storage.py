@@ -95,6 +95,15 @@ class RunStore(Protocol):
         """Return the cell ID for a (target, runner, plugin) pair, if registered."""
         ...
 
+    def register_judge(self, judge_model: str, source: str,
+                       config: dict[str, Any] | None = None) -> None:
+        ...
+
+    def register_contract(self, contract_id: str, *, plugin_id: str,
+                          plugin_version: str, prompt_version: str,
+                          instructions_version: str) -> None:
+        ...
+
 
 @runtime_checkable
 class PayloadStore(Protocol):
@@ -199,6 +208,15 @@ class JsonRunStore:
     def get_cell_id(self, target_name: str, runner: str, plugin_id: str) -> int | None:
         del target_name, runner, plugin_id
         return None
+
+    def register_judge(self, judge_model: str, source: str,
+                       config: dict[str, Any] | None = None) -> None:
+        del judge_model, source, config
+
+    def register_contract(self, contract_id: str, *, plugin_id: str,
+                          plugin_version: str, prompt_version: str,
+                          instructions_version: str) -> None:
+        del contract_id, plugin_id, plugin_version, prompt_version, instructions_version
 
 
 class SQLiteRunStore:
@@ -437,6 +455,38 @@ class SQLiteRunStore:
     def get_cell_id(self, target_name: str, runner: str, plugin_id: str) -> int | None:
         """Return the cell ID for a (target, runner, plugin) pair, if registered."""
         return self._cell_ids.get((target_name, runner, plugin_id))
+
+    def register_judge(self, judge_model: str, source: str,
+                       config: dict[str, Any] | None = None) -> None:
+        """Activate one judge model in the current revision."""
+        if self._revision_id is None:
+            raise RuntimeError("SQLite run must be started before registering judges")
+        def operation(connection):
+            SQLiteJudgeStore(connection).register_judge(
+                self._revision_id, judge_model, source=source, config=config,
+            )
+        self._connection_operation(operation)
+
+    def register_contract(self, contract_id: str, *, plugin_id: str,
+                          plugin_version: str, prompt_version: str,
+                          instructions_version: str) -> None:
+        """Register and activate one judge contract for a plugin version."""
+        if self._revision_id is None:
+            raise RuntimeError("SQLite run must be started before registering contracts")
+        import hashlib
+        contract_hash = hashlib.sha256(contract_id.encode("utf-8")).hexdigest()
+        def operation(connection):
+            judges = SQLiteJudgeStore(connection)
+            judges.register_contract(
+                contract_id, plugin_id=plugin_id, plugin_version=plugin_version,
+                prompt_version=prompt_version,
+                instructions_version=instructions_version,
+                response_schema_hash=contract_hash,
+                contract={"contract_id": contract_id},
+                contract_hash=contract_hash,
+            )
+            judges.activate_contract(self._revision_id, plugin_id, contract_id)
+        self._connection_operation(operation)
 
     def _submit_async(self, operation: Any) -> Future[Any]:
         """Queue an operation without blocking the caller.
