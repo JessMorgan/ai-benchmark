@@ -721,12 +721,12 @@ faster ordering; format them at report boundaries.
 
 ### Stage 6 — benchmark task persistence
 
-- [ ] Persist one immutable row per benchmark attempt.
-- [ ] Persist revision-specific cell membership and selection.
-- [ ] Store prompt/content/thinking through payload IDs.
-- [ ] Preserve rubric, diagnostics, token, retry, and failure metadata.
-- [ ] Reproduce current resume and failed-task semantics.
-- [ ] Export legacy response files when `--save-responses` is selected.
+- [x] Persist one immutable row per benchmark attempt.
+- [x] Persist revision-specific cell membership and selection.
+- [x] Store prompt/content/thinking through payload IDs.
+- [x] Preserve rubric, diagnostics, token, retry, and failure metadata.
+- [x] Reproduce current resume and failed-task semantics.
+- [x] Export legacy response files when `--save-responses` is selected.
 
 ### Stage 7 — judge persistence
 
@@ -838,7 +838,7 @@ Using the measured `2026-08-17-nas-and-more-test-changes` run as the reference:
 4. [x] Background SQLite writer.
 5. [x] Single-representation payload store.
 6. [x] Debug-only gzip writer from `gzip-append-log-plan.md`.
-7. [ ] Benchmark attempt persistence.
+7. [x] Benchmark attempt persistence.
 8. [ ] Judge attempt/vote persistence.
 9. [ ] Revision-aware resume, continuation, and purge.
 10. [ ] On-demand report generation.
