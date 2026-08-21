@@ -87,7 +87,13 @@ from benchmark.outputs import save_outputs
 from benchmark.pi import pi_version, resolve_pi_worker, run_pi_probe
 from benchmark.plugin import SCORE_SCHEMA
 from benchmark.results import save_judge_result
-from benchmark.runtime_records import PluginRecord, RunContext, TargetRecord
+from benchmark.runtime_records import (
+    JudgeAttemptRecord,
+    JudgeVoteRecord,
+    PluginRecord,
+    RunContext,
+    TargetRecord,
+)
 from benchmark.sqlite_import import LegacySQLiteImporter
 from benchmark.sqlite_reports import SQLiteReportSource, sqlite_path_from_report_path
 from benchmark.state import apply_state_recovery, prepare_state_recovery
@@ -3777,9 +3783,11 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
                     judge_name, target_name, plugin_id,
                 )
                 progress_chars = [0, 0]
+                last_attempt = [1]
 
                 def judge_attempt(attempt_number):
                     progress_chars[:] = [0, 0]
+                    last_attempt[0] = attempt_number
                     state.set_judge_activity_attempt(activity_id, attempt_number)
 
                 def judge_progress(content_delta, thinking_delta):
@@ -3834,6 +3842,43 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
                     judge_prompt_version=JUDGE_PROMPT_VERSION,
                     judge_contract_id=contract_id,
                 )
+                # Persist one immutable judge transport attempt plus its
+                # parsed vote through the storage facade. JSON is a no-op;
+                # SQLite records judge_attempts / judge_vote_attempts /
+                # judge_criteria and the revision-local current-vote
+                # projection. Fire-and-forget so the judge worker is never
+                # blocked on the background writer.
+                judge_cell_id = state.run_store.get_cell_id(
+                    state_key, runner, plugin_id,
+                )
+                if judge_cell_id is not None:
+                    judge_vote_record = JudgeVoteRecord(
+                        score=vote.get("score"),
+                        confidence=vote.get("confidence"),
+                        rationale=vote.get("rationale"),
+                        criteria=vote.get("criteria") or [],
+                        error=vote.get("error"),
+                        usable=is_successful_judge_vote(vote),
+                    )
+                    state.run_store.record_judge_attempt(
+                        judge_cell_id,
+                        JudgeAttemptRecord(
+                            judge_model=judge_name,
+                            contract_id=contract_id,
+                            attempt_number=last_attempt[0],
+                            raw_response=outcome.response_text,
+                            max_tokens=judge_max_tokens,
+                            usage=outcome.diagnostics or {},
+                            diagnostics=outcome.diagnostics or {},
+                            finish_reason=(
+                                outcome.diagnostics.get("finish_reason")
+                                if isinstance(outcome.diagnostics, dict) else None
+                            ),
+                            error=outcome.error,
+                            status="completed" if not outcome.error else "failed",
+                        ),
+                        vote=judge_vote_record,
+                    )
                 response_text = outcome.response_text or ""
                 artifact_error = None
                 try:
@@ -4003,6 +4048,28 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
                         ),
                     },
                 )
+                # Record the failed judge attempt through the storage facade
+                # so SQLite retains a traceable transport/parse failure.
+                judge_cell_id = state.run_store.get_cell_id(
+                    state_key, runner, plugin_id,
+                )
+                if judge_cell_id is not None:
+                    state.run_store.record_judge_attempt(
+                        judge_cell_id,
+                        JudgeAttemptRecord(
+                            judge_model=judge_name,
+                            contract_id=contract_id,
+                            attempt_number=last_attempt[0],
+                            raw_response=None,
+                            max_tokens=judge_max_tokens,
+                            error=f"{type(exc).__name__}: {exc}",
+                            status="failed",
+                        ),
+                        vote=JudgeVoteRecord(
+                            error=failure_vote["error"],
+                            usable=False,
+                        ),
+                    )
                 vote_identity = (state_key, runner, plugin_id)
                 with judge_votes_lock:
                     prior_all_votes = list(
