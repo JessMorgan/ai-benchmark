@@ -338,7 +338,7 @@ class SQLiteRunStore:
             return SQLiteBenchmarkStore(connection).record_attempt(
                 self.identity.revision_id, cell_id, attempt.as_dict(), selected=selected,
             )
-        return self._connection_operation(operation)
+        return self._submit_async(operation)
 
     def record_judge_attempt(self, cell_id: int, attempt: JudgeAttemptRecord,
                              vote: JudgeVoteRecord | None = None) -> Any:
@@ -358,11 +358,29 @@ class SQLiteRunStore:
                         attempt.contract_id, vote_id,
                     )
             return judge_attempt_id
-        return self._connection_operation(operation)
+        return self._submit_async(operation)
 
     def get_cell_id(self, target_name: str, runner: str, plugin_id: str) -> int | None:
         """Return the cell ID for a (target, runner, plugin) pair, if registered."""
         return self._cell_ids.get((target_name, runner, plugin_id))
+
+    def _submit_async(self, operation: Any) -> Future[Any]:
+        """Queue an operation without blocking the caller.
+
+        The writer already reports commit failures through ``failure_callback``
+        and ``writer.failures``; retrieving the future's exception here merely
+        prevents an un-retrieved-exception warning when the future is collected.
+        """
+        future = self.writer.submit(operation)
+
+        def _consume(done: Future[Any]) -> None:
+            try:
+                done.exception()
+            except Exception:  # noqa: BLE001 - already reported by the writer
+                pass
+
+        future.add_done_callback(_consume)
+        return future
 
     def submit(self, operation: Any) -> Future[Any]:
         """Submit a normalized SQLite operation to the background writer."""

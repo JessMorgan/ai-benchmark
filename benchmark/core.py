@@ -45,6 +45,7 @@ from .plugin import (
     serialize_rubric,
 )
 from .results import save_task_result
+from .runtime_records import BenchmarkAttemptRecord
 from .state import BenchmarkState  # noqa: F401
 from .transport import (
     BENCHMARK_DEFAULT_MAX_TOKENS,
@@ -2642,6 +2643,56 @@ def _run_plugin_task(target_name, api_model, source, plugin, source_config, time
         if attempt.attempt_number == selected["attempt"]
     )
     execution.select(selected_task_attempt)
+
+    # Persist each immutable attempt through the storage facade. JSON adapts
+    # this to a no-op; SQLite records one benchmark_attempts row per transport
+    # attempt plus the revision-local selection. Recording is fire-and-forget
+    # so the transport worker is never blocked on the background writer.
+    cell_id = state.run_store.get_cell_id(target_name, runner, pid)
+    if cell_id is not None:
+        for attempt in attempts:
+            attempt_number = attempt["attempt"]
+            prompt, content, thinking = bodies[attempt_number]
+            attempt_gen_time = attempt.get("gen_time") or 0
+            attempt_tps = (
+                round(attempt["output_tokens"] / attempt_gen_time, 2)
+                if attempt_gen_time > 0 else None
+            )
+            status = (
+                "completed"
+                if attempt.get("usable") and not attempt.get("error") else "failed"
+            )
+            state.run_store.record_benchmark_attempt(
+                cell_id,
+                BenchmarkAttemptRecord(
+                    attempt_number=attempt_number,
+                    prompt=prompt,
+                    content=content,
+                    thinking=thinking,
+                    max_tokens=attempt.get("max_tokens"),
+                    output_tokens=attempt.get("output_tokens"),
+                    thinking_tokens=attempt.get("thinking_tokens"),
+                    total_tokens=attempt.get("total_tokens"),
+                    tps=attempt_tps,
+                    finish_reason=attempt.get("finish_reason"),
+                    response_nature=attempt.get("response_nature"),
+                    retry_reason=attempt.get("retry_reason"),
+                    prompt_altered=attempt.get("prompt_altered"),
+                    truncated=attempt.get("truncated"),
+                    truncated_due_to_time=attempt.get("truncated_due_to_time"),
+                    failure_cause=attempt.get("failure_cause"),
+                    stream_ok=attempt.get("stream_ok"),
+                    repeating=attempt.get("repeating"),
+                    empty_reason=attempt.get("empty_reason"),
+                    error=attempt.get("error"),
+                    score=attempt.get("score"),
+                    rubric=attempt.get("rubric", []),
+                    diagnostics=attempt.get("diagnostics", {}),
+                    status=status,
+                ),
+                selected=bool(attempt.get("selected")),
+            )
+
     selected_prompt, selected_text, selected_think = bodies[selected["attempt"]]
     selected_nature = selected["response_nature"]
     selected_error = selected["error"]
