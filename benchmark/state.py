@@ -782,6 +782,25 @@ class BenchmarkState:
         if self._run_store is not None and self._run_store.backend_name != "json":
             self._run_store.record_result(result)
 
+    def hydrate_results(self, rows):
+        """Seed the in-memory read model from a durable backend.
+
+        Used by non-JSON backends (SQLite) on resume so ``latest_results``
+        and per-plugin score reuse agree with the durable selection set. This
+        does not journal or re-record: the rows are already durable.
+        """
+        with self._lock:
+            self._mark_changed()
+            self.results = [dict(row) for row in rows]
+            for row in self.results:
+                state_key = row.get("state_key", row.get("model"))
+                info = self._model_info.get(state_key)
+                if info is None:
+                    continue
+                for key, value in row.items():
+                    if key.endswith("_score") and key != "overall_score_100":
+                        info[key] = value
+
     def set_journal_path(self, path, truncate=False):
         """Enable append-only result/judge event journaling to ``path``.
 

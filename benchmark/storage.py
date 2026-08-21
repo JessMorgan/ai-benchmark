@@ -233,31 +233,104 @@ class SQLiteRunStore:
         self._connection: sqlite3.Connection | None = None
         self.benchmark: SQLiteBenchmarkStore | None = None
         self.judges: SQLiteJudgeStore | None = None
+        self._revision_id: int | None = None
+        self._is_new_run: bool = False
         self._target_ids: dict[tuple[str, str, str], int] = {}
-        self._plugin_records: dict[tuple[str, str], PluginRecord] = {}
+        self._target_records: dict[tuple[str, str], TargetRecord] = {}
+        self._plugin_records: dict[str, PluginRecord] = {}
         self._cell_ids: dict[tuple[str, str, str], int] = {}
 
+    @property
+    def revision_id(self) -> int | None:
+        """The authoritative SQLite revision rowid for the current run."""
+        return self._revision_id
+
     def start_run(self, identity: RunIdentity, **metadata: Any) -> None:
+        """Start the writer and resolve/create the run's current revision.
+
+        ``identity.revision_id`` is the CLI's continuation counter (run-info
+        bookkeeping), not the SQLite revision rowid. The SQLite rowid is
+        resolved from the database: a missing run creates revision 1, an
+        existing run reuses its current revision. A continuation creates a
+        fresh revision via ``continue_run``.
+        """
         self.writer.start()
         self.writer.flush(timeout=10)
-        if identity.revision_id is None:
-            raise ValueError("SQLite run identity requires a revision_id")
         def operation(connection):
             row = connection.execute(
-                "SELECT run_id FROM runs WHERE run_id = ?", (identity.run_id,)
+                "SELECT current_revision_id FROM runs WHERE run_id = ?",
+                (identity.run_id,),
             ).fetchone()
-            if row is None:
-                SQLiteBenchmarkStore(connection).create_run(
+            if row is None or row[0] is None:
+                return SQLiteBenchmarkStore(connection).create_run(
                     identity.run_id,
                     score_schema=str(metadata.get("score_schema", "v1")),
                     storage_profile=str(metadata.get("storage_profile", "compact")),
                     runner_mode=str(metadata.get("runner_mode", "http")),
                     config=metadata.get("config", {}),
                     session_seed=metadata.get("session_seed"),
-                )
-        self._connection_operation(operation)
+                ), True
+            return int(row[0]), False
+        self._revision_id, self._is_new_run = self._connection_operation(operation)
         self.identity = identity
         self._metadata = dict(metadata)
+
+    def continue_run(self, *, config: Any, runner_mode: str, session_seed: int | None,
+                     rerun_failed: bool = True) -> None:
+        """Create a continuation revision reusing compatible prior attempts.
+
+        Uses the target/plugin records registered by ``prepare_run``. Cells are
+        stable across revisions, so existing ``_cell_ids`` remain valid for the
+        new revision. Judge votes are not carried forward here; they are
+        re-derived on resume from the retained benchmark selections.
+        """
+        from .sqlite_continuation import (
+            PluginSpec,
+            SQLiteContinuationStore,
+            TargetSpec,
+        )
+        if self.identity is None or self._revision_id is None:
+            raise RuntimeError("SQLite run must be started before continuing")
+
+        targets = [
+            TargetSpec(
+                record.logical_name, record.runner, record.source, record.api_model,
+                record.target_signature, record.is_agent, record.system_prompt,
+                record.target_config, record.order_index,
+            )
+            for record in self._target_records.values()
+        ]
+        plugins = [
+            PluginSpec(
+                record.plugin_id, record.plugin_version, record.name,
+                record.max_score, record.supports_streaming, record.metadata,
+            )
+            for record in self._plugin_records.values()
+        ]
+
+        # ``create_continuation`` manages its own BEGIN/COMMIT transaction,
+        # which conflicts with the writer's batch transaction. It runs on a
+        # dedicated connection at startup, after ``prepare_run`` has flushed
+        # the writer, so no writer work is in flight.
+        self.flush(timeout=30)
+        from .sqlite_schema import connect_database, configure_connection
+        connection = connect_database(self.path)
+        try:
+            configure_connection(connection)
+            store = SQLiteContinuationStore(connection)
+            self._revision_id = store.create_continuation(
+                self.identity.run_id,
+                config=config,
+                runner_mode=runner_mode,
+                targets=targets,
+                plugins=plugins,
+                judges=[],
+                contracts={},
+                session_seed=session_seed,
+                rerun_failed=rerun_failed,
+            ).revision_id
+        finally:
+            connection.close()
 
     def _connection_operation(self, operation: Any) -> Any:
         future = self.writer.submit(operation)
@@ -276,7 +349,7 @@ class SQLiteRunStore:
                 self.ensure_cell(target, plugin)
 
     def register_target(self, target: TargetRecord) -> int | None:
-        if self.identity is None or self.identity.revision_id is None:
+        if self.identity is None or self._revision_id is None:
             raise RuntimeError("SQLite run must be started before registering targets")
         from .sqlite_continuation import TargetSpec
         spec = TargetSpec(
@@ -287,7 +360,7 @@ class SQLiteRunStore:
         def operation(connection):
             store = SQLiteBenchmarkStore(connection)
             return store.register_target(
-                self.identity.revision_id, run_id=self.identity.run_id,
+                self._revision_id, run_id=self.identity.run_id,
                 logical_name=spec.logical_name, runner=spec.runner,
                 source=spec.source, api_model=spec.api_model,
                 target_signature=spec.target_signature, is_agent=spec.is_agent,
@@ -296,10 +369,11 @@ class SQLiteRunStore:
             )
         target_id = self._connection_operation(operation)
         self._target_ids[(target.logical_name, target.runner, target.target_signature)] = target_id
+        self._target_records[(target.logical_name, target.runner)] = target
         return target_id
 
     def register_plugin(self, plugin: PluginRecord) -> None:
-        if self.identity is None or self.identity.revision_id is None:
+        if self.identity is None or self._revision_id is None:
             raise RuntimeError("SQLite run must be started before registering plugins")
         def operation(connection):
             store = SQLiteBenchmarkStore(connection)
@@ -310,20 +384,20 @@ class SQLiteRunStore:
                 metadata=plugin.metadata,
             )
             store.activate_plugin(
-                self.identity.revision_id, plugin.plugin_id, plugin.plugin_version,
+                self._revision_id, plugin.plugin_id, plugin.plugin_version,
             )
         self._connection_operation(operation)
-        self._plugin_records[(plugin.plugin_id, plugin.plugin_version)] = plugin
+        self._plugin_records[plugin.plugin_id] = plugin
 
     def ensure_cell(self, target: TargetRecord, plugin: PluginRecord) -> int | None:
         target_id = self._target_ids.get(
             (target.logical_name, target.runner, target.target_signature),
         )
-        if target_id is None or self.identity is None or self.identity.revision_id is None:
+        if target_id is None or self.identity is None or self._revision_id is None:
             raise RuntimeError("target/run must be registered before creating a cell")
         def operation(connection):
             return SQLiteBenchmarkStore(connection).ensure_cell(
-                self.identity.revision_id, target_id,
+                self._revision_id, target_id,
                 plugin.plugin_id, plugin.plugin_version,
             )
         cell_id = self._connection_operation(operation)
@@ -332,29 +406,29 @@ class SQLiteRunStore:
 
     def record_benchmark_attempt(self, cell_id: int, attempt: BenchmarkAttemptRecord,
                                  *, selected: bool = False) -> Any:
-        if self.identity is None or self.identity.revision_id is None:
+        if self.identity is None or self._revision_id is None:
             raise RuntimeError("SQLite run must be started before recording attempts")
         def operation(connection):
             return SQLiteBenchmarkStore(connection).record_attempt(
-                self.identity.revision_id, cell_id, attempt.as_dict(), selected=selected,
+                self._revision_id, cell_id, attempt.as_dict(), selected=selected,
             )
         return self._submit_async(operation)
 
     def record_judge_attempt(self, cell_id: int, attempt: JudgeAttemptRecord,
                              vote: JudgeVoteRecord | None = None) -> Any:
-        if self.identity is None or self.identity.revision_id is None:
+        if self.identity is None or self._revision_id is None:
             raise RuntimeError("SQLite run must be started before recording judge attempts")
         def operation(connection):
             judges = SQLiteJudgeStore(connection)
             judge_attempt_id = judges.record_attempt(
-                self.identity.revision_id, cell_id, attempt.judge_model,
+                self._revision_id, cell_id, attempt.judge_model,
                 attempt.contract_id, attempt.as_dict(),
             )
             if vote is not None:
                 vote_id = judges.record_vote(judge_attempt_id, vote.as_dict())
                 if vote.usable:
                     judges.select_vote(
-                        self.identity.revision_id, cell_id, attempt.judge_model,
+                        self._revision_id, cell_id, attempt.judge_model,
                         attempt.contract_id, vote_id,
                     )
             return judge_attempt_id
@@ -415,7 +489,28 @@ class SQLiteRunStore:
         return not self.writer.failures
 
     def latest_results(self) -> list[dict[str, Any]]:
-        return list(self._results.values())
+        """Return the authoritative read model for the current revision.
+
+        Reads the normalized SQLite tables rather than the in-memory cache so
+        resume and report generation observe durable state. The writer is
+        flushed first so queued attempt/vote writes are visible.
+        """
+        self.flush(timeout=30)
+        if self._revision_id is None:
+            return list(self._results.values())
+        from .sqlite_reports import SQLiteReportSource
+        connection = sqlite3.connect(self.path)
+        connection.row_factory = sqlite3.Row
+        try:
+            from .sqlite_schema import configure_connection
+            configure_connection(connection)
+            source = SQLiteReportSource(connection)
+            rows, _active_plugins, _seed, _revision = source.load_results(
+                revision=self._revision_id, include_reused=True,
+            )
+            return rows
+        finally:
+            connection.close()
 
     def flush(self, timeout: float | None = None) -> None:
         self.writer.flush(timeout=timeout)

@@ -3301,6 +3301,17 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
                 for plugin in active_plugins
             ]
             sqlite_store.prepare_run(target_records, plugin_records)
+            # A run already present in SQLite is a continuation: create a
+            # fresh revision that reuses compatible prior attempts, then seed
+            # the in-memory read model so completed cells are skipped.
+            if not sqlite_store._is_new_run and not args.restart:
+                sqlite_store.continue_run(
+                    config=cfg,
+                    runner_mode=runner_mode,
+                    session_seed=session_seed,
+                    rerun_failed=not args.no_rerun_failed,
+                )
+                state.hydrate_results(sqlite_store.latest_results())
 
         if restored_targets and "opencode" in runner_sequence:
             # OpenCode's generated projection is created before the state file

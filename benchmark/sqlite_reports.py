@@ -35,7 +35,7 @@ class SQLiteReportSource:
             self._owned_connection = None
 
     def load_results(
-        self, *, revision: int | None = None,
+        self, *, revision: int | None = None, include_reused: bool = False,
     ) -> tuple[list[dict[str, Any]], list[str], int | None, int]:
         revision_id = self._resolve_revision(revision)
         revision_row = self.connection.execute(
@@ -53,8 +53,12 @@ class SQLiteReportSource:
         ).fetchall()
         active_plugins = [str(row[0]) for row in plugin_rows]
         results: dict[tuple[int, int], dict[str, Any]] = {}
+        # Report generation reads only scheduled cells. Resume hydration also
+        # needs reused (scheduled=0) cells so their copied selections surface
+        # as already-completed scores and are skipped by the runtime.
+        reused_clause = " OR s.attempt_id IS NOT NULL" if include_reused else ""
         cells = self.connection.execute(
-            """
+            f"""
             SELECT c.cell_id, c.target_instance_id, c.plugin_id, c.plugin_version,
                    t.logical_name, t.runner, t.source, t.api_model, t.is_agent,
                    s.attempt_id
@@ -63,7 +67,7 @@ class SQLiteReportSource:
             JOIN target_instances t ON t.target_instance_id = c.target_instance_id
             LEFT JOIN benchmark_selections s
               ON s.revision_id = rc.revision_id AND s.cell_id = c.cell_id
-            WHERE rc.revision_id = ? AND rc.scheduled = 1
+            WHERE rc.revision_id = ? AND (rc.scheduled = 1{reused_clause})
             ORDER BY t.logical_name, c.plugin_id
             """,
             (revision_id,),
