@@ -677,17 +677,17 @@ faster ordering; format them at report boundaries.
 
 ### Stage 2 — SQLite schema and migrations
 
-- [ ] Implement schema creation and version checking.
-- [ ] Add forward-only migrations.
-- [ ] Create revision-aware run/target/plugin membership tables.
-- [ ] Create immutable benchmark and judge attempt tables.
-- [ ] Create parsed judge vote-attempt and current-vote projection tables.
-- [ ] Enforce plugin-version and cross-revision relationships with foreign
+- [x] Implement schema creation and version checking.
+- [x] Add forward-only migrations.
+- [x] Create revision-aware run/target/plugin membership tables.
+- [x] Create immutable benchmark and judge attempt tables.
+- [x] Create parsed judge vote-attempt and current-vote projection tables.
+- [x] Enforce plugin-version and cross-revision relationships with foreign
       keys, composite keys, or validation triggers.
-- [ ] Create tables in dependency order and add the cyclic current-revision
+- [x] Create tables in dependency order and add the cyclic current-revision
       foreign key through a migration if necessary.
-- [ ] Enable foreign keys, WAL, busy timeout, and configured synchronous mode.
-- [ ] Add schema, index, constraint, and continuation tests.
+- [x] Enable foreign keys, WAL, busy timeout, and configured synchronous mode.
+- [x] Add schema, index, constraint, and continuation tests.
 
 ### Stage 3 — background SQLite writer
 
@@ -834,7 +834,7 @@ Using the measured `2026-08-17-nas-and-more-test-changes` run as the reference:
 
 1. [x] CLI/storage and continuation contract.
 2. [x] `RunStore`/`PayloadStore`/`DebugLogStore` abstractions.
-3. [ ] Revision-aware SQLite schema and migrations.
+3. [x] Revision-aware SQLite schema and migrations.
 4. [ ] Background SQLite writer.
 5. [ ] Single-representation payload store.
 6. [ ] Debug-only gzip writer from `gzip-append-log-plan.md`.
