@@ -1,3 +1,5 @@
+import os
+import tempfile
 import unittest
 
 from plugins import discover_plugins
@@ -60,8 +62,11 @@ class TestMarkdownOutputPlugin(unittest.TestCase):
         self.assertIn("Token Bucket", md)
 
     def test_gen_markdown_includes_response_links_with_output_dir(self):
-        md = self.plugin.generate(self.sample_results, self.plugins, output_dir="/tmp/benchmark-results")
-        self.assertIn("[view]", md)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self.plugin.generate(self.sample_results, self.plugins, output_dir=tmp)
+            self.assertTrue(os.path.isfile(path))
+            md = open(path, encoding="utf-8").read()
+            self.assertIn("[view]", md)
 
     def test_gen_markdown_includes_empty_reason_column(self):
         """Markdown table must include a Reason column per plugin."""

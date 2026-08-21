@@ -1,3 +1,5 @@
+import os
+import tempfile
 import unittest
 
 from plugins import discover_plugins
@@ -59,8 +61,11 @@ class TestHTMLOutputPlugin(unittest.TestCase):
         self.assertIn("Interface design", html)
 
     def test_gen_html_includes_response_links_with_output_dir(self):
-        html = self.plugin.generate(self.sample_results, self.plugins, output_dir="/tmp/benchmark-results")
-        self.assertIn("responses/", html)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self.plugin.generate(self.sample_results, self.plugins, output_dir=tmp)
+            self.assertTrue(os.path.isfile(path))
+            html = open(path, encoding="utf-8").read()
+            self.assertIn("responses/", html)
 
     def test_gen_html_includes_empty_reason_column(self):
         """The HTML table header must include a Reason column per plugin, and
