@@ -11,7 +11,7 @@ import sqlite3
 from collections.abc import Callable
 from typing import Any
 
-SQLITE_SCHEMA_VERSION = 1
+SQLITE_SCHEMA_VERSION = 2
 _DEFAULT_BUSY_TIMEOUT_MS = 5_000
 
 
@@ -185,6 +185,7 @@ def _create_schema_v1(connection: sqlite3.Connection) -> None:
             score                  REAL,
             rubric_json            TEXT,
             diagnostics_json       TEXT,
+            status                 TEXT NOT NULL DEFAULT 'completed',
             UNIQUE(revision_id, cell_id, attempt_number),
             UNIQUE(attempt_id, revision_id, cell_id),
             FOREIGN KEY(revision_id, cell_id)
@@ -248,6 +249,7 @@ def _create_schema_v1(connection: sqlite3.Connection) -> None:
             diagnostics_json        TEXT,
             finish_reason           TEXT,
             error                   TEXT,
+            status                  TEXT NOT NULL DEFAULT 'completed',
             UNIQUE(revision_id, cell_id, judge_model, contract_id, attempt_number),
             UNIQUE(judge_attempt_id, revision_id, cell_id, judge_model, contract_id)
         );
@@ -438,9 +440,124 @@ def _read_schema_version(connection: sqlite3.Connection) -> int | None:
     return version
 
 
+def _column_names(connection: sqlite3.Connection, table: str) -> set[str]:
+    """Return columns for a table while keeping migrations introspectable."""
+    return {row[1] for row in connection.execute(f"PRAGMA table_info({table})")}
+
+
+def _migrate_v2_continuation_reuse(connection: sqlite3.Connection) -> None:
+    """Allow current projections to reuse compatible prior-revision history.
+
+    Stage 1 of the schema used same-revision composite foreign keys for
+    selections and triggers. Continuation revisions deliberately keep the
+    immutable attempt in its original revision while selecting it from the
+    new revision, so replace those constraints with cell-identity validation.
+    Also add lifecycle status to legacy databases so stopping can mark
+    genuinely in-flight rows as abandoned without rewriting completed data.
+    """
+    if "status" not in _column_names(connection, "benchmark_attempts"):
+        connection.execute(
+            "ALTER TABLE benchmark_attempts ADD COLUMN status TEXT NOT NULL DEFAULT 'completed'"
+        )
+    if "status" not in _column_names(connection, "judge_attempts"):
+        connection.execute(
+            "ALTER TABLE judge_attempts ADD COLUMN status TEXT NOT NULL DEFAULT 'completed'"
+        )
+
+    connection.execute("DROP TRIGGER IF EXISTS validate_current_judge_vote")
+    connection.execute("DROP TRIGGER IF EXISTS validate_current_judge_vote_update")
+    connection.execute("DROP TRIGGER IF EXISTS validate_benchmark_selection")
+    connection.execute("DROP TRIGGER IF EXISTS validate_benchmark_selection_update")
+
+    connection.execute("ALTER TABLE benchmark_selections RENAME TO benchmark_selections_v1")
+    connection.execute(
+        """
+        CREATE TABLE benchmark_selections (
+            revision_id      INTEGER NOT NULL,
+            cell_id          INTEGER NOT NULL,
+            attempt_id       INTEGER NOT NULL,
+            selected_at      INTEGER NOT NULL,
+            selection_reason TEXT,
+            PRIMARY KEY(revision_id, cell_id),
+            FOREIGN KEY(revision_id, cell_id)
+                REFERENCES revision_cells(revision_id, cell_id),
+            FOREIGN KEY(attempt_id) REFERENCES benchmark_attempts(attempt_id)
+        )
+        """
+    )
+    connection.execute(
+        """
+        INSERT INTO benchmark_selections(
+            revision_id, cell_id, attempt_id, selected_at, selection_reason
+        )
+        SELECT revision_id, cell_id, attempt_id, selected_at, selection_reason
+        FROM benchmark_selections_v1
+        """
+    )
+    connection.execute("DROP TABLE benchmark_selections_v1")
+
+    connection.executescript(
+        """
+        CREATE TRIGGER validate_benchmark_selection
+        BEFORE INSERT ON benchmark_selections
+        WHEN NOT EXISTS (
+            SELECT 1 FROM benchmark_attempts a
+            WHERE a.attempt_id = NEW.attempt_id
+              AND a.cell_id = NEW.cell_id
+        )
+        BEGIN
+            SELECT RAISE(ABORT, 'benchmark selection identity mismatch');
+        END;
+
+        CREATE TRIGGER validate_benchmark_selection_update
+        BEFORE UPDATE OF revision_id, cell_id, attempt_id ON benchmark_selections
+        WHEN NOT EXISTS (
+            SELECT 1 FROM benchmark_attempts a
+            WHERE a.attempt_id = NEW.attempt_id
+              AND a.cell_id = NEW.cell_id
+        )
+        BEGIN
+            SELECT RAISE(ABORT, 'benchmark selection identity mismatch');
+        END;
+
+        CREATE TRIGGER validate_current_judge_vote
+        BEFORE INSERT ON current_judge_votes
+        WHEN NOT EXISTS (
+            SELECT 1
+            FROM judge_vote_attempts v
+            JOIN judge_attempts a ON a.judge_attempt_id = v.judge_attempt_id
+            WHERE v.vote_attempt_id = NEW.vote_attempt_id
+              AND a.cell_id = NEW.cell_id
+              AND a.judge_model = NEW.judge_model
+              AND a.contract_id = NEW.contract_id
+        )
+        BEGIN
+            SELECT RAISE(ABORT, 'current judge vote identity mismatch');
+        END;
+
+        CREATE TRIGGER validate_current_judge_vote_update
+        BEFORE UPDATE OF revision_id, cell_id, judge_model, contract_id, vote_attempt_id
+            ON current_judge_votes
+        WHEN NOT EXISTS (
+            SELECT 1
+            FROM judge_vote_attempts v
+            JOIN judge_attempts a ON a.judge_attempt_id = v.judge_attempt_id
+            WHERE v.vote_attempt_id = NEW.vote_attempt_id
+              AND a.cell_id = NEW.cell_id
+              AND a.judge_model = NEW.judge_model
+              AND a.contract_id = NEW.contract_id
+        )
+        BEGIN
+            SELECT RAISE(ABORT, 'current judge vote identity mismatch');
+        END;
+        """
+    )
+
+
 Migration = Callable[[sqlite3.Connection], None]
 MIGRATIONS: dict[int, Migration] = {
     1: _create_schema_v1,
+    2: _migrate_v2_continuation_reuse,
 }
 
 

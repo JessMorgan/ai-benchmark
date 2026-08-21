@@ -742,17 +742,17 @@ faster ordering; format them at report boundaries.
 
 ### Stage 8 — SQLite continuation, resume, and purge
 
-- [ ] Implement revision creation for every continuation invocation.
-- [ ] Reuse compatible target instances and cells.
-- [ ] Schedule added models/plugins/judges only.
-- [ ] Retire removed models/plugins/judges without deleting history.
-- [ ] Create new cells for changed target signatures or plugin versions.
-- [ ] Create new contracts for changed judge prompt/instruction/schema versions.
-- [ ] Reuse immutable global contract definitions when the contract hash matches.
-- [ ] Implement interrupted/abandoned attempt handling.
-- [ ] Reproduce `--no-rerun-failed` behavior.
-- [ ] Update `purge-results` to clear revision selections while retaining history.
-- [ ] Define and test `--restart` as a new logical run.
+- [x] Implement revision creation for every continuation invocation.
+- [x] Reuse compatible target instances and cells.
+- [x] Schedule added models/plugins/judges only.
+- [x] Retire removed models/plugins/judges without deleting history.
+- [x] Create new cells for changed target signatures or plugin versions.
+- [x] Create new contracts for changed judge prompt/instruction/schema versions.
+- [x] Reuse immutable global contract definitions when the contract hash matches.
+- [x] Implement interrupted/abandoned attempt handling.
+- [x] Reproduce `--no-rerun-failed` behavior.
+- [x] Update `purge-results` to clear revision selections while retaining history.
+- [x] Define and test `--restart` as a new logical run.
 
 ### Stage 9 — report generation
 
@@ -840,7 +840,7 @@ Using the measured `2026-08-17-nas-and-more-test-changes` run as the reference:
 6. [x] Debug-only gzip writer from `gzip-append-log-plan.md`.
 7. [x] Benchmark attempt persistence.
 8. [x] Judge attempt/vote persistence.
-9. [ ] Revision-aware resume, continuation, and purge.
+9. [x] Revision-aware resume, continuation, and purge.
 10. [ ] On-demand report generation.
 11. [ ] Existing-run importer.
 12. [ ] Dual-write validation.

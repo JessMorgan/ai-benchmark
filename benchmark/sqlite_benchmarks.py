@@ -242,6 +242,7 @@ class SQLiteBenchmarkStore:
             "score": score,
             "rubric_json": self._json_value(attempt.get("rubric")),
             "diagnostics_json": self._json_value(attempt.get("diagnostics")),
+            "status": attempt.get("status", "completed"),
         }
         cursor = self.connection.execute(
             """
@@ -252,7 +253,7 @@ class SQLiteBenchmarkStore:
                 total_tokens, tps, finish_reason, response_nature, retry_reason,
                 prompt_altered, truncated, truncated_due_to_time, failure_cause,
                 stream_ok, repeating, empty_reason, error, score, rubric_json,
-                diagnostics_json
+                diagnostics_json, status
             ) VALUES (
                 :revision_id, :cell_id, :attempt_number,
                 :prompt_payload_id, :content_payload_id, :thinking_payload_id,
@@ -260,7 +261,7 @@ class SQLiteBenchmarkStore:
                 :total_tokens, :tps, :finish_reason, :response_nature, :retry_reason,
                 :prompt_altered, :truncated, :truncated_due_to_time, :failure_cause,
                 :stream_ok, :repeating, :empty_reason, :error, :score, :rubric_json,
-                :diagnostics_json
+                :diagnostics_json, :status
             )
             """,
             {
@@ -317,7 +318,6 @@ class SQLiteBenchmarkStore:
             FROM benchmark_selections s
             JOIN benchmark_attempts a
               ON a.attempt_id = s.attempt_id
-             AND a.revision_id = s.revision_id
              AND a.cell_id = s.cell_id
             WHERE s.revision_id = ? AND s.cell_id = ?
             """,
@@ -336,7 +336,6 @@ class SQLiteBenchmarkStore:
             SELECT a.* FROM benchmark_selections s
             JOIN benchmark_attempts a
               ON a.attempt_id = s.attempt_id
-             AND a.revision_id = s.revision_id
              AND a.cell_id = s.cell_id
             WHERE s.revision_id = ? AND s.cell_id = ?
             """,

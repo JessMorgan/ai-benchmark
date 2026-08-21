@@ -104,8 +104,8 @@ class SQLiteJudgeStore:
                 revision_id, cell_id, judge_model, contract_id, attempt_number,
                 started_at, ended_at, max_tokens, raw_response_payload_id,
                 request_payload_id, response_usage_json, diagnostics_json,
-                finish_reason, error
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                finish_reason, error, status
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 revision_id, cell_id, judge_model, contract_id,
@@ -115,6 +115,7 @@ class SQLiteJudgeStore:
                 self._json_value(attempt.get("usage")),
                 self._json_value(attempt.get("diagnostics")),
                 attempt.get("finish_reason"), attempt.get("error"),
+                attempt.get("status", "completed"),
             ),
         )
         if cursor.lastrowid is None:

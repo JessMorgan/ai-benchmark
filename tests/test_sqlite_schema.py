@@ -33,7 +33,7 @@ class TestSQLiteSchema(unittest.TestCase):
         configure_connection(connection)
         initialize_schema(connection)
         initialize_schema(connection)
-        self.assertEqual(schema_version(connection), 1)
+        self.assertEqual(schema_version(connection), SQLITE_SCHEMA_VERSION)
         connection.close()
 
     def test_missing_version_is_migrated_forward(self):
