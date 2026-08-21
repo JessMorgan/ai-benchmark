@@ -123,7 +123,7 @@ class TestStateHydrate:
         assert len(state.results) == 1
         assert state._model_info["m1"]["status"] == "completed"
 
-    def test_hydrate_results_marks_failed(self) -> None:
+    def test_hydrate_results_marks_pending_for_partial(self) -> None:
         from benchmark.state import BenchmarkState
 
         state = BenchmarkState({"m1": {}}, ["p1", "p2"])
@@ -131,7 +131,10 @@ class TestStateHydrate:
             {"state_key": "m1", "runner": "http", "p1_score": 15, "p2_score": "fail"},
         ]
         state.hydrate_results(rows)
-        assert state._model_info["m1"]["status"] == "failed"
+        # Partial completion: one valid score, one "fail" → pending (not failed)
+        assert state._model_info["m1"]["status"] == "pending"
+        # The valid score is preserved, the "fail" string is not overwriting it
+        assert state._model_info["m1"]["p1_score"] == 15
 
     def test_hydrate_results_unknown_model(self) -> None:
         from benchmark.state import BenchmarkState
