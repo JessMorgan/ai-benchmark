@@ -70,6 +70,10 @@ class RunStore(Protocol):
         """Close the backend and return whether shutdown completed."""
         ...
 
+    def prepare_run(self, targets: Iterable[TargetRecord],
+                    plugins: Iterable[PluginRecord]) -> None:
+        ...
+
     def register_target(self, target: TargetRecord) -> int | None:
         ...
 
@@ -163,6 +167,10 @@ class JsonRunStore:
         del timeout
         return True
 
+    def prepare_run(self, targets: Iterable[TargetRecord],
+                    plugins: Iterable[PluginRecord]) -> None:
+        del targets, plugins
+
     def register_target(self, target: TargetRecord) -> int | None:
         del target
         return None
@@ -246,6 +254,18 @@ class SQLiteRunStore:
     def _connection_operation(self, operation: Any) -> Any:
         future = self.writer.submit(operation)
         return future.result(timeout=30)
+
+    def prepare_run(self, targets: Iterable[TargetRecord],
+                    plugins: Iterable[PluginRecord]) -> None:
+        target_list = list(targets)
+        plugin_list = list(plugins)
+        for plugin in plugin_list:
+            self.register_plugin(plugin)
+        for target in target_list:
+            self.register_target(target)
+        for target in target_list:
+            for plugin in plugin_list:
+                self.ensure_cell(target, plugin)
 
     def register_target(self, target: TargetRecord) -> int | None:
         if self.identity is None or self.identity.revision_id is None:
