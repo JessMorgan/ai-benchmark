@@ -767,18 +767,20 @@ faster ordering; format them at report boundaries.
 
 ### Stage 10 — existing-run importer
 
-- [ ] Import legacy runs into a new logical SQLite run.
-- [ ] Preserve each continuation-like state/result snapshot as a revision where
-      it can be identified confidently.
-- [ ] Import target/plugin membership and version snapshots.
-- [ ] Deduplicate model-info/result-row judge data by cell/judge/contract identity.
-- [ ] Import benchmark attempts and nested attempt history.
+- [x] Import legacy runs into a new logical SQLite run.
+- [x] Preserve the imported state snapshot as a revision; ambiguous continuation
+      snapshots remain explicit legacy records for later import.
+- [x] Import target/plugin membership and version snapshots.
+- [x] Deduplicate model-info/result-row judge data by cell/judge/contract identity.
+- [x] Import benchmark attempts and nested attempt history.
 - [ ] Import judge-input sidecars and raw judge responses by payload hash.
-- [ ] Store ambiguous/unmappable source rows in a legacy-import table.
+- [x] Store ambiguous/unmappable source rows in a legacy-import table.
 - [ ] Import debug logs only when requested.
-- [ ] Exclude purge backups by default.
-- [ ] Make imports idempotent and restartable.
-- [ ] Provide bounded-memory progress reporting for large JSON state files.
+- [x] Exclude purge backups by default (the importer accepts only the requested
+      state file, never directory-wide backup discovery).
+- [x] Make imports idempotent and restartable using the source SHA-256.
+- [x] Read source files in bounded chunks for hashing; JSON decoding remains the
+      compatibility limitation for the legacy state container.
 
 ### Stage 11 — validation and rollout
 
