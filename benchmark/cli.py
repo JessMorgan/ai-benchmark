@@ -87,10 +87,11 @@ from benchmark.outputs import save_outputs
 from benchmark.pi import pi_version, resolve_pi_worker, run_pi_probe
 from benchmark.plugin import SCORE_SCHEMA
 from benchmark.results import save_judge_result
+from benchmark.runtime_records import PluginRecord, RunContext, TargetRecord
 from benchmark.sqlite_import import LegacySQLiteImporter
 from benchmark.sqlite_reports import SQLiteReportSource, sqlite_path_from_report_path
 from benchmark.state import apply_state_recovery, prepare_state_recovery
-from benchmark.storage import JsonReportSource, latest_result_rows
+from benchmark.storage import JsonReportSource, RunIdentity, SQLiteRunStore, latest_result_rows
 from plugins import discover_plugins, format_plugin_list
 
 _CORRUPTED_STATE_ABORT = "abort"
@@ -2755,11 +2756,6 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
             print(yaml.safe_dump(cfg, sort_keys=False, default_flow_style=False))
         sys.exit(0)
 
-    if args.storage == "sqlite":
-        print("❌ SQLite storage is not available until the runtime persistence stage is complete.",
-              file=sys.stderr)
-        sys.exit(2)
-
     config_path = _resolve_config_path(args.config)
     if config_path is None:
         print(f"❌ Config file not found: {args.config}\n"
@@ -3244,6 +3240,62 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
         )
         state.set_active_judge_contracts(active_judge_contracts)
 
+        # Use the CLI --seed if provided; otherwise preserve the seed from a
+        # resumed state so report exports remain consistent. Resolved before
+        # storage is attached so the SQLite run record can capture the same
+        # seed used by execution.
+        if args.seed is not None:
+            session_seed = args.seed
+        elif getattr(state, "session_seed", None) is not None:
+            session_seed = state.session_seed
+        else:
+            session_seed = random.randint(0, 2**31 - 1)
+        state.session_seed = session_seed
+        run_info["session_seed"] = session_seed
+
+        if args.storage == "sqlite":
+            sqlite_db_path = os.path.join(output_dir, "run.sqlite3")
+            sqlite_store = SQLiteRunStore(
+                sqlite_db_path,
+                failure_callback=lambda exc: report_persistence_failure("sqlite", exc),
+            )
+            state.set_run_store(sqlite_store)
+            state.start_run_store(
+                RunIdentity(run_id, revision_id),
+                score_schema=SCORE_SCHEMA,
+                storage_profile=args.storage_profile or "compact",
+                runner_mode=runner_mode,
+                config=cfg,
+                session_seed=session_seed,
+            )
+            # Build the identity graph before workers dispatch.
+            target_records = []
+            for target_name, target_info in targets.items():
+                for selected_runner in runner_sequence:
+                    state_key = _runner_state_key(target_name, selected_runner)
+                    target_records.append(TargetRecord(
+                        logical_name=state_key,
+                        runner=selected_runner,
+                        source=target_info.get("source", "Default"),
+                        api_model=target_info.get("api_model", target_name),
+                        target_signature=f"{target_info.get('source', 'Default')}/{target_info.get('api_model', target_name)}",
+                        is_agent=target_info.get("is_agent", False),
+                        system_prompt=target_info.get("system_prompt"),
+                        target_config=target_info,
+                        order_index=0,
+                    ))
+            plugin_records = [
+                PluginRecord(
+                    plugin_id=plugin.id,
+                    plugin_version=plugin.version,
+                    name=plugin.name,
+                    max_score=plugin.max_score,
+                    supports_streaming=plugin.supports_streaming,
+                )
+                for plugin in active_plugins
+            ]
+            sqlite_store.prepare_run(target_records, plugin_records)
+
         if restored_targets and "opencode" in runner_sequence:
             # OpenCode's generated projection is created before the state file
             # is loaded. Rebuild it after restoring removed targets so their
@@ -3264,17 +3316,6 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
             except (OSError, ValueError) as exc:
                 print(f"❌ Could not refresh OpenCode configuration: {exc}", file=sys.stderr)
                 sys.exit(1)
-
-        # Use the CLI --seed if provided; otherwise preserve the seed from a
-        # resumed state so report exports remain consistent.
-        if args.seed is not None:
-            session_seed = args.seed
-        elif getattr(state, "session_seed", None) is not None:
-            session_seed = state.session_seed
-        else:
-            session_seed = random.randint(0, 2**31 - 1)
-        state.session_seed = session_seed
-        run_info["session_seed"] = session_seed
 
         stop_event = threading.Event()
 

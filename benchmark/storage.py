@@ -91,6 +91,10 @@ class RunStore(Protocol):
                              vote: JudgeVoteRecord | None = None) -> Any:
         ...
 
+    def get_cell_id(self, target_name: str, runner: str, plugin_id: str) -> int | None:
+        """Return the cell ID for a (target, runner, plugin) pair, if registered."""
+        ...
+
 
 @runtime_checkable
 class PayloadStore(Protocol):
@@ -190,6 +194,10 @@ class JsonRunStore:
     def record_judge_attempt(self, cell_id: int, attempt: JudgeAttemptRecord,
                              vote: JudgeVoteRecord | None = None) -> Any:
         del cell_id, attempt, vote
+        return None
+
+    def get_cell_id(self, target_name: str, runner: str, plugin_id: str) -> int | None:
+        del target_name, runner, plugin_id
         return None
 
 
@@ -351,6 +359,10 @@ class SQLiteRunStore:
                     )
             return judge_attempt_id
         return self._connection_operation(operation)
+
+    def get_cell_id(self, target_name: str, runner: str, plugin_id: str) -> int | None:
+        """Return the cell ID for a (target, runner, plugin) pair, if registered."""
+        return self._cell_ids.get((target_name, runner, plugin_id))
 
     def submit(self, operation: Any) -> Future[Any]:
         """Submit a normalized SQLite operation to the background writer."""
