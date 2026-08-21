@@ -201,7 +201,7 @@ def _run_report_only(path, output_formats, revision=None):
         if sqlite_path is not None:
             source = SQLiteReportSource.open(sqlite_path)
             results, active_ids, session_seed, _revision_id = source.load_results(
-                revision=revision,
+                revision=revision, include_reused=True,
             )
         else:
             output_dir = path if os.path.isdir(path) else os.path.dirname(path) or "."
