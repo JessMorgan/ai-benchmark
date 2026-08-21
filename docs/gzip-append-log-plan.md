@@ -306,13 +306,14 @@ Create `tests/test_compressed_logs.py`.
 
 ## Implementation order
 
-1. [ ] Implement `AppendOnlyGzipLog` and member metadata.
-2. [ ] Implement bounded-memory tolerant member scanning.
-3. [ ] Implement safe final-tail repair.
-4. [ ] Add round-trip, truncation, corruption, and append-after-recovery tests.
-5. [ ] Add per-file writer ownership and failure reporting.
-6. [ ] Add redaction tests.
-7. [ ] Integrate judge debug logs.
-8. [ ] Integrate HTTP/OpenCode/Pi diagnostic streams.
-9. [ ] Benchmark gzip against bz2 on representative judge logs.
-10. [ ] Reconsider zstd only if gzip measurements justify a dependency.
+1. [x] Implement `AppendOnlyGzipLog` and member metadata.
+2. [x] Implement bounded-memory tolerant member scanning.
+3. [x] Implement safe final-tail repair.
+4. [x] Add round-trip, truncation, corruption, and append-after-recovery tests.
+5. [x] Add per-file writer ownership and failure reporting.
+6. [x] Add redaction tests.
+7. [x] Integrate judge debug logs.
+8. [x] Integrate HTTP diagnostic streams.
+9. [ ] Integrate OpenCode/Pi diagnostic streams.
+10. [ ] Benchmark gzip against bz2 on representative judge logs.
+11. [ ] Reconsider zstd only if gzip measurements justify a dependency.

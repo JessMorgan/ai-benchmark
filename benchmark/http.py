@@ -23,6 +23,7 @@ from typing import Any
 
 import requests
 
+from .logs import AppendOnlyGzipLog, recover_log
 from .observer import TaskObserver
 
 
@@ -215,6 +216,7 @@ def _iter_1min_sse_events(resp: requests.Response) -> Iterator[tuple[str, Any] |
 
 
 _log_lock = threading.Lock()
+_GZIP_LOGS_RECOVERED: set[str] = set()
 
 # Active HTTP responses so Ctrl+C can close them and unblock plugin threads.
 _active_requests_lock = threading.Lock()
@@ -359,14 +361,29 @@ def build_curl_cmd(model, prompt, max_tokens, stream, api_url, headers, system_p
 
 
 def log_request_entry(log_path, curl_cmd, response_body, request_label=None):
-    """Append a curl command and response body to the log file."""
+    """Append a request/response block as plaintext or a gzip member."""
+    block = ""
+    if request_label:
+        block += f"\n# === {request_label} ===\n"
+    block += f"{curl_cmd}\n\n"
+    block += f"{response_body}\n"
+    block += "\n" + "-" * 60 + "\n"
     os.makedirs(os.path.dirname(log_path), exist_ok=True)
-    with _log_lock, open(log_path, 'a') as f:
-        if request_label:
-            f.write(f"\n# === {request_label} ===\n")
-        f.write(f"{curl_cmd}\n\n")
-        f.write(f"{response_body}\n")
-        f.write("\n" + "-" * 60 + "\n")
+    with _log_lock:
+        if log_path.endswith(".gz"):
+            absolute_path = os.path.abspath(log_path)
+            recover_tail = absolute_path not in _GZIP_LOGS_RECOVERED
+            if recover_tail:
+                recover_log(log_path, repair=True)
+                _GZIP_LOGS_RECOVERED.add(absolute_path)
+            writer = AppendOnlyGzipLog(
+                log_path, recover_tail=False, sync_policy="batch",
+            )
+            writer.append_record([block])
+            writer.close(sync=False)
+            return
+        with open(log_path, 'a', encoding='utf-8') as f:
+            f.write(block)
 
 
 def _check_total_timeout(start_time, timeout, error, finish_reason=None):

@@ -119,4 +119,5 @@ class SQLitePayloadStore:
         return dict(row)
 
     def count(self) -> int:
-        """Return the number of canonical payload rows."""        return int(self.connection.execute("SELECT count(*) FROM payloads").fetchone()[0])
+        """Return the number of canonical payload rows."""
+        return int(self.connection.execute("SELECT count(*) FROM payloads").fetchone()[0])

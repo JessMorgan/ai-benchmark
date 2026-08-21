@@ -2438,7 +2438,7 @@ def _run_plugin_task(target_name, api_model, source, plugin, source_config, time
                      opencode_agent=None, opencode_binary=None,
                      pi_node=None, pi_worker=None, pi_config=None,
                      artifact_target_name=None,
-                     config_target_name=None) -> PluginTaskResult:
+                     config_target_name=None, debug_logs=False) -> PluginTaskResult:
     """Run one benchmark cell with one scalar budget and at most one policy retry.
 
     Transport retries preserve the prompt. Token-limit and repetition retries
@@ -2737,7 +2737,7 @@ def run_model(model_name, source, state, active_plugins, source_config, timeout,
               opencode_config_path=None, opencode_model=None,
               opencode_agent=None, opencode_binary=None,
               pi_node=None, pi_worker=None, pi_config=None, display_name=None,
-              config_target_name=None):
+              config_target_name=None, debug_logs=False):
     """Run active plugins for one model or agent through a selected runner."""
     start = time.time()
     target_name = model_name
@@ -2917,7 +2917,8 @@ def run_model(model_name, source, state, active_plugins, source_config, timeout,
                  pi_worker=pi_worker,
                  pi_config=pi_config,
                  display_name=display_name,
-                 config_target_name=config_target_name)
+                 config_target_name=config_target_name,
+                 debug_logs=debug_logs)
 
 
 def _run_plugins(target_name, api_model, source, state, active_plugins, plugins_to_run,
@@ -2928,7 +2929,7 @@ def _run_plugins(target_name, api_model, source, state, active_plugins, plugins_
                  system_prompt=None, is_agent=False, runner="http", opencode_config_path=None,
                  opencode_model=None, opencode_agent=None, opencode_binary=None,
                  pi_node=None, pi_worker=None, pi_config=None,
-                 display_name=None, config_target_name=None):
+                 display_name=None, config_target_name=None, debug_logs=False):
     """Run plugins for one model using a thread pool of bounded size.
 
     A single-worker pool (``max_workers=1``) is equivalent to sequential
@@ -2943,7 +2944,10 @@ def _run_plugins(target_name, api_model, source, state, active_plugins, plugins_
     breaker_triggered = False
     breaker_reason = "Cancelled after 2 consecutive exhausted HTTP 429 responses"
     logs_dir = os.path.join(output_dir, "logs")
-    log_file = os.path.join(logs_dir, f"{sanitize_filename(display_name or target_name)}.log")
+    log_file = (
+        os.path.join(logs_dir, f"{sanitize_filename(display_name or target_name)}.log.gz")
+        if debug_logs else None
+    )
 
     def run_one(plugin):
         nonlocal consecutive_429, breaker_triggered
@@ -2984,7 +2988,8 @@ def _run_plugins(target_name, api_model, source, state, active_plugins, plugins_
                                            pi_worker=pi_worker,
                                            pi_config=pi_config,
                                            artifact_target_name=display_name or target_name,
-                                           config_target_name=config_target_name or display_name or target_name)
+                                           config_target_name=config_target_name or display_name or target_name,
+                                           debug_logs=debug_logs)
             result = task_result.result
             err = task_result.error
         finally:

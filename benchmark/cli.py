@@ -105,11 +105,12 @@ def _clear_restart_artifacts(state_file, output_dir):
             pass
     logs_dir = os.path.join(output_dir, "logs")
     if os.path.isdir(logs_dir):
-        for path in glob.glob(os.path.join(logs_dir, "*.log")):
-            try:
-                os.remove(path)
-            except OSError:
-                pass
+        for pattern in ("*.log", "*.log.gz"):
+            for path in glob.glob(os.path.join(logs_dir, pattern)):
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
 
 
 def _resolve_config_path(config_path):
@@ -3338,7 +3339,7 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
             log_path = None
             result = None
             try:
-                if args.save_responses:
+                if args.debug_logs or args.storage_profile == "debug":
                     preload_logs = os.path.join(output_dir, "logs")
                     os.makedirs(preload_logs, exist_ok=True)
                     log_path = os.path.join(preload_logs, "preload.log")
@@ -3715,7 +3716,10 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
                         drop_params=(raw_targets.get(judge_name, {}).get("drop_params", [])
                                      if isinstance(raw_targets.get(judge_name), dict) else []),
                         stop_event=judge_request_stop_events[judge_name],
-                        log_path=os.path.join(output_dir, f"judge-{judge_name}.log"),
+                        log_path=(
+                            os.path.join(output_dir, f"judge-{judge_name}.log.gz")
+                            if args.debug_logs or args.storage_profile == "debug" else None
+                        ),
                         plugin=plugin_obj,
                         progress_callback=judge_progress,
                         attempt_callback=judge_attempt,
@@ -4062,7 +4066,8 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
                       opencode_binary=opencode_binary,
                       pi_node=pi_node, pi_worker=pi_worker,
                       pi_config=target_info.get("pi", {}),
-                      display_name=model_name, config_target_name=model_name)
+                      display_name=model_name, config_target_name=model_name,
+                      debug_logs=bool(args.debug_logs or args.storage_profile == "debug"))
             # OpenCode and HTTP pipeline workers can finish different targets
             # concurrently. Persistence is throttled through the shared flush
             # gate and serialized on the background flusher thread, which

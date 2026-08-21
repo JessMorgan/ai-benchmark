@@ -709,11 +709,11 @@ faster ordering; format them at report boundaries.
 
 ### Stage 5 — append-only compressed debug logs
 
-- [ ] Add the debug-only full-transcript policy.
-- [ ] Stop creating full successful judge logs in compact mode.
-- [ ] Implement the writer and recovery behavior from
+- [x] Add the debug-only full-transcript policy.
+- [x] Stop creating full successful judge logs in compact mode.
+- [x] Implement the writer and recovery behavior from
       [gzip-append-log-plan.md](gzip-append-log-plan.md).
-- [ ] Add gzip concatenated-member, truncation, corruption, append-after-recovery,
+- [x] Add gzip concatenated-member, truncation, corruption, append-after-recovery,
       concurrency, redaction, and policy integration tests.
 - [ ] Benchmark gzip against bz2 using representative logs.
 - [ ] Consider zstd only if measurements justify a dependency; do not use 7z
@@ -837,7 +837,7 @@ Using the measured `2026-08-17-nas-and-more-test-changes` run as the reference:
 3. [x] Revision-aware SQLite schema and migrations.
 4. [x] Background SQLite writer.
 5. [x] Single-representation payload store.
-6. [ ] Debug-only gzip writer from `gzip-append-log-plan.md`.
+6. [x] Debug-only gzip writer from `gzip-append-log-plan.md`.
 7. [ ] Benchmark attempt persistence.
 8. [ ] Judge attempt/vote persistence.
 9. [ ] Revision-aware resume, continuation, and purge.
