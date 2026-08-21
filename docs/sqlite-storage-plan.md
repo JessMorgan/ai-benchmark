@@ -691,12 +691,12 @@ faster ordering; format them at report boundaries.
 
 ### Stage 3 — background SQLite writer
 
-- [ ] Implement one persistence writer thread.
-- [ ] Batch operations by count and time.
-- [ ] Ensure workers never serialize a full state snapshot.
-- [ ] Add writer queue failure reporting.
-- [ ] Add shutdown timeout and synchronous final commit.
-- [ ] Add transaction crash-injection tests.
+- [x] Implement one persistence writer thread.
+- [x] Batch operations by count and time.
+- [x] Ensure workers never serialize a full state snapshot.
+- [x] Add writer queue failure reporting.
+- [x] Add shutdown timeout and synchronous final commit.
+- [x] Add transaction crash-injection tests.
 
 ### Stage 4 — payload store and deduplication
 
@@ -835,7 +835,7 @@ Using the measured `2026-08-17-nas-and-more-test-changes` run as the reference:
 1. [x] CLI/storage and continuation contract.
 2. [x] `RunStore`/`PayloadStore`/`DebugLogStore` abstractions.
 3. [x] Revision-aware SQLite schema and migrations.
-4. [ ] Background SQLite writer.
+4. [x] Background SQLite writer.
 5. [ ] Single-representation payload store.
 6. [ ] Debug-only gzip writer from `gzip-append-log-plan.md`.
 7. [ ] Benchmark attempt persistence.
