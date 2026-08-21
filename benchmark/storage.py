@@ -9,6 +9,13 @@ from concurrent.futures import Future
 from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
 
+from .runtime_records import (
+    BenchmarkAttemptRecord,
+    JudgeAttemptRecord,
+    JudgeVoteRecord,
+    PluginRecord,
+    TargetRecord,
+)
 from .sqlite_benchmarks import SQLiteBenchmarkStore
 from .sqlite_judges import SQLiteJudgeStore
 from .sqlite_writer import SQLiteWriteQueue
@@ -61,6 +68,23 @@ class RunStore(Protocol):
 
     def close(self, timeout: float | None = None) -> bool:
         """Close the backend and return whether shutdown completed."""
+        ...
+
+    def register_target(self, target: TargetRecord) -> int | None:
+        ...
+
+    def register_plugin(self, plugin: PluginRecord) -> None:
+        ...
+
+    def ensure_cell(self, target: TargetRecord, plugin: PluginRecord) -> int | None:
+        ...
+
+    def record_benchmark_attempt(self, cell_id: int, attempt: BenchmarkAttemptRecord,
+                                 *, selected: bool = False) -> Any:
+        ...
+
+    def record_judge_attempt(self, cell_id: int, attempt: JudgeAttemptRecord,
+                             vote: JudgeVoteRecord | None = None) -> Any:
         ...
 
 
@@ -139,6 +163,27 @@ class JsonRunStore:
         del timeout
         return True
 
+    def register_target(self, target: TargetRecord) -> int | None:
+        del target
+        return None
+
+    def register_plugin(self, plugin: PluginRecord) -> None:
+        del plugin
+
+    def ensure_cell(self, target: TargetRecord, plugin: PluginRecord) -> int | None:
+        del target, plugin
+        return None
+
+    def record_benchmark_attempt(self, cell_id: int, attempt: BenchmarkAttemptRecord,
+                                 *, selected: bool = False) -> Any:
+        del cell_id, attempt, selected
+        return None
+
+    def record_judge_attempt(self, cell_id: int, attempt: JudgeAttemptRecord,
+                             vote: JudgeVoteRecord | None = None) -> Any:
+        del cell_id, attempt, vote
+        return None
+
 
 class SQLiteRunStore:
     """Facade over the SQLite schema stores and one background writer thread.
@@ -172,12 +217,120 @@ class SQLiteRunStore:
         self._connection: sqlite3.Connection | None = None
         self.benchmark: SQLiteBenchmarkStore | None = None
         self.judges: SQLiteJudgeStore | None = None
+        self._target_ids: dict[tuple[str, str, str], int] = {}
+        self._plugin_records: dict[tuple[str, str], PluginRecord] = {}
+        self._cell_ids: dict[tuple[str, str, str], int] = {}
 
     def start_run(self, identity: RunIdentity, **metadata: Any) -> None:
-        self.identity = identity
-        self._metadata = dict(metadata)
         self.writer.start()
         self.writer.flush(timeout=10)
+        if identity.revision_id is None:
+            raise ValueError("SQLite run identity requires a revision_id")
+        def operation(connection):
+            row = connection.execute(
+                "SELECT run_id FROM runs WHERE run_id = ?", (identity.run_id,)
+            ).fetchone()
+            if row is None:
+                SQLiteBenchmarkStore(connection).create_run(
+                    identity.run_id,
+                    score_schema=str(metadata.get("score_schema", "v1")),
+                    storage_profile=str(metadata.get("storage_profile", "compact")),
+                    runner_mode=str(metadata.get("runner_mode", "http")),
+                    config=metadata.get("config", {}),
+                    session_seed=metadata.get("session_seed"),
+                )
+        self._connection_operation(operation)
+        self.identity = identity
+        self._metadata = dict(metadata)
+
+    def _connection_operation(self, operation: Any) -> Any:
+        future = self.writer.submit(operation)
+        return future.result(timeout=30)
+
+    def register_target(self, target: TargetRecord) -> int | None:
+        if self.identity is None or self.identity.revision_id is None:
+            raise RuntimeError("SQLite run must be started before registering targets")
+        from .sqlite_continuation import TargetSpec
+        spec = TargetSpec(
+            target.logical_name, target.runner, target.source, target.api_model,
+            target.target_signature, target.is_agent, target.system_prompt,
+            target.target_config, target.order_index,
+        )
+        def operation(connection):
+            store = SQLiteBenchmarkStore(connection)
+            return store.register_target(
+                self.identity.revision_id, run_id=self.identity.run_id,
+                logical_name=spec.logical_name, runner=spec.runner,
+                source=spec.source, api_model=spec.api_model,
+                target_signature=spec.target_signature, is_agent=spec.is_agent,
+                system_prompt=spec.system_prompt, target_config=spec.target_config,
+                order_index=spec.order_index,
+            )
+        target_id = self._connection_operation(operation)
+        self._target_ids[(target.logical_name, target.runner, target.target_signature)] = target_id
+        return target_id
+
+    def register_plugin(self, plugin: PluginRecord) -> None:
+        if self.identity is None or self.identity.revision_id is None:
+            raise RuntimeError("SQLite run must be started before registering plugins")
+        def operation(connection):
+            store = SQLiteBenchmarkStore(connection)
+            store.register_plugin(
+                plugin.plugin_id, plugin.plugin_version, name=plugin.name,
+                max_score=plugin.max_score,
+                supports_streaming=plugin.supports_streaming,
+                metadata=plugin.metadata,
+            )
+            store.activate_plugin(
+                self.identity.revision_id, plugin.plugin_id, plugin.plugin_version,
+            )
+        self._connection_operation(operation)
+        self._plugin_records[(plugin.plugin_id, plugin.plugin_version)] = plugin
+
+    def ensure_cell(self, target: TargetRecord, plugin: PluginRecord) -> int | None:
+        target_id = self._target_ids.get(
+            (target.logical_name, target.runner, target.target_signature),
+        )
+        if target_id is None or self.identity is None or self.identity.revision_id is None:
+            raise RuntimeError("target/run must be registered before creating a cell")
+        def operation(connection):
+            return SQLiteBenchmarkStore(connection).ensure_cell(
+                self.identity.revision_id, target_id,
+                plugin.plugin_id, plugin.plugin_version,
+            )
+        cell_id = self._connection_operation(operation)
+        self._cell_ids[(target.logical_name, target.runner, plugin.plugin_id)] = cell_id
+        return cell_id
+
+    def record_benchmark_attempt(self, cell_id: int, attempt: BenchmarkAttemptRecord,
+                                 *, selected: bool = False) -> Any:
+        if self.identity is None or self.identity.revision_id is None:
+            raise RuntimeError("SQLite run must be started before recording attempts")
+        def operation(connection):
+            return SQLiteBenchmarkStore(connection).record_attempt(
+                self.identity.revision_id, cell_id, attempt.as_dict(), selected=selected,
+            )
+        return self._connection_operation(operation)
+
+    def record_judge_attempt(self, cell_id: int, attempt: JudgeAttemptRecord,
+                             vote: JudgeVoteRecord | None = None) -> Any:
+        if self.identity is None or self.identity.revision_id is None:
+            raise RuntimeError("SQLite run must be started before recording judge attempts")
+        def operation(connection):
+            judges = SQLiteJudgeStore(connection)
+            judge_attempt_id = judges.record_attempt(
+                self.identity.revision_id, cell_id, attempt.judge_model,
+                attempt.contract_id, attempt.as_dict(),
+            )
+            if vote is not None:
+                vote_id = judges.record_vote(judge_attempt_id, vote.as_dict())
+                if vote.usable:
+                    judges.select_vote(
+                        self.identity.revision_id, cell_id, attempt.judge_model,
+                        attempt.contract_id, vote_id,
+                    )
+            return judge_attempt_id
+        return self._connection_operation(operation)
 
     def submit(self, operation: Any) -> Future[Any]:
         """Submit a normalized SQLite operation to the background writer."""
