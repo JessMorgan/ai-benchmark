@@ -27,7 +27,7 @@ from plugins import discover_plugins
 class TestSanitizeFilename(unittest.TestCase):
     def test_strips_illegal_chars_and_collapses_whitespace(self):
         self.assertEqual(sanitize_filename("My Model (v2)"), "My_Model_(v2)")
-        self.assertEqual(sanitize_filename("a/b\\c:d"), "a_b_c_d")
+        self.assertEqual(sanitize_filename(r"a/b\c:d"), "a_b_c_d")
         self.assertEqual(sanitize_filename("  spaced   out  "), "spaced_out")
         self.assertEqual(sanitize_filename("plain"), "plain")
 
@@ -184,6 +184,29 @@ class TestSaveOutputs(unittest.TestCase):
             _save_outputs(state, tmpdir, [])
         fake_plugin.generate.assert_called_once_with(
             [{"model": "m1"}], [], output_dir=tmpdir, session_seed=42)
+
+    def test_save_outputs_can_select_formats(self):
+        csv_plugin = mock.MagicMock()
+        csv_plugin.id = "output-csv"
+        csv_plugin.generate.return_value = "results.csv"
+        html_plugin = mock.MagicMock()
+        html_plugin.id = "output-html"
+        html_plugin.generate.return_value = "results.html"
+        md_plugin = mock.MagicMock()
+        md_plugin.id = "output-markdown"
+        pdf_plugin = mock.MagicMock()
+        pdf_plugin.id = "output-pdf"
+        with tempfile.TemporaryDirectory() as tmpdir, \
+                mock.patch("plugins.discover_output_plugins",
+                           return_value=[csv_plugin, html_plugin, md_plugin, pdf_plugin]):
+            generated = _save_outputs(
+                _FakeState([{"model": "m1"}]), tmpdir, [], ["html", "csv", "html"],
+            )
+        self.assertEqual(generated, ["results.html", "results.csv"])
+        csv_plugin.generate.assert_called_once()
+        html_plugin.generate.assert_called_once()
+        md_plugin.generate.assert_not_called()
+        pdf_plugin.generate.assert_not_called()
 
     def test_save_outputs_swallows_plugin_exceptions(self):
         bad_plugin = mock.MagicMock()

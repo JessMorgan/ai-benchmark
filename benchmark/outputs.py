@@ -163,14 +163,71 @@ def gen_pdf(results, active_plugins, output_dir, session_seed=None):
     return None
 
 
-def _save_outputs(state, output_dir, active_plugins):
-    """Regenerate CSV/markdown/HTML from latest deduplicated results."""
+_OUTPUT_FORMAT_PLUGIN_IDS = {
+    "csv": "output-csv",
+    "md": "output-markdown",
+    "html": "output-html",
+    "pdf": "output-pdf",
+}
+
+
+def normalize_output_formats(output_formats):
+    """Return valid report formats once, preserving the caller's order."""
+    if output_formats is None:
+        return list(_OUTPUT_FORMAT_PLUGIN_IDS)
+    formats = []
+    for output_format in output_formats:
+        if output_format not in _OUTPUT_FORMAT_PLUGIN_IDS:
+            raise ValueError(f"Unsupported output format: {output_format}")
+        if output_format not in formats:
+            formats.append(output_format)
+    return formats
+
+
+def save_outputs(results, output_dir, active_plugins, *, output_formats=None,
+                 session_seed=None):
+    """Generate the selected report formats from result dictionaries."""
     from plugins import discover_output_plugins
 
-    results = state.latest_results()
-    session_seed = getattr(state, "session_seed", None)
+    output_plugins_list = discover_output_plugins()
+    if output_formats is None:
+        generated = []
+        for plugin in output_plugins_list:
+            with contextlib.suppress(Exception):
+                path = plugin.generate(
+                    results, active_plugins, output_dir=output_dir,
+                    session_seed=session_seed,
+                )
+                if path:
+                    generated.append(path)
+        return generated
 
-    output_plugins = discover_output_plugins()
-    for plugin in output_plugins:
+    selected = normalize_output_formats(output_formats)
+    output_plugins = {plugin.id: plugin for plugin in output_plugins_list}
+    generated = []
+    for output_format in selected:
+        plugin = output_plugins.get(_OUTPUT_FORMAT_PLUGIN_IDS[output_format])
+        if plugin is None:
+            continue
         with contextlib.suppress(Exception):
-            plugin.generate(results, active_plugins, output_dir=output_dir, session_seed=session_seed)
+            path = plugin.generate(
+                results, active_plugins, output_dir=output_dir,
+                session_seed=session_seed,
+            )
+            if path:
+                generated.append(path)
+    return generated
+
+
+def _save_outputs(state, output_dir, active_plugins, output_formats=None):
+    """Regenerate selected reports from latest deduplicated results.
+
+    ``output_formats=None`` preserves the historical helper behavior for
+    callers and tests; the CLI passes an explicit empty/selected list so a
+    run can intentionally produce no reports.
+    """
+    return save_outputs(
+        state.latest_results(), output_dir, active_plugins,
+        output_formats=output_formats,
+        session_seed=getattr(state, "session_seed", None),
+    )

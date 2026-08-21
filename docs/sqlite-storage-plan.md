@@ -1,6 +1,6 @@
 # SQLite Run Storage Plan
 
-**Status:** Planned
+**Status:** Stage 0 complete; later stages planned
 **Last updated:** 2026-08-20
 **Primary goals:** fast writes, small output directories, reduced duplication, reliable resume, and reproducible reports.
 
@@ -658,14 +658,14 @@ faster ordering; format them at report boundaries.
 
 ### Stage 0 — storage contract and CLI
 
-- [ ] Add `--storage json|sqlite`.
-- [ ] Add `--storage-profile compact|debug|portable`.
-- [ ] Add `--debug-logs` as an explicit debug-transcript override.
-- [ ] Add `--output-format csv md html pdf` with one-or-more selection.
-- [ ] Add report-only `--generate-reports PATH` mode.
-- [ ] Define no-report behavior when no format is selected.
-- [ ] Define redaction rules for configs, headers, and credentials.
-- [ ] Record run ID, revision ID, storage profile, and report formats in
+- [x] Add `--storage json|sqlite`.
+- [x] Add `--storage-profile compact|debug|portable`.
+- [x] Add `--debug-logs` as an explicit debug-transcript override.
+- [x] Add `--output-format csv md html pdf` with one-or-more selection.
+- [x] Add report-only `--generate-reports PATH` mode.
+- [x] Define no-report behavior when no format is selected.
+- [x] Define redaction rules for configs, headers, and credentials.
+- [x] Record run ID, revision ID, storage profile, and report formats in
       `run-info.json`.
 
 ### Stage 1 — backend abstraction
@@ -832,7 +832,7 @@ Using the measured `2026-08-17-nas-and-more-test-changes` run as the reference:
 
 ## 11. Recommended implementation order
 
-1. [ ] CLI/storage and continuation contract.
+1. [x] CLI/storage and continuation contract.
 2. [ ] `RunStore`/`PayloadStore`/`DebugLogStore` abstractions.
 3. [ ] Revision-aware SQLite schema and migrations.
 4. [ ] Background SQLite writer.

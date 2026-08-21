@@ -123,6 +123,19 @@ def build_parser(prog=None, plugin_ids=None):
                              help='Run the non-scoring Pi worker/provider compatibility probe and print JSON')
 
     output_group = parser.add_argument_group('Output')
+    output_group.add_argument('--storage', choices=['json', 'sqlite'], default='json',
+                              help='Run storage backend (json during migration; sqlite becomes available in a later migration stage)')
+    output_group.add_argument('--storage-profile', choices=['compact', 'debug', 'portable'],
+                              default='compact',
+                              help='Storage policy for run artifacts (default: compact)')
+    output_group.add_argument('--debug-logs', action='store_true',
+                              help='Retain full request/response debug transcripts (overrides compact logging policy)')
+    output_group.add_argument('--output-format', nargs='+',
+                              choices=['csv', 'md', 'html', 'pdf'],
+                              default=None, metavar='FORMAT',
+                              help='Generate one or more reports (csv, md, html, pdf); omit to generate no reports')
+    output_group.add_argument('--generate-reports', type=str, default=None, metavar='PATH',
+                              help='Generate selected reports from an existing run directory or benchmark_state.json, without running models')
     output_group.add_argument('--save-responses', action='store_true',
                               help='Save each model\'s plugin response text to <output_dir>/responses/')
 

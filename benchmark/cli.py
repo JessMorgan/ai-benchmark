@@ -20,6 +20,7 @@ import threading
 import time
 import traceback
 import unicodedata
+import uuid
 from collections import deque
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from datetime import datetime, timezone
@@ -82,6 +83,7 @@ from benchmark.opencode import (
     opencode_version,
     resolve_opencode_binary,
 )
+from benchmark.outputs import save_outputs
 from benchmark.pi import pi_version, resolve_pi_worker, run_pi_probe
 from benchmark.plugin import SCORE_SCHEMA
 from benchmark.results import save_judge_result
@@ -151,6 +153,66 @@ def _write_run_info(output_dir, run_info):
             json.dump(run_info, f, indent=2, default=str)
     except Exception as e:  # noqa: BLE001 - a report-write failure must not abort the run
         print(f"⚠️  Could not write run-info.json: {e}", file=sys.stderr)
+
+
+def _latest_report_results(results):
+    """Return the last result for each state-key/runner pair."""
+    latest = {}
+    for result in results:
+        key = (result.get("state_key", result.get("model")), result.get("runner", "http"))
+        latest[key] = result
+    return list(latest.values())
+
+
+def _run_identity(output_dir, restart):
+    """Return a stable logical run ID and continuation revision number."""
+    manifest = os.path.join(output_dir, "run-info.json")
+    previous = {}
+    if not restart:
+        try:
+            with open(manifest, encoding="utf-8") as handle:
+                previous = json.load(handle)
+        except (OSError, json.JSONDecodeError, TypeError):
+            previous = {}
+    run_id = previous.get("run_id") or str(uuid.uuid4())
+    try:
+        revision_id = int(previous.get("revision_id", 0)) + 1
+    except (TypeError, ValueError):
+        revision_id = 1
+    return run_id, revision_id
+
+
+def _run_report_only(path, output_formats):
+    """Generate reports from a legacy JSON run without loading model config."""
+    if os.path.isdir(path):
+        state_path = os.path.join(path, "benchmark_state.json")
+        output_dir = path
+    else:
+        state_path = path
+        output_dir = os.path.dirname(path) or "."
+    if not os.path.isfile(state_path):
+        raise FileNotFoundError(f"benchmark state file not found: {state_path}")
+    if state_path.endswith(".sqlite3"):
+        raise RuntimeError("SQLite report-only loading is introduced in a later migration stage")
+    with open(state_path, encoding="utf-8") as handle:
+        data = json.load(handle)
+    results = data.get("results")
+    if not isinstance(results, list):
+        raise TypeError(f"{state_path} does not contain a results list")
+    active_ids = data.get("active_plugins") or []
+    discovered = discover_plugins()
+    active_plugins = [plugin for plugin in discovered if plugin.id in active_ids]
+    missing = [plugin_id for plugin_id in active_ids
+               if plugin_id not in {plugin.id for plugin in active_plugins}]
+    if missing:
+        raise ValueError(f"plugins are unavailable for report generation: {', '.join(missing)}")
+    generated = save_outputs(
+        _latest_report_results(results), output_dir, active_plugins,
+        output_formats=output_formats, session_seed=data.get("session_seed"),
+    )
+    for report in generated:
+        print(report)
+    return generated
 
 
 def _scan_judge_sidecars(judge_input_dir):
@@ -2591,6 +2653,18 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
     parser = build_parser()
     args = parser.parse_args()
 
+    if args.generate_reports:
+        if not args.output_format:
+            print("❌ --generate-reports requires --output-format with one or more formats.",
+                  file=sys.stderr)
+            sys.exit(2)
+        try:
+            _run_report_only(args.generate_reports, args.output_format)
+        except (OSError, json.JSONDecodeError, ValueError, RuntimeError) as exc:
+            print(f"❌ Could not generate reports: {exc}", file=sys.stderr)
+            sys.exit(1)
+        sys.exit(0)
+
     if args.build_judge_queue:
         try:
             path = write_disagreement_queue(
@@ -2650,6 +2724,11 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
             import yaml
             print(yaml.safe_dump(cfg, sort_keys=False, default_flow_style=False))
         sys.exit(0)
+
+    if args.storage == "sqlite":
+        print("❌ SQLite storage is not available yet; use --storage json until the SQLite migration is complete.",
+              file=sys.stderr)
+        sys.exit(2)
 
     config_path = _resolve_config_path(args.config)
     if config_path is None:
@@ -2784,6 +2863,7 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
     if args.out:
         output_dir = args.out
     state_file = os.path.join(output_dir, "benchmark_state.json")
+    run_id, revision_id = _run_identity(output_dir, args.restart)
     # Append-only result journal: every completed result is appended here so a
     # crash that truncates benchmark_state.json can still replay the results.
     journal_path = os.path.join(output_dir, "results.journal.jsonl")
@@ -2927,6 +3007,12 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
         "config_file": config_path,
         "cli_args": vars(args),
         "output_dir": output_dir,
+        "run_id": run_id,
+        "revision_id": revision_id,
+        "storage": args.storage,
+        "storage_profile": args.storage_profile,
+        "debug_logs": bool(args.debug_logs or args.storage_profile == "debug"),
+        "output_formats": list(dict.fromkeys(args.output_format or [])),
         "start_time": datetime.now(timezone.utc).isoformat(),
         "end_time": None,
         "status": "running",
@@ -4175,7 +4261,12 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
         # Reports are generated exactly once here, whether the run completed
         # or was stopped early, so the artifacts on disk always match the
         # final in-memory state.
-        _save_outputs(state, output_dir, active_plugins)
+        generated_reports = []
+        if args.output_format:
+            generated_reports = _save_outputs(
+                state, output_dir, active_plugins, args.output_format,
+            )
+        run_info["reports_generated"] = generated_reports
         if interrupted:
             done = state.completed
             print(f"✅ Saved state ({done}/{total} done). Re-run without --restart to continue.\n",

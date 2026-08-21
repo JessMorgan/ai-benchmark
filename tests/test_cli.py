@@ -19,6 +19,7 @@ from benchmark.cli import (
     _BenchmarkTUIApp,
     _FlushGate,
 )
+from benchmark.completions import build_parser
 from benchmark.http import NonStreamResult, StreamResult
 from benchmark.plugin import PluginTaskResult
 from benchmark.state import BenchmarkState
@@ -27,6 +28,20 @@ from tests.utils import MockResponse, load_benchmark_module
 
 
 class TestCLIArgs(unittest.TestCase):
+    def test_storage_and_report_options_parse(self):
+        args = build_parser().parse_args([
+            "--storage", "sqlite",
+            "--storage-profile", "debug",
+            "--debug-logs",
+            "--output-format", "csv", "html", "csv",
+            "--generate-reports", "run-dir",
+        ])
+        self.assertEqual(args.storage, "sqlite")
+        self.assertEqual(args.storage_profile, "debug")
+        self.assertTrue(args.debug_logs)
+        self.assertEqual(args.output_format, ["csv", "html", "csv"])
+        self.assertEqual(args.generate_reports, "run-dir")
+
     def test_list_plugins_shows_id_name_version(self):
         result = subprocess.run(
             [sys.executable, "ai-benchmark.py", "--list-plugins"],
@@ -107,6 +122,32 @@ class TestCLIArgs(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("CHATPLAYGROUND_EMAIL", result.stderr)
         self.assertIn("Could not enumerate ChatPlayground models", result.stderr)
+
+    def test_generate_reports_is_report_only(self):
+        project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        launcher = os.path.join(project_root, "ai-benchmark.py")
+        with tempfile.TemporaryDirectory() as tmp:
+            with open(os.path.join(tmp, "benchmark_state.json"), "w", encoding="utf-8") as handle:
+                json.dump({
+                    "active_plugins": ["rate-limiter"],
+                    "session_seed": 7,
+                    "results": [{
+                        "model": "demo",
+                        "status": "ok",
+                        "total_time": 1.0,
+                        "rate-limiter_score": 10,
+                    }],
+                }, handle)
+            result = subprocess.run(
+                [sys.executable, launcher, "--generate-reports", tmp, "--output-format", "csv"],
+                capture_output=True,
+                text=True,
+                check=False,
+                cwd=tmp,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertTrue(os.path.isfile(os.path.join(tmp, "results.csv")))
+            self.assertNotIn("Could not", result.stderr)
 
     def test_schema_sentinel_is_non_scoring_cli_tool(self):
         project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
