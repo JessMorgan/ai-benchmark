@@ -700,12 +700,12 @@ faster ordering; format them at report boundaries.
 
 ### Stage 4 — payload store and deduplication
 
-- [ ] Implement SHA-256 payload identity.
-- [ ] Store payload-bearing fields only as payload IDs.
-- [ ] Store short queryable judge text only as `TEXT`.
-- [ ] Add gzip compression for payload BLOBs.
-- [ ] Add payload integrity and round-trip tests.
-- [ ] Replace embedded judge-input prompt/response copies with payload IDs.
+- [x] Implement SHA-256 payload identity.
+- [x] Store payload-bearing fields only as payload IDs.
+- [x] Store short queryable judge text only as `TEXT`.
+- [x] Add gzip compression for payload BLOBs.
+- [x] Add payload integrity and round-trip tests.
+- [x] Replace embedded judge-input prompt/response copies with payload IDs.
 
 ### Stage 5 — append-only compressed debug logs
 
@@ -836,7 +836,7 @@ Using the measured `2026-08-17-nas-and-more-test-changes` run as the reference:
 2. [x] `RunStore`/`PayloadStore`/`DebugLogStore` abstractions.
 3. [x] Revision-aware SQLite schema and migrations.
 4. [x] Background SQLite writer.
-5. [ ] Single-representation payload store.
+5. [x] Single-representation payload store.
 6. [ ] Debug-only gzip writer from `gzip-append-log-plan.md`.
 7. [ ] Benchmark attempt persistence.
 8. [ ] Judge attempt/vote persistence.
