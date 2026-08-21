@@ -1,6 +1,6 @@
 # SQLite Run Storage Plan
 
-**Status:** Stages 0–9 complete; Stages 10–11 planned
+**Status:** Stages 0–10 complete; Stage 11 validation/rollout partially complete
 **Last updated:** 2026-08-20
 **Primary goals:** fast writes, small output directories, reduced duplication, reliable resume, and reproducible reports.
 
@@ -784,17 +784,19 @@ faster ordering; format them at report boundaries.
 
 ### Stage 11 — validation and rollout
 
-- [ ] Add optional JSON/SQLite dual-write shadow mode.
-- [ ] Compare scores, attempts, judge votes, consensus, revisions, and resume
-      queues.
-- [ ] Test model/plugin additions and removals across interrupted continuations.
-- [ ] Test plugin-version and judge-contract changes across continuations.
+- [ ] Add optional JSON/SQLite dual-write shadow mode. Runtime wiring remains
+      intentionally gated until all task and judge persistence paths use the
+      backend abstraction.
+- [x] Compare scores, attempts, judge votes, consensus, revisions, and resume
+      queues through the standalone semantic read-model validator.
+- [x] Test model/plugin additions and removals across interrupted continuations.
+- [x] Test plugin-version and judge-contract changes across continuations.
 - [ ] Benchmark write latency and TUI responsiveness.
 - [ ] Measure storage against the 2026-08-17 run shape.
 - [ ] Verify compact storage targets at least 60% savings.
 - [ ] Verify debug compressed storage remains materially smaller than plaintext.
 - [ ] Make SQLite compact the default for new runs.
-- [ ] Retain JSON import/export as a fallback.
+- [x] Retain JSON import/export as a fallback.
 - [ ] Update `AGENTS.md`, README, CLI docs, configuration docs, and architecture docs.
 
 ## 10. Acceptance criteria
@@ -843,10 +845,11 @@ Using the measured `2026-08-17-nas-and-more-test-changes` run as the reference:
 7. [x] Benchmark attempt persistence.
 8. [x] Judge attempt/vote persistence.
 9. [x] Revision-aware resume, continuation, and purge.
-10. [ ] On-demand report generation.
-11. [ ] Existing-run importer.
-12. [ ] Dual-write validation.
-13. [ ] SQLite compact default.
+10. [x] On-demand report generation.
+11. [x] Existing-run importer.
+12. [x] Semantic read-model validation.
+13. [ ] Runtime dual-write validation.
+14. [ ] SQLite compact default.
 
 The key invariant is:
 
