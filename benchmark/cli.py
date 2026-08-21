@@ -4489,6 +4489,15 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
         run_info["error"] = f"{type(exc).__name__}: {exc}"
         raise
     finally:
+        # Always drain and close the SQLite writer so queued writes are
+        # committed even when the normal shutdown path was interrupted
+        # (e.g. Ctrl+C before close_run_store was reached). The writer
+        # close() is safe to call multiple times.
+        if state is not None:
+            try:
+                state.close_run_store(timeout=shutdown_timeout)
+            except Exception:  # noqa: BLE001 - best-effort
+                pass
         run_info["end_time"] = datetime.now(timezone.utc).isoformat()
         run_info["completed_targets"] = state.completed if state is not None else 0
         run_info["worker_errors"] = worker_errors
