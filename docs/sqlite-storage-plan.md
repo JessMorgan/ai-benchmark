@@ -730,15 +730,15 @@ faster ordering; format them at report boundaries.
 
 ### Stage 7 — judge persistence
 
-- [ ] Persist immutable judge contracts.
-- [ ] Persist revision-specific judge model and contract membership.
-- [ ] Persist every judge transport attempt.
-- [ ] Persist every parsed vote attempt without overwriting history.
-- [ ] Normalize criteria and evidence as `TEXT`.
-- [ ] Maintain current-vote projections per revision and contract.
-- [ ] Cache consensus using a vote-set hash.
-- [ ] Preserve historical contracts side-by-side.
-- [ ] Keep full assembled request payloads debug-only.
+- [x] Persist immutable judge contracts.
+- [x] Persist revision-specific judge model and contract membership.
+- [x] Persist every judge transport attempt.
+- [x] Persist every parsed vote attempt without overwriting history.
+- [x] Normalize criteria and evidence as `TEXT`.
+- [x] Maintain current-vote projections per revision and contract.
+- [x] Cache consensus using a vote-set hash.
+- [x] Preserve historical contracts side-by-side.
+- [x] Keep full assembled request payloads debug-only.
 
 ### Stage 8 — SQLite continuation, resume, and purge
 
@@ -839,7 +839,7 @@ Using the measured `2026-08-17-nas-and-more-test-changes` run as the reference:
 5. [x] Single-representation payload store.
 6. [x] Debug-only gzip writer from `gzip-append-log-plan.md`.
 7. [x] Benchmark attempt persistence.
-8. [ ] Judge attempt/vote persistence.
+8. [x] Judge attempt/vote persistence.
 9. [ ] Revision-aware resume, continuation, and purge.
 10. [ ] On-demand report generation.
 11. [ ] Existing-run importer.
