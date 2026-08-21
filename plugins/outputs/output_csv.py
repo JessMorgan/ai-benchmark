@@ -14,6 +14,11 @@ from benchmark.outputs import (
 from benchmark.plugin import BenchmarkOutputPlugin
 
 
+def _atomic_write(path, content):
+    from benchmark.outputs import _atomic_replace_report
+    _atomic_replace_report(path, content)
+
+
 class CSVOutputPlugin(BenchmarkOutputPlugin):
     @property
     def id(self):
@@ -117,8 +122,7 @@ class CSVOutputPlugin(BenchmarkOutputPlugin):
         if output_dir:
             path = os.path.join(output_dir, "results.csv")
             try:
-                with open(path, "w") as f:
-                    f.write(content)
+                _atomic_write(path, content)
                 return path
             except OSError:
                 pass

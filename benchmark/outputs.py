@@ -4,7 +4,9 @@ This module contains the report generators (Markdown, CSV, HTML, PDF) and the
 helper used to persist them to disk.
 """
 import contextlib
+import os
 import re
+import tempfile
 
 from .plugin import normalize_score
 
@@ -182,6 +184,24 @@ def normalize_output_formats(output_formats):
         if output_format not in formats:
             formats.append(output_format)
     return formats
+
+
+def _atomic_replace_report(path, content, *, binary=False):
+    """Write report content through a sibling temporary file and replace atomically."""
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    mode = "wb" if binary else "w"
+    kwargs = {} if binary else {"encoding": "utf-8"}
+    fd, temporary = tempfile.mkstemp(prefix=f".{os.path.basename(path)}.", dir=os.path.dirname(path) or ".")
+    try:
+        with os.fdopen(fd, mode, **kwargs) as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    except Exception:
+        with contextlib.suppress(OSError):
+            os.unlink(temporary)
+        raise
 
 
 def save_outputs(results, output_dir, active_plugins, *, output_formats=None,

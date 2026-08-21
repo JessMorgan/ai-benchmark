@@ -1,0 +1,216 @@
+"""Read the normalized SQLite run store as the legacy report dictionaries."""
+from __future__ import annotations
+
+import json
+import os
+import sqlite3
+from typing import Any
+
+from .sqlite_payloads import SQLitePayloadStore
+
+
+class SQLiteReportSource:
+    """Materialize report-compatible rows from a selected SQLite revision."""
+
+    def __init__(self, connection: sqlite3.Connection):
+        self.connection = connection
+        self.payloads = SQLitePayloadStore(connection)
+        self._owned_connection: sqlite3.Connection | None = None
+
+    @classmethod
+    def open(cls, path: str) -> SQLiteReportSource:
+        connection = sqlite3.connect(path)
+        connection.row_factory = sqlite3.Row
+        from .sqlite_schema import configure_connection, initialize_schema
+        configure_connection(connection)
+        initialize_schema(connection)
+        source = cls(connection)
+        source._owned_connection = connection
+        return source
+
+    def close(self) -> None:
+        connection: sqlite3.Connection | None = getattr(self, "_owned_connection", None)
+        if connection is not None:
+            connection.close()
+            self._owned_connection = None
+
+    def load_results(
+        self, *, revision: int | None = None,
+    ) -> tuple[list[dict[str, Any]], list[str], int | None, int]:
+        revision_id = self._resolve_revision(revision)
+        revision_row = self.connection.execute(
+            "SELECT session_seed FROM run_revisions WHERE revision_id = ?",
+            (revision_id,),
+        ).fetchone()
+        if revision_row is None:
+            raise ValueError(f"SQLite revision {revision_id} does not exist")
+        plugin_rows = self.connection.execute(
+            """
+            SELECT plugin_id, plugin_version FROM revision_plugins
+            WHERE revision_id = ? AND active = 1 ORDER BY rowid
+            """,
+            (revision_id,),
+        ).fetchall()
+        active_plugins = [str(row[0]) for row in plugin_rows]
+        results: dict[tuple[int, int], dict[str, Any]] = {}
+        cells = self.connection.execute(
+            """
+            SELECT c.cell_id, c.target_instance_id, c.plugin_id, c.plugin_version,
+                   t.logical_name, t.runner, t.source, t.api_model, t.is_agent,
+                   s.attempt_id
+            FROM revision_cells rc
+            JOIN cells c ON c.cell_id = rc.cell_id
+            JOIN target_instances t ON t.target_instance_id = c.target_instance_id
+            LEFT JOIN benchmark_selections s
+              ON s.revision_id = rc.revision_id AND s.cell_id = c.cell_id
+            WHERE rc.revision_id = ? AND rc.scheduled = 1
+            ORDER BY t.logical_name, c.plugin_id
+            """,
+            (revision_id,),
+        ).fetchall()
+        for row in cells:
+            key = (int(row["target_instance_id"]), int(row["is_agent"]))
+            result = results.setdefault(key, {
+                "model": row["logical_name"],
+                "state_key": row["logical_name"],
+                "api_model": row["api_model"],
+                "source": row["source"],
+                "runner": row["runner"],
+                "is_agent": bool(row["is_agent"]),
+                "status": "ok",
+                "session_seed": revision_row[0],
+            })
+            pid = str(row["plugin_id"])
+            result[f"{pid}_plugin_version"] = row["plugin_version"]
+            attempt_id = row["attempt_id"]
+            if attempt_id is None:
+                result["status"] = "error"
+                result[f"{pid}_score"] = "fail"
+                continue
+            attempt = self.connection.execute(
+                "SELECT * FROM benchmark_attempts WHERE attempt_id = ?",
+                (attempt_id,),
+            ).fetchone()
+            if attempt is None:
+                result["status"] = "error"
+                result[f"{pid}_score"] = "fail"
+                continue
+            prefix = f"{pid}_"
+            result[f"{prefix}score"] = attempt["score"] if attempt["score"] is not None else "fail"
+            for column, suffix in (
+                ("output_tokens", "output_tokens"),
+                ("thinking_tokens", "thinking_tokens"),
+                ("total_tokens", "total_tokens"),
+                ("tps", "tps"),
+                ("finish_reason", "finish_reason"),
+                ("response_nature", "response_nature"),
+                ("retry_reason", "retry_reason"),
+                ("prompt_altered", "prompt_altered"),
+                ("truncated", "truncated"),
+                ("truncated_due_to_time", "truncated_due_to_time"),
+                ("failure_cause", "failure_cause"),
+                ("stream_ok", "stream_ok"),
+                ("repeating", "repeating"),
+                ("empty_reason", "empty_reason"),
+                ("error", "error"),
+            ):
+                value = attempt[column]
+                if value is not None:
+                    result[f"{prefix}{suffix}"] = bool(value) if suffix in {
+                        "truncated", "truncated_due_to_time", "stream_ok", "repeating",
+                    } else value
+            if attempt["error"] is not None or attempt["score"] is None:
+                result["status"] = "error"
+            rubric = self._json_load(attempt["rubric_json"])
+            if rubric is not None:
+                result[f"{prefix}rubric"] = rubric
+            diagnostics = self._json_load(attempt["diagnostics_json"])
+            if diagnostics is not None:
+                result[f"{prefix}diagnostics"] = diagnostics
+        rows = list(results.values())
+        for result in rows:
+            self._attach_judges(result, revision_id)
+        return rows, active_plugins, revision_row[0], revision_id
+
+    def _attach_judges(self, result: dict[str, Any], revision_id: int) -> None:
+        target = result.get("model")
+        runner = result.get("runner")
+        target_id = self.connection.execute(
+            "SELECT target_instance_id FROM target_instances WHERE logical_name = ? AND runner = ?",
+            (target, runner),
+        ).fetchone()
+        if target_id is None:
+            return
+        cells = self.connection.execute(
+            """
+            SELECT c.cell_id, c.plugin_id
+            FROM cells c JOIN target_instances t ON t.target_instance_id = c.target_instance_id
+            WHERE c.target_instance_id = ?
+            """,
+            (target_id[0],),
+        ).fetchall()
+        for cell in cells:
+            votes = self.connection.execute(
+                """
+                SELECT c.judge_model, c.contract_id, v.score, v.confidence,
+                       v.rationale, v.error, v.usable
+                FROM current_judge_votes c
+                JOIN judge_vote_attempts v ON v.vote_attempt_id = c.vote_attempt_id
+                WHERE c.revision_id = ? AND c.cell_id = ?
+                ORDER BY c.judge_model
+                """,
+                (revision_id, cell["cell_id"]),
+            ).fetchall()
+            if not votes:
+                continue
+            pid = str(cell["plugin_id"])
+            result[f"{pid}_judge_votes"] = [dict(vote) for vote in votes]
+            usable = [vote["score"] for vote in votes if vote["usable"] and vote["score"] is not None]
+            result[f"{pid}_judge_score"] = sum(usable) / len(usable) if usable else None
+            result[f"{pid}_judge_models"] = [vote["judge_model"] for vote in votes]
+
+    def _resolve_revision(self, revision: int | None) -> int:
+        if revision is None:
+            row = self.connection.execute(
+                "SELECT current_revision_id FROM runs ORDER BY created_at DESC LIMIT 1"
+            ).fetchone()
+            if row is None or row[0] is None:
+                raise ValueError("SQLite database has no current revision")
+            return int(row[0])
+        row = self.connection.execute(
+            """
+            SELECT revision_id FROM run_revisions
+            WHERE revision_id = ?
+               OR (run_id = (
+                    SELECT run_id FROM run_revisions WHERE revision_id = ?
+                  ) AND revision_number = ?)
+            ORDER BY CASE WHEN revision_id = ? THEN 0 ELSE 1 END, revision_id DESC
+            LIMIT 1
+            """,
+            (revision, revision, revision, revision),
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"SQLite revision {revision} does not exist")
+        return int(row[0])
+
+    @staticmethod
+    def _json_load(value: Any) -> Any:
+        if value is None:
+            return None
+        try:
+            return json.loads(value)
+        except (TypeError, ValueError):
+            return None
+
+
+def sqlite_path_from_report_path(path: str) -> str | None:
+    """Resolve a directory/database argument to a SQLite file if present."""
+    if os.path.isdir(path):
+        for name in ("run.sqlite3", "benchmark.sqlite3", "run.db"):
+            probe = os.path.join(path, name)
+            if os.path.isfile(probe):
+                return probe
+        return None
+    if os.path.isfile(path) and path.endswith((".sqlite3", ".db")):
+        return path
+    return None

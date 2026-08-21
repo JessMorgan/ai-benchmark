@@ -115,8 +115,8 @@ class JsonReportSource:
         state_path = path
         if os.path.isdir(path):
             state_path = os.path.join(path, "benchmark_state.json")
-        if state_path.endswith(".sqlite3"):
-            raise RuntimeError("SQLite report loading is not available yet")
+        if state_path.endswith((".sqlite3", ".db")):
+            raise RuntimeError("Use SQLiteReportSource for SQLite report loading")
         with open(state_path, encoding="utf-8") as handle:
             data = json.load(handle)
         results = data.get("results")

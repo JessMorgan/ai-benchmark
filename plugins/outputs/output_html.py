@@ -16,6 +16,11 @@ from benchmark.outputs import (
 )
 from benchmark.plugin import BenchmarkOutputPlugin
 
+
+def _atomic_write(path, content):
+    from benchmark.outputs import _atomic_replace_report
+    _atomic_replace_report(path, content)
+
 # The document skeleton (head, CSS, page structure) lives in a Jinja2
 # template; the data-driven cells are pre-built in Python and passed in
 # already escaped, so autoescape is off to avoid double-escaping.
@@ -228,8 +233,7 @@ class HTMLOutputPlugin(BenchmarkOutputPlugin):
         if output_dir:
             path = os.path.join(output_dir, "results.html")
             try:
-                with open(path, "w") as f:
-                    f.write(content)
+                _atomic_write(path, content)
                 return path
             except OSError:
                 pass

@@ -12,6 +12,21 @@ from benchmark.outputs import (
 from benchmark.plugin import BenchmarkOutputPlugin
 
 
+def _atomic_write_pdf(path, pdf):
+    import tempfile
+    fd, temporary = tempfile.mkstemp(prefix=f".{os.path.basename(path)}.", dir=os.path.dirname(path) or ".")
+    os.close(fd)
+    try:
+        pdf.output(temporary)
+        os.replace(temporary, path)
+    except Exception:
+        try:
+            os.unlink(temporary)
+        except OSError:
+            pass
+        raise
+
+
 class PDFOutputPlugin(BenchmarkOutputPlugin):
     @property
     def id(self):
@@ -195,5 +210,5 @@ class PDFOutputPlugin(BenchmarkOutputPlugin):
 
         os.makedirs(output_dir, exist_ok=True)
         path = os.path.join(output_dir, "results.pdf")
-        pdf.output(path)
+        _atomic_write_pdf(path, pdf)
         return path

@@ -87,6 +87,7 @@ from benchmark.outputs import save_outputs
 from benchmark.pi import pi_version, resolve_pi_worker, run_pi_probe
 from benchmark.plugin import SCORE_SCHEMA
 from benchmark.results import save_judge_result
+from benchmark.sqlite_reports import SQLiteReportSource, sqlite_path_from_report_path
 from benchmark.state import apply_state_recovery, prepare_state_recovery
 from benchmark.storage import JsonReportSource, latest_result_rows
 from plugins import discover_plugins, format_plugin_list
@@ -175,23 +176,40 @@ def _run_identity(output_dir, restart):
     return run_id, revision_id
 
 
-def _run_report_only(path, output_formats):
-    """Generate reports from a legacy JSON run without loading model config."""
-    output_dir = path if os.path.isdir(path) else os.path.dirname(path) or "."
-    results, active_ids, session_seed = JsonReportSource().load_results(path)
-    discovered = discover_plugins()
-    active_plugins = [plugin for plugin in discovered if plugin.id in active_ids]
-    missing = [plugin_id for plugin_id in active_ids
-               if plugin_id not in {plugin.id for plugin in active_plugins}]
-    if missing:
-        raise ValueError(f"plugins are unavailable for report generation: {', '.join(missing)}")
-    generated = save_outputs(
-        latest_result_rows(results), output_dir, active_plugins,
-        output_formats=output_formats, session_seed=session_seed,
-    )
-    for report in generated:
-        print(report)
-    return generated
+def _run_report_only(path, output_formats, revision=None):
+    """Generate reports from SQLite or a legacy JSON run without model work."""
+    sqlite_path = sqlite_path_from_report_path(path)
+    source = None
+    try:
+        if sqlite_path is not None:
+            source = SQLiteReportSource.open(sqlite_path)
+            results, active_ids, session_seed, _revision_id = source.load_results(
+                revision=revision,
+            )
+        else:
+            output_dir = path if os.path.isdir(path) else os.path.dirname(path) or "."
+            results, active_ids, session_seed = JsonReportSource().load_results(path)
+            results = latest_result_rows(results)
+
+        output_dir = path if os.path.isdir(path) else os.path.dirname(path) or "."
+        discovered = discover_plugins()
+        active_plugins = [plugin for plugin in discovered if plugin.id in active_ids]
+        missing = [plugin_id for plugin_id in active_ids
+                   if plugin_id not in {plugin.id for plugin in active_plugins}]
+        if missing:
+            raise ValueError(
+                f"plugins are unavailable for report generation: {', '.join(missing)}"
+            )
+        generated = save_outputs(
+            results, output_dir, active_plugins,
+            output_formats=output_formats, session_seed=session_seed,
+        )
+        for report in generated:
+            print(report)
+        return generated
+    finally:
+        if source is not None:
+            source.close()
 
 
 def _scan_judge_sidecars(judge_input_dir):
@@ -2638,7 +2656,9 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
                   file=sys.stderr)
             sys.exit(2)
         try:
-            _run_report_only(args.generate_reports, args.output_format)
+            _run_report_only(
+                args.generate_reports, args.output_format, args.revision,
+            )
         except (OSError, json.JSONDecodeError, TypeError, ValueError, RuntimeError) as exc:
             print(f"❌ Could not generate reports: {exc}", file=sys.stderr)
             sys.exit(1)
@@ -2705,7 +2725,7 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
         sys.exit(0)
 
     if args.storage == "sqlite":
-        print("❌ SQLite storage is not available yet; use --storage json until the SQLite migration is complete.",
+        print("❌ SQLite storage is not available until the runtime persistence stage is complete.",
               file=sys.stderr)
         sys.exit(2)
 

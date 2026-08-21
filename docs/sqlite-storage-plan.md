@@ -1,6 +1,6 @@
 # SQLite Run Storage Plan
 
-**Status:** Stage 0 complete; later stages planned
+**Status:** Stages 0–9 complete; Stages 10–11 planned
 **Last updated:** 2026-08-20
 **Primary goals:** fast writes, small output directories, reduced duplication, reliable resume, and reproducible reports.
 
@@ -756,14 +756,14 @@ faster ordering; format them at report boundaries.
 
 ### Stage 9 — report generation
 
-- [ ] Generate reports only when `--output-format` is selected.
-- [ ] Implement report-only loading from SQLite.
-- [ ] Support legacy JSON runs in report-only mode.
-- [ ] Default reports to the current revision.
-- [ ] Add an explicit historical-revision report option if needed.
-- [ ] Write each report atomically.
-- [ ] Preserve current report content through the compatibility read model.
-- [ ] Add no-report, one-format, multi-format, and changed-config tests.
+- [x] Generate reports only when `--output-format` is selected.
+- [x] Implement report-only loading from SQLite.
+- [x] Support legacy JSON runs in report-only mode.
+- [x] Default reports to the current revision.
+- [x] Add an explicit historical-revision report option if needed (`--revision`).
+- [x] Write each report atomically.
+- [x] Preserve current report content through the compatibility read model.
+- [x] Add no-report, one-format, multi-format, and changed-config tests.
 
 ### Stage 10 — existing-run importer
 

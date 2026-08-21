@@ -136,6 +136,8 @@ def build_parser(prog=None, plugin_ids=None):
                               help='Generate one or more reports (csv, md, html, pdf); omit to generate no reports')
     output_group.add_argument('--generate-reports', type=str, default=None, metavar='PATH',
                               help='Generate selected reports from an existing run directory or benchmark_state.json, without running models')
+    output_group.add_argument('--revision', type=int, default=None, metavar='N',
+                              help='Report a specific SQLite revision number or ID (default: current revision)')
     output_group.add_argument('--save-responses', action='store_true',
                               help='Save each model\'s plugin response text to <output_dir>/responses/')
 

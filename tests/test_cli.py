@@ -149,6 +149,13 @@ class TestCLIArgs(unittest.TestCase):
             self.assertTrue(os.path.isfile(os.path.join(tmp, "results.csv")))
             self.assertNotIn("Could not", result.stderr)
 
+    def test_generate_reports_accepts_revision_selector(self):
+        args = build_parser().parse_args([
+            "--generate-reports", "run.sqlite3", "--output-format", "csv",
+            "--revision", "2",
+        ])
+        self.assertEqual(args.revision, 2)
+
     def test_schema_sentinel_is_non_scoring_cli_tool(self):
         project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         launcher = os.path.join(project_root, "ai-benchmark.py")
