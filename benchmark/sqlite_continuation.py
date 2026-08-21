@@ -447,7 +447,19 @@ class SQLiteContinuationStore:
             if (row[0], float(row[1]), bool(row[2]), row[3]) != (
                 spec.name, float(spec.max_score), bool(spec.supports_streaming), metadata,
             ):
-                raise ValueError(f"plugin definition is immutable: {spec.plugin_id}@{spec.plugin_version}")
+                # Plugin properties changed — update the stored definition so
+                # the continuation reflects the current code.  Earlier schema
+                # versions treated plugin definitions as immutable, which broke
+                # resume after any plugin edit.  Updating here is safe because
+                # benchmark cells and selections reference plugin_id+version,
+                # not the mutable properties.
+                self.connection.execute(
+                    "UPDATE plugin_definitions SET name = ?, max_score = ?, "
+                    "supports_streaming = ?, metadata_json = ? "
+                    "WHERE plugin_id = ? AND plugin_version = ?",
+                    (spec.name, spec.max_score, int(spec.supports_streaming),
+                     metadata, spec.plugin_id, spec.plugin_version),
+                )
             return
         self.connection.execute(
             "INSERT INTO plugin_definitions(plugin_id, plugin_version, name, max_score, "

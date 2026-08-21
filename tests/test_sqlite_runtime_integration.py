@@ -131,5 +131,37 @@ class TestSQLiteRuntimeIntegration(unittest.TestCase):
             self.assertTrue(resumed.close(timeout=10))
 
 
+    def test_continuation_updates_plugin_definition_on_mismatch(self):
+        """Plugin metadata can change between continuations without raising."""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "run.sqlite3")
+            store = SQLiteRunStore(path, flush_interval=0.01)
+            store.start_run(RunIdentity("run", 1), source="test")
+            target = _target()
+            plugin = _plugin()  # version=1.0.0, max_score=20
+            store.prepare_run([target], [plugin])
+            cell_id = store.get_cell_id("m", "http", "rate-limiter")
+            store.record_benchmark_attempt(
+                cell_id, _benchmark_attempt(score=18, attempt_number=1),
+                selected=True,
+            )
+            store.flush(timeout=10)
+            store.close(timeout=10)
+
+            # Simulate plugin edit: same version but changed metadata
+            plugin_edited = PluginRecord(
+                plugin_id="rate-limiter", plugin_version="1.0.0",
+                name="Rate Limiter Updated", max_score=25.0,
+                supports_streaming=False, metadata={"changed": True},
+            )
+
+            resumed = SQLiteRunStore(path, flush_interval=0.01)
+            resumed.start_run(RunIdentity("run", 2), source="test")
+            resumed.prepare_run([target], [plugin_edited])
+            # This should NOT raise — should update the definition
+            resumed.continue_run(config={}, runner_mode="http", session_seed=None)
+            self.assertTrue(resumed.close(timeout=10))
+
+
 if __name__ == "__main__":
     unittest.main()
