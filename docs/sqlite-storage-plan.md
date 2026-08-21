@@ -14,28 +14,34 @@ references and derived reports.
 ### Decisions
 
 - SQLite is the authoritative store for new runs.
-- Benchmark and judge attempts are immutable records; current selections are
-  references, not copied result objects.
-- Prompts, candidate responses, thinking text, and raw judge responses are
-  content-addressed and stored once.
-- Full judge request/response transcripts are **debug-only**. They are not
-  written during ordinary compact runs.
-- Debug transcripts are compressed while being written and support append-only
-  operation without decompressing the existing file.
+- A logical run contains immutable continuation revisions. Stopping and
+  continuing a run never mutates historical revisions.
+- Benchmark and judge attempts are immutable records. Current selections are
+  revision-scoped pointers, not copied result objects.
+- Prompts, candidate responses, thinking text, and raw judge responses use one
+  representation: a payload ID referencing one compressed SQLite BLOB. There is
+  no parallel inline-text/hash representation for the same field.
+- Short, frequently queried judge text (`rationale`, `criterion`, and `evidence`)
+  uses one representation: SQLite `TEXT` columns. It is not optionally split
+  into inline text and payload hashes.
+- Full judge request/response transcripts are debug-only. They are not written
+  during ordinary compact runs.
+- Debug transcripts use gzip concatenated members and append without
+  decompressing existing data. The detailed design and recovery tests are in
+  [the gzip append-log plan](gzip-append-log-plan.md).
 - Reports are generated only when requested.
-- Users select one or more report formats with a CLI argument.
 - JSON remains available as an import/export and compatibility backend during
   migration.
 - SQLite WAL and one background writer replace the separate full-state JSONL
-  journal for normal SQLite runs.
+  journal for normal SQLite runs. An audit-event table is optional and never
+  contains full payloads.
 
 ## 2. Storage profiles
 
 ### `compact` (default)
 
 - SQLite metadata and result tables.
-- Deduplicated compressed payloads.
-- Raw benchmark and judge responses retained as payloads.
+- Deduplicated compressed payload BLOBs.
 - No full successful judge request/response transcript.
 - Failure metadata and compact transport diagnostics retained.
 - No purge backups in the normal run directory.
@@ -43,15 +49,9 @@ references and derived reports.
 
 ### `debug`
 
-Includes everything in `compact`, plus:
-
-- Full judge request and response transcripts.
-- HTTP request/response diagnostics.
-- OpenCode and Pi stdout/stderr artifacts.
-- Attempt-level transport details useful for reproducing failures.
-
-Debug transcripts are compressed append-only files. They are not duplicated in
-SQLite unless the operator explicitly requests database embedding.
+Includes everything in `compact`, plus compressed full judge transcripts,
+HTTP diagnostics, and OpenCode/Pi stdout/stderr artifacts. Debug log behavior
+is specified in [gzip-append-log-plan.md](gzip-append-log-plan.md).
 
 ### `portable`
 
@@ -73,7 +73,6 @@ SQLite unless the operator explicitly requests database embedding.
 ├── results.md                  # optional generated export
 ├── results.html                # optional generated export
 ├── results.pdf                 # optional generated export
-├── payloads/                   # optional external large payloads
 └── logs/                       # only in debug mode or for failures
     ├── judge-<model>.log.gz
     ├── <target>/<plugin>.log.gz
@@ -83,89 +82,9 @@ SQLite unless the operator explicitly requests database embedding.
 After a clean shutdown, SQLite checkpoints its WAL. The database is the main
 portable artifact; reports and debug logs are derived or optional artifacts.
 
-## 4. Append-only compressed debug logs
+## 4. On-demand report generation
 
-### 4.1 Preferred format: gzip member streams
-
-The first implementation should use Python's standard-library `gzip` module.
-Gzip is the best initial choice because it is:
-
-- available without a new dependency;
-- fast enough for diagnostic text;
-- widely available for operators and shell tooling;
-- streamable;
-- compatible with append-only concatenated members.
-
-A log writer can append a new gzip member to an existing file:
-
-```python
-with gzip.open(path, "ab") as stream:
-    stream.write(chunk)
-```
-
-Readers concatenate gzip members transparently. The existing compressed log is
-never decompressed or rewritten merely to append new data.
-
-The implementation should buffer logical log entries or chunks, rather than
-creating a gzip member for every tiny character delta. A target member size of
-roughly 64–256 KiB is a reasonable starting point. Each member should contain
-complete UTF-8 text boundaries where practical.
-
-### 4.2 Crash behavior
-
-A process crash can leave an incomplete final gzip member. Readers must:
-
-- return all complete preceding members;
-- tolerate an incomplete final member;
-- report the truncated tail in debug metadata;
-- never rewrite the file during normal reading.
-
-The single persistence/log writer should own each log file. If more than one
-thread can write the same log, retain the existing log lock or use one queue
-per file.
-
-### 4.3 Alternatives considered
-
-| Format | Advantages | Disadvantages | Decision |
-|---|---|---|---|
-| gzip | Standard library, streaming, concatenated members, ubiquitous | Worse ratio than newer codecs | **Initial implementation** |
-| bz2 | Better ratio for some text; standard library | Slower compression/decompression; less convenient for frequent small appends | Optional later profile |
-| xz/lzma | Excellent ratio | Slow, high memory, poor fit for live append | Do not use for live logs |
-| zstd | Excellent speed/ratio; supports independent frames | Requires adding/verifying a dependency; packaging complexity | Consider after baseline |
-| 7z | Strong compression and archive features | Not a streaming log format; append often rewrites archive/metadata; external dependency | Reject for append-only logs |
-| tar.gz | Convenient archive of many files | Appending requires tar records and complicates random file access | Use only for final packaging |
-
-The plan should not add 7z for active logs. A future `zstd` profile may be
-added if measurements justify a dependency, but gzip is the default baseline.
-
-### 4.4 Log policy
-
-Normal compact runs should store only structured diagnostics:
-
-- request ID and target/cell identity;
-- source/model/runner;
-- start/end time;
-- status and error;
-- HTTP status and retry counts;
-- response hash;
-- token/finish metadata.
-
-Full request bodies and responses should be written only when:
-
-- `--storage-profile debug` is selected;
-- a dedicated `--debug-logs` option is selected;
-- an operator explicitly requests failure transcripts;
-- a provider/schema failure requires a retained reproduction artifact.
-
-Successful judge requests must not create full plaintext `judge-*.log` files in
-compact mode.
-
-## 5. On-demand report generation
-
-Reports should no longer be generated automatically for every run. This avoids
-writing large CSV/HTML/PDF artifacts that may never be used.
-
-### 5.1 Proposed CLI
+Reports should not be generated automatically for every run.
 
 For a benchmark run:
 
@@ -191,362 +110,683 @@ python ai-benchmark.py \
   --output-format csv html
 ```
 
-`--generate-reports PATH` is report-only mode. It loads the SQLite store, or a
-legacy JSON run during migration, and writes only the selected formats.
+`--generate-reports PATH` is report-only mode. It loads SQLite or a legacy JSON
+run and schedules no model, benchmark, or judge work.
 
-### 5.2 CLI validation
+CLI rules:
 
-- `--output-format` requires either a benchmark run or
-  `--generate-reports PATH`.
-- `--generate-reports PATH` must not schedule model, benchmark, or judge work.
-- Duplicate formats are removed while preserving the first requested order.
-- Unknown formats fail before loading a model.
-- Existing output files are replaced atomically.
-- Report generation failures identify the format and do not corrupt the run
-  database.
-- `--save-responses` controls materialized human-readable response files; it
-  does not implicitly enable reports.
+- `--output-format` requires a benchmark run or `--generate-reports PATH`.
+- Duplicate formats are removed while preserving request order.
+- Unknown formats fail before model loading.
+- Existing reports are replaced atomically.
+- Report failures identify the format and do not corrupt the database.
+- `--save-responses` controls materialized response files; it does not enable
+  reports.
 
-### 5.3 Report compatibility
+The first SQLite implementation should expose the existing result-dictionary
+read model to output plugins. Reports remain derived artifacts rather than a
+second authoritative result store.
 
-The first SQLite implementation should expose the existing result dictionary
-read model to output plugins. This keeps report content equivalent while the
-storage backend changes.
+## 5. Representation and deduplication policy
 
-Later, output plugins may query SQLite directly for large reports. Reports must
-remain derived artifacts and must not become a second authoritative result
-store.
+There is deliberately one representation per logical field.
+
+| Data | Representation |
+|---|---|
+| Task prompt | `payload_id` → compressed BLOB in `payloads` |
+| Candidate content | `payload_id` → compressed BLOB in `payloads` |
+| Candidate thinking | `payload_id` → compressed BLOB in `payloads` |
+| Raw judge response | `payload_id` → compressed BLOB in `payloads` |
+| Judge rationale | SQLite `TEXT` |
+| Criterion description | SQLite `TEXT` |
+| Criterion evidence | SQLite `TEXT` |
+| Stable metadata | Typed SQLite columns |
+| Provider-specific metadata | JSON stored in one `TEXT` column |
+| Full debug transcript | Append-only `.gz` file, never a second payload representation |
+
+The `payloads` table stores compressed BLOBs only. It does not have an
+alternative `external_path` representation. Debug logs are the exception:
+they are append-only diagnostic files governed by the separate gzip plan.
+
+Payload identity is the SHA-256 of the uncompressed bytes. Identical prompts,
+responses, or judge outputs receive one payload row.
 
 ## 6. SQLite schema
 
-### Schema metadata
+### Schema metadata and payloads
 
 ```sql
 CREATE TABLE schema_meta (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
+
+CREATE TABLE payloads (
+    payload_id          INTEGER PRIMARY KEY,
+    sha256              TEXT NOT NULL UNIQUE,
+    kind                TEXT NOT NULL,
+    compression         TEXT NOT NULL DEFAULT 'gzip',
+    uncompressed_bytes  INTEGER NOT NULL,
+    stored_bytes        INTEGER NOT NULL,
+    data                BLOB NOT NULL,
+    created_at          INTEGER NOT NULL
+);
 ```
 
-### Runs and targets
+All payload-bearing fields use an integer `payload_id`; they never switch
+between a text column and a payload reference. Short queryable text remains
+plain `TEXT` instead of requiring a payload join.
+
+### Logical runs and continuation revisions
+
+A database may contain one logical run with many continuation revisions. A
+revision is one invocation of the benchmark using one configuration snapshot.
+The `runs.current_revision_id` foreign key is intentionally cyclic with
+`run_revisions.run_id`; schema creation must either create the tables in a
+foreign-key-compatible order or add the current-revision foreign key in a
+migration after both tables exist.
+
+Plugin definitions, payloads, and judge contract definitions are immutable
+within the database and may be reused by multiple logical runs. Run-specific
+activation belongs in the revision membership tables.
 
 ```sql
 CREATE TABLE runs (
-    run_id              TEXT PRIMARY KEY,
-    created_at          TEXT NOT NULL,
-    started_at          TEXT,
-    ended_at            TEXT,
+    run_id             TEXT PRIMARY KEY,
+    created_at         INTEGER NOT NULL,
     status              TEXT NOT NULL,
     score_schema        TEXT NOT NULL,
-    runner_mode         TEXT NOT NULL,
-    session_seed        INTEGER,
-    config_payload_id   INTEGER,
-    app_version         TEXT,
-    storage_profile     TEXT NOT NULL
+    storage_profile     TEXT NOT NULL,
+    current_revision_id INTEGER REFERENCES run_revisions(revision_id)
 );
 
-CREATE TABLE targets (
-    target_id           INTEGER PRIMARY KEY,
-    run_id              TEXT NOT NULL REFERENCES runs(run_id),
-    target_name         TEXT NOT NULL,
-    source              TEXT NOT NULL,
-    api_model           TEXT NOT NULL,
-    runner              TEXT NOT NULL,
-    is_agent            INTEGER NOT NULL DEFAULT 0,
-    system_prompt_id    INTEGER REFERENCES payloads(payload_id),
-    target_config_id    INTEGER REFERENCES payloads(payload_id),
-    UNIQUE(run_id, target_name, runner)
+CREATE TABLE run_revisions (
+    revision_id        INTEGER PRIMARY KEY,
+    run_id             TEXT NOT NULL REFERENCES runs(run_id),
+    revision_number    INTEGER NOT NULL,
+    status              TEXT NOT NULL,
+    started_at          INTEGER,
+    ended_at            INTEGER,
+    runner_mode        TEXT NOT NULL,
+    session_seed       INTEGER,
+    config_json        TEXT NOT NULL,
+    config_sha256      TEXT NOT NULL,
+    created_at         INTEGER NOT NULL,
+    UNIQUE(run_id, revision_number)
 );
 ```
 
-### Canonical payloads
+`config_json` is a redacted configuration snapshot. It is one `TEXT` field,
+not a choice between inline text and a hash. `config_sha256` identifies the
+snapshot without replacing it.
+
+### Target definitions and revision membership
+
+A target instance is immutable. If a model's source, API model, runner, agent
+prompt, or execution-affecting configuration changes, a new target instance is
+created.
 
 ```sql
-CREATE TABLE payloads (
-    payload_id          INTEGER PRIMARY KEY,
-    sha256               TEXT NOT NULL UNIQUE,
-    kind                 TEXT NOT NULL,
-    compression          TEXT NOT NULL DEFAULT 'gzip',
-    uncompressed_bytes   INTEGER NOT NULL,
-    stored_bytes         INTEGER NOT NULL,
-    data                 BLOB,
-    external_path        TEXT,
-    created_at           TEXT NOT NULL,
-    CHECK (data IS NOT NULL OR external_path IS NOT NULL)
+CREATE TABLE target_instances (
+    target_instance_id INTEGER PRIMARY KEY,
+    run_id             TEXT NOT NULL REFERENCES runs(run_id),
+    logical_name       TEXT NOT NULL,
+    runner             TEXT NOT NULL,
+    source             TEXT NOT NULL,
+    api_model          TEXT NOT NULL,
+    is_agent           INTEGER NOT NULL DEFAULT 0,
+    system_prompt      TEXT,
+    target_config_json TEXT,
+    target_signature    TEXT NOT NULL,
+    first_revision_id   INTEGER NOT NULL REFERENCES run_revisions(revision_id),
+    retired_revision_id INTEGER REFERENCES run_revisions(revision_id),
+    UNIQUE(run_id, logical_name, runner, target_signature)
+);
+
+CREATE TABLE revision_targets (
+    revision_id        INTEGER NOT NULL REFERENCES run_revisions(revision_id),
+    target_instance_id INTEGER NOT NULL REFERENCES target_instances(target_instance_id),
+    active              INTEGER NOT NULL,
+    order_index         INTEGER,
+    PRIMARY KEY(revision_id, target_instance_id)
 );
 ```
 
-Normal prompts, responses, thinking text, judge responses, and JSON metadata
-should be compressed payloads. Very large debug transcripts may instead be
-stored as external compressed files referenced by `external_path`.
+### Plugin definitions and revision membership
 
-### Benchmark cells and attempts
+```sql
+CREATE TABLE plugin_definitions (
+    plugin_id          TEXT NOT NULL,
+    plugin_version      TEXT NOT NULL,
+    name                TEXT NOT NULL,
+    max_score           INTEGER NOT NULL,
+    supports_streaming INTEGER NOT NULL,
+    metadata_json       TEXT,
+    PRIMARY KEY(plugin_id, plugin_version)
+);
+
+CREATE TABLE revision_plugins (
+    revision_id         INTEGER NOT NULL REFERENCES run_revisions(revision_id),
+    plugin_id           TEXT NOT NULL,
+    plugin_version      TEXT NOT NULL,
+    active               INTEGER NOT NULL,
+    PRIMARY KEY(revision_id, plugin_id),
+    FOREIGN KEY(plugin_id, plugin_version)
+        REFERENCES plugin_definitions(plugin_id, plugin_version)
+);
+```
+
+### Cells and revision-specific selection
+
+A cell identifies a target instance and plugin version across the logical run.
+It does not contain a mutable current score or current attempt pointer.
 
 ```sql
 CREATE TABLE cells (
-    cell_id                  INTEGER PRIMARY KEY,
-    run_id                   TEXT NOT NULL REFERENCES runs(run_id),
-    target_id                INTEGER NOT NULL REFERENCES targets(target_id),
-    plugin_id                TEXT NOT NULL,
-    plugin_version           TEXT NOT NULL,
-    status                   TEXT NOT NULL DEFAULT 'pending',
-    selected_attempt_id      INTEGER,
-    deterministic_score      REAL,
-    selected_attempt_number  INTEGER,
-    created_at               TEXT NOT NULL,
-    updated_at               TEXT NOT NULL,
-    UNIQUE(target_id, plugin_id)
+    cell_id             INTEGER PRIMARY KEY,
+    run_id              TEXT NOT NULL REFERENCES runs(run_id),
+    target_instance_id  INTEGER NOT NULL REFERENCES target_instances(target_instance_id),
+    plugin_id           TEXT NOT NULL,
+    plugin_version      TEXT NOT NULL,
+    created_at          INTEGER NOT NULL,
+    UNIQUE(target_instance_id, plugin_id, plugin_version),
+    FOREIGN KEY(plugin_id, plugin_version)
+        REFERENCES plugin_definitions(plugin_id, plugin_version)
 );
 
-CREATE TABLE benchmark_attempts (
-    attempt_id              INTEGER PRIMARY KEY,
-    cell_id                 INTEGER NOT NULL REFERENCES cells(cell_id),
-    attempt_number          INTEGER NOT NULL,
-    prompt_payload_id       INTEGER REFERENCES payloads(payload_id),
-    content_payload_id      INTEGER REFERENCES payloads(payload_id),
-    thinking_payload_id     INTEGER REFERENCES payloads(payload_id),
-    started_at              TEXT,
-    ended_at                TEXT,
-    max_tokens              INTEGER,
-    output_tokens           INTEGER,
-    thinking_tokens         INTEGER,
-    total_tokens            INTEGER,
-    tps                     REAL,
-    finish_reason           TEXT,
-    response_nature         TEXT,
-    retry_reason            TEXT,
-    prompt_altered         TEXT,
-    truncated               INTEGER,
-    truncated_due_to_time  INTEGER,
-    failure_cause           TEXT,
-    stream_ok               INTEGER,
-    repeating               INTEGER,
-    empty_reason            TEXT,
-    error                   TEXT,
-    score                   REAL,
-    rubric_json             TEXT,
-    diagnostics_json        TEXT,
-    selected                INTEGER NOT NULL DEFAULT 0,
-    UNIQUE(cell_id, attempt_number)
+CREATE TABLE revision_cells (
+    revision_id         INTEGER NOT NULL REFERENCES run_revisions(revision_id),
+    cell_id             INTEGER NOT NULL REFERENCES cells(cell_id),
+    scheduled            INTEGER NOT NULL,
+    status               TEXT NOT NULL,
+    queue_reason         TEXT,
+    updated_at           INTEGER NOT NULL,
+    PRIMARY KEY(revision_id, cell_id)
+);
+
+CREATE TABLE benchmark_selections (
+    revision_id         INTEGER NOT NULL REFERENCES run_revisions(revision_id),
+    cell_id             INTEGER NOT NULL REFERENCES cells(cell_id),
+    attempt_id          INTEGER NOT NULL,
+    selected_at         INTEGER NOT NULL,
+    selection_reason    TEXT,
+    PRIMARY KEY(revision_id, cell_id),
+    FOREIGN KEY(attempt_id, revision_id, cell_id)
+        REFERENCES benchmark_attempts(attempt_id, revision_id, cell_id)
 );
 ```
 
-Retries are represented as rows instead of a nested `{plugin}_attempts` JSON
-array. A cell has one selected attempt, while all historical attempts remain
-available.
+The selection table avoids mutable selection fields on cells and makes
+historical report selection revision-specific. The implementation should create
+`benchmark_attempts` before `benchmark_selections`, then use a composite foreign
+key (or an equivalent validation trigger) to ensure the selected attempt belongs
+to the same revision and cell. The DDL snippets are organized conceptually;
+the migration must create tables in dependency order.
 
-### Judge contracts and attempts
+### Benchmark attempts
 
 ```sql
+CREATE TABLE benchmark_attempts (
+    attempt_id             INTEGER PRIMARY KEY,
+    revision_id            INTEGER NOT NULL REFERENCES run_revisions(revision_id),
+    cell_id                INTEGER NOT NULL REFERENCES cells(cell_id),
+    attempt_number         INTEGER NOT NULL,
+    prompt_payload_id      INTEGER REFERENCES payloads(payload_id),
+    content_payload_id     INTEGER REFERENCES payloads(payload_id),
+    thinking_payload_id    INTEGER REFERENCES payloads(payload_id),
+    started_at             INTEGER,
+    ended_at               INTEGER,
+    max_tokens             INTEGER,
+    output_tokens          INTEGER,
+    thinking_tokens        INTEGER,
+    total_tokens           INTEGER,
+    tps                    REAL,
+    finish_reason          TEXT,
+    response_nature        TEXT,
+    retry_reason           TEXT,
+    prompt_altered        TEXT,
+    truncated              INTEGER,
+    truncated_due_to_time INTEGER,
+    failure_cause          TEXT,
+    stream_ok              INTEGER,
+    repeating              INTEGER,
+    empty_reason           TEXT,
+    error                  TEXT,
+    score                  REAL,
+    rubric_json            TEXT,
+    diagnostics_json       TEXT,
+    UNIQUE(revision_id, cell_id, attempt_number),
+    UNIQUE(attempt_id, revision_id, cell_id)
+);
+```
+
+An attempt is immutable. A stopped or abandoned attempt is never selected as a
+successful result.
+
+### Judge revisions, contracts, and attempts
+
+```sql
+CREATE TABLE revision_judges (
+    revision_id  INTEGER NOT NULL REFERENCES run_revisions(revision_id),
+    judge_model  TEXT NOT NULL,
+    source       TEXT NOT NULL,
+    config_json  TEXT,
+    active       INTEGER NOT NULL,
+    PRIMARY KEY(revision_id, judge_model)
+);
+
 CREATE TABLE judge_contracts (
     contract_id              TEXT PRIMARY KEY,
-    run_id                   TEXT NOT NULL REFERENCES runs(run_id),
     plugin_id                TEXT NOT NULL,
-    plugin_version            TEXT NOT NULL,
-    prompt_version            TEXT NOT NULL,
+    plugin_version           TEXT NOT NULL,
+    prompt_version           TEXT NOT NULL,
     instructions_version     TEXT NOT NULL,
-    response_schema_hash      TEXT NOT NULL,
-    contract_payload_id       INTEGER REFERENCES payloads(payload_id),
-    active                    INTEGER NOT NULL DEFAULT 0
+    response_schema_hash     TEXT NOT NULL,
+    contract_json             TEXT NOT NULL,
+    contract_hash             TEXT NOT NULL UNIQUE,
+    FOREIGN KEY(plugin_id, plugin_version)
+        REFERENCES plugin_definitions(plugin_id, plugin_version)
+);
+
+CREATE TABLE revision_judge_contracts (
+    revision_id  INTEGER NOT NULL REFERENCES run_revisions(revision_id),
+    plugin_id    TEXT NOT NULL,
+    contract_id  TEXT NOT NULL REFERENCES judge_contracts(contract_id),
+    active       INTEGER NOT NULL,
+    PRIMARY KEY(revision_id, plugin_id)
 );
 
 CREATE TABLE judge_attempts (
     judge_attempt_id         INTEGER PRIMARY KEY,
+    revision_id              INTEGER NOT NULL REFERENCES run_revisions(revision_id),
     cell_id                  INTEGER NOT NULL REFERENCES cells(cell_id),
     judge_model              TEXT NOT NULL,
-    judge_source              TEXT,
     contract_id              TEXT NOT NULL REFERENCES judge_contracts(contract_id),
-    attempt_number            INTEGER NOT NULL,
-    started_at                TEXT,
-    ended_at                  TEXT,
-    max_tokens                INTEGER,
-    raw_response_payload_id   INTEGER REFERENCES payloads(payload_id),
-    request_payload_id        INTEGER REFERENCES payloads(payload_id),
-    response_usage_json       TEXT,
-    diagnostics_json          TEXT,
-    finish_reason             TEXT,
-    error                     TEXT,
-    selected                  INTEGER NOT NULL DEFAULT 0,
-    UNIQUE(cell_id, judge_model, contract_id, attempt_number)
-);
-
-CREATE TABLE judge_votes (
-    vote_id                  INTEGER PRIMARY KEY,
-    cell_id                  INTEGER NOT NULL REFERENCES cells(cell_id),
-    judge_attempt_id         INTEGER NOT NULL REFERENCES judge_attempts(judge_attempt_id),
-    judge_model              TEXT NOT NULL,
-    contract_id              TEXT NOT NULL REFERENCES judge_contracts(contract_id),
-    score                    INTEGER,
-    confidence               TEXT,
-    rationale_payload_id     INTEGER REFERENCES payloads(payload_id),
+    attempt_number           INTEGER NOT NULL,
+    started_at               INTEGER,
+    ended_at                 INTEGER,
+    max_tokens               INTEGER,
+    raw_response_payload_id  INTEGER REFERENCES payloads(payload_id),
+    request_payload_id       INTEGER REFERENCES payloads(payload_id),
+    response_usage_json      TEXT,
+    diagnostics_json         TEXT,
+    finish_reason            TEXT,
     error                    TEXT,
-    usable                   INTEGER NOT NULL DEFAULT 0,
-    created_at               TEXT NOT NULL,
-    UNIQUE(cell_id, judge_model, contract_id)
+    UNIQUE(revision_id, cell_id, judge_model, contract_id, attempt_number)
+);
+```
+
+`request_payload_id` is populated only in debug mode or for an explicitly
+retained failure transcript. It is still one field with one type; it is simply
+nullable when compact storage omits the full request.
+
+### Parsed judge votes and criteria
+
+Every judge attempt gets at most one parsed vote record. This preserves failed,
+invalid, and superseded parsed outcomes without overwriting history.
+
+```sql
+CREATE TABLE judge_vote_attempts (
+    vote_attempt_id  INTEGER PRIMARY KEY,
+    judge_attempt_id  INTEGER NOT NULL UNIQUE
+        REFERENCES judge_attempts(judge_attempt_id),
+    score             INTEGER,
+    confidence        TEXT,
+    rationale         TEXT,
+    error             TEXT,
+    usable            INTEGER NOT NULL,
+    created_at        INTEGER NOT NULL
 );
 
 CREATE TABLE judge_criteria (
-    criterion_id             INTEGER PRIMARY KEY,
-    vote_id                  INTEGER NOT NULL REFERENCES judge_votes(vote_id),
-    ordinal                  INTEGER NOT NULL,
-    criterion_key            TEXT NOT NULL,
-    criterion_payload_id     INTEGER REFERENCES payloads(payload_id),
-    status                   TEXT NOT NULL,
-    evidence_payload_id      INTEGER REFERENCES payloads(payload_id),
-    UNIQUE(vote_id, ordinal)
+    criterion_id     INTEGER PRIMARY KEY,
+    vote_attempt_id  INTEGER NOT NULL REFERENCES judge_vote_attempts(vote_attempt_id),
+    ordinal          INTEGER NOT NULL,
+    criterion_key    TEXT NOT NULL,
+    criterion        TEXT NOT NULL,
+    status           TEXT NOT NULL,
+    evidence         TEXT NOT NULL,
+    UNIQUE(vote_attempt_id, ordinal)
+);
+
+CREATE TABLE current_judge_votes (
+    revision_id      INTEGER NOT NULL REFERENCES run_revisions(revision_id),
+    cell_id          INTEGER NOT NULL REFERENCES cells(cell_id),
+    judge_model      TEXT NOT NULL,
+    contract_id      TEXT NOT NULL REFERENCES judge_contracts(contract_id),
+    vote_attempt_id  INTEGER NOT NULL REFERENCES judge_vote_attempts(vote_attempt_id),
+    selected_at      INTEGER NOT NULL,
+    selection_reason TEXT,
+    PRIMARY KEY(revision_id, cell_id, judge_model, contract_id)
 );
 ```
 
-The full assembled judge prompt is reconstructed from the contract and payload
-references by default. `request_payload_id` is populated only in debug mode or
-for explicitly retained failure transcripts.
+`current_judge_votes` is a projection. Historical parsed votes remain in
+`judge_vote_attempts`; criteria and evidence remain queryable as `TEXT`.
 
-### Consensus and audit records
+### Consensus cache
 
 ```sql
-CREATE TABLE consensus (
-    cell_id                  INTEGER NOT NULL REFERENCES cells(cell_id),
-    contract_id              TEXT NOT NULL REFERENCES judge_contracts(contract_id),
-    score                    REAL,
-    confidence               TEXT,
-    valid_judges             INTEGER NOT NULL,
-    attempts                 INTEGER NOT NULL,
-    vote_set_hash            TEXT NOT NULL,
-    calculated_at            TEXT NOT NULL,
-    PRIMARY KEY(cell_id, contract_id)
-);
-
-CREATE TABLE events (
-    event_id                 INTEGER PRIMARY KEY,
-    sequence                 INTEGER NOT NULL UNIQUE,
-    event_type               TEXT NOT NULL,
-    cell_id                  INTEGER REFERENCES cells(cell_id),
-    attempt_id               INTEGER REFERENCES benchmark_attempts(attempt_id),
-    judge_attempt_id         INTEGER REFERENCES judge_attempts(judge_attempt_id),
-    vote_id                  INTEGER REFERENCES judge_votes(vote_id),
-    created_at               TEXT NOT NULL
+CREATE TABLE consensus_cache (
+    revision_id       INTEGER NOT NULL REFERENCES run_revisions(revision_id),
+    cell_id           INTEGER NOT NULL REFERENCES cells(cell_id),
+    contract_id       TEXT NOT NULL REFERENCES judge_contracts(contract_id),
+    score             REAL,
+    confidence        TEXT,
+    valid_judges      INTEGER NOT NULL,
+    attempts          INTEGER NOT NULL,
+    vote_set_hash     TEXT NOT NULL,
+    calculated_at     INTEGER NOT NULL,
+    PRIMARY KEY(revision_id, cell_id, contract_id)
 );
 ```
 
-The `events` table contains references and scalar metadata, not full prompt,
-response, vote, or consensus objects. SQLite WAL provides crash recovery for
-normal operation.
+Rationale and criteria are derived from the current vote rows rather than copied
+into consensus. The cache is invalidated whenever `vote_set_hash` changes.
 
-## 7. Migration stages
+### Optional audit and debug-log metadata
+
+SQLite WAL is sufficient for crash recovery. Audit events are optional and
+contain IDs, never full payloads:
+
+```sql
+CREATE TABLE audit_events (
+    event_id          INTEGER PRIMARY KEY,
+    run_id            TEXT NOT NULL REFERENCES runs(run_id),
+    revision_id       INTEGER REFERENCES run_revisions(revision_id),
+    event_type        TEXT NOT NULL,
+    cell_id           INTEGER REFERENCES cells(cell_id),
+    attempt_id        INTEGER REFERENCES benchmark_attempts(attempt_id),
+    judge_attempt_id  INTEGER REFERENCES judge_attempts(judge_attempt_id),
+    vote_attempt_id   INTEGER REFERENCES judge_vote_attempts(vote_attempt_id),
+    created_at        INTEGER NOT NULL
+);
+
+CREATE TABLE debug_log_files (
+    log_id             INTEGER PRIMARY KEY,
+    run_id             TEXT NOT NULL REFERENCES runs(run_id),
+    revision_id        INTEGER REFERENCES run_revisions(revision_id),
+    path               TEXT NOT NULL,
+    compression        TEXT NOT NULL,
+    complete_members   INTEGER NOT NULL DEFAULT 0,
+    uncompressed_bytes INTEGER NOT NULL DEFAULT 0,
+    stored_bytes       INTEGER NOT NULL DEFAULT 0,
+    truncated_tail     INTEGER NOT NULL DEFAULT 0,
+    created_at         INTEGER NOT NULL,
+    updated_at         INTEGER NOT NULL
+);
+
+CREATE TABLE legacy_import_records (
+    legacy_record_id  INTEGER PRIMARY KEY,
+    run_id            TEXT NOT NULL REFERENCES runs(run_id),
+    source_file       TEXT NOT NULL,
+    source_sha256     TEXT NOT NULL,
+    source_row_number INTEGER,
+    record_kind       TEXT NOT NULL,
+    raw_json          TEXT NOT NULL,
+    mapping_status    TEXT NOT NULL,
+    mapping_note      TEXT,
+    UNIQUE(source_sha256, source_row_number, record_kind)
+);
+```
+
+`legacy_import_records` is populated only when importing legacy JSON data that
+cannot be mapped confidently to a normalized attempt, vote, or revision. It
+prevents an importer from silently dropping or inventing historical data.
+
+The implementation and recovery tests for `debug_log_files` are defined in
+[gzip-append-log-plan.md](gzip-append-log-plan.md), especially its writer,
+recovery, and integration-test stages.
+
+## 7. Continuation and configuration-change semantics
+
+A normal continuation creates a new `run_revisions` row. It never deletes or
+mutates prior revision membership, attempts, votes, contracts, or reports.
+The current revision is selected through `runs.current_revision_id`.
+
+### Models/targets
+
+- **Unchanged target:** resolve to the same `target_signature` and reuse the
+  existing `target_instance` and cells. A selected successful attempt can be
+  reused.
+- **Added target:** create a target instance, cells, and current-revision rows;
+  schedule only its pending cells.
+- **Removed target:** mark it inactive in `revision_targets` and its cells
+  unscheduled in `revision_cells`; retain all historical data.
+- **Re-added target with the same signature:** reuse its previous instance and
+  selected results unless explicitly purged.
+- **Changed source, API model, runner, agent prompt, or execution config:**
+  create a new target instance and new cells. The old target instance remains
+  historical and is not silently mixed with the new execution.
+
+### Plugins
+
+- **Added plugin:** register its immutable definition, add it to
+  `revision_plugins`, create cells for active targets, and schedule only those
+  cells.
+- **Removed plugin:** deactivate it for the new revision; retain old cells and
+  results for historical reports.
+- **Re-added plugin with the same version:** reuse the existing plugin
+  definition and cell identity where the target signature is unchanged.
+- **Changed plugin version:** register a new plugin definition and create new
+  cells. The old plugin-version cells remain available and are not overwritten.
+
+The current revision's plugin set controls default reports and scheduling; the
+historical set controls historical reports. A report query must always include
+`revision_id`; it must never infer current membership from whether a target,
+plugin, or judge row still exists.
+
+### Judges and contracts
+
+- **Added judge model:** add it to `revision_judges`; queue missing votes for
+  the active contract.
+- **Removed judge model:** mark it inactive for the new revision; retain its
+  previous attempts and votes.
+- **Re-added judge model:** reuse old votes only when the active contract and
+  input identity match; otherwise queue a new attempt.
+- **Changed judge prompt, instructions, schema, or plugin guidance:** create a
+  new immutable `judge_contracts` row and select it through
+  `revision_judge_contracts`. Do not rerun benchmark tasks solely because the
+  judge contract changed.
+- **Judge contract change:** preserve all old contract votes and consensus;
+  calculate new consensus independently for the new contract.
+
+### Stopping and continuing
+
+When a run stops:
+
+1. mark the current revision `interrupted`;
+2. mark in-flight benchmark/judge attempts `abandoned` or equivalent;
+3. do not select abandoned attempts or votes as successful results;
+4. commit all completed attempts and votes before shutdown;
+5. retain the current revision as historical.
+
+On continuation:
+
+1. create a new revision with the new configuration snapshot;
+2. resolve target/plugin/judge memberships;
+3. reuse compatible selected attempts and votes;
+4. schedule only missing, invalidated, or newly added cells;
+5. leave removed models/plugins/judges available historically but inactive.
+
+### Restart semantics
+
+`--restart` should create a new logical `run_id` in a database rather than
+silently mixing fresh results with an old logical run. The output manifest can
+mark the new run as current. A separate explicit prune operation may remove old
+runs; restart itself should not destroy historical evidence.
+
+## 8. Indexes and constraints
+
+At minimum:
+
+```sql
+CREATE INDEX idx_revision_cells_status
+    ON revision_cells(revision_id, status, scheduled);
+
+CREATE INDEX idx_attempts_cell_revision
+    ON benchmark_attempts(revision_id, cell_id, attempt_number);
+
+CREATE INDEX idx_judge_attempts_cell
+    ON judge_attempts(revision_id, cell_id, judge_model, contract_id);
+
+CREATE INDEX idx_vote_attempts_judge
+    ON judge_vote_attempts(judge_attempt_id);
+
+CREATE INDEX idx_criteria_vote
+    ON judge_criteria(vote_attempt_id);
+
+CREATE INDEX idx_payload_kind
+    ON payloads(kind);
+
+CREATE INDEX idx_legacy_import_source
+    ON legacy_import_records(source_sha256, source_row_number);
+
+CREATE UNIQUE INDEX one_active_contract_per_plugin
+    ON revision_judge_contracts(revision_id, plugin_id)
+    WHERE active = 1;
+```
+
+Use SQLite checks for known statuses, confidence values, and non-negative token
+counts. Add validation triggers or composite foreign keys for relationships that
+must share a run/revision/cell, including current revision ownership, revision
+membership ownership, benchmark selection ownership, and current judge-vote
+ownership. Store timestamps as integer UTC epoch values for smaller rows and
+faster ordering; format them at report boundaries.
+
+## 9. Migration stages
 
 ### Stage 0 — storage contract and CLI
 
 - [ ] Add `--storage json|sqlite`.
 - [ ] Add `--storage-profile compact|debug|portable`.
+- [ ] Add `--debug-logs` as an explicit debug-transcript override.
 - [ ] Add `--output-format csv md html pdf` with one-or-more selection.
 - [ ] Add report-only `--generate-reports PATH` mode.
-- [ ] Define behavior when no output format is selected: no reports generated.
+- [ ] Define no-report behavior when no format is selected.
 - [ ] Define redaction rules for configs, headers, and credentials.
-- [ ] Record storage profile and selected report formats in `run-info.json`.
+- [ ] Record run ID, revision ID, storage profile, and report formats in
+      `run-info.json`.
 
 ### Stage 1 — backend abstraction
 
-- [ ] Define the `RunStore` interface.
-- [ ] Wrap the existing JSON persistence in `JsonRunStore`.
-- [ ] Route task and judge result callers through the interface.
+- [ ] Define `RunStore`, `PayloadStore`, `DebugLogStore`, and `ReportSource`.
+- [ ] Wrap existing JSON persistence in `JsonRunStore`.
+- [ ] Route task and judge callers through the interfaces.
 - [ ] Preserve existing JSON behavior and tests.
 
 ### Stage 2 — SQLite schema and migrations
 
 - [ ] Implement schema creation and version checking.
-- [ ] Add forward-only migration helpers.
+- [ ] Add forward-only migrations.
+- [ ] Create revision-aware run/target/plugin membership tables.
+- [ ] Create immutable benchmark and judge attempt tables.
+- [ ] Create parsed judge vote-attempt and current-vote projection tables.
+- [ ] Enforce plugin-version and cross-revision relationships with foreign
+      keys, composite keys, or validation triggers.
+- [ ] Create tables in dependency order and add the cyclic current-revision
+      foreign key through a migration if necessary.
 - [ ] Enable foreign keys, WAL, busy timeout, and configured synchronous mode.
-- [ ] Add schema/index/constraint tests.
+- [ ] Add schema, index, constraint, and continuation tests.
 
 ### Stage 3 — background SQLite writer
 
-- [ ] Implement a single persistence writer thread.
+- [ ] Implement one persistence writer thread.
 - [ ] Batch operations by count and time.
-- [ ] Ensure worker threads never serialize a full state snapshot.
+- [ ] Ensure workers never serialize a full state snapshot.
 - [ ] Add writer queue failure reporting.
 - [ ] Add shutdown timeout and synchronous final commit.
-- [ ] Add crash-injection tests around transaction boundaries.
+- [ ] Add transaction crash-injection tests.
 
 ### Stage 4 — payload store and deduplication
 
 - [ ] Implement SHA-256 payload identity.
-- [ ] Deduplicate identical prompts, responses, thinking text, and judge outputs.
-- [ ] Add gzip compression for ordinary payloads.
-- [ ] Add an external compressed-payload path for very large data.
+- [ ] Store payload-bearing fields only as payload IDs.
+- [ ] Store short queryable judge text only as `TEXT`.
+- [ ] Add gzip compression for payload BLOBs.
 - [ ] Add payload integrity and round-trip tests.
-- [ ] Replace embedded judge-input prompt/response copies with references.
+- [ ] Replace embedded judge-input prompt/response copies with payload IDs.
 
 ### Stage 5 — append-only compressed debug logs
 
-- [ ] Add a debug-only full-transcript policy.
-- [ ] Stop creating successful full judge logs in compact mode.
-- [ ] Implement buffered gzip member appends.
-- [ ] Add a per-log writer lock or writer-queue ownership rule.
-- [ ] Make readers tolerate an incomplete final gzip member.
-- [ ] Store log compression, byte counts, and truncation status in metadata.
-- [ ] Add optional bz2 benchmark support for comparison.
-- [ ] Evaluate zstd as a future optional dependency.
-- [ ] Explicitly reject 7z for active append-only logs.
-- [ ] Add tests proving append works without decompressing old data.
-- [ ] Add crash/truncated-tail reader tests.
-- [ ] Add compact-mode tests proving full successful judge transcripts are absent.
+- [ ] Add the debug-only full-transcript policy.
+- [ ] Stop creating full successful judge logs in compact mode.
+- [ ] Implement the writer and recovery behavior from
+      [gzip-append-log-plan.md](gzip-append-log-plan.md).
+- [ ] Add gzip concatenated-member, truncation, corruption, append-after-recovery,
+      concurrency, redaction, and policy integration tests.
+- [ ] Benchmark gzip against bz2 using representative logs.
+- [ ] Consider zstd only if measurements justify a dependency; do not use 7z
+      for active append-only logs.
 
 ### Stage 6 — benchmark task persistence
 
-- [ ] Persist one row per benchmark attempt.
-- [ ] Store selected attempt through a cell reference.
-- [ ] Store prompt/content/thinking through payload references.
+- [ ] Persist one immutable row per benchmark attempt.
+- [ ] Persist revision-specific cell membership and selection.
+- [ ] Store prompt/content/thinking through payload IDs.
 - [ ] Preserve rubric, diagnostics, token, retry, and failure metadata.
 - [ ] Reproduce current resume and failed-task semantics.
 - [ ] Export legacy response files when `--save-responses` is selected.
 
 ### Stage 7 — judge persistence
 
-- [ ] Persist versioned judge contracts.
-- [ ] Persist every judge attempt separately.
-- [ ] Store only one current vote per cell/judge/contract.
-- [ ] Normalize criteria and evidence.
+- [ ] Persist immutable judge contracts.
+- [ ] Persist revision-specific judge model and contract membership.
+- [ ] Persist every judge transport attempt.
+- [ ] Persist every parsed vote attempt without overwriting history.
+- [ ] Normalize criteria and evidence as `TEXT`.
+- [ ] Maintain current-vote projections per revision and contract.
 - [ ] Cache consensus using a vote-set hash.
 - [ ] Preserve historical contracts side-by-side.
 - [ ] Keep full assembled request payloads debug-only.
-- [ ] Ensure retries remain visible as judge-attempt rows.
 
-### Stage 8 — SQLite resume and purge
+### Stage 8 — SQLite continuation, resume, and purge
 
-- [ ] Implement resume queries for pending/failed cells.
-- [ ] Keep HTTP, OpenCode, and Pi runner identities separate.
+- [ ] Implement revision creation for every continuation invocation.
+- [ ] Reuse compatible target instances and cells.
+- [ ] Schedule added models/plugins/judges only.
+- [ ] Retire removed models/plugins/judges without deleting history.
+- [ ] Create new cells for changed target signatures or plugin versions.
+- [ ] Create new contracts for changed judge prompt/instruction/schema versions.
+- [ ] Reuse immutable global contract definitions when the contract hash matches.
+- [ ] Implement interrupted/abandoned attempt handling.
 - [ ] Reproduce `--no-rerun-failed` behavior.
-- [ ] Reproduce plugin-version and judge-contract invalidation.
-- [ ] Update `purge-results` to operate on SQLite.
-- [ ] Retain historical attempts while clearing the selected current attempt.
-- [ ] Add resume/purge regression tests.
+- [ ] Update `purge-results` to clear revision selections while retaining history.
+- [ ] Define and test `--restart` as a new logical run.
 
 ### Stage 9 — report generation
 
 - [ ] Generate reports only when `--output-format` is selected.
 - [ ] Implement report-only loading from SQLite.
 - [ ] Support legacy JSON runs in report-only mode.
-- [ ] Validate one or more requested formats.
+- [ ] Default reports to the current revision.
+- [ ] Add an explicit historical-revision report option if needed.
 - [ ] Write each report atomically.
 - [ ] Preserve current report content through the compatibility read model.
-- [ ] Add tests for no-report, one-format, and multi-format runs.
+- [ ] Add no-report, one-format, multi-format, and changed-config tests.
 
 ### Stage 10 — existing-run importer
 
-- [ ] Import `benchmark_state.json` into SQLite.
-- [ ] Import benchmark config and run metadata.
-- [ ] Import judge-input sidecars as canonical payloads.
-- [ ] Import response artifacts and judge raw responses by hash.
-- [ ] Import historical result rows without duplicating latest projections.
+- [ ] Import legacy runs into a new logical SQLite run.
+- [ ] Preserve each continuation-like state/result snapshot as a revision where
+      it can be identified confidently.
+- [ ] Import target/plugin membership and version snapshots.
+- [ ] Deduplicate model-info/result-row judge data by cell/judge/contract identity.
+- [ ] Import benchmark attempts and nested attempt history.
+- [ ] Import judge-input sidecars and raw judge responses by payload hash.
+- [ ] Store ambiguous/unmappable source rows in a legacy-import table.
 - [ ] Import debug logs only when requested.
 - [ ] Exclude purge backups by default.
-- [ ] Emit missing/ambiguous-data warnings.
-- [ ] Make imports idempotent.
+- [ ] Make imports idempotent and restartable.
+- [ ] Provide bounded-memory progress reporting for large JSON state files.
 
 ### Stage 11 — validation and rollout
 
 - [ ] Add optional JSON/SQLite dual-write shadow mode.
-- [ ] Compare scores, attempts, judge votes, consensus, and resume queues.
+- [ ] Compare scores, attempts, judge votes, consensus, revisions, and resume
+      queues.
+- [ ] Test model/plugin additions and removals across interrupted continuations.
+- [ ] Test plugin-version and judge-contract changes across continuations.
 - [ ] Benchmark write latency and TUI responsiveness.
 - [ ] Measure storage against the 2026-08-17 run shape.
 - [ ] Verify compact storage targets at least 60% savings.
@@ -555,13 +795,17 @@ normal operation.
 - [ ] Retain JSON import/export as a fallback.
 - [ ] Update `AGENTS.md`, README, CLI docs, configuration docs, and architecture docs.
 
-## 8. Acceptance criteria
+## 10. Acceptance criteria
 
 ### Correctness
 
-- [ ] SQLite and JSON produce equivalent selected scores and statuses.
-- [ ] Benchmark retry history is preserved.
-- [ ] Judge retry history and contract versioning are preserved.
+- [ ] SQLite and JSON produce equivalent current scores and statuses.
+- [ ] Every benchmark attempt remains queryable after retries and continuations.
+- [ ] Every judge transport and parsed vote attempt remains queryable.
+- [ ] Current judge votes never overwrite historical vote attempts.
+- [ ] New judge contracts coexist with old contracts.
+- [ ] Added and removed targets/plugins/judges are handled without deleting history.
+- [ ] Changed target signatures and plugin versions do not reuse incompatible results.
 - [ ] Purge and resume select the same cells for rerun.
 - [ ] Reports from both backends are semantically equivalent.
 - [ ] Interrupted runs recover without duplicated votes or attempts.
@@ -572,36 +816,39 @@ normal operation.
 - [ ] Persistence p95 latency remains below the configured batch interval.
 - [ ] TUI refresh remains responsive during judge-heavy runs.
 - [ ] SQLite startup/resume is no slower than JSON for normal runs.
+- [ ] Report-only generation does not load models or schedule requests.
 
 ### Storage
 
 Using the measured `2026-08-17-nas-and-more-test-changes` run as the reference:
 
-- [ ] Compact SQLite output target: approximately 200–400 MiB.
+- [ ] Compact SQLite output target: approximately 200–400 MiB with reports.
 - [ ] Compact mode has no full successful judge transcript logs.
 - [ ] Debug gzip logs are appendable without decompressing existing data.
 - [ ] Reports are absent unless explicitly requested.
-- [ ] Prompt/response payloads are stored once per unique hash.
+- [ ] Payload-bearing fields have one representation and identical payloads are
+      stored once per database.
 - [ ] Purge backups are outside the normal output directory or explicitly opt-in.
 
-## 9. Recommended implementation order
+## 11. Recommended implementation order
 
-1. [ ] CLI/storage contract.
-2. [ ] `RunStore` abstraction.
-3. [ ] SQLite schema and migrations.
-4. [ ] Background writer.
-5. [ ] Payload deduplication.
-6. [ ] Debug-only gzip log writer.
+1. [ ] CLI/storage and continuation contract.
+2. [ ] `RunStore`/`PayloadStore`/`DebugLogStore` abstractions.
+3. [ ] Revision-aware SQLite schema and migrations.
+4. [ ] Background SQLite writer.
+5. [ ] Single-representation payload store.
+6. [ ] Debug-only gzip writer from `gzip-append-log-plan.md`.
 7. [ ] Benchmark attempt persistence.
 8. [ ] Judge attempt/vote persistence.
-9. [ ] SQLite resume and purge.
+9. [ ] Revision-aware resume, continuation, and purge.
 10. [ ] On-demand report generation.
 11. [ ] Existing-run importer.
 12. [ ] Dual-write validation.
 13. [ ] SQLite compact default.
 
-The most important invariant is:
+The key invariant is:
 
-> Store immutable attempts and canonical payload references; derive current
-> projections, consensus, TUI state, and reports from those records instead of
-> independently copying the same data into multiple durable structures.
+> Store immutable attempts, immutable configuration revisions, and canonical
+> payload references. Derive current projections, consensus, TUI state, and
+> reports from those records instead of independently copying the same data
+> into multiple durable structures.
