@@ -130,7 +130,7 @@ def build_parser(prog=None, plugin_ids=None):
 
     output_group = parser.add_argument_group('Output')
     output_group.add_argument('--storage', choices=['json', 'sqlite'], default='json',
-                              help='Run storage backend (json during migration; sqlite becomes available in a later migration stage)')
+                              help='Run storage backend (default: json; sqlite persists a normalized database)')
     output_group.add_argument('--storage-profile', choices=['compact', 'debug', 'portable'],
                               default='compact',
                               help='Storage policy for run artifacts (default: compact)')
