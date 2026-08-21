@@ -87,6 +87,7 @@ from benchmark.outputs import save_outputs
 from benchmark.pi import pi_version, resolve_pi_worker, run_pi_probe
 from benchmark.plugin import SCORE_SCHEMA
 from benchmark.results import save_judge_result
+from benchmark.sqlite_import import LegacySQLiteImporter
 from benchmark.sqlite_reports import SQLiteReportSource, sqlite_path_from_report_path
 from benchmark.state import apply_state_recovery, prepare_state_recovery
 from benchmark.storage import JsonReportSource, latest_result_rows
@@ -2649,6 +2650,36 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
 
     parser = build_parser()
     args = parser.parse_args()
+
+    if args.import_to_sqlite:
+        source_path = os.path.abspath(args.import_to_sqlite)
+        if not os.path.isfile(source_path):
+            print(f"❌ JSON state file not found: {args.import_to_sqlite}", file=sys.stderr)
+            sys.exit(1)
+        output_path = args.sqlite_output or os.path.join(
+            os.path.dirname(source_path), "run.sqlite3",
+        )
+        output_path = os.path.abspath(output_path)
+        if os.path.exists(output_path) and not args.overwrite_sqlite:
+            print(
+                f"❌ SQLite output already exists: {output_path}\n"
+                "   Choose --sqlite-output for a new file or pass --overwrite-sqlite explicitly.",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+        try:
+            summary = LegacySQLiteImporter.import_path(
+                source_path, output_path,
+            )
+        except (OSError, ValueError, TypeError, RuntimeError, json.JSONDecodeError) as exc:
+            print(f"❌ Could not import JSON to SQLite: {exc}", file=sys.stderr)
+            sys.exit(1)
+        print(json.dumps({
+            "source": source_path,
+            "sqlite": output_path,
+            "summary": summary.__dict__,
+        }, indent=2, default=str))
+        sys.exit(0)
 
     if args.generate_reports:
         if not args.output_format:

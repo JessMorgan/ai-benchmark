@@ -42,6 +42,16 @@ class TestCLIArgs(unittest.TestCase):
         self.assertEqual(args.output_format, ["csv", "html", "csv"])
         self.assertEqual(args.generate_reports, "run-dir")
 
+    def test_import_to_sqlite_options_parse(self):
+        args = build_parser().parse_args([
+            "--import-to-sqlite", "state.json",
+            "--sqlite-output", "converted.sqlite3",
+            "--overwrite-sqlite",
+        ])
+        self.assertEqual(args.import_to_sqlite, "state.json")
+        self.assertEqual(args.sqlite_output, "converted.sqlite3")
+        self.assertTrue(args.overwrite_sqlite)
+
     def test_list_plugins_shows_id_name_version(self):
         result = subprocess.run(
             [sys.executable, "ai-benchmark.py", "--list-plugins"],

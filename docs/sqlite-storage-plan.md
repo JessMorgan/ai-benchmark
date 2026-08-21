@@ -779,6 +779,10 @@ faster ordering; format them at report boundaries.
 - [x] Exclude purge backups by default (the importer accepts only the requested
       state file, never directory-wide backup discovery).
 - [x] Make imports idempotent and restartable using the source SHA-256.
+- [x] Expose JSON-to-SQLite conversion through `--import-to-sqlite`, with
+      `--sqlite-output` for an explicit destination.
+- [x] Never modify the source JSON; refuse existing SQLite destinations unless
+      `--overwrite-sqlite` is explicitly supplied.
 - [x] Read source files in bounded chunks for hashing; JSON decoding remains the
       compatibility limitation for the legacy state container.
 

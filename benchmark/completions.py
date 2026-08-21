@@ -121,6 +121,12 @@ def build_parser(prog=None, plugin_ids=None):
                              help='Run a non-scoring schema compatibility probe for every configured model and print JSON')
     tools_group.add_argument('--pi-probe', action='store_true',
                              help='Run the non-scoring Pi worker/provider compatibility probe and print JSON')
+    tools_group.add_argument('--import-to-sqlite', type=str, default=None, metavar='STATE_JSON',
+                             help='Import a legacy benchmark_state.json into SQLite and exit')
+    tools_group.add_argument('--sqlite-output', type=str, default=None, metavar='PATH',
+                             help='SQLite output path for --import-to-sqlite (default: run.sqlite3 beside the JSON)')
+    tools_group.add_argument('--overwrite-sqlite', action='store_true',
+                             help='Allow --import-to-sqlite to replace an existing SQLite output file')
 
     output_group = parser.add_argument_group('Output')
     output_group.add_argument('--storage', choices=['json', 'sqlite'], default='json',
