@@ -4410,6 +4410,19 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
             report_persistence_failure("synchronous final state save", exc)
             raise
 
+        # Flush and close the storage backend with a bounded timeout so queued
+        # SQLite writes are drained before the process exits. Any remaining
+        # backend failures are surfaced rather than lost silently.
+        if not state.close_run_store(timeout=shutdown_timeout):
+            report_persistence_failure(
+                "storage backend close timeout",
+                TimeoutError(f"storage backend did not close within {shutdown_timeout:g}s"),
+            )
+        backend = getattr(state, "_run_store", None)
+        if backend is not None and getattr(backend, "backend_name", "json") == "sqlite":
+            for failure in backend.writer.failures:
+                report_persistence_failure("sqlite writer", failure)
+
 
         # Reports are generated exactly once here, whether the run completed
         # or was stopped early, so the artifacts on disk always match the
