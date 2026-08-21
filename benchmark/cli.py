@@ -92,7 +92,6 @@ from benchmark.runtime_records import (
     JudgeAttemptRecord,
     JudgeVoteRecord,
     PluginRecord,
-    RunContext,
     TargetRecord,
 )
 from benchmark.sqlite_import import LegacySQLiteImporter

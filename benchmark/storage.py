@@ -331,7 +331,7 @@ class SQLiteRunStore:
         # dedicated connection at startup, after ``prepare_run`` has flushed
         # the writer, so no writer work is in flight.
         self.flush(timeout=30)
-        from .sqlite_schema import connect_database, configure_connection
+        from .sqlite_schema import configure_connection, connect_database
         connection = connect_database(self.path)
         try:
             configure_connection(connection)
@@ -500,7 +500,7 @@ class SQLiteRunStore:
         def _consume(done: Future[Any]) -> None:
             try:
                 done.exception()
-            except Exception:  # noqa: BLE001 - already reported by the writer
+            except Exception:  # noqa: BLE001, S110 - already reported by the writer
                 pass
 
         future.add_done_callback(_consume)
