@@ -88,6 +88,7 @@ from benchmark.pi import pi_version, resolve_pi_worker, run_pi_probe
 from benchmark.plugin import SCORE_SCHEMA
 from benchmark.results import save_judge_result
 from benchmark.state import apply_state_recovery, prepare_state_recovery
+from benchmark.storage import JsonReportSource, latest_result_rows
 from plugins import discover_plugins, format_plugin_list
 
 _CORRUPTED_STATE_ABORT = "abort"
@@ -155,15 +156,6 @@ def _write_run_info(output_dir, run_info):
         print(f"⚠️  Could not write run-info.json: {e}", file=sys.stderr)
 
 
-def _latest_report_results(results):
-    """Return the last result for each state-key/runner pair."""
-    latest = {}
-    for result in results:
-        key = (result.get("state_key", result.get("model")), result.get("runner", "http"))
-        latest[key] = result
-    return list(latest.values())
-
-
 def _run_identity(output_dir, restart):
     """Return a stable logical run ID and continuation revision number."""
     manifest = os.path.join(output_dir, "run-info.json")
@@ -184,22 +176,8 @@ def _run_identity(output_dir, restart):
 
 def _run_report_only(path, output_formats):
     """Generate reports from a legacy JSON run without loading model config."""
-    if os.path.isdir(path):
-        state_path = os.path.join(path, "benchmark_state.json")
-        output_dir = path
-    else:
-        state_path = path
-        output_dir = os.path.dirname(path) or "."
-    if not os.path.isfile(state_path):
-        raise FileNotFoundError(f"benchmark state file not found: {state_path}")
-    if state_path.endswith(".sqlite3"):
-        raise RuntimeError("SQLite report-only loading is introduced in a later migration stage")
-    with open(state_path, encoding="utf-8") as handle:
-        data = json.load(handle)
-    results = data.get("results")
-    if not isinstance(results, list):
-        raise TypeError(f"{state_path} does not contain a results list")
-    active_ids = data.get("active_plugins") or []
+    output_dir = path if os.path.isdir(path) else os.path.dirname(path) or "."
+    results, active_ids, session_seed = JsonReportSource().load_results(path)
     discovered = discover_plugins()
     active_plugins = [plugin for plugin in discovered if plugin.id in active_ids]
     missing = [plugin_id for plugin_id in active_ids
@@ -207,8 +185,8 @@ def _run_report_only(path, output_formats):
     if missing:
         raise ValueError(f"plugins are unavailable for report generation: {', '.join(missing)}")
     generated = save_outputs(
-        _latest_report_results(results), output_dir, active_plugins,
-        output_formats=output_formats, session_seed=data.get("session_seed"),
+        latest_result_rows(results), output_dir, active_plugins,
+        output_formats=output_formats, session_seed=session_seed,
     )
     for report in generated:
         print(report)
@@ -2660,7 +2638,7 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
             sys.exit(2)
         try:
             _run_report_only(args.generate_reports, args.output_format)
-        except (OSError, json.JSONDecodeError, ValueError, RuntimeError) as exc:
+        except (OSError, json.JSONDecodeError, TypeError, ValueError, RuntimeError) as exc:
             print(f"❌ Could not generate reports: {exc}", file=sys.stderr)
             sys.exit(1)
         sys.exit(0)
@@ -3571,7 +3549,7 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
             # append-only event journal. Report files (CSV/HTML/Markdown/PDF)
             # are deliberately handled by the separate final output stage.
             with persistence_lock:
-                state.compact_journal(
+                state.run_store.save_snapshot(
                     state_file,
                     plugin_versions=plugin_versions,
                     raise_on_error=True,
@@ -3832,7 +3810,7 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
                     else "partial" if all_judges_finished and any(vote.get("error") for vote in votes)
                     else "complete" if all_judges_finished else "running"
                 )
-                state.update_judge_result(
+                state.run_store.record_judge_result(
                     state_key, runner, plugin_id,
                     score=consensus["score"],
                     confidence=consensus["confidence"],
@@ -3951,7 +3929,7 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
                 all_judges_finished = expected_judges.issubset(
                     received_judges | failed_judges
                 )
-                state.update_judge_result(
+                state.run_store.record_judge_result(
                     state_key, runner, plugin_id,
                     error=failure_vote["error"],
                     selected_contract=contract_id,
@@ -4245,7 +4223,7 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
                 # This final snapshot is serialized with all worker saves and
                 # compacts the journal through the same sequence boundary.
                 # Reports are still generated separately below.
-                state.compact_journal(
+                state.run_store.save_snapshot(
                     state_file,
                     plugin_versions=plugin_versions,
                     raise_on_error=True,

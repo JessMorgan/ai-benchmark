@@ -2787,7 +2787,7 @@ def run_model(model_name, source, state, active_plugins, source_config, timeout,
         r["status"] = "error"
         r["error"] = f"Unknown source '{source}' — not in SOURCE_CONFIG"
         r["total_time"] = round(time.time() - start, 1)
-        state.add_result(r)
+        state.run_store.record_result(r)
         state.update(target_name, status="failed", error=r["error"], elapsed=r["total_time"])
         state.log(target_name, r['error'])
         return
@@ -2881,7 +2881,7 @@ def run_model(model_name, source, state, active_plugins, source_config, timeout,
             for p in active_plugins
         )
         r["total_time"] = round(time.time() - start, 1)
-        state.add_result(r)
+        state.run_store.record_result(r)
         state.update(target_name, status="completed", elapsed=r["total_time"])
         publish_judge_sidecars(
             judge_input_dir, display_name, runner, active_plugins, judge_enqueue,
@@ -3127,7 +3127,7 @@ def _run_plugins(target_name, api_model, source, state, active_plugins, plugins_
         r["error"] = breaker_reason
         r["cancelled_after_consecutive_429"] = True
         r["total_time"] = round(time.time() - start, 1)
-        state.add_result(r)
+        state.run_store.record_result(r)
         state.update(target_name, status="failed", error=r["error"], elapsed=r["total_time"], last_error=r["error"])
         return
 
@@ -3135,7 +3135,7 @@ def _run_plugins(target_name, api_model, source, state, active_plugins, plugins_
         r["status"] = "error"
         r["error"] = "Cancelled"
         r["total_time"] = round(time.time() - start, 1)
-        state.add_result(r)
+        state.run_store.record_result(r)
         state.update(target_name, status="failed", error=r["error"], elapsed=r["total_time"], last_error=r["error"])
         return
 
@@ -3143,7 +3143,7 @@ def _run_plugins(target_name, api_model, source, state, active_plugins, plugins_
         r["status"] = "error"
         r["error"] = "; ".join(f"{pid}: {err}" for pid, err in errors.items())
         r["total_time"] = round(time.time() - start, 1)
-        state.add_result(r)
+        state.run_store.record_result(r)
         state.update(target_name, status="failed", error=r["error"], elapsed=r["total_time"], last_error=r["error"])
         return
 
@@ -3154,7 +3154,7 @@ def _run_plugins(target_name, api_model, source, state, active_plugins, plugins_
         for p in active_plugins
     )
     r["total_time"] = round(time.time() - start, 1)
-    state.add_result(r)
+    state.run_store.record_result(r)
     state.update(target_name, status="completed", elapsed=r["total_time"])
     publish_judge_sidecars(
         judge_input_dir, display_name, runner, active_plugins, judge_enqueue,

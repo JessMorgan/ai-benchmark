@@ -670,10 +670,10 @@ faster ordering; format them at report boundaries.
 
 ### Stage 1 — backend abstraction
 
-- [ ] Define `RunStore`, `PayloadStore`, `DebugLogStore`, and `ReportSource`.
-- [ ] Wrap existing JSON persistence in `JsonRunStore`.
-- [ ] Route task and judge callers through the interfaces.
-- [ ] Preserve existing JSON behavior and tests.
+- [x] Define `RunStore`, `PayloadStore`, `DebugLogStore`, and `ReportSource`.
+- [x] Wrap existing JSON persistence in `JsonRunStore`.
+- [x] Route task and judge callers through the interfaces.
+- [x] Preserve existing JSON behavior and tests.
 
 ### Stage 2 — SQLite schema and migrations
 
@@ -833,7 +833,7 @@ Using the measured `2026-08-17-nas-and-more-test-changes` run as the reference:
 ## 11. Recommended implementation order
 
 1. [x] CLI/storage and continuation contract.
-2. [ ] `RunStore`/`PayloadStore`/`DebugLogStore` abstractions.
+2. [x] `RunStore`/`PayloadStore`/`DebugLogStore` abstractions.
 3. [ ] Revision-aware SQLite schema and migrations.
 4. [ ] Background SQLite writer.
 5. [ ] Single-representation payload store.

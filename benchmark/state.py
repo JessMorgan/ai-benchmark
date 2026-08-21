@@ -352,6 +352,10 @@ class BenchmarkState:
         # keep selected judges green across queue/transport gaps.
         self._judge_selected = set()
         self._next_judge_activity_id = 0
+        # Storage is a lazy adapter so state-only unit tests and the JSON
+        # compatibility backend retain the same construction API. SQLite can
+        # replace this adapter in a later migration stage.
+        self._run_store = None
         # Optional append-only result/judge event journal (see
         # ``set_journal_path``). The sequence is persisted in the state
         # snapshot so a restart can replay only events written after that
@@ -483,6 +487,18 @@ class BenchmarkState:
     def _mark_changed(self):
         """Bump the revision counter; must be called under ``self._lock``."""
         self._revision += 1
+
+    @property
+    def run_store(self):
+        """Return the persistence adapter for this state instance."""
+        if self._run_store is None:
+            from .storage import JsonRunStore
+            self._run_store = JsonRunStore(self)
+        return self._run_store
+
+    def set_run_store(self, store):
+        """Replace the persistence adapter used by execution callers."""
+        self._run_store = store
 
     @property
     def revision(self):
