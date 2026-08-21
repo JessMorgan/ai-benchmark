@@ -2683,6 +2683,17 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
                 file=sys.stderr,
             )
             sys.exit(2)
+        if os.path.exists(output_path) and args.overwrite_sqlite:
+            try:
+                os.remove(output_path)
+            except OSError as exc:
+                print(f"❌ Could not remove existing SQLite file: {exc}", file=sys.stderr)
+                sys.exit(1)
+            for sidecar in (output_path + "-wal", output_path + "-shm"):
+                try:
+                    os.remove(sidecar)
+                except OSError:
+                    pass
         try:
             summary = LegacySQLiteImporter.import_path(
                 source_path, output_path,
