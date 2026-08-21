@@ -107,6 +107,15 @@ def _clear_restart_artifacts(state_file, output_dir):
     """Remove state/report/log artifacts for an explicit fresh restart."""
     if os.path.exists(state_file):
         os.remove(state_file)
+    # A restart discards the durable SQLite run too, including its WAL/SHM
+    # sidecar files. Deleting them keeps ``--storage sqlite`` restarts honest.
+    for name in ("run.sqlite3", "run.sqlite3-wal", "run.sqlite3-shm"):
+        path = os.path.join(output_dir, name)
+        if os.path.exists(path):
+            try:
+                os.remove(path)
+            except OSError:
+                pass
     for path in glob.glob(os.path.join(output_dir, "results.*")):
         try:
             os.remove(path)

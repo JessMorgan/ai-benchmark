@@ -800,6 +800,19 @@ class BenchmarkState:
                 for key, value in row.items():
                     if key.endswith("_score") and key != "overall_score_100":
                         info[key] = value
+                # A target is reusable only when every configured plugin has a
+                # non-failed score. Marking completed here lets the scheduler
+                # skip it; partial/failed targets remain queued for re-run.
+                scores = [
+                    info.get(f"{pid}_score") for pid in self.plugin_ids
+                ]
+                if scores and all(
+                    isinstance(s, (int, float)) and not isinstance(s, bool)
+                    for s in scores
+                ):
+                    info["status"] = "completed"
+                else:
+                    info["status"] = "failed"
 
     def set_journal_path(self, path, truncate=False):
         """Enable append-only result/judge event journaling to ``path``.
