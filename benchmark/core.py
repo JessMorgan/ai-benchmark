@@ -79,8 +79,8 @@ JUDGE_MAX_RATIONALE_CHARS = 2000
 # ``FLUSH_MAX_VOTES`` changes, whichever comes first. A final flush on
 # drain/shutdown always persists the tail, so a crash loses at most one
 # interval of changes (re-runnable on resume).
-FLUSH_INTERVAL_SECONDS = 60.0
-FLUSH_MAX_VOTES = 10
+FLUSH_INTERVAL_SECONDS = 120.0
+FLUSH_MAX_VOTES = 50
 # Maximum time the main thread waits for the background state flusher during
 # shutdown before reporting a failure and attempting a synchronous final save.
 PERSISTENCE_SHUTDOWN_TIMEOUT = 10.0
