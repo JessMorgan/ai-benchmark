@@ -1521,6 +1521,21 @@ class BenchmarkState:
                 info.setdefault(f"{pid}_judge_criteria", [])
                 info.setdefault(f"{pid}_judge_consensus_by_contract", {})
                 info.setdefault(f"{pid}_judge_selected_contract", None)
+        # Sync authoritative scores from the latest result per model back
+        # into ``_model_info``.  The ``results`` list is the source-of-truth
+        # for ``{pid}_score`` values; ``_model_info`` may have stale ``None``
+        # entries from a prior ``save_state`` that didn't carry them forward.
+        # Without this, the TUI table (which reads ``_model_info``) shows
+        # blank score cells on JSON resume.
+        for row in state.results:
+            state_key = row.get("state_key", row.get("model"))
+            info = state._model_info.get(state_key)
+            if info is None:
+                continue
+            for key, value in row.items():
+                if key.endswith("_score") and key != "overall_score_100":
+                    if isinstance(value, (int, float)) and not isinstance(value, bool):
+                        info[key] = value
         for name, info in state._model_info.items():
             if info.get("status") == "completed":
                 continue
