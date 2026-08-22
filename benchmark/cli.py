@@ -2198,19 +2198,23 @@ def _resolve_judge_plugin_limit(source_config, source):
 
 def _configure_judge_source(benchmark_limits, source, full_limit,
                             benchmark_active, pool):
-    """Configure the judge reservation for one source.
+    """Configure strict benchmark-first scheduling for one source.
 
-    During benchmark overlap, reserve one judge model only when another
-    source slot remains available. Sources with no benchmark work start their
-    full judge pool immediately; completion callbacks later call
-    ``pool.expand_full()`` for active sources.
+    Benchmark work keeps every configured source slot while it is pending or
+    running. Judge jobs may be queued during that phase, but judge workers are
+    not allocated until the source benchmark scheduler calls
+    ``pool.expand_full()`` after draining its queue. Sources with no benchmark
+    work can start their full judge pool immediately.
     """
     full_limit = max(1, int(full_limit))
-    if not benchmark_active:
+    if benchmark_active:
+        # Keep the benchmark scheduler at its configured capacity and leave
+        # judges dormant. ``enqueue`` is safe with an inactive pool: jobs wait
+        # until the source completion callback expands the pool.
+        benchmark_limits[source] = full_limit
+        pool.start(0)
+    else:
         pool.start(full_limit)
-    elif full_limit > 1:
-        benchmark_limits[source] = max(1, full_limit - 1)
-        pool.start(1)
 
 
 class _CombinedStopEvent:

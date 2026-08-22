@@ -179,15 +179,15 @@ def test_partial_completed_row_keeps_benchmark_reservation_path_active():
     assert queues == {"NAS": ["nas-model"]}
 
 
-def test_judge_source_reservation_configures_one_then_full_pool():
+def test_judge_source_waits_for_benchmarks_before_starting_pool():
     stop = threading.Event()
     pool = SourceJudgeWorkerPool("Cloud", 3, lambda _job: None, stop)
     limits = {"Cloud": 3}
 
     _configure_judge_source(limits, "Cloud", 3, True, pool)
-    assert limits["Cloud"] == 2
-    assert pool.model_slots == 1
-    pool.expand_full()
+    assert limits["Cloud"] == 3
+    assert pool.model_slots == 0
+    pool.start(3)
     assert pool.model_slots == 3
     pool.stop(timeout=1)
 
@@ -450,10 +450,9 @@ def test_judge_pool_expands_after_source_benchmark_completion():
             active_benchmarks -= 1
 
     full_limit = 3
-    benchmark_limit = full_limit - 1
+    benchmark_limit = full_limit
     pool = SourceJudgeWorkerPool("Cloud", full_limit, process_judge, stop)
-    pool.start(1)
-    assert pool.model_slots == 1
+    assert pool.model_slots == 0
     for judge in ("judge-0", "judge-1", "judge-2"):
         pool.enqueue((judge, None, None, None, judge, True))
 
@@ -467,16 +466,22 @@ def test_judge_pool_expands_after_source_benchmark_completion():
 
     assert benchmark_started.wait(timeout=1)
     assert benchmark_both_active.wait(timeout=1)
-    assert judge_started.wait(timeout=1)
-    # The overlap phase uses two benchmark slots plus the one reserved judge
-    # model, never exceeding the source's full limit of three.
+    # Judge workers must not start while benchmark work is active, even when
+    # judge jobs are already queued.
+    assert not judge_started.wait(timeout=0.1)
     with lock:
-        assert active_benchmarks == benchmark_limit
-        assert peak_benchmarks == benchmark_limit
-        assert active_judges == 1
-        assert peak_judges == 1
-        assert active_benchmarks + active_judges == full_limit
-    assert pool.model_slots == 1
+        assert active_benchmarks == 2
+        assert peak_benchmarks == 2
+        assert active_judges == 0
+        assert peak_judges == 0
+    assert pool.model_slots == 0
+
+    benchmark_release.set()
+    benchmark_thread.join(timeout=2)
+    assert not benchmark_thread.is_alive()
+    pool.start(full_limit)
+    assert judge_started.wait(timeout=1)
+    assert pool.model_slots == full_limit
 
     benchmark_release.set()
     benchmark_thread.join(timeout=2)
