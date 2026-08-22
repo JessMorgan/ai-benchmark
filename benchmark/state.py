@@ -327,6 +327,27 @@ def repair_state_file(path):
     return apply_state_recovery(path, recovery)
 
 
+# Per-plugin metadata suffixes that survive across sessions and should be
+# synced from the authoritative ``results`` list into ``_model_info`` on
+# resume.  Runtime-only keys (``_bytes_received``, ``_first_chunk_seen``,
+# ``_first_tok_ts``, ``_start_ts``) are deliberately excluded because they
+# reset at each dispatch.
+_RESUME_PERSISTENT_SUFFIXES = (
+    "_score",
+    "_tps",
+    "_response_time",
+    "_output_tokens",
+    "_thinking_tokens",
+    "_total_tokens",
+    "_attempt",
+    "_stream_ok",
+    "_truncated",
+    "_repeating",
+    "_rubric",
+    "_empty_reason",
+)
+
+
 class BenchmarkState:
     """Thread-safe shared state for parallel benchmark execution."""
 
@@ -797,13 +818,20 @@ class BenchmarkState:
                 info = self._model_info.get(state_key)
                 if info is None:
                     continue
-                # Only overwrite scores with actual numeric values from SQLite;
-                # "fail" strings for pending/unscored plugins must not
-                # destroy valid scores carried forward from the prior run.
+                # Sync all resume-persistent per-plugin metadata from the
+                # result row into ``_model_info``.  Only overwrite when the
+                # row has a real value (not ``None``); runtime-only keys
+                # (``_bytes_received``, ``_first_chunk_seen``, ``_first_tok_ts``,
+                # ``_start_ts``) are deliberately excluded because they reset
+                # at each dispatch.
                 for key, value in row.items():
-                    if key.endswith("_score") and key != "overall_score_100":
-                        if isinstance(value, (int, float)) and not isinstance(value, bool):
-                            info[key] = value
+                    if key == "overall_score_100":
+                        continue
+                    for suffix in _RESUME_PERSISTENT_SUFFIXES:
+                        if key.endswith(suffix):
+                            if value is not None:
+                                info[key] = value
+                            break
                 # A target is reusable only when every configured plugin has a
                 # non-failed score. Marking completed here lets the scheduler
                 # skip it; partial targets remain queued for re-run as
@@ -1521,21 +1549,26 @@ class BenchmarkState:
                 info.setdefault(f"{pid}_judge_criteria", [])
                 info.setdefault(f"{pid}_judge_consensus_by_contract", {})
                 info.setdefault(f"{pid}_judge_selected_contract", None)
-        # Sync authoritative scores from the latest result per model back
-        # into ``_model_info``.  The ``results`` list is the source-of-truth
-        # for ``{pid}_score`` values; ``_model_info`` may have stale ``None``
-        # entries from a prior ``save_state`` that didn't carry them forward.
-        # Without this, the TUI table (which reads ``_model_info``) shows
-        # blank score cells on JSON resume.
+        # Sync authoritative per-plugin metadata from the latest result per
+        # model back into ``_model_info``.  The ``results`` list is the
+        # source-of-truth for ``{pid}_score``, ``{pid}_tps``, etc.;
+        # ``_model_info`` may have stale ``None`` entries from a prior
+        # ``save_state`` that didn't carry them forward.  Without this, the
+        # TUI table (which reads ``_model_info``) shows blank score/metric
+        # cells on JSON resume.
         for row in state.results:
             state_key = row.get("state_key", row.get("model"))
             info = state._model_info.get(state_key)
             if info is None:
                 continue
             for key, value in row.items():
-                if key.endswith("_score") and key != "overall_score_100":
-                    if isinstance(value, (int, float)) and not isinstance(value, bool):
-                        info[key] = value
+                if key == "overall_score_100":
+                    continue
+                for suffix in _RESUME_PERSISTENT_SUFFIXES:
+                    if key.endswith(suffix):
+                        if value is not None:
+                            info[key] = value
+                        break
         for name, info in state._model_info.items():
             if info.get("status") == "completed":
                 continue
