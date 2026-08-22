@@ -1841,7 +1841,7 @@ def _mark_preload_failed(state, model_name, result, phase_runner, runner_mode):
 
 
 def _build_runner_queues(targets, snapshot, runner_mode, source_config,
-                         *, rerun_failed=True):
+                         *, rerun_failed=True, plugin_ids=None):
     """Build pending runner queues from the loaded state snapshot.
 
     ``rerun_failed`` mirrors the resume option. Keeping this decision in the
@@ -1849,11 +1849,30 @@ def _build_runner_queues(targets, snapshot, runner_mode, source_config,
     failed status, but a status-only ``!= completed`` check would immediately
     put that target back on the scheduler queue anyway.
     """
+    inferred_plugin_ids = list(plugin_ids or [])
+    if not inferred_plugin_ids:
+        for state in snapshot.values():
+            if not isinstance(state, dict):
+                continue
+            inferred_plugin_ids.extend(
+                key.removesuffix("_score")
+                for key, value in state.items()
+                if key.endswith("_score") and key != "overall_score_100"
+                and value is not None
+            )
+        inferred_plugin_ids = list(dict.fromkeys(inferred_plugin_ids))
+
     def needs_run(state):
-        return (
-            state is not None
-            and state.get("status") != "completed"
-            and (rerun_failed or state.get("status") != "failed")
+        if state is None:
+            return False
+        if state.get("status") == "failed" and not rerun_failed:
+            return False
+        if state.get("status") != "completed":
+            return True
+        return bool(inferred_plugin_ids) and any(
+            not isinstance(state.get(f"{pid}_score"), (int, float))
+            or isinstance(state.get(f"{pid}_score"), bool)
+            for pid in inferred_plugin_ids
         )
 
     if runner_mode == "both":
@@ -4305,6 +4324,7 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
             source_queues = _build_runner_queues(
                 targets, snapshot, phase_runner, source_config,
                 rerun_failed=not args.no_rerun_failed,
+                plugin_ids=plugin_ids,
             )
             benchmark_limits = dict(model_thread_limits)
             benchmark_sources = {
@@ -4354,6 +4374,7 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
             targets_by_source, opencode_pending, http_pending = _build_runner_queues(
                 targets, snapshot, runner_mode, source_config,
                 rerun_failed=not args.no_rerun_failed,
+                plugin_ids=plugin_ids,
             )
             benchmark_limits = dict(model_thread_limits)
             benchmark_sources = {

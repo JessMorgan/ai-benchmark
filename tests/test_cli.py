@@ -1697,6 +1697,24 @@ class TestConfigFallback(unittest.TestCase):
         )
         self.assertEqual(queue, {"Saved Source": ["configured-model"]})
 
+    def test_queue_admission_requeues_completed_model_with_missing_plugin_score(self):
+        targets = {"partial-model": {"source": "Saved Source"}}
+        snapshot = {
+            "partial-model": {
+                "status": "completed",
+                "p1_score": 10.0,
+                "p2_score": None,
+            },
+        }
+        queue = self.ai_benchmark._build_runner_queues(
+            targets,
+            snapshot,
+            "http",
+            {"Saved Source": {}},
+            plugin_ids=["p1", "p2"],
+        )
+        self.assertEqual(queue, {"Saved Source": ["partial-model"]})
+
     def test_no_rerun_failed_excludes_failed_single_runner_targets(self):
         """The no-rerun flag must reach queue construction, not just state load."""
         targets = {
