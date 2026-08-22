@@ -200,8 +200,21 @@ def _run_report_only(path, output_formats, revision=None):
     try:
         if sqlite_path is not None:
             source = SQLiteReportSource.open(sqlite_path)
+            report_run_id = None
+            if revision is None:
+                manifest_path = os.path.join(
+                    path if os.path.isdir(path) else os.path.dirname(path) or ".",
+                    "run-info.json",
+                )
+                try:
+                    with open(manifest_path, encoding="utf-8") as handle:
+                        manifest = json.load(handle)
+                    if isinstance(manifest, dict) and isinstance(manifest.get("run_id"), str):
+                        report_run_id = manifest["run_id"]
+                except (OSError, json.JSONDecodeError, TypeError):
+                    pass
             results, active_ids, session_seed, _revision_id = source.load_results(
-                revision=revision, include_reused=True,
+                revision=revision, run_id=report_run_id, include_reused=True,
             )
         else:
             output_dir = path if os.path.isdir(path) else os.path.dirname(path) or "."
@@ -2759,6 +2772,22 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
         except (OSError, ValueError, TypeError, RuntimeError, json.JSONDecodeError) as exc:
             print(f"❌ Could not import JSON to SQLite: {exc}", file=sys.stderr)
             sys.exit(1)
+        manifest_path = os.path.join(os.path.dirname(output_path), "run-info.json")
+        manifest = {}
+        try:
+            with open(manifest_path, encoding="utf-8") as handle:
+                loaded_manifest = json.load(handle)
+            if isinstance(loaded_manifest, dict):
+                manifest.update(loaded_manifest)
+        except (OSError, json.JSONDecodeError, TypeError):
+            pass
+        manifest.update({
+            "run_id": summary.run_id,
+            "revision_id": summary.revision_id,
+            "storage": "sqlite",
+            "sqlite_path": output_path,
+        })
+        _write_run_info(os.path.dirname(output_path), manifest)
         print(json.dumps({
             "source": source_path,
             "sqlite": output_path,
@@ -3352,6 +3381,12 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
                 config=cfg,
                 session_seed=session_seed,
             )
+            # SQLite may adopt the sole imported run when the CLI manifest was
+            # created before the JSON-to-SQLite conversion. Persist the adopted
+            # identity so the next continuation uses the same logical run.
+            run_id = sqlite_store.identity.run_id
+            run_info["run_id"] = run_id
+            run_info["storage"] = "sqlite"
             # Build the identity graph before workers dispatch.
             target_records = []
             for target_name, target_info in targets.items():

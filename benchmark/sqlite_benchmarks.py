@@ -115,6 +115,25 @@ class SQLiteBenchmarkStore:
             (run_id, logical_name, runner, target_signature),
         ).fetchone()
         if row is None:
+            legacy_rows = self.connection.execute(
+                """
+                SELECT target_instance_id, target_signature
+                FROM target_instances
+                WHERE run_id = ? AND logical_name = ? AND runner = ?
+                  AND source = ? AND api_model = ?
+                """,
+                (run_id, logical_name, runner, source, api_model),
+            ).fetchall()
+            matching_legacy = [
+                candidate for candidate in legacy_rows
+                if isinstance(candidate[1], str)
+                and len(candidate[1]) == 64
+                and all(char in "0123456789abcdefABCDEF" for char in candidate[1])
+            ]
+            if len(matching_legacy) == 1:
+                row = matching_legacy[0]
+
+        if row is None:
             cursor = self.connection.execute(
                 """
                 INSERT INTO target_instances(

@@ -31,6 +31,11 @@ class TestSQLiteImportCLI(unittest.TestCase):
             )
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertTrue(os.path.isfile(os.path.join(tmp, "run.sqlite3")))
+            with open(os.path.join(tmp, "run-info.json"), encoding="utf-8") as handle:
+                manifest = json.load(handle)
+            self.assertEqual(manifest["storage"], "sqlite")
+            self.assertTrue(manifest["run_id"])
+            self.assertEqual(manifest["revision_id"], 1)
             with open(source, encoding="utf-8") as handle:
                 self.assertEqual(handle.read(), original)
             report = json.loads(result.stdout)

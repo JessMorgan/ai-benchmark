@@ -35,9 +35,10 @@ class SQLiteReportSource:
             self._owned_connection = None
 
     def load_results(
-        self, *, revision: int | None = None, include_reused: bool = False,
+        self, *, revision: int | None = None, run_id: str | None = None,
+        include_reused: bool = False,
     ) -> tuple[list[dict[str, Any]], list[str], int | None, int]:
-        revision_id = self._resolve_revision(revision)
+        revision_id = self._resolve_revision(revision, run_id=run_id)
         revision_row = self.connection.execute(
             "SELECT session_seed FROM run_revisions WHERE revision_id = ?",
             (revision_id,),
@@ -140,18 +141,27 @@ class SQLiteReportSource:
         target = result.get("model")
         runner = result.get("runner")
         target_id = self.connection.execute(
-            "SELECT target_instance_id FROM target_instances WHERE logical_name = ? AND runner = ?",
-            (target, runner),
+            """
+            SELECT t.target_instance_id
+            FROM target_instances t
+            JOIN revision_targets rt ON rt.target_instance_id = t.target_instance_id
+            WHERE rt.revision_id = ? AND rt.active = 1
+              AND t.logical_name = ? AND t.runner = ?
+            ORDER BY t.target_instance_id DESC
+            LIMIT 1
+            """,
+            (revision_id, target, runner),
         ).fetchone()
         if target_id is None:
             return
         cells = self.connection.execute(
             """
             SELECT c.cell_id, c.plugin_id
-            FROM cells c JOIN target_instances t ON t.target_instance_id = c.target_instance_id
-            WHERE c.target_instance_id = ?
+            FROM cells c
+            JOIN revision_cells rc ON rc.cell_id = c.cell_id
+            WHERE c.target_instance_id = ? AND rc.revision_id = ?
             """,
-            (target_id[0],),
+            (target_id[0], revision_id),
         ).fetchall()
         for cell in cells:
             votes = self.connection.execute(
@@ -173,13 +183,21 @@ class SQLiteReportSource:
             result[f"{pid}_judge_score"] = sum(usable) / len(usable) if usable else None
             result[f"{pid}_judge_models"] = [vote["judge_model"] for vote in votes]
 
-    def _resolve_revision(self, revision: int | None) -> int:
+    def _resolve_revision(self, revision: int | None, *, run_id: str | None = None) -> int:
         if revision is None:
-            row = self.connection.execute(
-                "SELECT current_revision_id FROM runs ORDER BY created_at DESC LIMIT 1"
-            ).fetchone()
+            if run_id is None:
+                row = self.connection.execute(
+                    "SELECT current_revision_id FROM runs ORDER BY created_at DESC LIMIT 1"
+                ).fetchone()
+            else:
+                row = self.connection.execute(
+                    "SELECT current_revision_id FROM runs WHERE run_id = ?",
+                    (run_id,),
+                ).fetchone()
             if row is None or row[0] is None:
-                raise ValueError("SQLite database has no current revision")
+                if run_id is None:
+                    raise ValueError("SQLite database has no current revision")
+                raise ValueError(f"SQLite run {run_id!r} has no current revision")
             return int(row[0])
         row = self.connection.execute(
             """

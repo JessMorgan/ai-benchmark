@@ -135,21 +135,35 @@ class SQLiteWriteQueue:
 
     def _execute_batch(self, connection: sqlite3.Connection,
                        batch: list[_WorkItem]) -> None:
-        try:
-            connection.execute("BEGIN")
-            values = [item.operation(connection) for item in batch]
-            connection.commit()
-        except Exception as exc:  # noqa: BLE001 - fail the whole transaction
+        """Commit each queued operation while retaining batching overhead.
+
+        Runtime operations are intentionally independent: a malformed judge
+        vote or one invalid benchmark payload must not roll back unrelated
+        completed cells that happened to share the same flush batch. Savepoints
+        keep each operation atomic while the surrounding transaction amortizes
+        the commit cost across the batch.
+        """
+        pending: list[tuple[_WorkItem, Any]] = []
+        for item in batch:
             try:
-                connection.rollback()
-            except sqlite3.Error:
-                pass
-            self._report_failure(exc)
-            for item in batch:
+                # Store operations historically commit themselves. Execute
+                # each item as its own transaction so both those operations
+                # and simple test/custom operations are supported without one
+                # failure rolling back its neighbors.
+                value = item.operation(connection)
+                connection.commit()
+            except Exception as exc:  # noqa: BLE001 - isolate one operation
+                try:
+                    connection.rollback()
+                except sqlite3.Error:
+                    pass
+                self._report_failure(exc)
                 if not item.future.done():
                     item.future.set_exception(exc)
-            return
-        for item, value in zip(batch, values):
+            else:
+                pending.append((item, value))
+
+        for item, value in pending:
             if not item.future.done():
                 item.future.set_result(value)
 

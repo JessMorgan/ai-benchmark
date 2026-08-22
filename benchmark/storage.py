@@ -1,6 +1,7 @@
 """Backend-neutral persistence façade for benchmark runs."""
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import sqlite3
@@ -17,6 +18,7 @@ from .runtime_records import (
     TargetRecord,
 )
 from .sqlite_benchmarks import SQLiteBenchmarkStore
+from .sqlite_continuation import ContractSpec, JudgeSpec, PluginSpec, TargetSpec
 from .sqlite_judges import SQLiteJudgeStore
 from .sqlite_writer import SQLiteWriteQueue
 
@@ -256,6 +258,8 @@ class SQLiteRunStore:
         self._target_ids: dict[tuple[str, str, str], int] = {}
         self._target_records: dict[tuple[str, str], TargetRecord] = {}
         self._plugin_records: dict[str, PluginRecord] = {}
+        self._judge_records: dict[str, tuple[str, dict[str, Any] | str | None]] = {}
+        self._contract_records: dict[str, tuple[str, str, str, str]] = {}
         self._cell_ids: dict[tuple[str, str, str], int] = {}
 
     @property
@@ -276,21 +280,58 @@ class SQLiteRunStore:
         self.writer.flush(timeout=10)
         def operation(connection):
             row = connection.execute(
-                "SELECT current_revision_id FROM runs WHERE run_id = ?",
+                "SELECT run_id, current_revision_id FROM runs WHERE run_id = ?",
                 (identity.run_id,),
             ).fetchone()
-            if row is None or row[0] is None:
-                return SQLiteBenchmarkStore(connection).create_run(
-                    identity.run_id,
-                    score_schema=str(metadata.get("score_schema", "v1")),
-                    storage_profile=str(metadata.get("storage_profile", "compact")),
-                    runner_mode=str(metadata.get("runner_mode", "http")),
-                    config=metadata.get("config", {}),
-                    session_seed=metadata.get("session_seed"),
-                ), True
-            return int(row[0]), False
-        self._revision_id, self._is_new_run = self._connection_operation(operation)
-        self.identity = identity
+            # Recover databases created by the pre-manifest importer before
+            # honoring a non-imported shadow UUID. The output directory is a
+            # single logical run, and legacy_import_records is the durable
+            # evidence that identifies the history the operator intended to
+            # continue.
+            imported = connection.execute(
+                """
+                SELECT DISTINCT r.run_id, r.current_revision_id
+                FROM legacy_import_records l
+                JOIN runs r ON r.run_id = l.run_id
+                WHERE r.current_revision_id IS NOT NULL
+                ORDER BY r.created_at, r.run_id
+                """
+            ).fetchall()
+            if len(imported) == 1 and str(imported[0][0]) != identity.run_id:
+                return str(imported[0][0]), int(imported[0][1]), False
+
+            if row is not None and row[1] is not None:
+                return str(row[0]), int(row[1]), False
+
+            # JSON-to-SQLite import predates the SQLite run manifest, so the
+            # CLI may present a newly generated UUID even though this database
+            # already contains the imported logical run. Attach to a sole
+            # existing run instead of silently creating an empty shadow run.
+            # With multiple logical runs there is no safe inference; fail
+            # rather than resuming the wrong history.
+            existing = connection.execute(
+                "SELECT run_id, current_revision_id FROM runs "
+                "WHERE current_revision_id IS NOT NULL ORDER BY created_at, run_id"
+            ).fetchall()
+            if len(existing) == 1:
+                return str(existing[0][0]), int(existing[0][1]), False
+            if len(existing) > 1:
+                raise RuntimeError(
+                    "SQLite database contains multiple logical runs and the "
+                    f"requested run ID {identity.run_id!r} is unknown; "
+                    "provide the matching run-info.json or use a fresh database"
+                )
+            revision_id = SQLiteBenchmarkStore(connection).create_run(
+                identity.run_id,
+                score_schema=str(metadata.get("score_schema", "v1")),
+                storage_profile=str(metadata.get("storage_profile", "compact")),
+                runner_mode=str(metadata.get("runner_mode", "http")),
+                config=metadata.get("config", {}),
+                session_seed=metadata.get("session_seed"),
+            )
+            return identity.run_id, revision_id, True
+        actual_run_id, self._revision_id, self._is_new_run = self._connection_operation(operation)
+        self.identity = RunIdentity(actual_run_id, identity.revision_id)
         self._metadata = dict(metadata)
 
     def continue_run(self, *, config: Any, runner_mode: str, session_seed: int | None,
@@ -302,11 +343,7 @@ class SQLiteRunStore:
         new revision. Judge votes are not carried forward here; they are
         re-derived on resume from the retained benchmark selections.
         """
-        from .sqlite_continuation import (
-            PluginSpec,
-            SQLiteContinuationStore,
-            TargetSpec,
-        )
+        from .sqlite_continuation import SQLiteContinuationStore
         if self.identity is None or self._revision_id is None:
             raise RuntimeError("SQLite run must be started before continuing")
 
@@ -325,6 +362,22 @@ class SQLiteRunStore:
             )
             for record in self._plugin_records.values()
         ]
+        judges = [
+            JudgeSpec(judge_model, source, config)
+            for judge_model, (source, config) in self._judge_records.items()
+        ]
+        contracts = {
+            plugin_id: ContractSpec(
+                contract_id, plugin_id, plugin_version, prompt_version,
+                instructions_version, response_schema_hash,
+                {"contract_id": contract_id}, response_schema_hash,
+            )
+            for plugin_id, (
+                contract_id, plugin_version, prompt_version,
+                instructions_version,
+            ) in self._contract_records.items()
+            for response_schema_hash in [hashlib.sha256(contract_id.encode("utf-8")).hexdigest()]
+        }
 
         # ``create_continuation`` manages its own BEGIN/COMMIT transaction,
         # which conflicts with the writer's batch transaction. It runs on a
@@ -342,8 +395,8 @@ class SQLiteRunStore:
                 runner_mode=runner_mode,
                 targets=targets,
                 plugins=plugins,
-                judges=[],
-                contracts={},
+                judges=judges,
+                contracts=contracts,
                 session_seed=session_seed,
                 rerun_failed=rerun_failed,
             ).revision_id
@@ -466,6 +519,7 @@ class SQLiteRunStore:
                 self._revision_id, judge_model, source=source, config=config,
             )
         self._connection_operation(operation)
+        self._judge_records[judge_model] = (source, config)
 
     def register_contract(self, contract_id: str, *, plugin_id: str,
                           plugin_version: str, prompt_version: str,
@@ -473,7 +527,6 @@ class SQLiteRunStore:
         """Register and activate one judge contract for a plugin version."""
         if self._revision_id is None:
             raise RuntimeError("SQLite run must be started before registering contracts")
-        import hashlib
         contract_hash = hashlib.sha256(contract_id.encode("utf-8")).hexdigest()
         def operation(connection):
             judges = SQLiteJudgeStore(connection)
@@ -487,6 +540,9 @@ class SQLiteRunStore:
             )
             judges.activate_contract(self._revision_id, plugin_id, contract_id)
         self._connection_operation(operation)
+        self._contract_records[plugin_id] = (
+            contract_id, plugin_version, prompt_version, instructions_version,
+        )
 
     def _submit_async(self, operation: Any) -> Future[Any]:
         """Queue an operation without blocking the caller.
@@ -548,6 +604,8 @@ class SQLiteRunStore:
         self.flush(timeout=30)
         if self._revision_id is None:
             return list(self._results.values())
+        if self.identity is None:
+            raise RuntimeError("SQLite run identity is not initialized")
         from .sqlite_reports import SQLiteReportSource
         connection = sqlite3.connect(self.path)
         connection.row_factory = sqlite3.Row
@@ -556,7 +614,8 @@ class SQLiteRunStore:
             configure_connection(connection)
             source = SQLiteReportSource(connection)
             rows, _active_plugins, _seed, _revision = source.load_results(
-                revision=self._revision_id, include_reused=True,
+                revision=self._revision_id, run_id=self.identity.run_id,
+                include_reused=True,
             )
             return rows
         finally:

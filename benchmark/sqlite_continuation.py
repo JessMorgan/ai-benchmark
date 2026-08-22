@@ -405,6 +405,31 @@ class SQLiteContinuationStore:
             """,
             (run_id, spec.logical_name, spec.runner, spec.target_signature),
         ).fetchone()
+        if row is None:
+            # Legacy JSON imports used a SHA-256 target signature, while the
+            # live SQLite runtime uses ``source/api_model``. Match that one
+            # known representation change by identity, but only when the old
+            # signature is exactly a hexadecimal digest and all execution
+            # identity fields agree. Other signature changes remain distinct
+            # targets and therefore intentionally do not reuse attempts.
+            legacy_rows = self.connection.execute(
+                """
+                SELECT target_instance_id, target_signature
+                FROM target_instances
+                WHERE run_id = ? AND logical_name = ? AND runner = ?
+                  AND source = ? AND api_model = ?
+                """,
+                (run_id, spec.logical_name, spec.runner, spec.source, spec.api_model),
+            ).fetchall()
+            matching_legacy = [
+                candidate for candidate in legacy_rows
+                if isinstance(candidate[1], str)
+                and len(candidate[1]) == 64
+                and all(char in "0123456789abcdefABCDEF" for char in candidate[1])
+            ]
+            if len(matching_legacy) == 1:
+                row = matching_legacy[0]
+
         if row is not None:
             return int(row[0]), True
         cursor = self.connection.execute(

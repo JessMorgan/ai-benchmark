@@ -51,14 +51,13 @@ class TestSQLiteWriteQueue(unittest.TestCase):
             )
             with self.assertRaises(sqlite3.Error):
                 bad.result(timeout=5)
-            with self.assertRaises(sqlite3.Error):
-                good.result(timeout=1)
+            self.assertEqual(good.result(timeout=1).rowcount, 1)
             self.assertTrue(writer.close(timeout=5))
             self.assertEqual(len(failures), 1)
             connection = sqlite3.connect(f"{tmpdir}/run.sqlite3")
             self.assertEqual(
                 connection.execute("SELECT count(*) FROM schema_meta WHERE key = 'good'").fetchone()[0],
-                0,
+                1,
             )
             connection.close()
 

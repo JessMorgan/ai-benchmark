@@ -10,6 +10,7 @@ from typing import Any
 
 from .sqlite_benchmarks import SQLiteBenchmarkStore
 from .sqlite_judges import SQLiteJudgeStore
+from .storage import latest_result_rows
 from .sqlite_schema import connect_database
 
 
@@ -58,6 +59,12 @@ class LegacySQLiteImporter:
         if not isinstance(data, dict):
             raise TypeError("legacy state must contain a JSON object")
         results = data.get("results", [])
+        # JSON resume/report semantics are latest-row-per-(state_key, runner).
+        # Import that same projection so an old rerun row cannot collide with
+        # the current row's attempt numbers and cause the current result to be
+        # silently recorded as ambiguous.
+        if isinstance(results, list):
+            results = latest_result_rows(results)
         model_info = data.get("model_info", {})
         active_plugins = data.get("active_plugins", [])
         if not isinstance(results, list) or not isinstance(model_info, dict):
@@ -222,17 +229,22 @@ class LegacySQLiteImporter:
 def _result_attempt(result: dict[str, Any], plugin_id: str, info: dict[str, Any]) -> dict[str, Any]:
     prefix = f"{plugin_id}_"
     attempts = result.get(f"{prefix}attempts")
-    if isinstance(attempts, list) and attempts:
-        selected = attempts[-1]
-        if isinstance(selected, dict):
-            attempt = dict(selected)
-        else:
-            attempt = {}
-    else:
-        attempt = {}
+    selected_number = result.get(
+        f"{prefix}selected_attempt", result.get(f"{prefix}attempt", 1),
+    )
+    selected = None
+    if isinstance(attempts, list):
+        for candidate in attempts:
+            if isinstance(candidate, dict) and candidate.get("attempt") == selected_number:
+                selected = candidate
+                break
+        if selected is None and attempts:
+            candidate = attempts[-1]
+            selected = candidate if isinstance(candidate, dict) else None
+    attempt = dict(selected) if selected is not None else {}
     merged = dict(attempt)
-    merged.update({
-        "attempt_number": result.get(f"{prefix}selected_attempt", result.get(f"{prefix}attempt", 1)),
+    fallback_fields = {
+        "attempt_number": selected_number,
         "prompt": result.get(f"{prefix}prompt", result.get("prompt", "")),
         "content": result.get(f"{prefix}content", result.get("response", "")),
         "thinking": result.get(f"{prefix}thinking", result.get(f"{prefix}think_text", "")),
@@ -245,7 +257,10 @@ def _result_attempt(result: dict[str, Any], plugin_id: str, info: dict[str, Any]
         "rubric": result.get(f"{prefix}rubric"),
         "diagnostics": result.get(f"{prefix}diagnostics"),
         "status": "completed" if result.get("status") == "ok" else "failed",
-    })
+    }
+    for key, value in fallback_fields.items():
+        if key not in merged or merged[key] in (None, ""):
+            merged[key] = value
     if not merged.get("prompt") and isinstance(info, dict):
         merged["prompt"] = info.get(f"{prefix}prompt", "")
     return merged

@@ -56,6 +56,59 @@ class TestSQLiteReports(unittest.TestCase):
         self.assertTrue(rows[0]["rate-limiter_stream_ok"])
         self.assertEqual(rows[0]["rate-limiter_rubric"][0]["name"], "quality")
 
+    def test_default_report_revision_can_be_scoped_to_run_id(self):
+        second = self.store.create_run(
+            "run-b", score_schema="v1", storage_profile="compact",
+            runner_mode="http", config={}, session_seed=99,
+        )
+        source = SQLiteReportSource.open(self.path)
+        self.addCleanup(source.close)
+        _rows, _plugins, seed, revision_id = source.load_results(run_id="run-a")
+        self.assertEqual(seed, 42)
+        self.assertEqual(revision_id, self.revision)
+        _rows, _plugins, seed, revision_id = source.load_results(run_id="run-b")
+        self.assertEqual(seed, 99)
+        self.assertEqual(revision_id, second)
+
+    def test_judge_votes_are_scoped_to_selected_revision_target(self):
+        from benchmark.sqlite_judges import SQLiteJudgeStore
+
+        judge = SQLiteJudgeStore(self.connection)
+        judge.register_judge(self.revision, "judge-a", source="Local")
+        judge.register_contract(
+            "contract-1", plugin_id="rate-limiter", plugin_version="1.0.0",
+            prompt_version="v1", instructions_version="v1",
+            response_schema_hash="schema-1", contract={"v": 1},
+            contract_hash="hash-1",
+        )
+        judge.activate_contract(self.revision, "rate-limiter", "contract-1")
+        attempt = judge.record_attempt(
+            self.revision, self.cell, "judge-a", "contract-1", {"attempt_number": 1},
+        )
+        vote = judge.record_vote(attempt, {"score": 11, "usable": True})
+        judge.select_vote(self.revision, self.cell, "judge-a", "contract-1", vote)
+
+        second = self.store.create_run(
+            "run-b", score_schema="v1", storage_profile="compact",
+            runner_mode="http", config={}, session_seed=99,
+        )
+        target_b = self.store.register_target(
+            second, run_id="run-b", logical_name="model-a", runner="http",
+            source="Other", api_model="model-a", target_signature="other/model-a",
+        )
+        self.store.register_plugin(
+            "rate-limiter", "1.0.0", name="Rate Limiter", max_score=20,
+            supports_streaming=True,
+        )
+        self.store.activate_plugin(second, "rate-limiter", "1.0.0")
+        cell_b = self.store.ensure_cell(second, target_b, "rate-limiter", "1.0.0")
+        self.store.record_attempt(second, cell_b, {"attempt_number": 1, "score": 7}, selected=True)
+
+        source = SQLiteReportSource.open(self.path)
+        self.addCleanup(source.close)
+        rows, _plugins, _seed, _revision = source.load_results(revision=second)
+        self.assertNotIn("rate-limiter_judge_score", rows[0])
+
     def test_historical_revision_can_be_selected(self):
         self.store.record_attempt(
             self.revision, self.cell,
