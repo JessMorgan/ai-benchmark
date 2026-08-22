@@ -815,29 +815,59 @@ class BenchmarkState:
             info["running_pids"] = cur
             # Status intentionally untouched; see docstring.
 
+    def _add_result_locked(self, result):
+        """Append one result while the state lock is held."""
+        self._mark_changed()
+        # Judge workers may finish a plugin after its score is published
+        # but before the enclosing model result row is appended. Carry the
+        # per-plugin judge fields from live model_info into this new row so
+        # a concurrent judge update is not lost on resume.
+        state_key = result.get("state_key", result.get("model"))
+        info = self._model_info.get(state_key, {})
+        for key, value in info.items():
+            if "_judge_" not in key and key != "judge_status":
+                continue
+            # Default-initialized fields do not replace meaningful values
+            # already carried by an older result row. Conversely, a live
+            # judge update must win over a stale row value before append.
+            if value not in (None, False, [], ""):
+                result[key] = value
+            else:
+                result.setdefault(key, value)
+        self.results.append(result)
+        self._journal_append("result", result)
+
     def add_result(self, result):
         with self._lock:
-            self._mark_changed()
-            # Judge workers may finish a plugin after its score is published
-            # but before the enclosing model result row is appended. Carry the
-            # per-plugin judge fields from live model_info into this new row so
-            # a concurrent judge update is not lost on resume.
-            state_key = result.get("state_key", result.get("model"))
-            info = self._model_info.get(state_key, {})
-            for key, value in info.items():
-                if "_judge_" not in key and key != "judge_status":
-                    continue
-                # Default-initialized fields do not replace meaningful values
-                # already carried by an older result row. Conversely, a live
-                # judge update must win over a stale row value before append.
-                if value not in (None, False, [], ""):
-                    result[key] = value
-                else:
-                    result.setdefault(key, value)
-            self.results.append(result)
-            self._journal_append("result", result)
+            self._add_result_locked(result)
         if self._run_store is not None and self._run_store.backend_name != "json":
             self._run_store.record_result(result)
+
+    def publish_result(self, result, *, status, error=None, elapsed=None,
+                       last_error=None):
+        """Publish a result and its live model status in one state mutation."""
+        state_key = result.get("state_key", result.get("model"))
+        with self._lock:
+            self._add_result_locked(result)
+            info = self._model_info.get(state_key)
+            if info is not None:
+                self._mark_changed()
+                info["status"] = status
+                if error is not None:
+                    info["error"] = error
+                if last_error is not None:
+                    info["last_error"] = last_error
+                if elapsed is not None:
+                    info["elapsed"] = elapsed
+        if self._run_store is not None and self._run_store.backend_name != "json":
+            self._run_store.record_result(result)
+            self._run_store.update_model(
+                state_key,
+                status=status,
+                **({"error": error} if error is not None else {}),
+                **({"last_error": last_error} if last_error is not None else {}),
+                **({"elapsed": elapsed} if elapsed is not None else {}),
+            )
 
     def hydrate_results(self, rows):
         """Seed the in-memory read model from a durable backend.

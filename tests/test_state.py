@@ -338,6 +338,21 @@ class TestBenchmarkState(unittest.TestCase):
             snap = loaded.snapshot()
             self.assertEqual(snap["model-a"]["status"], "completed")
 
+    def test_publish_result_updates_row_and_status_as_one_operation(self):
+        state = self.module.BenchmarkState({"model-a": "Source1"}, ["p1"])
+        state.publish_result(
+            {"model": "model-a", "state_key": "model-a", "status": "error", "p1_score": "fail"},
+            status="failed",
+            error="Cancelled",
+            elapsed=2.5,
+        )
+        info = state.snapshot()["model-a"]
+        result = state.latest_results()[0]
+        self.assertEqual(info["status"], "failed")
+        self.assertEqual(info["error"], "Cancelled")
+        self.assertEqual(info["elapsed"], 2.5)
+        self.assertEqual(result["status"], "error")
+
     def test_load_state_does_not_let_cancellation_row_hide_prior_scores(self):
         """A later cancelled row must not erase the last usable plugin values."""
         models = {"model-a": "Source1"}
