@@ -160,6 +160,25 @@ def test_source_scheduler_cancellation_stops_new_submissions():
     assert calls == ["a"]
 
 
+def test_partial_completed_row_keeps_benchmark_reservation_path_active():
+    targets = {"nas-model": {"source": "NAS"}}
+    snapshot = {
+        "nas-model": {
+            "status": "completed",
+            "p1_score": 10.0,
+            "p2_score": None,
+        },
+    }
+    queues = _build_runner_queues(
+        targets,
+        snapshot,
+        "http",
+        {"NAS": {"model_thread_limit": 1}},
+        plugin_ids=["p1", "p2"],
+    )
+    assert queues == {"NAS": ["nas-model"]}
+
+
 def test_judge_source_reservation_configures_one_then_full_pool():
     stop = threading.Event()
     pool = SourceJudgeWorkerPool("Cloud", 3, lambda _job: None, stop)
