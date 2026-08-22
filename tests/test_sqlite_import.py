@@ -124,6 +124,50 @@ class TestSQLiteImport(unittest.TestCase):
             import gzip
             self.assertEqual((row[0], gzip.decompress(row[1]), row[2]), (1, b"selected", 12))
 
+    def test_import_preserves_scores_from_partial_terminal_rows(self):
+        """A cancellation row must not erase score metadata from JSON resume."""
+        with tempfile.TemporaryDirectory() as tmp:
+            source = os.path.join(tmp, "benchmark_state.json")
+            database = os.path.join(tmp, "run.sqlite3")
+            state = {
+                "score_schema": "v1",
+                "runner": "http",
+                "active_plugins": ["rate-limiter"],
+                "plugin_versions": {"rate-limiter": "1.0.0"},
+                "model_info": {
+                    "model-a": {
+                        "rate-limiter_score": 18,
+                        "rate-limiter_output_tokens": 42,
+                        "rate-limiter_tps": 3.5,
+                    },
+                },
+                "results": [
+                    {
+                        "model": "model-a", "source": "Local", "api_model": "model-a",
+                        "status": "ok", "rate-limiter_score": 18,
+                        "rate-limiter_output_tokens": 42,
+                        "rate-limiter_tps": 3.5,
+                    },
+                    {
+                        "model": "model-a", "source": "Local", "api_model": "model-a",
+                        "status": "error", "rate-limiter_score": "fail",
+                        "rate-limiter_output_tokens": 7,
+                        "rate-limiter_tps": 1.2,
+                        "error": "Cancelled",
+                    },
+                ],
+            }
+            with open(source, "w", encoding="utf-8") as handle:
+                json.dump(state, handle)
+
+            LegacySQLiteImporter.import_path(source, database)
+            connection = connect_database(database)
+            self.addCleanup(connection.close)
+            row = connection.execute(
+                "SELECT score, output_tokens, tps FROM benchmark_attempts"
+            ).fetchone()
+            self.assertEqual(tuple(row), (18, 7, 1.2))
+
     def test_import_rejects_non_object_state(self):
         with tempfile.TemporaryDirectory() as tmp:
             source = os.path.join(tmp, "state.json")

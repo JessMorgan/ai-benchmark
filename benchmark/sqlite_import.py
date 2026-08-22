@@ -10,7 +10,7 @@ from typing import Any
 
 from .sqlite_benchmarks import SQLiteBenchmarkStore
 from .sqlite_judges import SQLiteJudgeStore
-from .storage import latest_result_rows
+from .storage import project_result_rows
 from .sqlite_schema import connect_database
 
 
@@ -59,14 +59,15 @@ class LegacySQLiteImporter:
         if not isinstance(data, dict):
             raise TypeError("legacy state must contain a JSON object")
         results = data.get("results", [])
-        # JSON resume/report semantics are latest-row-per-(state_key, runner).
-        # Import that same projection so an old rerun row cannot collide with
-        # the current row's attempt numbers and cause the current result to be
-        # silently recorded as ambiguous.
-        if isinstance(results, list):
-            results = latest_result_rows(results)
         model_info = data.get("model_info", {})
         active_plugins = data.get("active_plugins", [])
+        # JSON resume/report semantics are latest-row-per-(state_key, runner),
+        # with independent per-plugin recovery. Import that same projection so
+        # a shutdown/cancellation row cannot erase scores that were already
+        # completed, including scores published to model_info before the row
+        # was appended.
+        if isinstance(results, list) and isinstance(active_plugins, list):
+            results = project_result_rows(results, active_plugins, model_info)
         if not isinstance(results, list) or not isinstance(model_info, dict):
             raise TypeError("legacy state has invalid results or model_info")
         if not isinstance(active_plugins, list) or not all(isinstance(p, str) for p in active_plugins):

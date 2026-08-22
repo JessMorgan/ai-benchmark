@@ -12,6 +12,7 @@ import threading
 import time
 
 from .plugin import SCORE_SCHEMA
+from .storage import project_result_rows
 
 # State saves intentionally retain the historical ``<state>.tmp`` path for
 # operational compatibility. Serialize all writers so two threads cannot
@@ -349,39 +350,10 @@ _RESUME_PERSISTENT_SUFFIXES = (
 
 
 def _project_latest_result_rows(results, plugin_ids):
-    """Merge usable per-plugin values across result rows.
+    """Apply the shared latest-row/per-plugin recovery projection.
 
-    A cancellation can append a final row containing ``"fail"`` for plugins
-    that were not dispatched in that attempt. Those sentinel values must not
-    hide the last successful value for the same plugin. The row's run-level
-    status and error remain current, while persistent per-plugin fields fall
-    back independently to the newest usable value.
     """
-    latest = {}
-    history = {}
-    for row in results:
-        identity = (
-            row.get("state_key", row.get("model")),
-            row.get("runner", "http"),
-        )
-        latest[identity] = dict(row)
-        per_plugin = history.setdefault(identity, {})
-        for plugin_id in plugin_ids:
-            prefix = f"{plugin_id}_"
-            for key, value in row.items():
-                if not key.startswith(prefix):
-                    continue
-                if value is None or value == "fail":
-                    continue
-                per_plugin[key] = value
-
-    projected = []
-    for identity, row in latest.items():
-        for key, value in history.get(identity, {}).items():
-            if row.get(key) is None or row.get(key) == "fail":
-                row[key] = value
-        projected.append(row)
-    return projected
+    return project_result_rows(results, plugin_ids)
 
 
 class BenchmarkState:

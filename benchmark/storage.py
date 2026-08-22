@@ -678,13 +678,53 @@ class JsonDebugLogStore:
         return None
 
 
-def latest_result_rows(results: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Return the last row for each state-key/runner identity."""
+def project_result_rows(
+    results: Iterable[dict[str, Any]],
+    plugin_ids: Iterable[str],
+    model_info: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    """Project the latest rows without losing usable per-plugin values.
+
+    A shutdown/cancellation row can be the newest row for a model while
+    containing ``fail`` for plugins that already completed. Preserve the most
+    recent usable value for each plugin independently, then use ``model_info``
+    as a fallback for values that were published there but never reached a
+    result row.
+    """
+    plugin_ids = list(plugin_ids)
     latest: dict[tuple[Any, Any], dict[str, Any]] = {}
+    history: dict[tuple[Any, Any], dict[str, Any]] = {}
     for result in results:
-        key = (
+        identity = (
             result.get("state_key", result.get("model")),
             result.get("runner", "http"),
         )
-        latest[key] = result
-    return list(latest.values())
+        latest[identity] = dict(result)
+        per_plugin = history.setdefault(identity, {})
+        for plugin_id in plugin_ids:
+            prefix = f"{plugin_id}_"
+            for key, value in result.items():
+                if key.startswith(prefix) and value not in (None, "fail"):
+                    per_plugin[key] = value
+
+    projected: list[dict[str, Any]] = []
+    for identity, row in latest.items():
+        state_key, runner = identity
+        for key, value in history.get(identity, {}).items():
+            if row.get(key) in (None, "fail"):
+                row[key] = value
+        info = (model_info or {}).get(state_key, {})
+        if isinstance(info, dict):
+            for plugin_id in plugin_ids:
+                prefix = f"{plugin_id}_"
+                for key, value in info.items():
+                    if key.startswith(prefix) and value not in (None, "fail"):
+                        if row.get(key) in (None, "fail"):
+                            row[key] = value
+        projected.append(row)
+    return projected
+
+
+def latest_result_rows(results: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Return the last row for each state-key/runner identity."""
+    return project_result_rows(results, ())
