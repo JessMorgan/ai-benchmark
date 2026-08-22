@@ -1639,17 +1639,21 @@ class BenchmarkState:
                         if value is not None:
                             info[key] = value
                         break
-            scores = [info.get(f"{pid}_score") for pid in plugin_ids]
-            complete = bool(scores) and all(
-                isinstance(score, (int, float)) and not isinstance(score, bool)
-                for score in scores
-            )
-            if complete:
-                info["status"] = "completed"
-            elif info.get("status") == "completed" or rerun_failed:
-                info["status"] = "pending"
-            elif row.get("status") == "error":
-                info["status"] = "failed"
+            # Older hand-built/legacy rows may not carry plugin_versions;
+            # leave their explicit model status intact. Runtime result rows do
+            # carry the contract and are authoritative for completeness.
+            if isinstance(row.get("plugin_versions"), dict):
+                scores = [info.get(f"{pid}_score") for pid in plugin_ids]
+                complete = bool(scores) and all(
+                    isinstance(score, (int, float)) and not isinstance(score, bool)
+                    for score in scores
+                )
+                if complete:
+                    info["status"] = "completed"
+                elif info.get("status") == "completed" or rerun_failed:
+                    info["status"] = "pending"
+                elif row.get("status") == "error":
+                    info["status"] = "failed"
 
         for name, info in state._model_info.items():
             if info.get("status") == "completed":

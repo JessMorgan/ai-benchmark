@@ -383,6 +383,7 @@ class TestBenchmarkState(unittest.TestCase):
             "model": "model-a",
             "status": "error",
             "error": "Cancelled",
+            "plugin_versions": {"p1": "1.0.0", "p2": "1.0.0"},
             "p1_score": "fail",
             "p1_response_time": "fail",
             "p1_output_tokens": "fail",
