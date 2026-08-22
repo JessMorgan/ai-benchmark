@@ -80,6 +80,38 @@ def _frame_text(lines):
     return "\n".join(text for text, _style in lines)
 
 
+class TestFrameCache(unittest.TestCase):
+    def test_frame_alignment_cache_reuses_unchanged_revision(self):
+        state = mock.Mock()
+        state.snapshot.return_value = {
+            "model-a": {
+                "status": "completed",
+                "source": "Local",
+                "judge_models": ["judge"],
+                "running_pids": [],
+                "p_score": 10.0,
+            },
+        }
+        state.completed = 1
+        state.total = 1
+        state.judge_activity_snapshot.return_value = []
+        state.judge_progress_snapshot.return_value = {}
+        state.judge_selected_snapshot.return_value = set()
+        state.has_live_work.return_value = False
+        state.revision = 1
+        state.recent_log.return_value = []
+        plugin = mock.Mock(id="p", supports_streaming=True)
+        with mock.patch("benchmark.cli._plugin_judge_alignment", return_value=(2, 0, 0)) as alignment:
+            cli._build_frame_lines(
+                state, [plugin], {"Local": "Loc"}, "#", "p", 1, 0, 0, (20, 80),
+            )
+            cli._build_frame_lines(
+                state, [plugin], {"Local": "Loc"}, "#", "p", 1, 0, 0, (20, 80),
+            )
+        self.assertEqual(alignment.call_count, 1)
+
+
+
 class TestFrameLinesToText(unittest.TestCase):
     def test_joins_lines_with_newlines_and_preserves_content(self):
         text = cli._frame_lines_to_text(

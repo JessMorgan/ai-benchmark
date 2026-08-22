@@ -1233,12 +1233,26 @@ def _build_frame_lines(state, active_plugins, source_abbrevs, frozen_hdr,
         lines.append(line(frozen_hdr + " " + visible_plugin_hdr, "bold underline"))
     # Per-plugin-column judge marker slots, computed once over the FULL
     # snapshot (not just the visible slice) so like-emojis line up in the
-    # same columns regardless of scroll position.
-    judge_slots = {}
-    for plugin in active_plugins:
-        slots = _plugin_judge_alignment(snap.values(), plugin.id)
-        if slots is not None:
-            judge_slots[plugin.id] = slots
+    # same columns regardless of scroll position. Cache these derived widths
+    # by the state revision: scrolling changes the visible slice but not the
+    # alignment inputs, while any state mutation invalidates the cache.
+    alignment_key = (state.revision, tuple(plugin.id for plugin in active_plugins))
+    alignment_cache = getattr(state, "_tui_alignment_cache", None)
+    if not isinstance(alignment_cache, dict):
+        alignment_cache = {}
+        try:
+            setattr(state, "_tui_alignment_cache", alignment_cache)
+        except Exception:  # pragma: no cover - defensive for read-only test doubles
+            pass
+    judge_slots = alignment_cache.get(alignment_key)
+    if judge_slots is None:
+        judge_slots = {}
+        for plugin in active_plugins:
+            slots = _plugin_judge_alignment(snap.values(), plugin.id)
+            if slots is not None:
+                judge_slots[plugin.id] = slots
+        alignment_cache.clear()
+        alignment_cache[alignment_key] = judge_slots
     for row_idx in range(visible_rows):
         abs_idx = scroll_y + row_idx
         if abs_idx >= len(snap_items):
