@@ -627,6 +627,13 @@ class TestFrameRowWidget(unittest.TestCase):
         row.update_line("hello", None, 8)
         self.assertTrue(row.update_line("heXlo", None, 8))
 
+    def test_resize_repaints_even_when_visible_prefix_is_unchanged(self):
+        row = cli._FrameRow()
+        row.update_line("hello", None, 8)
+        with mock.patch.object(row, "refresh") as refresh:
+            row.update_line("hello", None, 4)
+        refresh.assert_called_once()
+
     def test_style_change_repaints(self):
         row = cli._FrameRow()
         row.update_line("hello", None, 8)
@@ -703,6 +710,36 @@ class TestBenchmarkTUIAppRows(unittest.IsolatedAsyncioTestCase):
             self.assertGreater(len(app._rows), 3)
             self.assertIn("AI Benchmark", app._rows[0]._line_text)
             self.assertTrue(app._rows[0].id.startswith("row-"))
+
+    async def test_rapid_resize_keeps_rows_and_rendering_valid(self):
+        stop = threading.Event()
+        app = cli._BenchmarkTUIApp(
+            _FakeState(), stop, {"Local": "LC"},
+            "  #  S Model  St", "ratSc ratTok ratTm ratTPS",
+            1, [_plugin()], 0, {"Local": 2},
+        )
+        async with app.run_test(size=(30, 100)) as pilot:
+            for size in ((8, 32), (30, 100), (10, 40), (30, 100)):
+                await pilot.resize_terminal(*size)
+                await pilot.pause()
+            self.assertTrue(app.is_attached)
+            self.assertTrue(app._rows)
+            self.assertTrue(all(row.is_attached for row in app._rows))
+
+    async def test_resize_clamps_scroll_offsets(self):
+        stop = threading.Event()
+        app = cli._BenchmarkTUIApp(
+            _FakeState(), stop, {"Local": "LC"},
+            "  #  S Model  St", "x" * 300,
+            1, [_plugin()], 0, {"Local": 2},
+        )
+        async with app.run_test(size=(30, 100)) as pilot:
+            app.action_scroll_end()
+            app.action_scroll_end_x()
+            await pilot.resize_terminal(10, 32)
+            await pilot.pause()
+            self.assertLessEqual(app._scroll_y, app._max_row_offset())
+            self.assertLessEqual(app._scroll_x, app._max_col_offset())
 
     async def test_quit_cancels_requests_and_sets_stop_event(self):
         stop = threading.Event()
