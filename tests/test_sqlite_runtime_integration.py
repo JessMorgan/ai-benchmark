@@ -4,6 +4,7 @@ These exercise the same facade calls the live benchmark/judge runtime makes:
 register the identity graph, record immutable attempts and votes, then resume
 via a continuation and read the durable read model back for reports.
 """
+import json
 import os
 import tempfile
 import unittest
@@ -256,6 +257,42 @@ class TestSQLiteRuntimeIntegration(unittest.TestCase):
             self.assertEqual(rows[0]["rate-limiter_score"], 18)
             self.assertTrue(resumed.close(timeout=10))
 
+
+    def test_legacy_import_contract_placeholder_upgrades_on_continuation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source = os.path.join(tmp, "benchmark_state.json")
+            path = os.path.join(tmp, "run.sqlite3")
+            state = {
+                "score_schema": "v1", "runner": "http",
+                "active_plugins": ["rate-limiter"],
+                "plugin_versions": {"rate-limiter": "1.0.0"},
+                "model_info": {"m": {}},
+                "results": [{
+                    "model": "m", "source": "Local", "api_model": "m",
+                    "status": "ok", "rate-limiter_score": 15,
+                    "rate-limiter_judge_votes": [{
+                        "model": "judge-a", "score": 14, "usable": True,
+                        "judge_contract_id": "contract-1",
+                    }],
+                }],
+            }
+            with open(source, "w", encoding="utf-8") as handle:
+                json.dump(state, handle)
+            from benchmark.sqlite_import import LegacySQLiteImporter
+            LegacySQLiteImporter.import_path(source, path)
+
+            resumed = SQLiteRunStore(path, flush_interval=0.01)
+            resumed.start_run(RunIdentity("legacy-" + "x" * 16, 2), source="test")
+            target = _target()
+            plugin = _plugin()
+            resumed.prepare_run([target], [plugin])
+            resumed.register_judge("judge-a", "Local")
+            resumed.register_contract(
+                "contract-1", plugin_id="rate-limiter", plugin_version="1.0.0",
+                prompt_version="judge-v8", instructions_version="1.0.0",
+            )
+            resumed.continue_run(config={}, runner_mode="http", session_seed=None)
+            self.assertTrue(resumed.close(timeout=10))
 
     def test_continuation_preserves_registered_judges_and_contracts(self):
         with tempfile.TemporaryDirectory() as tmp:

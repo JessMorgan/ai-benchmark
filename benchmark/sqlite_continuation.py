@@ -536,9 +536,29 @@ class SQLiteContinuationStore:
             (spec.contract_id,),
         ).fetchone()
         if row is not None:
-            if row[0] != spec.contract_hash or row[1] != contract_json:
-                raise ValueError(f"judge contract is immutable: {spec.contract_id}")
-            return
+            if row[0] == spec.contract_hash and row[1] == contract_json:
+                return
+            # Legacy JSON imports use a deliberately minimal placeholder
+            # because the original contract body is not present in the state
+            # file. Allow the first real runtime contract to replace only that
+            # exact placeholder; all other contract mutations remain rejected.
+            if row[0] == spec.contract_hash and row[1] == '{"legacy":true}':
+                self.connection.execute(
+                    """
+                    UPDATE judge_contracts SET
+                        plugin_id = ?, plugin_version = ?, prompt_version = ?,
+                        instructions_version = ?, response_schema_hash = ?,
+                        contract_json = ?
+                    WHERE contract_id = ?
+                    """,
+                    (
+                        spec.plugin_id, spec.plugin_version, spec.prompt_version,
+                        spec.instructions_version, spec.response_schema_hash,
+                        contract_json, spec.contract_id,
+                    ),
+                )
+                return
+            raise ValueError(f"judge contract is immutable: {spec.contract_id}")
         existing = self.connection.execute(
             "SELECT contract_id FROM judge_contracts WHERE contract_hash = ?",
             (spec.contract_hash,),
