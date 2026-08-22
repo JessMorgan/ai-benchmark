@@ -338,6 +338,56 @@ class TestBenchmarkState(unittest.TestCase):
             snap = loaded.snapshot()
             self.assertEqual(snap["model-a"]["status"], "completed")
 
+    def test_load_state_does_not_let_cancellation_row_hide_prior_scores(self):
+        """A later cancelled row must not erase the last usable plugin values."""
+        models = {"model-a": "Source1"}
+        plugin_ids = ["p1", "p2"]
+        state = self.module.BenchmarkState(models, plugin_ids)
+        state.update(
+            "model-a",
+            status="completed",
+            p1_score=12.0,
+            p1_response_time=1.2,
+            p1_output_tokens=100,
+            p2_score=None,
+            p2_response_time=None,
+            p2_output_tokens=None,
+        )
+        state.add_result({
+            "model": "model-a",
+            "status": "ok",
+            "plugin_versions": {"p1": "1.0.0", "p2": "1.0.0"},
+            "p1_score": 12.0,
+            "p1_response_time": 1.2,
+            "p1_output_tokens": 100,
+            "p2_score": "fail",
+            "p2_response_time": "fail",
+            "p2_output_tokens": "fail",
+        })
+        state.add_result({
+            "model": "model-a",
+            "status": "error",
+            "error": "Cancelled",
+            "p1_score": "fail",
+            "p1_response_time": "fail",
+            "p1_output_tokens": "fail",
+            "p2_score": "fail",
+            "p2_response_time": "fail",
+            "p2_output_tokens": "fail",
+        })
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, "state.json")
+            state.save_state(path)
+            loaded = self.module.BenchmarkState.load_state(path, models, plugin_ids)
+            info = loaded.snapshot()["model-a"]
+
+        self.assertEqual(info["status"], "pending")
+        self.assertEqual(info["p1_score"], 12.0)
+        self.assertEqual(info["p1_output_tokens"], 100)
+        self.assertEqual(info["p2_score"], "fail")
+        self.assertEqual(info["p2_output_tokens"], "fail")
+
 
     def test_start_plugin_run_sets_running_status_and_pid(self):
         """start_plugin_run promotes the model to in-flight with the canonical

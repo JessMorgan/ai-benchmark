@@ -348,6 +348,42 @@ _RESUME_PERSISTENT_SUFFIXES = (
 )
 
 
+def _project_latest_result_rows(results, plugin_ids):
+    """Merge usable per-plugin values across result rows.
+
+    A cancellation can append a final row containing ``"fail"`` for plugins
+    that were not dispatched in that attempt. Those sentinel values must not
+    hide the last successful value for the same plugin. The row's run-level
+    status and error remain current, while persistent per-plugin fields fall
+    back independently to the newest usable value.
+    """
+    latest = {}
+    history = {}
+    for row in results:
+        identity = (
+            row.get("state_key", row.get("model")),
+            row.get("runner", "http"),
+        )
+        latest[identity] = dict(row)
+        per_plugin = history.setdefault(identity, {})
+        for plugin_id in plugin_ids:
+            prefix = f"{plugin_id}_"
+            for key, value in row.items():
+                if not key.startswith(prefix):
+                    continue
+                if value is None or value == "fail":
+                    continue
+                per_plugin[key] = value
+
+    projected = []
+    for identity, row in latest.items():
+        for key, value in history.get(identity, {}).items():
+            if row.get(key) is None or row.get(key) == "fail":
+                row[key] = value
+        projected.append(row)
+    return projected
+
+
 class BenchmarkState:
     """Thread-safe shared state for parallel benchmark execution."""
 
@@ -1425,13 +1461,9 @@ class BenchmarkState:
         return True
 
     def latest_results(self):
-        """Return only the most recent result per model (deduplicates across runs)."""
+        """Return the latest row with per-plugin cancellation recovery applied."""
         with self._lock:
-            seen = {}
-            for r in self.results:
-                key = (r.get("state_key", r["model"]), r.get("runner", "http"))
-                seen[key] = r
-            return list(seen.values())
+            return _project_latest_result_rows(self.results, self.plugin_ids)
 
     @classmethod
     def load_state(cls, path, models, plugin_ids, *, rerun_failed=True):
@@ -1530,6 +1562,14 @@ class BenchmarkState:
                         ):
                             state._model_info[name]["status"] = "pending"
         state.results = data.get("results", [])
+        projected_results = _project_latest_result_rows(state.results, plugin_ids)
+        projected_by_identity = {
+            (
+                row.get("state_key", row.get("model")),
+                row.get("runner", "http"),
+            ): row
+            for row in projected_results
+        }
         state._journal_sequence = data.get("journal_sequence", 0)
         if not isinstance(state._journal_sequence, int) or state._journal_sequence < 0:
             state._journal_sequence = 0
@@ -1556,8 +1596,8 @@ class BenchmarkState:
         # ``save_state`` that didn't carry them forward.  Without this, the
         # TUI table (which reads ``_model_info``) shows blank score/metric
         # cells on JSON resume.
-        for row in state.results:
-            state_key = row.get("state_key", row.get("model"))
+        for identity, row in projected_by_identity.items():
+            state_key, runner_name = identity
             info = state._model_info.get(state_key)
             if info is None:
                 continue
@@ -1569,6 +1609,18 @@ class BenchmarkState:
                         if value is not None:
                             info[key] = value
                         break
+            scores = [info.get(f"{pid}_score") for pid in plugin_ids]
+            complete = bool(scores) and all(
+                isinstance(score, (int, float)) and not isinstance(score, bool)
+                for score in scores
+            )
+            if complete:
+                info["status"] = "completed"
+            elif info.get("status") == "completed" or rerun_failed:
+                info["status"] = "pending"
+            elif row.get("status") == "error":
+                info["status"] = "failed"
+
         for name, info in state._model_info.items():
             if info.get("status") == "completed":
                 continue
