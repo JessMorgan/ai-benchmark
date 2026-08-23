@@ -59,6 +59,48 @@ class TestSQLiteReports(unittest.TestCase):
         self.assertEqual(rows[0]["rate-limiter_response_time"], 2.4)
         self.assertEqual(rows[0]["rate-limiter_gen_time"], 1.8)
 
+    def test_inactive_target_and_plugin_memberships_are_not_materialized(self):
+        """Current report rows must honor active revision membership."""
+        inactive_target = self.store.register_target(
+            self.revision, run_id="run-a", logical_name="retired-model", runner="http",
+            source="Local", api_model="retired-model", target_signature="sig-retired",
+        )
+        inactive_cell = self.store.ensure_cell(
+            self.revision, inactive_target, "rate-limiter", "1.0.0",
+        )
+        self.store.record_attempt(
+            self.revision, inactive_cell,
+            {"attempt_number": 1, "content": "retired", "score": 9}, selected=True,
+        )
+        self.connection.execute(
+            "UPDATE revision_targets SET active = 0 WHERE revision_id = ? AND target_instance_id = ?",
+            (self.revision, inactive_target),
+        )
+        self.store.register_plugin(
+            "removed-plugin", "1.0.0", name="Removed", max_score=20,
+            supports_streaming=True,
+        )
+        self.store.activate_plugin(self.revision, "removed-plugin", "1.0.0")
+        removed_cell = self.store.ensure_cell(
+            self.revision, self.target, "removed-plugin", "1.0.0",
+        )
+        self.store.record_attempt(
+            self.revision, removed_cell,
+            {"attempt_number": 1, "content": "removed", "score": 8}, selected=True,
+        )
+        self.connection.execute(
+            "UPDATE revision_plugins SET active = 0 WHERE revision_id = ? AND plugin_id = ?",
+            (self.revision, "removed-plugin"),
+        )
+        self.connection.commit()
+
+        source = SQLiteReportSource.open(self.path)
+        self.addCleanup(source.close)
+        rows, plugins, _seed, _revision = source.load_results(include_reused=True)
+        self.assertEqual([row["model"] for row in rows], ["model-a"])
+        self.assertEqual(plugins, ["rate-limiter"])
+        self.assertNotIn("removed-plugin_score", rows[0])
+
     def test_default_report_revision_can_be_scoped_to_run_id(self):
         second = self.store.create_run(
             "run-b", score_schema="v1", storage_profile="compact",

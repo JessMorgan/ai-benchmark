@@ -69,6 +69,12 @@ class SQLiteReportSource:
             JOIN revision_targets rt
               ON rt.revision_id = rc.revision_id
              AND rt.target_instance_id = c.target_instance_id
+             AND rt.active = 1
+            JOIN revision_plugins rp
+              ON rp.revision_id = rc.revision_id
+             AND rp.plugin_id = c.plugin_id
+             AND rp.plugin_version = c.plugin_version
+             AND rp.active = 1
             LEFT JOIN benchmark_selections s
               ON s.revision_id = rc.revision_id AND s.cell_id = c.cell_id
             WHERE rc.revision_id = ? AND (rc.scheduled = 1{reused_clause})
