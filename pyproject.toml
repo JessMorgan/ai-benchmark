@@ -63,6 +63,14 @@ packages = [
 [tool.pytest.ini_options]
 testpaths = ["tests", "plugins/challenges", "plugins/outputs"]
 pythonpath = ["."]
+# Python's "strict mode" for the suite: unclosed files/sockets surface as
+# test failures instead of silent GC-time warnings. Unclosed resources in
+# app code are GC'd and re-raised by pytest's unraisable-exception plugin,
+# so that warning type must be fatal as well.
+filterwarnings = [
+    "error::pytest.PytestUnraisableExceptionWarning",
+    "error::ResourceWarning",
+]
 
 [tool.coverage.run]
 source = ["benchmark", "plugins"]

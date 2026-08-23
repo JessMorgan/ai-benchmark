@@ -1,13 +1,9 @@
 """Final push for 90% coverage: more core.py pi config, state.py journal compaction, transport edge cases, validators."""
 from __future__ import annotations
 
-import json
 import os
 from typing import Any
-import sqlite3
-import tempfile
 from pathlib import Path
-from typing import Any
 from unittest.mock import MagicMock
 
 import pytest

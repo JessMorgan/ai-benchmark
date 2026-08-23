@@ -64,7 +64,8 @@ class TestHTMLOutputPlugin(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             path = self.plugin.generate(self.sample_results, self.plugins, output_dir=tmp)
             self.assertTrue(os.path.isfile(path))
-            html = open(path, encoding="utf-8").read()
+            with open(path, encoding="utf-8") as handle:
+                html = handle.read()
             self.assertIn("responses/", html)
 
     def test_gen_html_includes_empty_reason_column(self):

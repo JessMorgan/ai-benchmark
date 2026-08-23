@@ -5,13 +5,10 @@ import gzip
 import json
 import os
 import sqlite3
-import tempfile
-import threading
-import time
 from pathlib import Path
 from concurrent.futures import Future
 from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -92,7 +89,8 @@ class TestJsonDebugLogStore:
         log_path = str(tmp_path / "logs" / "debug.log")
         store.append(log_path, "hello world\n")
         assert os.path.exists(log_path)
-        assert open(log_path).read() == "hello world\n"
+        with open(log_path) as handle:
+            assert handle.read() == "hello world\n"
 
     def test_append_bytes(self, tmp_path: Path) -> None:
         from benchmark.storage import JsonDebugLogStore
@@ -100,7 +98,8 @@ class TestJsonDebugLogStore:
         store = JsonDebugLogStore()
         log_path = str(tmp_path / "debug.log")
         store.append(log_path, b"bytes data\n")
-        assert open(log_path, "rb").read() == b"bytes data\n"
+        with open(log_path, "rb") as handle:
+            assert handle.read() == b"bytes data\n"
 
     def test_close_noop(self) -> None:
         from benchmark.storage import JsonDebugLogStore
@@ -135,7 +134,6 @@ class TestJsonRunStoreFacade:
             BenchmarkAttemptRecord,
             JsonRunStore,
             JudgeAttemptRecord,
-            JudgeVoteRecord,
             PluginRecord,
             RunIdentity,
             TargetRecord,
@@ -335,7 +333,6 @@ class TestSQLiteWriteQueue:
         q.close(timeout=5)
 
     def test_submit_after_close(self, tmp_path: Path) -> None:
-        from concurrent.futures import InvalidStateError
         from benchmark.sqlite_writer import SQLiteWriteQueue
 
         db = str(tmp_path / "test.db")
@@ -981,7 +978,7 @@ class TestSQLiteBenchmarkStore:
 class TestSQLiteJudges:
     def _make_store(self) -> tuple[sqlite3.Connection, Any]:
         from benchmark.sqlite_judges import SQLiteJudgeStore
-        from benchmark.sqlite_schema import configure_connection, connect_database
+        from benchmark.sqlite_schema import configure_connection
 
         conn = sqlite3.connect(":memory:")
         conn.row_factory = sqlite3.Row

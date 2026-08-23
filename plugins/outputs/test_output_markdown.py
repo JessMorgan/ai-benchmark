@@ -65,7 +65,8 @@ class TestMarkdownOutputPlugin(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             path = self.plugin.generate(self.sample_results, self.plugins, output_dir=tmp)
             self.assertTrue(os.path.isfile(path))
-            md = open(path, encoding="utf-8").read()
+            with open(path, encoding="utf-8") as handle:
+                md = handle.read()
             self.assertIn("[view]", md)
 
     def test_gen_markdown_includes_empty_reason_column(self):

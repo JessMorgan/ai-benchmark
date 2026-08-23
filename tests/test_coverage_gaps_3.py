@@ -6,7 +6,6 @@ import os
 import sqlite3
 import tempfile
 from pathlib import Path
-from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
@@ -657,7 +656,7 @@ class TestStorageMore:
             JsonPayloadStore().get(1)
 
     def test_run_store_protocol_compliance(self) -> None:
-        from benchmark.storage import JsonRunStore, RunStore, SQLiteRunStore
+        from benchmark.storage import JsonRunStore, RunStore
 
         mock_state = MagicMock()
         json_store = JsonRunStore(mock_state)
