@@ -1,10 +1,13 @@
 """Tests for the legacy JSON to SQLite importer."""
+import gzip
 import json
 import os
 import tempfile
 import unittest
 
+from benchmark.logs import iter_log_members
 from benchmark.sqlite_import import LegacySQLiteImporter
+from benchmark.sqlite_payloads import SQLitePayloadStore
 from benchmark.sqlite_schema import connect_database
 
 
@@ -167,6 +170,91 @@ class TestSQLiteImport(unittest.TestCase):
                 "SELECT score, output_tokens, tps FROM benchmark_attempts"
             ).fetchone()
             self.assertEqual(tuple(row), (18, 7, 1.2))
+
+    def test_imports_judge_sidecar_and_raw_response_as_payloads(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source = os.path.join(tmp, "benchmark_state.json")
+            database = os.path.join(tmp, "run.sqlite3")
+            os.makedirs(os.path.join(tmp, "judge-inputs", "http", "model-a"))
+            os.makedirs(os.path.join(tmp, "http", "responses", "model-a"))
+            with open(os.path.join(tmp, "judge-inputs", "http", "model-a", "rate-limiter.json"), "w", encoding="utf-8") as handle:
+                json.dump({
+                    "target": "model-a", "state_key": "model-a", "runner": "http",
+                    "plugin": "rate-limiter", "plugin_name": "Rate limiter",
+                    "plugin_version": "1.0.0", "max_score": 20,
+                    "prompt": "judge prompt with details",
+                    "response": "candidate response",
+                }, handle)
+            response_path = os.path.join(
+                tmp, "http", "responses", "model-a",
+                "rate-limiter.judge.judge-a.contract-1.txt",
+            )
+            with open(response_path, "w", encoding="utf-8") as handle:
+                handle.write('{"score": 17}')
+            state = {
+                "runner": "http", "active_plugins": ["rate-limiter"],
+                "plugin_versions": {"rate-limiter": "1.0.0"},
+                "model_info": {}, "results": [{
+                    "model": "model-a", "source": "Local", "api_model": "model-a",
+                    "status": "ok", "rate-limiter_score": 18,
+                    "rate-limiter_judge_votes": [{
+                        "model": "judge-a", "judge_contract_id": "contract-1",
+                        "score": 17, "usable": True,
+                    }],
+                }],
+            }
+            with open(source, "w", encoding="utf-8") as handle:
+                json.dump(state, handle)
+
+            summary = LegacySQLiteImporter.import_path(source, database)
+            self.assertEqual(summary.imported_artifacts, 1)
+            connection = connect_database(database)
+            self.addCleanup(connection.close)
+            attempt = connection.execute(
+                "SELECT raw_response_payload_id, request_payload_id FROM judge_attempts"
+            ).fetchone()
+            self.assertIsNotNone(attempt[0])
+            self.assertIsNotNone(attempt[1])
+            payloads = SQLitePayloadStore(connection)
+            self.assertEqual(payloads.get_text(attempt[0]), '{"score": 17}')
+            manifest = json.loads(payloads.get_text(attempt[1]))
+            self.assertEqual(payloads.get_text(manifest["prompt_payload_id"]), "judge prompt with details")
+            self.assertEqual(payloads.get_text(manifest["response_payload_id"]), "candidate response")
+
+    def test_debug_log_import_is_opt_in_and_compresses_output(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source = os.path.join(tmp, "benchmark_state.json")
+            log_path = os.path.join(tmp, "legacy", "model-a.log")
+            os.makedirs(os.path.dirname(log_path))
+            with open(log_path, "w", encoding="utf-8") as handle:
+                handle.write("legacy request\nlegacy response\n")
+            state = {
+                "active_plugins": [], "model_info": {}, "results": [],
+            }
+            with open(source, "w", encoding="utf-8") as handle:
+                json.dump(state, handle)
+
+            compact_db = os.path.join(tmp, "compact.sqlite3")
+            compact = LegacySQLiteImporter.import_path(source, compact_db)
+            self.assertEqual(compact.imported_debug_logs, 0)
+            self.assertFalse(os.path.exists(os.path.join(tmp, "logs", "imported")))
+
+            debug_db = os.path.join(tmp, "debug.sqlite3")
+            debug = LegacySQLiteImporter.import_path(
+                source, debug_db, run_id="debug-run", include_debug_logs=True,
+            )
+            self.assertEqual(debug.imported_debug_logs, 1)
+            imported_path = os.path.join(tmp, "logs", "imported", "legacy", "model-a.log.gz")
+            self.assertTrue(os.path.isfile(imported_path))
+            self.assertEqual(list(iter_log_members(imported_path)), [b"legacy request\nlegacy response\n"])
+            self.assertEqual(
+                connect_database(debug_db).execute(
+                    "SELECT compression, complete_members FROM debug_log_files"
+                ).fetchone()[:],
+                ("gzip", 1),
+            )
+            with gzip.open(imported_path, "rb") as handle:
+                self.assertEqual(handle.read(), b"legacy request\nlegacy response\n")
 
     def test_import_rejects_non_object_state(self):
         with tempfile.TemporaryDirectory() as tmp:

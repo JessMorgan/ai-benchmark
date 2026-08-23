@@ -6,10 +6,14 @@ import json
 import os
 import sqlite3
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
+from .logs import AppendOnlyGzipLog, iter_log_members, recover_log
+from .outputs import sanitize_filename
 from .sqlite_benchmarks import SQLiteBenchmarkStore
 from .sqlite_judges import SQLiteJudgeStore
+from .sqlite_payloads import build_payload_only_judge_input
 from .sqlite_schema import connect_database
 from .storage import project_result_rows
 
@@ -24,6 +28,8 @@ class ImportSummary:
     imported_votes: int
     ambiguous_records: int
     skipped_files: int
+    imported_artifacts: int = 0
+    imported_debug_logs: int = 0
 
 
 class LegacySQLiteImporter:
@@ -51,7 +57,6 @@ class LegacySQLiteImporter:
         self, source_path: str, *, run_id: str | None = None,
         include_debug_logs: bool = False,
     ) -> ImportSummary:
-        del include_debug_logs  # Debug-log copying is intentionally opt-in future work.
         source_path = os.path.abspath(source_path)
         source_hash = _sha256_file(source_path)
         with open(source_path, encoding="utf-8") as handle:
@@ -105,6 +110,7 @@ class LegacySQLiteImporter:
         target_ids: dict[tuple[str, str], int] = {}
         cell_ids: dict[tuple[str, str, str], int] = {}
         imported_targets = imported_cells = imported_attempts = imported_votes = 0
+        imported_artifacts = imported_debug_logs = skipped_files = 0
         ambiguous = 0
         for row_number, result in enumerate(results):
             if not isinstance(result, dict):
@@ -152,27 +158,37 @@ class LegacySQLiteImporter:
                         "ambiguous", str(exc),
                     )
                     continue
-                imported_votes += self._import_votes(
+                votes, artifacts, skipped = self._import_votes(
                     run_id, source_hash, row_number, revision_id, cell_id,
-                    plugin_id, result, attempt_id,
+                    plugin_id, result, attempt_id, source_dir=os.path.dirname(source_path),
                 )
+                imported_votes += votes
+                imported_artifacts += artifacts
+                skipped_files += skipped
             self._record_legacy(run_id, source_hash, row_number, "result", result, "mapped", None)
 
+        if include_debug_logs:
+            imported_debug_logs, log_skipped = self._import_debug_logs(
+                run_id, revision_id, os.path.dirname(source_path),
+            )
+            skipped_files += log_skipped
         self.connection.commit()
         return ImportSummary(
             run_id, revision_id, imported_targets, imported_cells,
-            imported_attempts, imported_votes, ambiguous, 0,
+            imported_attempts, imported_votes, ambiguous, skipped_files,
+            imported_artifacts, imported_debug_logs,
         )
 
     def _import_votes(
         self, run_id: str, source_hash: str, row_number: int, revision_id: int,
-        cell_id: int, plugin_id: str, result: dict[str, Any], attempt_id: int,
-    ) -> int:
+        cell_id: int, plugin_id: str, result: dict[str, Any], _attempt_id: int,
+        *, source_dir: str,
+    ) -> tuple[int, int, int]:
         votes = result.get(f"{plugin_id}_judge_votes", [])
         if not isinstance(votes, list):
-            return 0
+            return 0, 0, 0
         judge_store = SQLiteJudgeStore(self.connection)
-        count = 0
+        count = artifacts = skipped = 0
         for ordinal, vote in enumerate(votes):
             if not isinstance(vote, dict) or not isinstance(vote.get("model"), str):
                 self._record_legacy(run_id, source_hash, row_number, "judge_vote", vote, "ambiguous", "missing judge model")
@@ -198,10 +214,40 @@ class LegacySQLiteImporter:
                 contract_hash=contract_hash,
             )
             judge_store.activate_contract(revision_id, plugin_id, contract_id)
+            target = str(result.get("state_key", result.get("model", "target")))
+            runner = str(result.get("runner", "http"))
+            sidecar = _judge_sidecar_file(
+                source_dir, target, runner, plugin_id,
+            )
+            sidecar_payload = _load_json_file(sidecar)
+            raw_response = _load_text_file(
+                _judge_response_file(
+                    source_dir, target, runner, plugin_id,
+                    judge_model, contract_id,
+                ),
+            )
+            if raw_response is None and isinstance(vote.get("raw_response"), str):
+                raw_response = vote["raw_response"]
+            request_payload = None
+            if sidecar_payload is not None:
+                request_payload = json.dumps(
+                    build_payload_only_judge_input(judge_store.payloads, sidecar_payload),
+                    sort_keys=True,
+                    ensure_ascii=False,
+                )
+            if sidecar_payload is not None:
+                artifacts += 1
+            elif raw_response is None:
+                # Response/sidecar files are optional legacy artifacts. Their
+                # absence is normal for compact JSON runs, so do not turn it
+                # into an ambiguous mapping record; malformed files are still
+                # recorded by the loaders' callers when they are discovered.
+                pass
             judge_attempt_id = judge_store.record_attempt(
                 revision_id, cell_id, judge_model, contract_id,
-                {"attempt_number": ordinal + 1, "raw_response": vote.get("raw_response"),
-                 "status": "completed", "error": vote.get("error")},
+                {"attempt_number": ordinal + 1, "raw_response": raw_response,
+                 "request": request_payload, "status": "completed", "error": vote.get("error")},
+                retain_request=request_payload is not None,
             )
             vote_id = judge_store.record_vote(judge_attempt_id, vote)
             if vote.get("score") is not None or vote.get("usable"):
@@ -210,10 +256,73 @@ class LegacySQLiteImporter:
                     reason="legacy-import",
                 )
             count += 1
-        return count
+        return count, artifacts, skipped
+
+    def _import_debug_logs(
+        self, run_id: str, revision_id: int, source_dir: str,
+    ) -> tuple[int, int]:
+        """Copy legacy logs into compressed append-only files and index them."""
+        root = Path(source_dir)
+        destination_root = root / "logs" / "imported"
+        imported = skipped = 0
+        candidates = sorted(
+            path for path in root.rglob("*")
+            if path.is_file()
+            and (path.name.endswith(".log") or path.name.endswith(".log.gz"))
+            and not path.is_relative_to(destination_root)
+        )
+        for source in candidates:
+            relative = source.relative_to(root)
+            safe_parts = [sanitize_filename(part) for part in relative.parts]
+            destination_relative = Path("logs", "imported", *safe_parts)
+            if not destination_relative.name.endswith(".gz"):
+                destination_relative = destination_relative.with_name(
+                    destination_relative.name + ".gz"
+                )
+            destination = root / destination_relative
+            try:
+                writer = AppendOnlyGzipLog(str(destination), sync_policy="final")
+                uncompressed = 0
+                if source.name.endswith(".gz"):
+                    for member in iter_log_members(str(source)):
+                        writer.append_record([member])
+                        uncompressed += len(member)
+                else:
+                    with open(source, "rb") as handle:
+                        while True:
+                            chunk = handle.read(128 * 1024)
+                            if not chunk:
+                                break
+                            writer.append(chunk)
+                            uncompressed += len(chunk)
+                writer.close()
+                recovery = recover_log(str(destination))
+                now = int(os.path.getmtime(destination))
+                self.connection.execute(
+                    """
+                    INSERT INTO debug_log_files(
+                        run_id, revision_id, path, compression,
+                        complete_members, uncompressed_bytes, stored_bytes,
+                        truncated_tail, created_at, updated_at
+                    ) VALUES (?, ?, ?, 'gzip', ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        run_id, revision_id, str(destination_relative),
+                        recovery.complete_members, uncompressed,
+                        recovery.total_bytes, int(recovery.truncated_tail), now, now,
+                    ),
+                )
+                imported += 1
+            except (OSError, EOFError, ValueError) as exc:
+                skipped += 1
+                self._record_legacy(
+                    run_id, _sha256_file(str(source)) if source.exists() else "debug-log",
+                    None, "debug_log", str(source), "skipped", str(exc),
+                )
+        return imported, skipped
 
     def _record_legacy(
-        self, run_id: str, source_hash: str, row_number: int, kind: str,
+        self, run_id: str, source_hash: str, row_number: int | None, kind: str,
         value: Any, status: str, note: str | None,
     ) -> None:
         self.connection.execute(
@@ -267,6 +376,43 @@ def _result_attempt(result: dict[str, Any], plugin_id: str, info: dict[str, Any]
     if not merged.get("prompt") and isinstance(info, dict):
         merged["prompt"] = info.get(f"{prefix}prompt", "")
     return merged
+
+
+def _judge_sidecar_file(source_dir: str, target: str, runner: str,
+                        plugin_id: str) -> str:
+    return os.path.join(
+        source_dir, "judge-inputs", runner, sanitize_filename(target),
+        f"{plugin_id}.json",
+    )
+
+
+def _judge_response_file(source_dir: str, target: str, runner: str,
+                         plugin_id: str, judge_model: str,
+                         contract_id: str) -> str:
+    suffix = sanitize_filename(judge_model)
+    if contract_id:
+        suffix += f".{sanitize_filename(contract_id)}"
+    return os.path.join(
+        source_dir, runner, "responses", sanitize_filename(target),
+        f"{plugin_id}.judge.{suffix}.txt",
+    )
+
+
+def _load_json_file(path: str) -> dict[str, Any] | None:
+    try:
+        with open(path, encoding="utf-8") as handle:
+            value = json.load(handle)
+    except (OSError, json.JSONDecodeError):
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def _load_text_file(path: str) -> str | None:
+    try:
+        with open(path, encoding="utf-8") as handle:
+            return handle.read()
+    except (OSError, UnicodeDecodeError):
+        return None
 
 
 def _target_signature(result: dict[str, Any]) -> str:
