@@ -46,6 +46,29 @@ def _split_token_budget(total_budget, fallback: int) -> tuple[int, int, int]:
 
 
 @dataclass(frozen=True)
+class RequestIdentity:
+    """Stable identity shared by transport logs, attempts, and diagnostics."""
+
+    run_id: str = "unknown-run"
+    revision_id: str | int = "unknown-revision"
+    target: str = "unknown-target"
+    plugin: str = "unknown-plugin"
+    runner: str = "http"
+    attempt: int = 1
+
+    @property
+    def request_id(self) -> str:
+        """Return a compact, log-safe request identifier."""
+        return ":".join(
+            str(value).replace(":", "_")
+            for value in (
+                self.run_id, self.revision_id, self.target,
+                self.plugin, self.runner, self.attempt,
+            )
+        )
+
+
+@dataclass(frozen=True)
 class TransportRequest:
     """All inputs needed to execute one transport attempt."""
 
@@ -86,6 +109,7 @@ class TransportRequest:
     pi_config: dict | None = None
     pi_target_key: str | None = None
     pi_plugin_id: str | None = None
+    identity: RequestIdentity | None = None
 
 
 @dataclass(frozen=True)
@@ -111,6 +135,8 @@ class TransportResult:
     stream_fallback_used: bool = False
     stream_fallback_error: str | None = None
     runner_metadata: dict[str, Any] = field(default_factory=dict)
+    request_id: str = "unknown-request"
+    timeout_seconds: float | None = None
 
 
 @dataclass(frozen=True)
@@ -407,6 +433,13 @@ def _normalize(request: TransportRequest, *, text: str, think_text: str,
         stream_fallback_used=stream_fallback_used,
         stream_fallback_error=stream_fallback_error,
         runner_metadata=runner_metadata or {},
+        request_id=(request.identity or RequestIdentity(
+            target=request.api_model,
+            plugin=request.pid or "unknown-plugin",
+            runner=request.transport,
+            attempt=request.attempt,
+        )).request_id,
+        timeout_seconds=request.timeout,
     )
 
 
