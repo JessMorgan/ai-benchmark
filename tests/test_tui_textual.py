@@ -164,6 +164,39 @@ class TestBuildFrameLines(unittest.TestCase):
         self.assertIn("green", styles.values())
         self.assertIn("yellow", styles.values())
 
+    def test_active_row_is_yellow_even_if_stale_status_is_failed(self):
+        state = mock.Mock()
+        state.snapshot.return_value = {
+            "model-a": {
+                "status": "failed",
+                "source": "Local",
+                "running_pids": ["rate-limiter"],
+                "rate-limiter_start_ts": 0,
+            },
+        }
+        state.completed = 0
+        state.total = 1
+        state.judge_activity_snapshot.return_value = []
+        state.judge_progress_snapshot.return_value = {}
+        state.judge_selected_snapshot.return_value = set()
+        state.recent_log.return_value = []
+        state.revision = 0
+        state.has_live_work.return_value = True
+        with mock.patch("benchmark.cli.get_active_request_count", return_value=1), \
+                mock.patch("benchmark.cli.get_429_stats", return_value={}):
+            lines = cli._build_frame_lines(
+                state, [_plugin()], {"Local": "LC"},
+                "  #  S Model  St", "ratSc ratTok ratTm ratTPS",
+                num_sources=1, scroll_y=0, scroll_x=0, size=(24, 100),
+                session_seed=42,
+            )
+        self.assertTrue(
+            any(style == "yellow" and "model-a" in text for text, style in lines)
+        )
+        self.assertFalse(
+            any(style == "red" and "model-a" in text for text, style in lines)
+        )
+
     def test_small_terminal_limits_visible_rows(self):
         with mock.patch("benchmark.cli.get_active_request_count", return_value=0), \
                 mock.patch("benchmark.cli.get_429_stats", return_value={}):

@@ -1282,12 +1282,15 @@ def _build_frame_lines(state, active_plugins, source_abbrevs, frozen_hdr,
         )
         row_line = frozen + " " + visible_plugin
         sv = s["status"]
-        if sv == "completed":
+        # Live work takes precedence over a stale terminal status. A model
+        # can retain ``failed`` while a retry or another plugin is active;
+        # active rows must remain yellow until all running work finishes.
+        if sv == "running" or s.get("running_pids"):
+            style = "yellow"
+        elif sv == "completed":
             style = "green"
         elif sv == "failed":
             style = "red"
-        elif sv == "running" or s.get("running_pids"):
-            style = "yellow"
         else:
             style = None
         lines.append(line(row_line, style))
