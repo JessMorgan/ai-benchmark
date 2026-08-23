@@ -247,6 +247,8 @@ class SQLiteBenchmarkStore:
             "thinking_tokens": attempt.get("thinking_tokens"),
             "total_tokens": attempt.get("total_tokens"),
             "tps": attempt.get("tps"),
+            "response_time": attempt.get("response_time"),
+            "gen_time": attempt.get("gen_time"),
             "finish_reason": attempt.get("finish_reason"),
             "response_nature": attempt.get("response_nature"),
             "retry_reason": attempt.get("retry_reason"),
@@ -268,7 +270,8 @@ class SQLiteBenchmarkStore:
             INSERT INTO benchmark_attempts(
                 revision_id, cell_id, attempt_number,
                 prompt_payload_id, content_payload_id, thinking_payload_id,
-                started_at, ended_at, max_tokens, output_tokens, thinking_tokens,
+                started_at, ended_at, response_time, gen_time,
+                max_tokens, output_tokens, thinking_tokens,
                 total_tokens, tps, finish_reason, response_nature, retry_reason,
                 prompt_altered, truncated, truncated_due_to_time, failure_cause,
                 stream_ok, repeating, empty_reason, error, score, rubric_json,
@@ -276,7 +279,8 @@ class SQLiteBenchmarkStore:
             ) VALUES (
                 :revision_id, :cell_id, :attempt_number,
                 :prompt_payload_id, :content_payload_id, :thinking_payload_id,
-                :started_at, :ended_at, :max_tokens, :output_tokens, :thinking_tokens,
+                :started_at, :ended_at, :response_time, :gen_time,
+                :max_tokens, :output_tokens, :thinking_tokens,
                 :total_tokens, :tps, :finish_reason, :response_nature, :retry_reason,
                 :prompt_altered, :truncated, :truncated_due_to_time, :failure_cause,
                 :stream_ok, :repeating, :empty_reason, :error, :score, :rubric_json,

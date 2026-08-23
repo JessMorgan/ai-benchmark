@@ -28,6 +28,38 @@ class TestSQLiteSchema(unittest.TestCase):
             self.assertIn("legacy_import_records", table_names(connection))
             connection.close()
 
+    def test_attempt_timing_columns_exist(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            connection = connect_database(f"{tmpdir}/run.sqlite3")
+            columns = {
+                row[1]
+                for row in connection.execute("PRAGMA table_info(benchmark_attempts)")
+            }
+            self.assertIn("response_time", columns)
+            self.assertIn("gen_time", columns)
+            connection.close()
+
+    def test_v2_database_migrates_timing_columns_forward(self):
+        # Build a v2 database by creating the schema and dropping the v3
+        # columns, then confirm initialize_schema re-adds them.
+        connection = sqlite3.connect(":memory:")
+        configure_connection(connection)
+        initialize_schema(connection)
+        connection.execute("ALTER TABLE benchmark_attempts DROP COLUMN response_time")
+        connection.execute("ALTER TABLE benchmark_attempts DROP COLUMN gen_time")
+        connection.execute(
+            "UPDATE schema_meta SET value = '2' WHERE key = 'schema_version'"
+        )
+        initialize_schema(connection)
+        columns = {
+            row[1]
+            for row in connection.execute("PRAGMA table_info(benchmark_attempts)")
+        }
+        self.assertIn("response_time", columns)
+        self.assertIn("gen_time", columns)
+        self.assertEqual(schema_version(connection), SQLITE_SCHEMA_VERSION)
+        connection.close()
+
     def test_initialize_is_idempotent(self):
         connection = sqlite3.connect(":memory:")
         configure_connection(connection)

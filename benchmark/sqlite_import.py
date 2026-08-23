@@ -254,6 +254,8 @@ def _result_attempt(result: dict[str, Any], plugin_id: str, info: dict[str, Any]
         "thinking_tokens": result.get(f"{prefix}thinking_tokens"),
         "total_tokens": result.get(f"{prefix}total_tokens"),
         "tps": result.get(f"{prefix}tps"),
+        "response_time": result.get(f"{prefix}response_time"),
+        "gen_time": result.get(f"{prefix}gen_time"),
         "error": result.get(f"{prefix}error", result.get("error")),
         "rubric": result.get(f"{prefix}rubric"),
         "diagnostics": result.get(f"{prefix}diagnostics"),

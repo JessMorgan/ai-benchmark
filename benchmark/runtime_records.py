@@ -47,6 +47,8 @@ class BenchmarkAttemptRecord:
     thinking_tokens: int | None = None
     total_tokens: int | None = None
     tps: float | None = None
+    response_time: float | None = None
+    gen_time: float | None = None
     finish_reason: str | None = None
     response_nature: str | None = None
     retry_reason: str | None = None

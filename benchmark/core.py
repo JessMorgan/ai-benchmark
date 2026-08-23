@@ -2674,6 +2674,8 @@ def _run_plugin_task(target_name, api_model, source, plugin, source_config, time
                     thinking_tokens=attempt.get("thinking_tokens"),
                     total_tokens=attempt.get("total_tokens"),
                     tps=attempt_tps,
+                    response_time=attempt.get("response_time"),
+                    gen_time=attempt.get("gen_time"),
                     finish_reason=attempt.get("finish_reason"),
                     response_nature=attempt.get("response_nature"),
                     retry_reason=attempt.get("retry_reason"),

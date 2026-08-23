@@ -11,7 +11,7 @@ import sqlite3
 from collections.abc import Callable
 from typing import Any
 
-SQLITE_SCHEMA_VERSION = 2
+SQLITE_SCHEMA_VERSION = 3
 _DEFAULT_BUSY_TIMEOUT_MS = 5_000
 
 
@@ -166,6 +166,8 @@ def _create_schema_v1(connection: sqlite3.Connection) -> None:
             thinking_payload_id    INTEGER REFERENCES payloads(payload_id),
             started_at             INTEGER,
             ended_at               INTEGER,
+            response_time          REAL,
+            gen_time               REAL,
             max_tokens             INTEGER CHECK (max_tokens IS NULL OR max_tokens > 0),
             output_tokens          INTEGER CHECK (output_tokens IS NULL OR output_tokens >= 0),
             thinking_tokens        INTEGER CHECK (thinking_tokens IS NULL OR thinking_tokens >= 0),
@@ -554,10 +556,32 @@ def _migrate_v2_continuation_reuse(connection: sqlite3.Connection) -> None:
     )
 
 
+def _migrate_v3_attempt_timing(connection: sqlite3.Connection) -> None:
+    """Persist per-attempt response/generation timing on benchmark attempts.
+
+    The runtime measures ``response_time`` (TTFT for streaming, full request
+    time for non-streaming) and ``gen_time`` per transport attempt, and the
+    legacy JSON read model surfaces ``{plugin}_response_time`` in results.
+    Earlier schema revisions had ``started_at``/``ended_at`` epoch columns but
+    no runtime path populated them, so timing was silently dropped on the
+    SQLite path. Add explicit REAL duration columns so continuations and
+    reports can reproduce the timing each attempt took.
+    """
+    for column, definition in (
+        ("response_time", "REAL"),
+        ("gen_time", "REAL"),
+    ):
+        if column not in _column_names(connection, "benchmark_attempts"):
+            connection.execute(
+                f"ALTER TABLE benchmark_attempts ADD COLUMN {column} {definition}"
+            )
+
+
 Migration = Callable[[sqlite3.Connection], None]
 MIGRATIONS: dict[int, Migration] = {
     1: _create_schema_v1,
     2: _migrate_v2_continuation_reuse,
+    3: _migrate_v3_attempt_timing,
 }
 
 

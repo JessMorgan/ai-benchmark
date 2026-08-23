@@ -107,6 +107,8 @@ class SQLiteReportSource:
                 ("thinking_tokens", "thinking_tokens"),
                 ("total_tokens", "total_tokens"),
                 ("tps", "tps"),
+                ("response_time", "response_time"),
+                ("gen_time", "gen_time"),
                 ("finish_reason", "finish_reason"),
                 ("response_nature", "response_nature"),
                 ("retry_reason", "retry_reason"),

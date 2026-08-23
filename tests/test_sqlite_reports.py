@@ -40,6 +40,7 @@ class TestSQLiteReports(unittest.TestCase):
                 "attempt_number": 1, "prompt": "prompt", "content": "answer",
                 "thinking": "thought", "score": 15, "output_tokens": 4,
                 "thinking_tokens": 2, "total_tokens": 6, "tps": 3.5,
+                "response_time": 2.4, "gen_time": 1.8,
                 "stream_ok": True, "rubric": [{"name": "quality", "points": 15}],
             },
             selected=True,
@@ -55,6 +56,8 @@ class TestSQLiteReports(unittest.TestCase):
         self.assertEqual(rows[0]["rate-limiter_total_tokens"], 6)
         self.assertTrue(rows[0]["rate-limiter_stream_ok"])
         self.assertEqual(rows[0]["rate-limiter_rubric"][0]["name"], "quality")
+        self.assertEqual(rows[0]["rate-limiter_response_time"], 2.4)
+        self.assertEqual(rows[0]["rate-limiter_gen_time"], 1.8)
 
     def test_default_report_revision_can_be_scoped_to_run_id(self):
         second = self.store.create_run(
