@@ -3404,6 +3404,35 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
 
         if args.storage == "sqlite":
             sqlite_db_path = os.path.join(output_dir, "run.sqlite3")
+            # A JSON run may predate SQLite or may have been created with
+            # explicit ``--storage json``. Adopt it before starting the
+            # normalized backend so the default cannot create an empty shadow
+            # history beside a populated benchmark_state.json.
+            if (
+                not args.restart
+                and os.path.isfile(state_file)
+                and not os.path.exists(sqlite_db_path)
+            ):
+                try:
+                    LegacySQLiteImporter.import_path(
+                        state_file,
+                        sqlite_db_path,
+                        include_debug_logs=bool(
+                            args.debug_logs or args.storage_profile == "debug"
+                        ),
+                    )
+                    run_info["sqlite_imported_from_json"] = state_file
+                except (OSError, TypeError, ValueError, RuntimeError, json.JSONDecodeError) as exc:
+                    print(
+                        f"❌ Could not adopt JSON state into SQLite: {exc}",
+                        file=sys.stderr,
+                    )
+                    print(
+                        "   Use --storage json to continue the legacy backend "
+                        "or repair the state file before retrying.",
+                        file=sys.stderr,
+                    )
+                    sys.exit(1)
             sqlite_store = SQLiteRunStore(
                 sqlite_db_path,
                 failure_callback=lambda exc: report_persistence_failure("sqlite", exc),

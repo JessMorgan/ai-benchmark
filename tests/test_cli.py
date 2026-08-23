@@ -28,6 +28,10 @@ from tests.utils import MockResponse, load_benchmark_module
 
 
 class TestCLIArgs(unittest.TestCase):
+    def test_storage_defaults_to_sqlite_but_json_remains_selectable(self):
+        self.assertEqual(build_parser().parse_args([]).storage, "sqlite")
+        self.assertEqual(build_parser().parse_args(["--storage", "json"]).storage, "json")
+
     def test_storage_and_report_options_parse(self):
         args = build_parser().parse_args([
             "--storage", "sqlite",
