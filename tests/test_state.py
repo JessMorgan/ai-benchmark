@@ -1,6 +1,8 @@
 """Tests for BenchmarkState."""
 import json
 import os
+import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -1174,6 +1176,45 @@ class TestResultJournal(unittest.TestCase):
             resumed.set_journal_path(journal)
             self.assertEqual(resumed.replay_journal_tail(journal), 1)
             self.assertEqual(resumed.latest_results()[0]["fake_judge_score"], 9)
+
+    def test_abrupt_process_exit_replays_durable_journal_tail(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            journal = os.path.join(tmp, "results.journal.jsonl")
+            state_file = os.path.join(tmp, "benchmark_state.json")
+            state = self._state(journal)
+            state.add_result({"model": "model-a", "status": "ok"})
+            state.save_state(state_file)
+
+            script = """
+import os
+import sys
+from benchmark.state import BenchmarkState
+
+state_path, journal_path = sys.argv[1:]
+state = BenchmarkState.load_state(state_path, {"model-a": "Source1"}, ["fake"])
+state.set_journal_path(journal_path)
+state.add_result({"model": "model-b", "status": "ok"})
+os._exit(17)
+"""
+            env = dict(os.environ)
+            project_root = os.path.dirname(os.path.dirname(__file__))
+            env["PYTHONPATH"] = os.pathsep.join(
+                part for part in (project_root, env.get("PYTHONPATH")) if part
+            )
+            completed = subprocess.run(
+                [sys.executable, "-c", script, state_file, journal],
+                env=env,
+                check=False,
+            )
+            self.assertEqual(completed.returncode, 17)
+
+            resumed = self.module.BenchmarkState.load_state(
+                state_file, {"model-a": "Source1", "model-b": "Source1"}, ["fake"],
+            )
+            resumed.set_journal_path(journal)
+            self.assertEqual(resumed.replay_journal_tail(journal), 1)
+            self.assertEqual([row["model"] for row in resumed.results], ["model-a", "model-b"])
+            self.assertEqual(resumed.replay_journal_tail(journal), 0)
 
     def test_resume_does_not_truncate_existing_journal(self):
         # Regression: resuming (load_state + re-attach the journal without
