@@ -6,7 +6,9 @@ All benchmark configuration lives in a single file (default: `benchmark-config.j
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `output_dir` | string | `benchmark-results` | Directory for reports, logs, and state |
+| `output_dir` | string | `benchmark-results` | Directory for the SQLite database, reports, logs, and optional state |
+| `storage` | string | `sqlite` | Run backend: `sqlite` (default) or explicit legacy `json` |
+| `storage_profile` | string | `compact` | Artifact policy: `compact`, `debug`, or `portable` |
 | `timeout` | integer | `600` | API request timeout in seconds |
 | `max_tokens` | integer | `16384` | One generation budget; each task may retry once with the same budget |
 | `model_max_tokens` | object | `{}` | Per-target max-token overrides; keys are target names or `"{source}/{api_model}"` |
@@ -23,6 +25,8 @@ All benchmark configuration lives in a single file (default: `benchmark-config.j
 | `models` | object | required | Model-to-source mapping |
 | `agents` | object | optional | Agent definitions with system prompts |
 | `judge` | object | optional | Semantic-judge timeout, token budget, temperature, and provider-specific request parameters |
+
+SQLite is authoritative for new runs. Existing JSON state is adopted automatically when the default SQLite database is absent; use `--storage json` to preserve the legacy backend explicitly. Full diagnostic transcripts are omitted by the compact profile and enabled only with `--debug-logs` or `storage_profile: debug`; runner transcripts use redacted concatenated gzip members.
 
 State persistence is throttled across the whole run: completed judge votes and
 completed benchmark tasks accumulate in memory, and the full state snapshot

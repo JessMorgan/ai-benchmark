@@ -49,6 +49,7 @@ class LegacySQLiteImporter:
             return importer.import_file(
                 source_path, run_id=run_id,
                 include_debug_logs=include_debug_logs,
+                artifact_root=os.path.dirname(os.path.abspath(database_path)),
             )
         finally:
             connection.close()
@@ -56,6 +57,7 @@ class LegacySQLiteImporter:
     def import_file(
         self, source_path: str, *, run_id: str | None = None,
         include_debug_logs: bool = False,
+        artifact_root: str | None = None,
     ) -> ImportSummary:
         source_path = os.path.abspath(source_path)
         source_hash = _sha256_file(source_path)
@@ -170,6 +172,7 @@ class LegacySQLiteImporter:
         if include_debug_logs:
             imported_debug_logs, log_skipped = self._import_debug_logs(
                 run_id, revision_id, os.path.dirname(source_path),
+                artifact_root=artifact_root or os.path.dirname(source_path),
             )
             skipped_files += log_skipped
         self.connection.commit()
@@ -259,11 +262,11 @@ class LegacySQLiteImporter:
         return count, artifacts, skipped
 
     def _import_debug_logs(
-        self, run_id: str, revision_id: int, source_dir: str,
+        self, run_id: str, revision_id: int, source_dir: str, *, artifact_root: str,
     ) -> tuple[int, int]:
         """Copy legacy logs into compressed append-only files and index them."""
         root = Path(source_dir)
-        destination_root = root / "logs" / "imported"
+        destination_root = Path(artifact_root) / "logs" / "imported"
         imported = skipped = 0
         candidates = sorted(
             path for path in root.rglob("*")
@@ -279,7 +282,7 @@ class LegacySQLiteImporter:
                 destination_relative = destination_relative.with_name(
                     destination_relative.name + ".gz"
                 )
-            destination = root / destination_relative
+            destination = Path(artifact_root) / destination_relative
             try:
                 writer = AppendOnlyGzipLog(str(destination), sync_policy="final")
                 uncompressed = 0

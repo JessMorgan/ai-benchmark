@@ -1,6 +1,6 @@
 # Gzip Concatenated-Member Log Plan
 
-**Status:** Planned
+**Status:** Core implementation and subprocess rollout complete; codec benchmarking remains open
 **Primary use:** compressed debug and failure transcripts for benchmark, judge, OpenCode, and Pi execution.
 
 ## Goals
@@ -268,15 +268,15 @@ Create `tests/test_compressed_logs.py`.
 ### Round-trip and append tests
 
 - [ ] One-member round trip preserves exact bytes.
-- [ ] Multiple concatenated members are read in order.
-- [ ] Appending does not rewrite existing member bytes.
-- [ ] UTF-8, emoji, multiline, and empty records round-trip.
+- [x] Multiple concatenated members are read in order.
+- [x] Appending does not rewrite existing member bytes.
+- [x] UTF-8, emoji, multiline, and empty records round-trip.
 - [ ] Large streamed input remains bounded-memory.
 - [ ] Python gzip readers and the tolerant reader see the same complete data.
 
 ### Crash and corruption tests
 
-- [ ] Gzip header-only final member is detected as truncated.
+- [x] Gzip header-only final member is detected as truncated.
 - [ ] Every truncation point within a final compressed member preserves all
       preceding members.
 - [ ] Truncated footer is detected correctly.
@@ -289,7 +289,7 @@ Create `tests/test_compressed_logs.py`.
 
 ### Concurrency and failure tests
 
-- [ ] Concurrent append calls do not interleave records.
+- [x] Concurrent append calls do not interleave records.
 - [ ] Concurrent recovery/open operations are serialized.
 - [ ] Write failures are surfaced without crashing benchmark workers.
 - [ ] `fsync()` failures are reported through persistence diagnostics.
@@ -297,10 +297,10 @@ Create `tests/test_compressed_logs.py`.
 
 ### Policy integration tests
 
-- [ ] Compact mode creates no full successful judge transcript.
-- [ ] Debug mode creates `.log.gz` and not plaintext judge logs.
+- [x] Compact mode creates no full successful judge transcript.
+- [x] Debug mode creates `.log.gz` and not plaintext judge logs.
 - [ ] Debug log content includes attempt/version/contract metadata.
-- [ ] Credentials never appear in compressed or exported logs.
+- [x] Credentials never appear in compressed or exported logs.
 - [ ] Legacy plaintext logs remain readable.
 - [ ] Incomplete gzip tails are reported in run metadata.
 
@@ -314,6 +314,6 @@ Create `tests/test_compressed_logs.py`.
 6. [x] Add redaction tests.
 7. [x] Integrate judge debug logs.
 8. [x] Integrate HTTP diagnostic streams.
-9. [ ] Integrate OpenCode/Pi diagnostic streams.
+9. [x] Integrate OpenCode/Pi diagnostic streams.
 10. [ ] Benchmark gzip against bz2 on representative judge logs.
 11. [ ] Reconsider zstd only if gzip measurements justify a dependency.

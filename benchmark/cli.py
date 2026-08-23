@@ -2752,6 +2752,37 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
     parser = build_parser()
     args = parser.parse_args()
 
+    if args.measure_storage:
+        from benchmark.storage_measure import measure_storage
+        try:
+            print(json.dumps(measure_storage(), indent=2))
+        except (OSError, RuntimeError, ValueError) as exc:
+            print(f"❌ Could not measure storage: {exc}", file=sys.stderr)
+            sys.exit(1)
+        sys.exit(0)
+
+    if args.compare_storage:
+        from benchmark.storage_validation import compare_read_models
+        json_path, sqlite_path = args.compare_storage
+        source = None
+        try:
+            json_results, _plugins, _seed = JsonReportSource().load_results(json_path)
+            source = SQLiteReportSource.open(sqlite_path)
+            sqlite_results, _active, _sqlite_seed, _revision = source.load_results(
+                include_reused=True,
+            )
+            report = compare_read_models(
+                latest_result_rows(json_results), sqlite_results,
+            )
+            print(json.dumps(report.as_dict(), indent=2, default=str))
+        except (OSError, sqlite3.Error, RuntimeError, TypeError, ValueError, json.JSONDecodeError) as exc:
+            print(f"❌ Could not compare storage backends: {exc}", file=sys.stderr)
+            sys.exit(1)
+        finally:
+            if source is not None:
+                source.close()
+        sys.exit(0 if report.equivalent else 1)
+
     if args.check_sqlite:
         sqlite_path = sqlite_path_from_report_path(args.check_sqlite)
         if sqlite_path is None:
@@ -2804,6 +2835,7 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
         try:
             summary = LegacySQLiteImporter.import_path(
                 source_path, output_path,
+                include_debug_logs=args.import_debug_logs,
             )
         except (OSError, ValueError, TypeError, RuntimeError, json.JSONDecodeError) as exc:
             print(f"❌ Could not import JSON to SQLite: {exc}", file=sys.stderr)

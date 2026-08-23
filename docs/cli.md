@@ -11,7 +11,7 @@ ai-benchmark [options]            # installed console script
 python ai-benchmark.py [options]    # repository launcher
 ```
 
-At startup the CLI loads a `.env` file from the current working directory
+New runs default to SQLite (`run.sqlite3`); pass `--storage json` for the legacy JSON backend. If a JSON state file exists and no SQLite database is present, the default backend adopts that state before continuing. Debug transcripts are opt-in via `--debug-logs` or the `debug` storage profile and are written as redacted gzip members. The CLI loads a `.env` file from the current working directory
 (via `python-dotenv`) so config `${VAR}` expansion and env-driven tools can
 read credentials without exporting them into the shell. A missing `.env` is
 ignored, and real environment variables take precedence over file values. See
@@ -42,6 +42,14 @@ ignored, and real environment variables take precedence over file values. See
 | `--schema-sentinel` | Run a non-scoring structured-schema compatibility probe for every configured model and print JSON |
 | `--pi-probe` | Run the non-scoring Pi worker/provider compatibility probe and print JSON |
 | `--save-responses` | Save each model's plugin response text to the selected runner namespace under `<output_dir>/{http,opencode,pi}/responses/` |
+| `--storage {json,sqlite}` | Select the run backend; SQLite is the default and JSON is an explicit fallback |
+| `--storage-profile {compact,debug,portable}` | Select compact, debug, or portable artifact policy |
+| `--debug-logs` | Retain redacted full diagnostics as concatenated-member gzip logs |
+| `--import-to-sqlite STATE_JSON` | Convert a legacy JSON state file to SQLite without modifying the source |
+| `--import-debug-logs` | Include legacy log files during JSON-to-SQLite conversion |
+| `--measure-storage` | Measure a synthetic JSON/SQLite size and persistence-latency baseline |
+| `--compare-storage JSON SQLITE` | Compare current JSON and SQLite read models without mutation |
+| `--check-sqlite PATH` | Run read-only SQLite integrity diagnostics |
 | `--seed INT` | Fixed random seed for all API requests |
 | `--no-rerun-failed` | Keep failed models as failed on resume (default re-runs them) |
 | `--retry-on-429` / `--no-retry-on-429` | Toggle HTTP-429 retry/backoff globally. Default is **ON**; pass `--no-retry-on-429` to opt out (sources with explicit `max_429_retries` are preserved). A model run is cancelled after two consecutive plugin tests exhaust their 429 retries. See [Configuration Reference](configuration.md#http-429-retry--backoff) for the per-source keys and migration notes. |

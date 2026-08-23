@@ -239,16 +239,20 @@ class TestSQLiteImport(unittest.TestCase):
             self.assertEqual(compact.imported_debug_logs, 0)
             self.assertFalse(os.path.exists(os.path.join(tmp, "logs", "imported")))
 
-            debug_db = os.path.join(tmp, "debug.sqlite3")
+            output_dir = os.path.join(tmp, "converted")
+            os.makedirs(output_dir)
+            debug_db = os.path.join(output_dir, "debug.sqlite3")
             debug = LegacySQLiteImporter.import_path(
                 source, debug_db, run_id="debug-run", include_debug_logs=True,
             )
             self.assertEqual(debug.imported_debug_logs, 1)
-            imported_path = os.path.join(tmp, "logs", "imported", "legacy", "model-a.log.gz")
+            imported_path = os.path.join(output_dir, "logs", "imported", "legacy", "model-a.log.gz")
             self.assertTrue(os.path.isfile(imported_path))
             self.assertEqual(list(iter_log_members(imported_path)), [b"legacy request\nlegacy response\n"])
+            debug_connection = connect_database(debug_db)
+            self.addCleanup(debug_connection.close)
             self.assertEqual(
-                connect_database(debug_db).execute(
+                debug_connection.execute(
                     "SELECT compression, complete_members FROM debug_log_files"
                 ).fetchone()[:],
                 ("gzip", 1),

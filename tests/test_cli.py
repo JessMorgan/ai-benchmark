@@ -50,6 +50,12 @@ class TestCLIArgs(unittest.TestCase):
         args = build_parser().parse_args(["--check-sqlite", "run.sqlite3"])
         self.assertEqual(args.check_sqlite, "run.sqlite3")
 
+    def test_storage_measurement_and_compare_options_parse(self):
+        parser = build_parser()
+        self.assertTrue(parser.parse_args(["--measure-storage"]).measure_storage)
+        args = parser.parse_args(["--compare-storage", "state.json", "run.sqlite3"])
+        self.assertEqual(args.compare_storage, ["state.json", "run.sqlite3"])
+
     def test_import_to_sqlite_options_parse(self):
         args = build_parser().parse_args([
             "--import-to-sqlite", "state.json",
@@ -59,6 +65,7 @@ class TestCLIArgs(unittest.TestCase):
         self.assertEqual(args.import_to_sqlite, "state.json")
         self.assertEqual(args.sqlite_output, "converted.sqlite3")
         self.assertTrue(args.overwrite_sqlite)
+        self.assertFalse(args.import_debug_logs)
 
     def test_list_plugins_shows_id_name_version(self):
         result = subprocess.run(

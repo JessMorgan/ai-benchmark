@@ -125,10 +125,16 @@ def build_parser(prog=None, plugin_ids=None):
                              help='Import a legacy benchmark_state.json into SQLite and exit')
     tools_group.add_argument('--check-sqlite', type=str, default=None, metavar='PATH',
                              help='Run read-only SQLite integrity diagnostics on a database or run directory and print JSON')
+    tools_group.add_argument('--measure-storage', action='store_true',
+                             help='Measure synthetic JSON/SQLite storage size and persistence latency, then print JSON')
+    tools_group.add_argument('--compare-storage', nargs=2, metavar=('JSON_STATE', 'SQLITE_PATH'),
+                             help='Compare JSON and SQLite current read models without modifying either backend')
     tools_group.add_argument('--sqlite-output', type=str, default=None, metavar='PATH',
                              help='SQLite output path for --import-to-sqlite (default: run.sqlite3 beside the JSON)')
     tools_group.add_argument('--overwrite-sqlite', action='store_true',
                              help='Allow --import-to-sqlite to replace an existing SQLite output file')
+    tools_group.add_argument('--import-debug-logs', action='store_true',
+                             help='Also import legacy .log/.log.gz files as compressed debug logs')
 
     output_group = parser.add_argument_group('Output')
     output_group.add_argument('--storage', choices=['json', 'sqlite'], default='sqlite',

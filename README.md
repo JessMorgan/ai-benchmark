@@ -201,6 +201,14 @@ python ai-benchmark.py [options]  # repository launcher
 | `--no-preload` | Disable configured source preload probes |
 | `--retry-on-429 / --no-retry-on-429` | Enable or disable default HTTP 429 backoff |
 | `--save-responses` | Save prompts, responses, reasoning, and metadata sidecars |
+| `--storage {json,sqlite}` | Select run storage; SQLite is the default, JSON remains an explicit compatibility fallback |
+| `--storage-profile {compact,debug,portable}` | Select artifact policy; compact omits full successful transcripts |
+| `--debug-logs` | Retain redacted full request/response and runner diagnostics as append-only gzip logs |
+| `--import-to-sqlite STATE_JSON` | Convert a legacy JSON state file without modifying the source |
+| `--import-debug-logs` | Include legacy `.log`/`.log.gz` files during JSON-to-SQLite conversion |
+| `--measure-storage` | Print a reproducible synthetic JSON/SQLite size and persistence-latency baseline |
+| `--compare-storage JSON SQLITE` | Compare current JSON and SQLite read models without writing either backend |
+| `--check-sqlite PATH` | Run read-only SQLite integrity checks |
 | `--judge-models MODEL [...]` | Run confidence-weighted semantic judging |
 | `--build-judge-queue STATE_FILE` | Build a ranked judge-disagreement queue |
 | `--judge-queue-output PATH` | Choose the judge queue output path |
@@ -216,7 +224,7 @@ python ai-benchmark.py [options]  # repository launcher
 
 ## Resume / Continue
 
-By default, re-running resumes from where you left off — completed models are skipped, and failed models are retried. Saved state is stored in `benchmark_state.json` inside the output directory and is preserved after completion so you can re-run to retry any failures. New models added to the config between runs are picked up automatically. Use `--restart` to force a clean run. Use `--scripted` to continue automatically without the interactive restart/continue prompt.
+By default, re-running resumes from where you left off — completed models are skipped, and failed models are retried. New runs use `run.sqlite3` as the authoritative store; `--storage json` selects the legacy `benchmark_state.json` backend explicitly. Existing JSON runs are adopted into SQLite when the default backend is used and no database exists beside the state file. Use `--restart` to force a clean run. Use `--scripted` to continue automatically without the interactive restart/continue prompt.
 
 If the saved state file is unreadable or fails to load (e.g. a corrupt `benchmark_state.json`), the run **aborts with an error** instead of silently discarding prior results — inspect or repair the state file, or pass `--restart` to explicitly discard it. If the set of active plugins changes between runs, the app detects this and asks whether to **restart** or **continue**. Other newly added plugins are run for models that already completed, and data for removed plugins is preserved but not run again.
 
@@ -242,9 +250,10 @@ After completion the output directory contains:
 | `results.csv` | CSV data |
 | `results.html` | HTML report |
 | `results.pdf` | PDF report (requires `fpdf2`) |
-| `logs/*.log` | Per-model request/response logs |
+| `run.sqlite3` | Authoritative normalized run store for new runs |
+| `logs/*.log.gz` | Redacted append-only debug logs when debug logging is enabled |
 | `responses/` | Prompts, final responses, reasoning sidecars, and per-plugin metadata when `--save-responses` is enabled |
-| `benchmark_state.json` | Resume state and per-plugin results |
+| `benchmark_state.json` | Legacy JSON resume state when `--storage json` is selected |
 | `run-info.json` | Run metadata, concurrency/preload data, and HTTP 429 backoff statistics |
 
 ## Plugins

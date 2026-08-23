@@ -56,6 +56,14 @@ uv run python -m py_compile ai-benchmark.py benchmark/*.py
   probes for the run; `preload_timeout` defaults to 300 seconds per source.
 - `--save-responses` — write per-(model, plugin) response files plus
   `meta.json` with rubric breakdown + `error`/`traceback` on crash.
+- `--storage {json,sqlite}` — SQLite is the default; JSON is an explicit
+  compatibility fallback.
+- `--storage-profile {compact,debug,portable}` / `--debug-logs` — choose
+  compact artifacts or retain redacted gzip debug transcripts.
+- `--import-to-sqlite STATE_JSON` / `--import-debug-logs` — convert legacy
+  state, optionally retaining legacy debug logs.
+- `--measure-storage` / `--compare-storage JSON SQLITE` — run local storage
+  measurements or read-only backend parity checks.
 - `--judge-models MODEL [...]` — run confidence-weighted semantic judging;
   `--build-judge-queue STATE_FILE` ranks disagreements for manual review.
 - `--plugin-temperature ID=VAL` — overrides the matching `_<id>_temperature`
@@ -104,7 +112,8 @@ polls it and rebuilds its frame only when something displayed changed
 - `benchmark-config.{yaml,json}` — **copy of the input config persisted
   as a time capsule**; diff against the in-repo config to see what the
   operator actually ran.
-- `logs/<model>.log` — curl + response bodies (when `--save-responses`); Pi additionally writes `pi/logs/<target>/<plugin>.stdout.ndjson` and `.stderr.txt`.
+- `run.sqlite3` — authoritative normalized store for new runs; `benchmark_state.json` remains the explicit JSON compatibility backend.
+- `logs/<model>.log.gz` — redacted curl + response diagnostics only in debug mode; Pi/OpenCode subprocess streams likewise use gzip members in debug mode.
 - `responses/<model>/<plugin>.txt` — model output; `.prompt.txt` is the
   prompt; `.think.txt` and `<plugin>.meta.json` preserve reasoning and rubric
   diagnostics. Failed evaluations include `error`/`traceback` when

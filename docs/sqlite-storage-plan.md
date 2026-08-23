@@ -1,7 +1,7 @@
 # SQLite Run Storage Plan
 
 **Status:** Stages 0–10 complete; Stage 11 validation/rollout partially complete
-**Last updated:** 2026-08-20
+**Last updated:** 2026-08-23
 **Primary goals:** fast writes, small output directories, reduced duplication, reliable resume, and reproducible reports.
 
 ## 1. Goals and decisions
@@ -777,9 +777,9 @@ faster ordering; format them at report boundaries.
 - [x] Import target/plugin membership and version snapshots.
 - [x] Deduplicate model-info/result-row judge data by cell/judge/contract identity.
 - [x] Import benchmark attempts and nested attempt history.
-- [ ] Import judge-input sidecars and raw judge responses by payload hash.
+- [x] Import judge-input sidecars and raw judge responses by payload hash.
 - [x] Store ambiguous/unmappable source rows in a legacy-import table.
-- [ ] Import debug logs only when requested.
+- [x] Import debug logs only when requested.
 - [x] Exclude purge backups by default (the importer accepts only the requested
       state file, never directory-wide backup discovery).
 - [x] Make imports idempotent and restartable using the source SHA-256.
@@ -799,13 +799,18 @@ faster ordering; format them at report boundaries.
       queues through the standalone semantic read-model validator.
 - [x] Test model/plugin additions and removals across interrupted continuations.
 - [x] Test plugin-version and judge-contract changes across continuations.
-- [ ] Benchmark write latency and TUI responsiveness.
-- [ ] Measure storage against the 2026-08-17 run shape.
-- [ ] Verify compact storage targets at least 60% savings.
+- [ ] Benchmark write latency and TUI responsiveness. `--measure-storage` now
+      provides a reproducible synthetic persistence baseline; real TUI measurement
+      still requires an operator run.
+- [ ] Measure storage against the 2026-08-17 run shape. Use
+      `ai-benchmark --measure-storage` for a synthetic baseline and compare the
+      resulting profile with a copied run directory before marking this complete.
+- [ ] Verify compact storage targets at least 60% savings. This remains an
+      empirical acceptance criterion, not a design assumption.
 - [ ] Verify debug compressed storage remains materially smaller than plaintext.
-- [ ] Make SQLite compact the default for new runs.
+- [x] Make SQLite compact the default for new runs.
 - [x] Retain JSON import/export as a fallback.
-- [ ] Update `AGENTS.md`, README, CLI docs, configuration docs, and architecture docs.
+- [x] Update `AGENTS.md`, README, CLI docs, configuration docs, and architecture docs.
 
 ## 10. Acceptance criteria
 
@@ -856,8 +861,9 @@ Using the measured `2026-08-17-nas-and-more-test-changes` run as the reference:
 10. [x] On-demand report generation.
 11. [x] Existing-run importer.
 12. [x] Semantic read-model validation.
-13. [ ] Runtime dual-write validation.
-14. [ ] SQLite compact default.
+13. [x] Read-only JSON/SQLite semantic comparison (`--compare-storage`).
+14. [x] SQLite compact default.
+15. [ ] Runtime dual-write shadow mode.
 
 The key invariant is:
 
