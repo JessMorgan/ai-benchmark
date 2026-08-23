@@ -6,7 +6,9 @@ from benchmark.observer import TaskObserver
 from benchmark.opencode import OpenCodeProcessResult
 from benchmark.transport import (
     RequestIdentity,
+    RetryPolicy,
     TransportRequest,
+    execute_task,
     execute_transport,
 )
 
@@ -36,6 +38,22 @@ class TestTransport(unittest.TestCase):
             result = execute_transport(self._request(identity=identity, attempt=2))
         self.assertEqual(result.request_id, identity.request_id)
         self.assertEqual(result.timeout_seconds, 5)
+
+    def test_logical_retry_updates_request_identity_attempt(self):
+        first = StreamResult("", "", None, 1.0, "connection refused", None, {})
+        second = StreamResult("answer", "", 1.0, 1.5, None, "stop", {})
+        identity = RequestIdentity(
+            run_id="run-1", revision_id=3, target="model-a",
+            plugin="rate-limiter", runner="http", attempt=1,
+        )
+        with mock.patch("benchmark.transport.stream_request", side_effect=[first, second]):
+            result = execute_task(
+                self._request(identity=identity),
+                retry_policy=RetryPolicy(max_attempts=2),
+                base_prompt="Answer the task.",
+            )
+        self.assertEqual(result.attempts[0].result.request_id, "run-1:3:model-a:rate-limiter:http:1")
+        self.assertEqual(result.attempts[1].result.request_id, "run-1:3:model-a:rate-limiter:http:2")
 
     def test_streaming_http_is_normalized(self):
         response = StreamResult(

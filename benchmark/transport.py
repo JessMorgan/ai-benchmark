@@ -779,12 +779,16 @@ def execute_task(
             log_label = log_label.replace("{attempt}", str(attempt_number))
         else:
             log_label = f"{log_label} (attempt {attempt_number})"
+        identity = request.identity
+        if identity is not None:
+            identity = replace(identity, attempt=attempt_number)
         attempt_request = replace(
             request,
             prompt=request_prompt,
             log_label=log_label,
             attempt=attempt_number,
             prompt_altered=prompt_altered,
+            identity=identity,
         )
         result = execute_transport(
             attempt_request,
@@ -900,6 +904,10 @@ def execute_task_streaming(
                     observer=observer,
                     attempt=_attempt_number,
                     prompt_altered=_prompt_altered,
+                    identity=(
+                        replace(request.identity, attempt=_attempt_number)
+                        if request.identity is not None else None
+                    ),
                 ),
                 stream_request_fn=stream_request_fn,
                 nonstream_request_fn=nonstream_request_fn,
