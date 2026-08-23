@@ -3522,7 +3522,7 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
             return (not args.no_preload and isinstance(src_cfg, dict)
                     and bool(src_cfg.get("preload", False)))
 
-        def _set_preloading(target_name, target_info, enabled):
+        def _set_preloading(target_name, target_info, phase_runner, enabled):
             """Mark both runner rows for a target as warming, when present."""
             keys = [target_name]
             if runner_mode == "both":
@@ -3561,7 +3561,7 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
                     inflight = threading.Event()
                     preload_inflight[key] = inflight
                     preload_owner = True
-                    _set_preloading(model_name, target_info, True)
+                    _set_preloading(model_name, target_info, phase_runner, True)
                     run_info["preload"]["attempted"] += 1
                     run_info["preload"]["per_model"][f"{key[0]}/{key[1]}"] = {
                         "status": "running",
