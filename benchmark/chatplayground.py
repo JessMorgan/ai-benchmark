@@ -183,6 +183,13 @@ def _teardown_worker() -> None:
     _terminate(proc)
     with contextlib.suppress(Exception):
         proc.wait(timeout=2)
+    # Release the parent's read-ends of the worker's stdout/stderr pipes;
+    # leaving them open leaks two file descriptors per spawned worker and
+    # trips ResourceWarning under strict mode.
+    for stream in (proc.stdout, proc.stderr):
+        if stream is not None:
+            with contextlib.suppress(Exception):
+                stream.close()
 
 
 def _ensure_worker() -> subprocess.Popen:
