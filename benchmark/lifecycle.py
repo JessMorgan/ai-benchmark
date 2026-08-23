@@ -67,12 +67,14 @@ class ShutdownSupervisor:
 
     timeout: float
     results: list[ShutdownPhaseResult] = field(default_factory=list)
+    _deadline: float = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
         if isinstance(self.timeout, bool) or not isinstance(self.timeout, (int, float)):
             raise ValueError("shutdown timeout must be numeric")
         if self.timeout <= 0:
             raise ValueError("shutdown timeout must be positive")
+        self._deadline = time.monotonic() + float(self.timeout)
 
     def run(self, name: str, action: Callable[[], Any]) -> bool:
         """Run one phase without blocking past the remaining deadline.
@@ -117,8 +119,8 @@ class ShutdownSupervisor:
         return completed
 
     def _remaining(self) -> float:
-        elapsed = sum(result.elapsed for result in self.results)
-        return self.timeout - elapsed
+        """Return time left on the supervisor's monotonic total deadline."""
+        return self._deadline - time.monotonic()
 
     @property
     def successful(self) -> bool:

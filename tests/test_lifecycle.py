@@ -37,7 +37,7 @@ def test_shutdown_supervisor_rejects_invalid_timeout_and_deadline_expiry():
         with pytest.raises(ValueError):
             ShutdownSupervisor(value)
     supervisor = ShutdownSupervisor(0.01)
-    supervisor.results.append(type("Result", (), {"elapsed": 0.02, "completed": True})())
+    time.sleep(0.02)
     assert not supervisor.run("late", lambda: True)
     assert supervisor.results[-1].error == "deadline exceeded"
 
@@ -59,6 +59,14 @@ def test_valid_model_lifecycle_record():
 def test_invalid_model_lifecycle_records_are_rejected(changes, message):
     with pytest.raises(LifecycleInvariantError, match=message):
         validate_model_info("m", _info(**changes))
+
+
+def test_shutdown_supervisor_uses_total_deadline_not_sum_of_phase_durations():
+    supervisor = ShutdownSupervisor(0.03)
+    assert supervisor.run("first", lambda: time.sleep(0.02) or True)
+    time.sleep(0.02)
+    assert not supervisor.run("second", lambda: True)
+    assert supervisor.results[-1].error == "deadline exceeded"
 
 
 def test_shutdown_supervisor_records_success_and_failure():
