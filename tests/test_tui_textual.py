@@ -1,10 +1,12 @@
 """Headless tests for the Textual-based live TUI in ``benchmark.cli``.
 
 The Textual renderer rebuilds one full frame as a list of ``(text, style)``
-pairs each tick and hands them to a ``Static`` widget. These tests exercise
-the pure frame builder, the Rich ``Text`` conversion, and the Textual/plain-
-text dispatch without needing a real terminal.
+pairs each tick and hands each line to its own ``_FrameRow`` widget, which
+repaints only the cells that changed. These tests exercise the pure frame
+builder, the cell-diff helpers, the row widget, and the Textual/plain-text
+dispatch without needing a real terminal.
 """
+import asyncio
 import os
 import threading
 import time
@@ -47,6 +49,13 @@ class _FakeState:
 
     def recent_log(self, _n):
         return []
+
+    @property
+    def revision(self):
+        return 0
+
+    def has_live_work(self):
+        return bool(self.snapshot().get("model-b", {}).get("running_pids"))
 
 
 def _plugin():
@@ -514,6 +523,168 @@ class TestBuildFrameLinesAdvanced(unittest.TestCase):
                 mock.patch("benchmark.cli.get_429_stats", return_value={}):
             text = _frame_text(_render_lines(state))
         self.assertIn("All models complete", text)
+
+
+class TestLineCells(unittest.TestCase):
+    """Per-display-column expansion used by the per-cell TUI repainter."""
+
+    def test_pads_to_width(self):
+        self.assertEqual(cli._line_cells("ab", 5), ["a", "b", " ", " ", " "])
+
+    def test_wide_glyph_occupies_two_cells(self):
+        self.assertEqual(cli._line_cells("a\U0001f504b", 5),
+                         ["a", "\U0001f504", "", "b", " "])
+
+    def test_cjk_wide(self):
+        self.assertEqual(cli._line_cells("\u65e5", 2), ["\u65e5", ""])
+
+    def test_truncates_when_wider_than_width(self):
+        self.assertEqual(cli._line_cells("abcdef", 3), ["a", "b", "c"])
+
+
+class TestChangedCellSpans(unittest.TestCase):
+    """Diff of two cell lists into changed column spans."""
+
+    def test_identical_returns_empty(self):
+        self.assertEqual(cli._changed_cell_spans(list("abc"), list("abc")), [])
+
+    def test_middle_change(self):
+        self.assertEqual(cli._changed_cell_spans(list("abcde"), list("abXde")),
+                         [(2, 1)])
+
+    def test_multiple_runs(self):
+        self.assertEqual(cli._changed_cell_spans(list("abcdef"), list("aXcdeY")),
+                         [(1, 1), (5, 1)])
+
+    def test_full_change(self):
+        self.assertEqual(cli._changed_cell_spans(list("aaa"), list("bbb")),
+                         [(0, 3)])
+
+    def test_wide_glyph_replaced_marks_both_cells(self):
+        old = ["a", "\U0001f504", "", "b", " "]
+        new = ["a", "b", " ", "c", " "]
+        spans = cli._changed_cell_spans(old, new)
+        covered = {x + dx for x, w in spans for dx in range(w)}
+        self.assertIn(1, covered)
+        self.assertIn(2, covered)
+
+    def test_trailing_growth_is_covered(self):
+        self.assertEqual(cli._changed_cell_spans(["a", "b"], ["a", "b", "c", " "]),
+                         [(2, 2)])
+
+    def test_trailing_padding_repaint(self):
+        self.assertEqual(cli._changed_cell_spans(["a", "b", "c", " "], ["a", "b", "c", "d"]),
+                         [(3, 1)])
+
+
+class TestFrameRowWidget(unittest.TestCase):
+    """The per-row widget repaints only on change."""
+
+    def test_first_update_stores_padded_cells(self):
+        row = cli._FrameRow()
+        self.assertTrue(row.update_line("hello", "green", 8))
+        self.assertEqual(row._line_cells, list("hello   "))
+
+    def test_identical_update_is_noop(self):
+        row = cli._FrameRow()
+        row.update_line("hello", None, 8)
+        self.assertFalse(row.update_line("hello", None, 8))
+
+    def test_cell_change_repaints(self):
+        row = cli._FrameRow()
+        row.update_line("hello", None, 8)
+        self.assertTrue(row.update_line("heXlo", None, 8))
+
+    def test_style_change_repaints(self):
+        row = cli._FrameRow()
+        row.update_line("hello", None, 8)
+        self.assertTrue(row.update_line("hello", "red", 8))
+
+    def test_zero_width_is_noop(self):
+        row = cli._FrameRow()
+        self.assertFalse(row.update_line("hello", None, 0))
+
+    def test_render_returns_padded_styled_text(self):
+        row = cli._FrameRow()
+        row.update_line("hi", "bold", 5)
+        self.assertEqual(row.render().plain, "hi   ")
+
+    def test_render_styles_are_spans_not_base_style(self):
+        """The frame style must ride as a Rich Text SPAN.
+
+        Regression: the per-row rewrite passed the style as ``Text(text,
+        style=...)`` (base style). Textual's ``Content.from_rich_text`` then
+        kept the raw style string, which Rich parsed with its DEFAULT theme
+        - so ``green`` rendered #008000 instead of the app's MONOKAI green
+        #98e024 (visible as dimmed colours in the live TUI). Span-styled
+        text goes through ``Style.from_rich_style(..., ansi_theme)`` and
+        keeps the theme mapping.
+        """
+        row = cli._FrameRow()
+        row.update_line("done", "green", 6)
+        rendered = row.render()
+        # The style string must be attached as a span (not the base style).
+        self.assertTrue(rendered._spans, "expected the style as a span")
+        self.assertEqual(rendered.style, "")
+        self.assertEqual(rendered._spans[0].style, "green")
+
+    def test_unstyled_rows_render_without_spans(self):
+        row = cli._FrameRow()
+        row.update_line("plain", None, 6)
+        rendered = row.render()
+        self.assertFalse(rendered._spans)
+        self.assertEqual(rendered.style, "")
+
+    def test_wide_emoji_keeps_count_adjacent(self):
+        """The wide scales emoji must not gain a space before its count.
+
+        Regression: the per-cell repainter splits wide glyphs into an atom
+        plus an empty continuation cell; joining that empty cell with a
+        literal space rendered ``95⚖️1`` as ``95⚖️ 1`` on every repaint.
+        """
+        row = cli._FrameRow()
+        row.update_line("95⚖️1❌3", None, 11)
+        self.assertEqual(row.render().plain, "95⚖️1❌3   ")
+        self.assertNotIn("⚖️ ", row.render().plain)
+        self.assertNotIn("❌ ", row.render().plain)
+
+    def test_wide_emoji_change_differs_only_real_cells(self):
+        """Replacing a judge count keeps the wide-emoji atom + continuation
+        cell in the diff machinery but never introduces a literal space."""
+        row = cli._FrameRow()
+        row.update_line("95⚖️1", None, 10)
+        self.assertTrue(row.update_line("95⚖️2", None, 10))
+        self.assertEqual(row.render().plain, "95⚖️2     ")
+
+class TestBenchmarkTUIAppRows(unittest.IsolatedAsyncioTestCase):
+    """End-to-end: the app mounts one row widget per frame line."""
+
+    async def test_rows_follow_the_frame(self):
+        stop = threading.Event()
+        app = cli._BenchmarkTUIApp(
+            _FakeState(), stop, {"Local": "LC"},
+            "  #  S Model  St", "ratSc ratTok ratTm ratTPS",
+            1, [_plugin()], 0, {"Local": 2},
+        )
+        async with app.run_test(size=(30, 100)):
+            await asyncio.sleep(0.6)
+            self.assertGreater(len(app._rows), 3)
+            self.assertIn("AI Benchmark", app._rows[0]._line_text)
+            self.assertTrue(app._rows[0].id.startswith("row-"))
+
+    async def test_quit_cancels_requests_and_sets_stop_event(self):
+        stop = threading.Event()
+        app = cli._BenchmarkTUIApp(
+            _FakeState(), stop, {"Local": "LC"},
+            "  #  S Model  St", "ratSc ratTok ratTm ratTPS",
+            1, [_plugin()], 0, {"Local": 2},
+        )
+        with mock.patch("benchmark.cli.close_active_requests") as close_requests:
+            async with app.run_test(size=(30, 100)) as pilot:
+                app.action_quit_tui()
+                await pilot.pause()
+        self.assertTrue(stop.is_set())
+        close_requests.assert_called()
 
 
 class TestHorizontalScrollActions(unittest.IsolatedAsyncioTestCase):

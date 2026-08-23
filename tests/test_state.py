@@ -1202,5 +1202,59 @@ class TestResultJournal(unittest.TestCase):
             )
 
 
+class TestStateRevision(unittest.TestCase):
+    """The mutation counter the adaptive TUI polls to skip idle repaints."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.module = load_benchmark_module()
+
+    def _state(self):
+        return self.module.BenchmarkState({"model-a": "Source1"}, ["fake"])
+
+    def test_mutations_bump_revision(self):
+        state = self._state()
+        r0 = state.revision
+        state.update("model-a", status="running")
+        state.start_plugin_run("model-a", "fake")
+        state.mark_first_chunk_seen("model-a", "fake")
+        state.add_bytes_received("model-a", "fake", 100)
+        state.finish_plugin_run("model-a", "fake")
+        state.add_result({"model": "model-a", "status": "ok"})
+        state.set_judge_progress({"judge": {"expected": 1}})
+        state.increment_judge_progress("judge", completed=1)
+        state.log("model-a", "boom")
+        self.assertGreater(state.revision, r0)
+
+    def test_judge_activity_bumps_revision(self):
+        state = self._state()
+        r0 = state.revision
+        activity_id = state.start_judge_activity("judge", "model-a", "fake")
+        state.update_judge_activity(activity_id, content_tokens=10)
+        state.finish_judge_activity(activity_id)
+        self.assertGreater(state.revision, r0)
+
+    def test_reads_do_not_bump_revision(self):
+        state = self._state()
+        state.update("model-a", status="running")
+        r0 = state.revision
+        _ = state.snapshot()
+        _ = state.completed
+        _ = state.total
+        _ = state.recent_log(5)
+        _ = state.judge_progress_snapshot()
+        _ = state.judge_activity_snapshot()
+        _ = state.latest_results()
+        self.assertEqual(state.revision, r0)
+
+    def test_has_live_work(self):
+        state = self._state()
+        self.assertFalse(state.has_live_work())
+        state.start_plugin_run("model-a", "fake")
+        self.assertTrue(state.has_live_work())
+        state.finish_plugin_run("model-a", "fake")
+        self.assertFalse(state.has_live_work())
+
+
 if __name__ == "__main__":
     unittest.main()
