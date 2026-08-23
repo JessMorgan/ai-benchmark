@@ -571,10 +571,38 @@ class SQLiteRunStore:
         self._results[key] = dict(result)
 
     def update_model(self, model_name: str, **fields: Any) -> None:
-        del model_name, fields
-        # Live model state remains owned by BenchmarkState. Normalized model
-        # projections are written by the benchmark store in the next runtime
-        # integration layer; this no-op keeps the façade safe during migration.
+        """Persist revision-local live model fields for restart hydration."""
+        if self.identity is None or self._revision_id is None:
+            raise RuntimeError("SQLite run must be started before updating models")
+        if not fields:
+            return
+        def operation(connection):
+            row = connection.execute(
+                """
+                SELECT target_instance_id, runtime_json
+                FROM revision_targets rt
+                JOIN target_instances t USING (target_instance_id)
+                WHERE rt.revision_id = ? AND t.logical_name = ? AND rt.active = 1
+                ORDER BY t.target_instance_id DESC LIMIT 1
+                """,
+                (self._revision_id, model_name),
+            ).fetchone()
+            if row is None:
+                return
+            runtime = json.loads(row["runtime_json"] or "{}")
+            if not isinstance(runtime, dict):
+                runtime = {}
+            runtime.update(fields)
+            connection.execute(
+                """
+                UPDATE revision_targets
+                SET runtime_json = ?
+                WHERE revision_id = ? AND target_instance_id = ?
+                """,
+                (json.dumps(runtime, ensure_ascii=False, sort_keys=True),
+                 self._revision_id, row["target_instance_id"]),
+            )
+        self._submit_async(operation)
 
     def record_judge_result(self, state_key: str, runner: str, plugin_id: str,
                             **fields: Any) -> None:

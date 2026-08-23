@@ -453,8 +453,8 @@ class SQLiteContinuationStore:
                                active: bool, order_index: int | None) -> None:
         self.connection.execute(
             """
-            INSERT INTO revision_targets(revision_id, target_instance_id, active, order_index)
-            VALUES (?, ?, ?, ?)
+            INSERT INTO revision_targets(revision_id, target_instance_id, active, order_index, runtime_json)
+            VALUES (?, ?, ?, ?, '{}')
             ON CONFLICT(revision_id, target_instance_id) DO UPDATE SET
                 active = excluded.active, order_index = excluded.order_index
             """,

@@ -11,7 +11,7 @@ import sqlite3
 from collections.abc import Callable
 from typing import Any
 
-SQLITE_SCHEMA_VERSION = 3
+SQLITE_SCHEMA_VERSION = 4
 _DEFAULT_BUSY_TIMEOUT_MS = 5_000
 
 
@@ -109,6 +109,7 @@ def _create_schema_v1(connection: sqlite3.Connection) -> None:
             target_instance_id INTEGER NOT NULL REFERENCES target_instances(target_instance_id),
             active              INTEGER NOT NULL CHECK (active IN (0, 1)),
             order_index         INTEGER,
+            runtime_json        TEXT NOT NULL DEFAULT '{}',
             PRIMARY KEY(revision_id, target_instance_id)
         );
 
@@ -556,6 +557,14 @@ def _migrate_v2_continuation_reuse(connection: sqlite3.Connection) -> None:
     )
 
 
+def _migrate_v4_target_runtime(connection: sqlite3.Connection) -> None:
+    """Persist revision-local live model fields used by resume and the TUI."""
+    if "runtime_json" not in _column_names(connection, "revision_targets"):
+        connection.execute(
+            "ALTER TABLE revision_targets ADD COLUMN runtime_json TEXT NOT NULL DEFAULT '{}'"
+        )
+
+
 def _migrate_v3_attempt_timing(connection: sqlite3.Connection) -> None:
     """Persist per-attempt response/generation timing on benchmark attempts.
 
@@ -582,6 +591,7 @@ MIGRATIONS: dict[int, Migration] = {
     1: _create_schema_v1,
     2: _migrate_v2_continuation_reuse,
     3: _migrate_v3_attempt_timing,
+    4: _migrate_v4_target_runtime,
 }
 
 

@@ -62,10 +62,13 @@ class SQLiteReportSource:
             f"""
             SELECT c.cell_id, c.target_instance_id, c.plugin_id, c.plugin_version,
                    t.logical_name, t.runner, t.source, t.api_model, t.is_agent,
-                   s.attempt_id
+                   rt.runtime_json, s.attempt_id
             FROM revision_cells rc
             JOIN cells c ON c.cell_id = rc.cell_id
             JOIN target_instances t ON t.target_instance_id = c.target_instance_id
+            JOIN revision_targets rt
+              ON rt.revision_id = rc.revision_id
+             AND rt.target_instance_id = c.target_instance_id
             LEFT JOIN benchmark_selections s
               ON s.revision_id = rc.revision_id AND s.cell_id = c.cell_id
             WHERE rc.revision_id = ? AND (rc.scheduled = 1{reused_clause})
@@ -85,6 +88,9 @@ class SQLiteReportSource:
                 "status": "ok",
                 "session_seed": revision_row[0],
             })
+            runtime_json = self._json_load(row["runtime_json"])
+            if isinstance(runtime_json, dict):
+                result.setdefault("_runtime_json", {}).update(runtime_json)
             pid = str(row["plugin_id"])
             result[f"{pid}_plugin_version"] = row["plugin_version"]
             attempt_id = row["attempt_id"]
@@ -136,6 +142,9 @@ class SQLiteReportSource:
                 result[f"{prefix}diagnostics"] = diagnostics
         rows = list(results.values())
         for result in rows:
+            runtime_json = result.pop("_runtime_json", None)
+            if isinstance(runtime_json, dict):
+                result.update(runtime_json)
             self._attach_model_level(result, revision_id)
             self._attach_judges(result, revision_id)
             self._attach_attempt_meta(result, revision_id)

@@ -57,6 +57,11 @@ class TestRunStoreContract(unittest.TestCase):
                 max_score=20.0, supports_streaming=True,
             )
             store.prepare_run([target], [plugin])
+            store.update_model("m", status="running", elapsed=1.25, last_error="")
+            store.flush(timeout=5)
+            hydrated = store.latest_results()
+            self.assertEqual(hydrated[0]["status"], "running")
+            self.assertEqual(hydrated[0]["elapsed"], 1.25)
             cell_id = store.get_cell_id("m", "http", "p")
             self.assertIsNotNone(cell_id)
             store.record_benchmark_attempt(

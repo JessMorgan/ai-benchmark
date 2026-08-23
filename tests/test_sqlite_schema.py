@@ -99,7 +99,10 @@ class TestSQLiteSchema(unittest.TestCase):
             "INSERT INTO target_instances VALUES "
             "(1, 'run-a', 'model-a', 'http', 'Local', 'model-a', 0, NULL, NULL, 'sig-a', 1, NULL)"
         )
-        connection.execute("INSERT INTO revision_targets VALUES (1, 1, 1, 0)")
+        connection.execute(
+            "INSERT INTO revision_targets "
+            "(revision_id, target_instance_id, active, order_index) VALUES (1, 1, 1, 0)"
+        )
         connection.execute(
             "INSERT INTO plugin_definitions VALUES ('plugin', '1.0.0', 'Plugin', 20, 1, NULL)"
         )
