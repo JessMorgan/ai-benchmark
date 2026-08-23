@@ -10,8 +10,36 @@ import unittest
 from unittest import mock
 
 from benchmark.state import prepare_state_recovery, repair_state_file
+from benchmark.state_schema import StateSchemaError, validate_state_data
 from plugins import discover_plugins
 from tests.utils import load_benchmark_module
+
+
+class TestStateSchema(unittest.TestCase):
+    def test_rejects_missing_top_level_fields(self):
+        with self.assertRaisesRegex(StateSchemaError, "missing required fields"):
+            validate_state_data({"results": [], "model_info": {}})
+
+    def test_rejects_invalid_result_identity(self):
+        data = {
+            "model_info": {"m": {"status": "pending"}},
+            "results": [{"status": "ok"}],
+            "active_plugins": ["p"],
+            "score_schema": "percentage-v1",
+        }
+        with self.assertRaisesRegex(StateSchemaError, "model or state_key"):
+            validate_state_data(data)
+
+    def test_rejects_invalid_status_and_journal_sequence(self):
+        data = {
+            "model_info": {"m": {"status": "bogus"}},
+            "results": [],
+            "active_plugins": ["p"],
+            "score_schema": "percentage-v1",
+            "journal_sequence": -1,
+        }
+        with self.assertRaises(StateSchemaError):
+            validate_state_data(data)
 
 
 class TestBenchmarkState(unittest.TestCase):

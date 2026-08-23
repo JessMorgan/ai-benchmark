@@ -12,6 +12,7 @@ import threading
 import time
 
 from .plugin import SCORE_SCHEMA
+from .state_schema import StateSchemaError, validate_journal_event, validate_state_data
 from .storage import project_result_rows
 
 # State saves intentionally retain the historical ``<state>.tmp`` path for
@@ -965,6 +966,10 @@ class BenchmarkState:
                         # that line; earlier complete events remain useful.
                         continue
                     if isinstance(value, dict) and value.get("type") in {"result", "judge"}:
+                        try:
+                            validate_journal_event(value)
+                        except StateSchemaError:
+                            continue
                         events.append(value)
                     elif isinstance(value, dict) and "model" in value:
                         # Compatibility with journals written before the event
@@ -1427,6 +1432,7 @@ class BenchmarkState:
                 "journal_sequence": self._journal_sequence,
                 "score_schema": SCORE_SCHEMA,
             })
+        validate_state_data(data)
         tmp = path + ".tmp"
         try:
             # Keep the fixed temporary filename, but serialize the complete
@@ -1471,6 +1477,7 @@ class BenchmarkState:
     def load_state(cls, path, models, plugin_ids, *, rerun_failed=True):
         with open(path) as f:
             data = json.load(f)
+        validate_state_data(data)
         session_seed = data.get("session_seed")
         runner = data.get("runner", "http")
         state = cls(models, plugin_ids, session_seed=session_seed, runner=runner)
