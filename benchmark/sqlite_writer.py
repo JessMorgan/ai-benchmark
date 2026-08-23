@@ -12,7 +12,7 @@ from typing import Any
 
 from .sqlite_schema import connect_database
 
-SQLiteOperation = Callable[[sqlite3.Connection], Any]
+SQLiteOperation = Callable[[Any], Any]
 
 
 @dataclass
@@ -21,13 +21,36 @@ class _WorkItem:
     future: Future[Any]
 
 
+class _BatchConnection:
+    """Connection proxy that keeps legacy operation commits inside the batch.
+
+    Store methods predate the queue and call ``commit()`` themselves. The
+    proxy exposes the real connection for normal SQLite operations while
+    making commit/rollback no-ops; the queue owns the outer transaction and
+    savepoint rollback decisions.
+    """
+
+    def __init__(self, connection: sqlite3.Connection):
+        self._connection = connection
+
+    def commit(self) -> None:
+        """Defer commit ownership to :class:`SQLiteWriteQueue`."""
+
+    def rollback(self) -> None:
+        """Defer rollback ownership to the current operation savepoint."""
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._connection, name)
+
+
 class SQLiteWriteQueue:
     """Batch SQLite operations on one dedicated connection-owning thread.
 
     Worker threads enqueue short database operations and never serialize a
     state snapshot or share a SQLite connection. Each batch commits as one
-    transaction. A future lets callers observe commit failures without making
-    submission synchronous.
+    transaction. A savepoint isolates a malformed operation so it does not
+    discard neighboring successful operations. A future resolves only after
+    the outer transaction is durable.
     """
 
     def __init__(
@@ -54,6 +77,7 @@ class SQLiteWriteQueue:
         self._closing = False
         self._thread: threading.Thread | None = None
         self._failures: list[Exception] = []
+        self._committed_batches = 0
 
     def start(self) -> None:
         """Start the writer thread once."""
@@ -124,6 +148,12 @@ class SQLiteWriteQueue:
         thread = self._thread
         return bool(thread and thread.is_alive())
 
+    @property
+    def committed_batches(self) -> int:
+        """Return the number of successfully committed outer transactions."""
+        with self._state_lock:
+            return self._committed_batches
+
     def _report_failure(self, exc: Exception) -> None:
         with self._state_lock:
             self._failures.append(exc)
@@ -133,36 +163,47 @@ class SQLiteWriteQueue:
             except Exception:  # noqa: BLE001, S110 - reporting must not kill the writer
                 pass
 
+    def _fail_item(self, item: _WorkItem, exc: Exception) -> None:
+        self._report_failure(exc)
+        if not item.future.done():
+            item.future.set_exception(exc)
+
     def _execute_batch(self, connection: sqlite3.Connection,
                        batch: list[_WorkItem]) -> None:
-        """Commit each queued operation while retaining batching overhead.
-
-        Runtime operations are intentionally independent: a malformed judge
-        vote or one invalid benchmark payload must not roll back unrelated
-        completed cells that happened to share the same flush batch. Savepoints
-        keep each operation atomic while the surrounding transaction amortizes
-        the commit cost across the batch.
-        """
+        """Run one batch with per-operation savepoints and one outer commit."""
+        proxy = _BatchConnection(connection)
         pending: list[tuple[_WorkItem, Any]] = []
-        for item in batch:
-            try:
-                # Store operations historically commit themselves. Execute
-                # each item as its own transaction so both those operations
-                # and simple test/custom operations are supported without one
-                # failure rolling back its neighbors.
-                value = item.operation(connection)
-                connection.commit()
-            except Exception as exc:  # noqa: BLE001 - isolate one operation
+        try:
+            connection.execute("BEGIN")
+            for ordinal, item in enumerate(batch):
+                savepoint = f"sqlite_queue_op_{ordinal}"
                 try:
-                    connection.rollback()
-                except sqlite3.Error:
-                    pass
-                self._report_failure(exc)
+                    connection.execute(f"SAVEPOINT {savepoint}")
+                    value = item.operation(proxy)
+                    connection.execute(f"RELEASE SAVEPOINT {savepoint}")
+                except Exception as exc:  # noqa: BLE001 - isolate one operation
+                    try:
+                        connection.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
+                        connection.execute(f"RELEASE SAVEPOINT {savepoint}")
+                    except sqlite3.Error as rollback_exc:
+                        self._report_failure(rollback_exc)
+                    self._fail_item(item, exc)
+                else:
+                    pending.append((item, value))
+            connection.commit()
+        except Exception as exc:  # noqa: BLE001 - outer commit failure affects batch
+            try:
+                connection.rollback()
+            except sqlite3.Error as rollback_exc:
+                self._report_failure(rollback_exc)
+            self._report_failure(exc)
+            for item, _value in pending:
                 if not item.future.done():
                     item.future.set_exception(exc)
-            else:
-                pending.append((item, value))
+            return
 
+        with self._state_lock:
+            self._committed_batches += 1
         for item, value in pending:
             if not item.future.done():
                 item.future.set_result(value)

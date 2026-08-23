@@ -24,6 +24,7 @@ class TestSQLiteWriteQueue(unittest.TestCase):
             writer.flush(timeout=5)
             for future in futures:
                 future.result(timeout=1)
+            self.assertEqual(writer.committed_batches, 1)
             self.assertTrue(writer.close(timeout=5))
             connection = sqlite3.connect(f"{tmpdir}/run.sqlite3")
             count = connection.execute(
