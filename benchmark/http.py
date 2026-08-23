@@ -218,6 +218,51 @@ def _iter_1min_sse_events(resp: requests.Response) -> Iterator[tuple[str, Any] |
 _log_lock = threading.Lock()
 _GZIP_LOGS_RECOVERED: set[str] = set()
 
+
+class _StopAwareRequestWatchdog:
+    """Close a streaming response after a deadline, or soon after cancellation.
+
+    ``close_active_requests()`` closes every response registered at the moment
+    a quit lands, but a request whose ``requests.post()`` was still in flight
+    then is added to ``_active_requests`` only after that pass, leaving the
+    worker blocked on a socket read for up to the full request timeout
+    (minutes) while the shutdown path's joins wait on it. This watchdog
+    observes the same ``stop_event``: once it fires, the response is closed
+    within a fraction of a second, so a quit can never strand a worker on a
+    stale connection.
+    """
+
+    def __init__(self, resp, timeout: float, stop_event) -> None:
+        self._resp = resp
+        self._timeout = max(0.0, float(timeout))
+        self._stop_event = stop_event
+        self._cancel = threading.Event()
+        self._thread = threading.Thread(
+            target=self._run, name="request-watchdog", daemon=True,
+        )
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def cancel(self) -> None:
+        """Disarm the watchdog (request completed normally)."""
+        self._cancel.set()
+
+    def _run(self) -> None:
+        deadline = time.monotonic() + self._timeout
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            if self._stop_event is not None and self._stop_event.is_set():
+                break
+            if self._cancel.wait(min(remaining, 0.25)):
+                return
+        with contextlib.suppress(Exception):
+            close_fn = getattr(self._resp, "close", None)
+            if callable(close_fn):
+                close_fn()
+
 # Active HTTP responses so Ctrl+C can close them and unblock plugin threads.
 _active_requests_lock = threading.Lock()
 _active_requests: set = set()
@@ -545,8 +590,7 @@ def _post_request_context(source_config, source, body, timeout, stream, log_path
             # entirely).
             close_fn = getattr(resp, "close", None)
             if callable(close_fn):
-                watchdog = threading.Timer(timeout, close_fn)
-                watchdog.daemon = True
+                watchdog = _StopAwareRequestWatchdog(resp, timeout, stop_event)
                 watchdog.start()
             else:
                 watchdog = None

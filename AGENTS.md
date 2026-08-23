@@ -236,6 +236,24 @@ and the OpenCode runner are exempt (the kwargs default off).
    content, large `reasoning_content`, `finish_reason="length"`). The retry
    is capped at 131072 and only fires for HTTP streaming plugins. Regression
    in `tests/test_cli.py::TestThinkingAutoEscalation`.
+7. **Judge votes read back from SQLite must use the canonical keys.** The
+   live judge path and the TUI footer seed per-judge progress from
+   `{plugin_id}_judge_votes` dicts keyed by `model` and `judge_contract_id`
+   (`judge_vote_identity` in `benchmark/core.py`). `SQLiteReportSource._attach_judges`
+   must alias the raw columns (`judge_model`/`contract_id`) to those names;
+   the raw names make every resumed judge show `0✅0❌0Σ` in the footer even
+   though the votes are durable ("judge results wiped" on continue).
+   Regression in `tests/test_sqlite_reports.py::TestSQLiteReports::test_judge_votes_attach_with_canonical_keys`.
+8. **Quit-hang: close the post-`close_active_requests` race.** `close_active_requests()`
+   only closes responses registered when the quit lands; a request whose
+   `requests.post()` was still in flight then lands *after* that pass and its
+   worker blocks on the socket read for up to the full request timeout while
+   the shutdown joins (`thread.join()`, `executor.shutdown(wait=True)`,
+   `orchestrator.join()`) wait on it — the process appears hung after `q`.
+   **Fix:** `_post_request_context` now arms a stop-aware watchdog
+   (`_StopAwareRequestWatchdog`) that closes the response within ~0.25 s of
+   `stop_event`, and the shutdown joins are stop_event-aware/bounded.
+   Regression in `tests/test_benchmark_http.py::TestStopAwareWatchdog`.
 7. **`faulthandler` is enabled at CLI startup** (`_enable_faulthandler` in
    `benchmark/cli.py`, called first thing in `main()`) and in the
    ChatPlayground worker subprocess. A native crash (SIGSEGV/SIGABRT/…) now

@@ -1254,7 +1254,7 @@ def _build_frame_lines(state, active_plugins, source_abbrevs, frozen_hdr,
     if not isinstance(alignment_cache, dict):
         alignment_cache = {}
         try:
-            setattr(state, "_tui_alignment_cache", alignment_cache)
+            state._tui_alignment_cache = alignment_cache
         except Exception:  # pragma: no cover - defensive for read-only test doubles
             pass
     judge_slots = alignment_cache.get(alignment_key)
@@ -2013,12 +2013,15 @@ class SourceModelScheduler:
         finally:
             # Do not let the executor context manager wait indefinitely after
             # cancellation: active HTTP/subprocess work is interrupted by the
-            # caller before workers are joined. Normal completion still shuts
-            # down synchronously so no executor thread leaks into output work.
+            # caller before workers are joined. Running futures are not waited
+            # on here -- the stop-aware request watchdog bounds any straggler
+            # to a fraction of a second, and the orchestrator performs its own
+            # bounded shutdown afterwards. Normal completion still shuts down
+            # synchronously so no executor thread leaks into output work.
             if self.stop_event.is_set():
                 for future in futures:
                     future.cancel()
-                executor.shutdown(wait=True, cancel_futures=True)
+                executor.shutdown(wait=False, cancel_futures=True)
             else:
                 executor.shutdown(wait=True)
         if not self.stop_event.is_set() and self.on_complete:
@@ -4432,7 +4435,8 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
                 phase_threads.append(thread)
             try:
                 for thread in phase_threads:
-                    thread.join()
+                    while thread.is_alive() and not stop_event.is_set():
+                        thread.join(timeout=0.5)
             except KeyboardInterrupt:
                 interrupted = True
                 run_info["status"] = "interrupted"
@@ -4470,7 +4474,8 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
             if pipeline_threads:
                 try:
                     for thread in pipeline_threads:
-                        thread.join()
+                        while thread.is_alive() and not stop_event.is_set():
+                            thread.join(timeout=0.5)
                 except KeyboardInterrupt:
                     interrupted = True
                     run_info["status"] = "interrupted"

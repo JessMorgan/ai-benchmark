@@ -589,6 +589,68 @@ class TestStreamRequest(unittest.TestCase):
         self.assertEqual(result.error, "Cancelled")
 
 
+class TestStopAwareWatchdog(unittest.TestCase):
+    """The request watchdog must close responses promptly on cancellation.
+
+    ``close_active_requests()`` only sees responses registered when the quit
+    lands; a request whose ``requests.post()`` was still in flight then is
+    added afterwards and would otherwise strand its worker on a socket read
+    for up to the full request timeout, hanging the shutdown joins. The
+    stop-aware watchdog closes it within a fraction of a second of the stop
+    event instead.
+    """
+
+    def test_closes_response_when_stop_event_set(self):
+        from benchmark.http import _StopAwareRequestWatchdog
+
+        stop_event = threading.Event()
+        stop_event.set()
+        closed = threading.Event()
+
+        class FakeResponse:
+            def close(self):
+                closed.set()
+
+        watchdog = _StopAwareRequestWatchdog(
+            FakeResponse(), timeout=60.0, stop_event=stop_event,
+        )
+        watchdog.start()
+        self.assertTrue(closed.wait(timeout=2.0))
+
+    def test_does_not_close_after_cancel(self):
+        from benchmark.http import _StopAwareRequestWatchdog
+
+        stop_event = threading.Event()
+        closed = threading.Event()
+
+        class FakeResponse:
+            def close(self):
+                closed.set()
+
+        watchdog = _StopAwareRequestWatchdog(
+            FakeResponse(), timeout=60.0, stop_event=stop_event,
+        )
+        watchdog.start()
+        watchdog.cancel()
+        time.sleep(0.4)
+        self.assertFalse(closed.is_set())
+
+    def test_closes_on_timeout_when_no_stop_event(self):
+        from benchmark.http import _StopAwareRequestWatchdog
+
+        closed = threading.Event()
+
+        class FakeResponse:
+            def close(self):
+                closed.set()
+
+        watchdog = _StopAwareRequestWatchdog(
+            FakeResponse(), timeout=0.1, stop_event=None,
+        )
+        watchdog.start()
+        self.assertTrue(closed.wait(timeout=2.0))
+
+
 class TestNonstreamRequest(unittest.TestCase):
     """Tests for the non-streaming request helper."""
 
