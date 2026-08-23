@@ -7,6 +7,7 @@ from unittest import mock
 
 from benchmark.completions import build_parser
 from benchmark.core import resolve_targets
+from benchmark.logs import iter_log_members
 from benchmark.pi import PiProcessResult, _node_version, run_process
 from benchmark.transport import TransportRequest, execute_transport
 
@@ -79,6 +80,7 @@ class TestPiAdapter(unittest.TestCase):
                 target_key="model",
                 plugin_id="test",
                 observer=mock.Mock(chunk=content.append, think_chunk=thinking.append),
+                debug_logs=True,
             )
 
             self.assertEqual(result.text, "answer")
@@ -89,12 +91,28 @@ class TestPiAdapter(unittest.TestCase):
             self.assertEqual(result.permissions, {"read": "allow"})
             self.assertEqual(content, ["answer"])
             self.assertEqual(thinking, ["think"])
-            self.assertTrue(os.path.exists(os.path.join(tmpdir, "logs", "model", "test.stdout.ndjson")))
+            self.assertTrue(os.path.exists(os.path.join(tmpdir, "logs", "model", "test.stdout.ndjson.gz")))
+            self.assertTrue(os.path.exists(os.path.join(tmpdir, "logs", "model", "test.stderr.txt.gz")))
             request = json.loads(fake.stdin.writes[0])
             self.assertEqual(request["prompt"], "prompt")
             self.assertEqual(request["prompt_altered"], "none")
             self.assertEqual(request["max_tokens"], 32)
             self.assertEqual(request["tools"], ["read"])
+            self.assertIn(b"worker diagnostic", b"".join(
+                iter_log_members(os.path.join(tmpdir, "logs", "model", "test.stderr.txt.gz"))
+            ))
+
+    def test_compact_pi_run_does_not_write_transcripts(self):
+        fake = _FakeProcess("", "")
+        with tempfile.TemporaryDirectory() as tmpdir, \
+                mock.patch("benchmark.pi.resolve_pi_worker", return_value=("node", "/tmp/worker.mjs")), \
+                mock.patch("benchmark.pi.subprocess.Popen", return_value=fake):
+            run_process(
+                "prompt", source_config={"Local": {}}, source="Local",
+                api_model="model", max_tokens=32, timeout=2,
+                output_dir=tmpdir, target_key="model", plugin_id="test",
+            )
+            self.assertFalse(os.path.exists(os.path.join(tmpdir, "logs")))
 
 
 class TestPiTransport(unittest.TestCase):

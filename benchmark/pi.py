@@ -21,6 +21,7 @@ from pathlib import Path
 from queue import Empty, Queue
 from typing import Any, cast
 
+from .logs import AppendOnlyGzipLog
 from .observer import TaskObserver
 from .process_supervisor import terminate_process_tree
 
@@ -241,6 +242,7 @@ def run_process(
     plugin_id: str = "plugin",
     stop_event: Any = None,
     observer: TaskObserver | None = None,
+    debug_logs: bool = False,
 ) -> PiProcessResult:
     """Run one isolated Pi request and retain partial output on failure."""
     node_path, worker_path = resolve_pi_worker(worker, node=node)
@@ -388,11 +390,16 @@ def run_process(
     think_text = "".join(think_parts)
     if error is None and not text.strip():
         error = "Pi returned an empty response"
-    if output_dir:
+    if output_dir and debug_logs:
         log_dir = Path(output_dir) / "logs" / _safe_name(target_key)
         log_dir.mkdir(parents=True, exist_ok=True)
-        (log_dir / f"{plugin_id}.stdout.ndjson").write_text("".join(stdout_parts), encoding="utf-8")
-        (log_dir / f"{plugin_id}.stderr.txt").write_text("".join(stderr_parts), encoding="utf-8")
+        for suffix, content in (
+            ("stdout.ndjson.gz", "".join(stdout_parts)),
+            ("stderr.txt.gz", "".join(stderr_parts)),
+        ):
+            writer = AppendOnlyGzipLog(str(log_dir / f"{plugin_id}.{suffix}"), sync_policy="final")
+            writer.append_record([content])
+            writer.close()
     return PiProcessResult(
         text=text,
         stderr="".join(stderr_parts),

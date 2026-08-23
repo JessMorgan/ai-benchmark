@@ -2531,6 +2531,7 @@ def _run_plugin_task(target_name, api_model, source, plugin, source_config, time
         opencode_no_output_grace=resolve_opencode_timeout(source_config, source),
         opencode_target_key=artifact_target,
         opencode_plugin_id=pid,
+        debug_logs=debug_logs,
         pi_node=pi_node,
         pi_worker=pi_worker,
         pi_config=pi_config,

@@ -104,6 +104,7 @@ class TransportRequest:
     opencode_no_output_grace: float | None = None
     opencode_target_key: str | None = None
     opencode_plugin_id: str | None = None
+    debug_logs: bool = False
     pi_node: str | None = None
     pi_worker: str | None = None
     pi_config: dict | None = None
@@ -636,6 +637,7 @@ def _execute_opencode(request: TransportRequest, *, run_process_fn=None) -> Tran
         plugin_id=request.opencode_plugin_id or request.pid or "plugin",
         stop_event=request.stop_event,
         no_output_grace=request.opencode_no_output_grace or 0,
+        debug_logs=request.debug_logs,
     )
     return _normalize(
         request,
@@ -713,6 +715,7 @@ def _execute_pi(request: TransportRequest) -> TransportResult:
         plugin_id=request.pi_plugin_id or request.pid or "plugin",
         stop_event=request.stop_event,
         observer=request.observer,
+        debug_logs=request.debug_logs,
     )
     return _normalize(
         request,

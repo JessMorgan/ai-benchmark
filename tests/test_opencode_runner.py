@@ -398,6 +398,7 @@ class TestOpenCodeProcess(unittest.TestCase):
                     output_dir=tmpdir,
                     target_key="agent-a",
                     plugin_id="rate-limiter",
+                    debug_logs=True,
                 )
 
             command = popen.call_args.args[0]
@@ -413,9 +414,9 @@ class TestOpenCodeProcess(unittest.TestCase):
             self.assertEqual(result.stderr, "diagnostic\n")
             self.assertIsNone(result.error)
             self.assertTrue(os.path.exists(os.path.join(
-                tmpdir, "logs", "agent-a", "rate-limiter.stdout.txt")))
+                tmpdir, "logs", "agent-a", "rate-limiter.stdout.txt.gz")))
             self.assertTrue(os.path.exists(os.path.join(
-                tmpdir, "logs", "agent-a", "rate-limiter.stderr.txt")))
+                tmpdir, "logs", "agent-a", "rate-limiter.stderr.txt.gz")))
 
     def test_nonzero_exit_is_reported(self):
         fake = _FakeProcess(returncode=7, stderr=b"bad config")

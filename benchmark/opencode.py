@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
+from .logs import AppendOnlyGzipLog
 from .process_supervisor import terminate_process_tree
 
 OPENCODE_BINARY = "opencode"
@@ -922,6 +923,7 @@ def run_process(
     step_limit: int = OPENCODE_MAX_STEPS,
     repeat_threshold: int = OPENCODE_REPEAT_THRESHOLD,
     repeat_min_len: int = OPENCODE_REPEAT_MIN_LEN,
+    debug_logs: bool = False,
 ) -> OpenCodeProcessResult:
     """Run one isolated, plugin-free OpenCode task.
 
@@ -1050,11 +1052,13 @@ def run_process(
     session_error = extract.error
     diagnostic = stderr.decode("utf-8", errors="replace")
     elapsed = time.monotonic() - started
-    if output_dir:
+    if output_dir and debug_logs:
         log_dir = Path(output_dir) / "logs" / re.sub(r"[^\w.()-]+", "_", target_key)
         log_dir.mkdir(parents=True, exist_ok=True)
-        (log_dir / f"{plugin_id}.stdout.txt").write_bytes(stdout)
-        (log_dir / f"{plugin_id}.stderr.txt").write_bytes(stderr)
+        for suffix, content in (("stdout.txt.gz", stdout), ("stderr.txt.gz", stderr)):
+            writer = AppendOnlyGzipLog(str(log_dir / f"{plugin_id}.{suffix}"), sync_policy="final")
+            writer.append_record([content])
+            writer.close()
     if error is None and session_error:
         error = f"OpenCode session error: {session_error}"
     if error is None and returncode != 0:

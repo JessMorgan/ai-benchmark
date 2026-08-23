@@ -601,11 +601,11 @@ class TestRunProcessEdgeCases(unittest.TestCase):
                 mock.patch("benchmark.opencode.subprocess.Popen", return_value=fake):
             result = run_process("p", config_path="/tmp/c.json", model="m",
                                  timeout=5, output_dir=tmpdir, target_key="t",
-                                 plugin_id="p")
+                                 plugin_id="p", debug_logs=True)
             self.assertEqual(result.text, "hello there")
             log_dir = Path(tmpdir) / "logs" / "t"
-            self.assertTrue((log_dir / "p.stdout.txt").exists())
-            self.assertTrue((log_dir / "p.stderr.txt").exists())
+            self.assertTrue((log_dir / "p.stdout.txt.gz").exists())
+            self.assertTrue((log_dir / "p.stderr.txt.gz").exists())
 
 
 if __name__ == "__main__":
