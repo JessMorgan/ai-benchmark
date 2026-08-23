@@ -23,6 +23,25 @@ def _info(**updates):
     return value
 
 
+def test_validate_snapshot_and_reject_invalid_model_names():
+    from benchmark.lifecycle import validate_snapshot
+    validate_snapshot({"m": _info()})
+    with pytest.raises(LifecycleInvariantError, match="model name"):
+        validate_model_info("", _info())
+    with pytest.raises(LifecycleInvariantError, match="snapshot"):
+        validate_snapshot([])
+
+
+def test_shutdown_supervisor_rejects_invalid_timeout_and_deadline_expiry():
+    for value in (True, "1", 0):
+        with pytest.raises(ValueError):
+            ShutdownSupervisor(value)
+    supervisor = ShutdownSupervisor(0.01)
+    supervisor.results.append(type("Result", (), {"elapsed": 0.02, "completed": True})())
+    assert not supervisor.run("late", lambda: True)
+    assert supervisor.results[-1].error == "deadline exceeded"
+
+
 def test_valid_model_lifecycle_record():
     validate_model_info("m", _info(status="running", running_pids=["p"]))
 

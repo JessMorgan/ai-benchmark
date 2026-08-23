@@ -4,8 +4,9 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest import mock
 
-from benchmark.sqlite_writer import SQLiteWriteQueue
+from benchmark.sqlite_writer import SQLiteWriteQueue, _WorkItem
 
 
 class TestSQLiteWriteQueue(unittest.TestCase):
@@ -96,6 +97,42 @@ class TestSQLiteWriteQueue(unittest.TestCase):
                 80,
             )
             connection.close()
+
+    def test_outer_commit_failure_fails_pending_future(self):
+        writer = SQLiteWriteQueue(":memory:")
+        connection = mock.MagicMock()
+        connection.commit.side_effect = sqlite3.Error("commit failed")
+        future = writer.submit(lambda _connection: "value")
+        # Avoid starting the real writer: exercise the transaction failure
+        # branch directly with a controlled connection double.
+        writer._execute_batch(connection, [_WorkItem(lambda _connection: "value", future)])
+        with self.assertRaisesRegex(sqlite3.Error, "commit failed"):
+            future.result()
+        self.assertEqual(len(writer.failures), 1)
+
+    def test_close_drains_items_after_shutdown_marker(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            writer = SQLiteWriteQueue(f"{tmpdir}/run.sqlite3", batch_size=1)
+            started = threading.Event()
+            release = threading.Event()
+
+            def slow(_connection):
+                started.set()
+                release.wait(5)
+
+            first = writer.submit(slow)
+            self.assertTrue(started.wait(5))
+            second = writer.submit(lambda connection: connection.execute(
+                "INSERT INTO schema_meta(key, value) VALUES ('after', 'marker')"
+            ))
+            closer = threading.Thread(target=lambda: writer.close(timeout=5))
+            closer.start()
+            time.sleep(0.02)
+            release.set()
+            first.result(timeout=5)
+            second.result(timeout=5)
+            closer.join(timeout=5)
+            self.assertFalse(closer.is_alive())
 
     def test_close_timeout_reports_live_writer(self):
         with tempfile.TemporaryDirectory() as tmpdir:

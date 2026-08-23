@@ -30,6 +30,65 @@ class TestStateSchema(unittest.TestCase):
         with self.assertRaisesRegex(StateSchemaError, "model or state_key"):
             validate_state_data(data)
 
+    def test_accepts_valid_state_and_journal_event(self):
+        data = {
+            "model_info": {"m": {"status": "pending"}},
+            "results": [{"model": "m", "status": "ok"}],
+            "active_plugins": ["p"],
+            "score_schema": "percentage-v1",
+            "plugin_versions": {"p": "1.0.0"},
+            "journal_sequence": 2,
+            "runner": "http",
+        }
+        validate_state_data(data)
+        from benchmark.state_schema import validate_journal_event
+        validate_journal_event({"type": "result", "seq": 1, "data": {"model": "m"}})
+        validate_journal_event({"type": "judge", "data": {"fields": {}}})
+
+    def test_rejects_invalid_top_level_state_types(self):
+        base = {
+            "model_info": {}, "results": [], "active_plugins": ["p"],
+            "score_schema": "v1",
+        }
+        cases = [
+            ("model_info", [], "model_info"),
+            ("results", {}, "results"),
+            ("active_plugins", [1], "active_plugins"),
+            ("score_schema", "", "score_schema"),
+            ("plugin_versions", {"p": 1}, "plugin_versions"),
+            ("journal_sequence", True, "journal_sequence"),
+            ("runner", "", "runner"),
+        ]
+        for key, value, message in cases:
+            data = dict(base)
+            data[key] = value
+            with self.subTest(key=key), self.assertRaisesRegex(StateSchemaError, message):
+                validate_state_data(data)
+
+    def test_rejects_invalid_state_records_and_journal_events(self):
+        base = {
+            "model_info": {}, "results": [], "active_plugins": ["p"],
+            "score_schema": "v1",
+        }
+        invalid_results = [
+            [None],
+            [{"model": ""}],
+        ]
+        for results in invalid_results:
+            data = dict(base)
+            data["results"] = results
+            with self.subTest(results=results), self.assertRaises(StateSchemaError):
+                validate_state_data(data)
+        for info in ([], {"status": "bogus"}):
+            data = dict(base)
+            data["model_info"] = {"m": info}
+            with self.subTest(info=info), self.assertRaises(StateSchemaError):
+                validate_state_data(data)
+        from benchmark.state_schema import validate_journal_event
+        for event in (None, {"type": "unknown", "data": {}}, {"type": "result", "seq": 0, "data": {}}, {"type": "result", "data": None}):
+            with self.subTest(event=event), self.assertRaises(StateSchemaError):
+                validate_journal_event(event)
+
     def test_rejects_invalid_status_and_journal_sequence(self):
         data = {
             "model_info": {"m": {"status": "bogus"}},
