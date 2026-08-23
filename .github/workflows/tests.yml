@@ -29,6 +29,28 @@ jobs:
         run: |
           uv run pre-commit run --all-files --show-diff-on-failure
 
+      - name: Run Ruff and strict infrastructure typing
+        run: |
+          uv run ruff check benchmark plugins tests
+          uv run mypy --strict \
+            benchmark/lifecycle.py \
+            benchmark/process_supervisor.py \
+            benchmark/scheduler_policy.py \
+            benchmark/sqlite_integrity.py \
+            benchmark/sqlite_writer.py \
+            benchmark/storage_validation.py
+
+      - name: Compile Python sources
+        run: uv run python -m compileall -q benchmark plugins ai-benchmark.py
+
+      - name: Run persistence contract tests
+        run: |
+          uv run pytest \
+            tests/test_storage.py \
+            tests/test_sqlite_writer.py \
+            tests/test_state.py \
+            tests/test_sqlite_integrity.py -q
+
       - name: Run unit tests with coverage
         run: |
           uv run coverage run -m pytest tests/ plugins/challenges/ plugins/outputs/ -q

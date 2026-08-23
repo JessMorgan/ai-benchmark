@@ -42,7 +42,7 @@ def compare_read_models(
         "timestamp", "total_time", "ttft", "session_seed", "judge_status",
         "judge_models", "is_agent", "p_judge_models", "p_judge_consensus_by_contract",
         "p_judge_selected_contract", "p_judge_queued", "p_attempt_count",
-        "p_plugin_version", "p_rubric", "p_diagnostics",
+        "p_plugin_version", "p_rubric", "p_diagnostics", "p_retry_reason",
     }
     left_rows = _index(left)
     right_rows = _index(right)
@@ -65,10 +65,12 @@ def compare_read_models(
             if key not in ignored
         }
         for key in sorted(set(left_row) | set(right_row)):
-            if left_row.get(key) != right_row.get(key):
+            left_value = _comparison_value(key, left_row.get(key))
+            right_value = _comparison_value(key, right_row.get(key))
+            if left_value != right_value:
                 differences.append(ValidationDifference(
                     _category_for_key(key), f"{identity}:{key}",
-                    left_row.get(key), right_row.get(key),
+                    left_value, right_value,
                 ))
     return ValidationReport(not differences, tuple(differences))
 
@@ -99,6 +101,15 @@ def _canonical_value(key: str, value: Any) -> Any:
         return value
     if isinstance(value, int) and not isinstance(value, bool):
         return float(value)
+    return value
+
+
+def _comparison_value(key: str, value: Any) -> Any:
+    """Normalize optional empty projections across storage backends."""
+    if value is None and key.endswith(("_judge_votes", "_judge_criteria")):
+        return []
+    if value is None and key.endswith("_judge_complete"):
+        return False
     return value
 
 

@@ -1,5 +1,6 @@
 """Tests for the backend-neutral storage façade."""
 import os
+import random
 import tempfile
 import unittest
 
@@ -129,6 +130,71 @@ class TestRunStoreContract(unittest.TestCase):
             sqlite_store.flush(timeout=5)
             sqlite_rows = sqlite_store.latest_results()
             report = compare_read_models(json_store.latest_results(), sqlite_rows)
+            self.assertTrue(report.equivalent, report.as_dict())
+            self.assertTrue(sqlite_store.close(timeout=2))
+
+    def test_seeded_mixed_event_sequence_preserves_backend_parity(self):
+        """Exercise a reproducible mix of completed, failed, and retried cells."""
+        rng = random.Random(20260823)
+        targets = [
+            TargetRecord(
+                logical_name=f"m-{index}", runner="http", source="Local",
+                api_model=f"m-{index}", target_signature=f"Local/m-{index}",
+            )
+            for index in range(8)
+        ]
+        plugin = PluginRecord(
+            plugin_id="p", plugin_version="1.0.0", name="Plugin",
+            max_score=20.0, supports_streaming=True,
+        )
+        state = BenchmarkState({target.logical_name: "Local" for target in targets}, ["p"])
+        json_store = JsonRunStore(state)
+        json_store.start_run(RunIdentity("run", 1))
+
+        with tempfile.TemporaryDirectory() as tmp:
+            sqlite_store = SQLiteRunStore(os.path.join(tmp, "run.sqlite3"), flush_interval=0.01)
+            sqlite_store.start_run(RunIdentity("run", 1))
+            sqlite_store.prepare_run(targets, [plugin])
+            for index, target in enumerate(targets):
+                score = rng.choice([None, 8, 12, 17])
+                retry = rng.choice([None, "transport", "thinking-budget"])
+                attempts = 2 if retry else 1
+                row = {
+                    "model": target.logical_name, "state_key": target.logical_name,
+                    "runner": "http", "source": "Local", "api_model": target.api_model,
+                    "status": "ok" if score is not None else "error",
+                    "p_score": score if score is not None else "fail",
+                    "p_output_tokens": 10 + index,
+                    "p_thinking_tokens": index % 3,
+                    "p_total_tokens": 10 + index + index % 3,
+                    "p_response_time": round(0.5 + index / 10, 2),
+                    "p_tps": round(10.0 + index, 2),
+                    "p_attempt_count": attempts,
+                }
+                if retry:
+                    row["p_retry_reasons"] = ["transport", retry] if attempts == 2 else [retry]
+                json_store.record_result(row)
+                cell_id = sqlite_store.get_cell_id(target.logical_name, "http", "p")
+                assert cell_id is not None
+                for attempt_number in range(1, attempts + 1):
+                    sqlite_store.record_benchmark_attempt(
+                        cell_id,
+                        BenchmarkAttemptRecord(
+                            attempt_number=attempt_number,
+                            content="answer" if score is not None else "",
+                            output_tokens=10 + index,
+                            thinking_tokens=index % 3,
+                            total_tokens=10 + index + index % 3,
+                            response_time=round(0.5 + index / 10, 2),
+                            tps=round(10.0 + index, 2),
+                            score=score if attempt_number == attempts else None,
+                            status="completed" if score is not None else "failed",
+                            retry_reason=retry if attempt_number == attempts else "transport",
+                        ),
+                        selected=attempt_number == attempts,
+                    )
+            sqlite_store.flush(timeout=5)
+            report = compare_read_models(json_store.latest_results(), sqlite_store.latest_results())
             self.assertTrue(report.equivalent, report.as_dict())
             self.assertTrue(sqlite_store.close(timeout=2))
 

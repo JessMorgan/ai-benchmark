@@ -14,6 +14,7 @@ import queue
 import random
 import shutil
 import signal
+import sqlite3
 import subprocess
 import sys
 import threading
@@ -2761,7 +2762,6 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
             sys.exit(1)
         connection = None
         try:
-            import sqlite3
             connection = sqlite3.connect(f"file:{os.path.abspath(sqlite_path)}?mode=ro", uri=True)
             connection.row_factory = sqlite3.Row
             report = check_integrity(connection)
