@@ -166,8 +166,8 @@ class SQLiteReportSource:
         for cell in cells:
             votes = self.connection.execute(
                 """
-                SELECT c.judge_model, c.contract_id, v.score, v.confidence,
-                       v.rationale, v.error, v.usable
+                SELECT c.judge_model AS model, c.contract_id AS judge_contract_id,
+                       v.score, v.confidence, v.rationale, v.error, v.usable
                 FROM current_judge_votes c
                 JOIN judge_vote_attempts v ON v.vote_attempt_id = c.vote_attempt_id
                 WHERE c.revision_id = ? AND c.cell_id = ?
@@ -181,7 +181,7 @@ class SQLiteReportSource:
             result[f"{pid}_judge_votes"] = [dict(vote) for vote in votes]
             usable = [vote["score"] for vote in votes if vote["usable"] and vote["score"] is not None]
             result[f"{pid}_judge_score"] = sum(usable) / len(usable) if usable else None
-            result[f"{pid}_judge_models"] = [vote["judge_model"] for vote in votes]
+            result[f"{pid}_judge_models"] = [vote["model"] for vote in votes]
 
     def _resolve_revision(self, revision: int | None, *, run_id: str | None = None) -> int:
         if revision is None:

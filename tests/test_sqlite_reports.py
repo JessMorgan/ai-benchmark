@@ -109,6 +109,46 @@ class TestSQLiteReports(unittest.TestCase):
         rows, _plugins, _seed, _revision = source.load_results(revision=second)
         self.assertNotIn("rate-limiter_judge_score", rows[0])
 
+    def test_judge_votes_attach_with_canonical_keys(self):
+        """Votes read back from SQLite must use the canonical vote shape.
+
+        The live judge path, footer progress seeding, ``merge_judge_vote``,
+        and disagreement analysis all key votes by ``model`` and
+        ``judge_contract_id``. If the SQLite report source emits the raw
+        column names (``judge_model``/``contract_id``) instead, a resumed
+        run sees zero existing votes and the footer shows every judge at
+        0\u2705 despite hundreds of persisted votes.
+        """
+        from benchmark.core import is_successful_judge_vote
+        from benchmark.sqlite_judges import SQLiteJudgeStore
+
+        judge = SQLiteJudgeStore(self.connection)
+        judge.register_judge(self.revision, "judge-a", source="Local")
+        judge.register_contract(
+            "contract-1", plugin_id="rate-limiter", plugin_version="1.0.0",
+            prompt_version="v1", instructions_version="v1",
+            response_schema_hash="schema-1", contract={"v": 1},
+            contract_hash="hash-1",
+        )
+        judge.activate_contract(self.revision, "rate-limiter", "contract-1")
+        attempt = judge.record_attempt(
+            self.revision, self.cell, "judge-a", "contract-1", {"attempt_number": 1},
+        )
+        vote = judge.record_vote(attempt, {
+            "score": 15, "confidence": "high", "rationale": "solid", "usable": True,
+        })
+        judge.select_vote(self.revision, self.cell, "judge-a", "contract-1", vote)
+
+        source = SQLiteReportSource.open(self.path)
+        self.addCleanup(source.close)
+        rows, _plugins, _seed, _revision = source.load_results()
+        votes = rows[0].get("rate-limiter_judge_votes", [])
+        self.assertEqual(len(votes), 1)
+        vote_dict = votes[0]
+        self.assertEqual(vote_dict.get("model"), "judge-a")
+        self.assertEqual(vote_dict.get("judge_contract_id"), "contract-1")
+        self.assertTrue(is_successful_judge_vote(vote_dict))
+
     def test_historical_revision_can_be_selected(self):
         self.store.record_attempt(
             self.revision, self.cell,
