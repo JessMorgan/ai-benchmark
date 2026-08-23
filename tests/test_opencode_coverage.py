@@ -449,7 +449,7 @@ class TestTerminateProcess(unittest.TestCase):
         child = mock.Mock()
         proc = mock.Mock()
         proc.children.return_value = [child]
-        with mock.patch("benchmark.opencode.psutil.Process", return_value=proc):
+        with mock.patch("benchmark.process_supervisor.psutil.Process", return_value=proc):
             _terminate_process(process)
         proc.terminate.assert_called_once()
         child.terminate.assert_called_once()
@@ -460,7 +460,7 @@ class TestTerminateProcess(unittest.TestCase):
         process.poll.return_value = None
         process.pid = 1234
         with mock.patch(
-            "benchmark.opencode.psutil.Process",
+            "benchmark.process_supervisor.psutil.Process",
             side_effect=psutil.NoSuchProcess(1234),
         ):
             _terminate_process(process)
@@ -474,7 +474,7 @@ class TestTerminateProcess(unittest.TestCase):
         child = mock.Mock()
         proc = mock.Mock()
         proc.children.return_value = [child]
-        with mock.patch("benchmark.opencode.psutil.Process", return_value=proc):
+        with mock.patch("benchmark.process_supervisor.psutil.Process", return_value=proc):
             _terminate_process(process)
         proc.kill.assert_called_once()
         child.kill.assert_called_once()

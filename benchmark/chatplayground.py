@@ -36,7 +36,7 @@ import sys
 import threading
 import time
 
-import psutil
+from .process_supervisor import terminate_and_close, terminate_process_tree
 
 DEFAULT_BASE_URL = "https://web.chatplayground.ai"
 
@@ -150,23 +150,8 @@ def _stderr_loop(proc, chunks) -> None:
 
 
 def _terminate(proc) -> None:
-    """Terminate the worker and its whole process tree (robust, psutil)."""
-    if proc.poll() is not None:
-        return
-    try:
-        worker = psutil.Process(proc.pid)
-    except psutil.NoSuchProcess:
-        return
-    procs = [worker] + worker.children(recursive=True)
-    for p in reversed(procs):
-        with contextlib.suppress(psutil.NoSuchProcess, psutil.AccessDenied):
-            p.terminate()
-    try:
-        proc.wait(timeout=1)
-    except subprocess.TimeoutExpired:
-        for p in reversed(procs):
-            with contextlib.suppress(psutil.NoSuchProcess, psutil.AccessDenied):
-                p.kill()
+    """Compatibility wrapper around the shared process-tree supervisor."""
+    terminate_process_tree(proc)
 
 
 def _teardown_worker() -> None:
@@ -180,16 +165,7 @@ def _teardown_worker() -> None:
     if proc.stdin is not None:
         with contextlib.suppress(Exception):
             proc.stdin.close()
-    _terminate(proc)
-    with contextlib.suppress(Exception):
-        proc.wait(timeout=2)
-    # Release the parent's read-ends of the worker's stdout/stderr pipes;
-    # leaving them open leaks two file descriptors per spawned worker and
-    # trips ResourceWarning under strict mode.
-    for stream in (proc.stdout, proc.stderr):
-        if stream is not None:
-            with contextlib.suppress(Exception):
-                stream.close()
+    terminate_and_close(proc, grace_seconds=1.0)
 
 
 def _ensure_worker() -> subprocess.Popen:

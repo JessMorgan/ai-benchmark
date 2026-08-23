@@ -11,7 +11,6 @@ import json
 import os
 import re
 import shutil
-import signal
 import subprocess
 import threading
 import time
@@ -23,6 +22,7 @@ from queue import Empty, Queue
 from typing import Any, cast
 
 from .observer import TaskObserver
+from .process_supervisor import terminate_process_tree
 
 PI_WORKER_PROTOCOL = "pi-worker-v1"
 PI_WORKER_VERSION = "1.0.0"
@@ -191,23 +191,8 @@ def _safe_name(value: str) -> str:
 
 
 def _terminate_process(process: subprocess.Popen[str]) -> None:
-    """Terminate the worker and descendants without waiting on SDK cleanup."""
-    if process.poll() is not None:
-        return
-    try:
-        if os.name == "posix" and process.pid:
-            os.killpg(process.pid, signal.SIGTERM)
-        else:
-            process.terminate()
-        process.wait(timeout=1)
-    except (OSError, subprocess.TimeoutExpired):
-        try:
-            if os.name == "posix" and process.pid:
-                os.killpg(process.pid, signal.SIGKILL)
-            else:
-                process.kill()
-        except OSError:
-            pass
+    """Terminate the worker and its descendants."""
+    terminate_process_tree(process)
 
 
 def _pump_lines(stream: Any, queue: Queue[tuple[str, str | None]], kind: str) -> None:
