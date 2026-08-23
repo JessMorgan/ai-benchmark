@@ -1,6 +1,7 @@
 """Lifecycle invariants and bounded shutdown supervision."""
 from __future__ import annotations
 
+import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -74,23 +75,44 @@ class ShutdownSupervisor:
             raise ValueError("shutdown timeout must be positive")
 
     def run(self, name: str, action: Callable[[], Any]) -> bool:
-        """Run one phase, bounded by the supervisor's remaining deadline."""
+        """Run one phase without blocking past the remaining deadline.
+
+        Python cannot safely terminate a running thread. On timeout the phase
+        is therefore marked failed and the daemon helper is left to finish in
+        the background; callers receive a bounded shutdown result instead of
+        hanging indefinitely.
+        """
         started = time.monotonic()
         remaining = self._remaining()
         if remaining <= 0:
             self.results.append(ShutdownPhaseResult(name, 0.0, False, "deadline exceeded"))
             return False
-        try:
-            value = action()
-            completed = value is not False
-            error = None if completed else "phase reported timeout"
-        except Exception as exc:  # noqa: BLE001 - supervisor records phase failures
-            completed = False
-            error = f"{type(exc).__name__}: {exc}"
+        outcome: dict[str, Any] = {}
+        finished = threading.Event()
+
+        def invoke() -> None:
+            try:
+                outcome["value"] = action()
+            except Exception as exc:  # noqa: BLE001 - supervisor records phase failures
+                outcome["error"] = f"{type(exc).__name__}: {exc}"
+            finally:
+                finished.set()
+
+        worker = threading.Thread(target=invoke, name=f"shutdown-{name}", daemon=True)
+        worker.start()
+        finished.wait(remaining)
         elapsed = time.monotonic() - started
-        if elapsed > remaining and completed:
+        completed: bool
+        error: str | None
+        if not finished.is_set():
             completed = False
             error = f"phase exceeded remaining deadline ({remaining:.3f}s)"
+        elif "error" in outcome:
+            completed = False
+            error = outcome["error"]
+        else:
+            completed = outcome.get("value") is not False
+            error = None if completed else "phase reported timeout"
         self.results.append(ShutdownPhaseResult(name, elapsed, completed, error))
         return completed
 
