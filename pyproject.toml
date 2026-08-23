@@ -81,6 +81,9 @@ omit = [
     "*/test_*.py",
     "*/__pycache__/*",
     ".venv/*",
+    # Runs as a separate Playwright subprocess; parent-process unit coverage
+    # cannot execute its browser lifecycle without credentials and Chromium.
+    "benchmark/chatplayground_worker.py",
 ]
 
 [tool.coverage.report]

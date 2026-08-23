@@ -1805,7 +1805,8 @@ def generate_config_from_api(base_url, api_key=None):
 
 # ─── Model execution ─────────────────────────────────────────────────────────
 
-def _run_plugin_task_legacy(target_name, api_model, source, plugin, source_config, timeout,
+def _run_plugin_task_legacy(  # pragma: no cover - retained compatibility implementation; unused
+                     target_name, api_model, source, plugin, source_config, timeout,
                      max_tokens, session_seed, log_file, global_cfg, state,
                      stop_event=None, save_responses=False, output_dir=None,
                      judge_input_dir=None, judge_enqueue=None,
