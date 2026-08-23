@@ -97,6 +97,7 @@ from benchmark.runtime_records import (
 )
 from benchmark.scheduler_policy import SourceSchedulingPolicy
 from benchmark.sqlite_import import LegacySQLiteImporter
+from benchmark.sqlite_integrity import check_integrity
 from benchmark.sqlite_reports import SQLiteReportSource, sqlite_path_from_report_path
 from benchmark.state import apply_state_recovery, prepare_state_recovery
 from benchmark.storage import JsonReportSource, RunIdentity, SQLiteRunStore, latest_result_rows
@@ -2749,6 +2750,29 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
 
     parser = build_parser()
     args = parser.parse_args()
+
+    if args.check_sqlite:
+        sqlite_path = sqlite_path_from_report_path(args.check_sqlite)
+        if sqlite_path is None:
+            print(
+                f"❌ SQLite database not found in path: {args.check_sqlite}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        connection = None
+        try:
+            import sqlite3
+            connection = sqlite3.connect(f"file:{os.path.abspath(sqlite_path)}?mode=ro", uri=True)
+            connection.row_factory = sqlite3.Row
+            report = check_integrity(connection)
+        except (OSError, sqlite3.Error, RuntimeError, ValueError) as exc:
+            print(f"❌ Could not check SQLite integrity: {exc}", file=sys.stderr)
+            sys.exit(1)
+        finally:
+            if connection is not None:
+                connection.close()
+        print(json.dumps(report.as_dict(), indent=2, default=str))
+        sys.exit(0 if report.ok else 1)
 
     if args.import_to_sqlite:
         source_path = os.path.abspath(args.import_to_sqlite)

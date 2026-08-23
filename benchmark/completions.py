@@ -123,6 +123,8 @@ def build_parser(prog=None, plugin_ids=None):
                              help='Run the non-scoring Pi worker/provider compatibility probe and print JSON')
     tools_group.add_argument('--import-to-sqlite', type=str, default=None, metavar='STATE_JSON',
                              help='Import a legacy benchmark_state.json into SQLite and exit')
+    tools_group.add_argument('--check-sqlite', type=str, default=None, metavar='PATH',
+                             help='Run read-only SQLite integrity diagnostics on a database or run directory and print JSON')
     tools_group.add_argument('--sqlite-output', type=str, default=None, metavar='PATH',
                              help='SQLite output path for --import-to-sqlite (default: run.sqlite3 beside the JSON)')
     tools_group.add_argument('--overwrite-sqlite', action='store_true',

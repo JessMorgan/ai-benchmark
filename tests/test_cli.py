@@ -42,6 +42,10 @@ class TestCLIArgs(unittest.TestCase):
         self.assertEqual(args.output_format, ["csv", "html", "csv"])
         self.assertEqual(args.generate_reports, "run-dir")
 
+    def test_check_sqlite_option_parses(self):
+        args = build_parser().parse_args(["--check-sqlite", "run.sqlite3"])
+        self.assertEqual(args.check_sqlite, "run.sqlite3")
+
     def test_import_to_sqlite_options_parse(self):
         args = build_parser().parse_args([
             "--import-to-sqlite", "state.json",
@@ -165,6 +169,23 @@ class TestCLIArgs(unittest.TestCase):
             "--revision", "2",
         ])
         self.assertEqual(args.revision, 2)
+
+    def test_check_sqlite_reports_healthy_database(self):
+        project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        launcher = os.path.join(project_root, "ai-benchmark.py")
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = os.path.join(tmp, "run.sqlite3")
+            from benchmark.sqlite_schema import connect_database
+            connection = connect_database(db_path)
+            connection.close()
+            result = subprocess.run(
+                [sys.executable, launcher, "--check-sqlite", db_path],
+                capture_output=True, text=True, check=False,
+            )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        report = json.loads(result.stdout)
+        self.assertTrue(report["ok"])
+        self.assertEqual(report["sqlite_integrity"], "ok")
 
     def test_schema_sentinel_is_non_scoring_cli_tool(self):
         project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

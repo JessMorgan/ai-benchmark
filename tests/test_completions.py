@@ -30,7 +30,7 @@ class TestCompletionBranches(unittest.TestCase):
         self.assertIn("#compdef ai-benchmark ai-benchmark.py", script)
         self.assertIn("_shtab_ai_benchmark_options", script)
         for flag in (
-            "--restart", "--config", "--runner", "--judge-spread-threshold",
+            "--restart", "--config", "--runner", "--check-sqlite", "--judge-spread-threshold",
             "--no-judge-spread", "--judge-deviation-threshold", "--no-judge-deviation",
         ):
             self.assertIn(flag, script)
