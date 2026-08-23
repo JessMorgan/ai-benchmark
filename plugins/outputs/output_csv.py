@@ -112,10 +112,11 @@ class CSVOutputPlugin(BenchmarkOutputPlugin):
                 ])
             overall = r.get("overall_score_100", tot)
             scored_plugins = r.get("overall_scored_plugins", _scored_plugin_count(r, active_plugins))
+            total_time = r.get('total_time', '')
             if r["status"] == "ok":
-                row.extend([overall if overall is not None else "", scored_plugins, r['total_time'], m, "OK", ""])
+                row.extend([overall if overall is not None else "", scored_plugins, total_time, m, "OK", ""])
             else:
-                row.extend([overall if overall is not None else "", scored_plugins, r['total_time'], m, "FAIL", r.get('error', '')])
+                row.extend([overall if overall is not None else "", scored_plugins, total_time, m, "FAIL", r.get('error', '')])
             w.writerow(row)
 
         content = out.getvalue()

@@ -152,6 +152,85 @@ class TestSQLiteReports(unittest.TestCase):
         self.assertEqual(vote_dict.get("judge_contract_id"), "contract-1")
         self.assertTrue(is_successful_judge_vote(vote_dict))
 
+    def test_judge_projection_and_criteria_attach_from_stored_votes(self):
+        """Judge criteria, consensus, confidence, and completion must be rebuilt.
+
+        The legacy JSON path stored the flat projection (confidence, rationale,
+        consensus-by-contract, criteria) alongside votes. SQLite keeps only the
+        vote + criteria rows, so the report source must reconstruct those
+        fields or reports silently lose the judge detail sections.
+        """
+        from benchmark.sqlite_judges import SQLiteJudgeStore
+
+        judge = SQLiteJudgeStore(self.connection)
+        judge.register_judge(self.revision, "judge-a", source="Local")
+        judge.register_judge(self.revision, "judge-b", source="Local")
+        judge.register_contract(
+            "contract-1", plugin_id="rate-limiter", plugin_version="1.0.0",
+            prompt_version="v1", instructions_version="v1",
+            response_schema_hash="schema-1", contract={"v": 1},
+            contract_hash="hash-1",
+        )
+        judge.activate_contract(self.revision, "rate-limiter", "contract-1")
+        for judge_name in ("judge-a", "judge-b"):
+            attempt = judge.record_attempt(
+                self.revision, self.cell, judge_name, "contract-1",
+                {"attempt_number": 1},
+            )
+            vote = judge.record_vote(attempt, {
+                "score": 15, "confidence": "high", "rationale": "solid",
+                "usable": True,
+                "criteria": [
+                    {"id": "R1", "criterion": "Use headings.",
+                     "status": "met", "evidence": "All present."},
+                ],
+            })
+            judge.select_vote(
+                self.revision, self.cell, judge_name, "contract-1", vote,
+            )
+
+        source = SQLiteReportSource.open(self.path)
+        self.addCleanup(source.close)
+        rows, _plugins, _seed, _revision = source.load_results()
+        row = rows[0]
+        self.assertEqual(row.get("rate-limiter_judge_score"), 15.0)
+        self.assertEqual(row.get("rate-limiter_judge_confidence"), "high")
+        self.assertEqual(row.get("rate-limiter_judge_rationale"), "solid | solid")
+        self.assertEqual(row.get("rate-limiter_judge_selected_contract"), "contract-1")
+        self.assertTrue(row.get("rate-limiter_judge_complete"))
+        consensus = row.get("rate-limiter_judge_consensus_by_contract", {})
+        self.assertIn("contract-1", consensus)
+        criteria = row.get("rate-limiter_judge_criteria", [])
+        self.assertEqual(len(criteria), 2)  # one report per valid judge
+        self.assertEqual(criteria[0]["judge"], "judge-a")
+        self.assertEqual(criteria[0]["criteria"][0]["id"], "R1")
+        # Each stored vote also carries its criteria for the vote-based helper.
+        votes = row.get("rate-limiter_judge_votes", [])
+        self.assertEqual(votes[0]["criteria"][0]["criterion"], "Use headings.")
+
+    def test_attempt_meta_and_model_level_attach(self):
+        """Attempt counts/retry reasons and model-level judge identities attach."""
+        from benchmark.sqlite_judges import SQLiteJudgeStore
+
+        judge = SQLiteJudgeStore(self.connection)
+        judge.register_judge(self.revision, "judge-a", source="Local")
+        self.store.record_attempt(
+            self.revision, self.cell,
+            {"attempt_number": 1, "score": 10, "retry_reason": "none"},
+            selected=True,
+        )
+        self.store.record_attempt(
+            self.revision, self.cell,
+            {"attempt_number": 2, "score": 15, "retry_reason": "transport_error"},
+        )
+        source = SQLiteReportSource.open(self.path)
+        self.addCleanup(source.close)
+        rows, _plugins, _seed, _revision = source.load_results()
+        row = rows[0]
+        self.assertEqual(row.get("rate-limiter_attempt_count"), 2)
+        self.assertEqual(row.get("rate-limiter_retry_reasons"), ["transport_error"])
+        self.assertEqual(row.get("judge_models"), ["judge-a"])
+
     def test_historical_revision_can_be_selected(self):
         self.store.record_attempt(
             self.revision, self.cell,

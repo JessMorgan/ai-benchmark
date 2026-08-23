@@ -119,7 +119,9 @@ class MarkdownOutputPlugin(BenchmarkOutputPlugin):
                     row += f" [view]({rel_path}) |"
             overall = r.get("overall_score_100", tot)
             scored_plugins = r.get("overall_scored_plugins", _scored_plugin_count(r, active_plugins))
-            row += f" {overall if overall is not None else '-'} | {scored_plugins} | {r['total_time']}s | {m} |"
+            total_time = r.get('total_time')
+            row += (f" {overall if overall is not None else '-'} | {scored_plugins} | "
+                    f"{total_time if total_time is not None else '-'}s | {m} |")
             lines.append(row)
 
         if ok:
@@ -128,8 +130,9 @@ class MarkdownOutputPlugin(BenchmarkOutputPlugin):
             lines.append("### ⚡ Fastest Cold Load (TTFT)")
             lines.append("| # | Model | Load (s) |")
             lines.append("|---|---|---|")
-            for i, r in enumerate(sorted(ok, key=lambda x: (x['ttft'] if isinstance(x['ttft'], (int, float)) else 999))[:10], 1):
-                lines.append(f"| {i} | {r['model']} | {r['ttft']} |")
+            for i, r in enumerate(sorted(ok, key=lambda x: (x.get('ttft') if isinstance(x.get('ttft'), (int, float)) else 999))[:10], 1):
+                ttft = r.get('ttft')
+                lines.append(f"| {i} | {r['model']} | {ttft if ttft is not None else '-'} |")
 
             for p in active_plugins:
                 lines.extend(["", f"### 🧠 Best {p.name} Score (/100)"])

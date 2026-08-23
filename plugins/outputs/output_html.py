@@ -98,8 +98,10 @@ class HTMLOutputPlugin(BenchmarkOutputPlugin):
                 )
             overall = r.get("overall_score_100", tot)
             scored_plugins = r.get("overall_scored_plugins", _scored_plugin_count(r, active_plugins))
+            total_time = r.get('total_time')
             cells += (f'<td><strong>{overall if overall is not None else "-"}</strong></td>'
-                      f'<td>{scored_plugins}</td><td>{r["total_time"]}s</td><td>{m}</td>')
+                      f'<td>{scored_plugins}</td>'
+                      f'<td>{total_time if total_time is not None else "-"}s</td><td>{m}</td>')
             if r["status"] == "ok":
                 cells += '<td class="ok-badge">✅</td>'
             else:
@@ -109,9 +111,10 @@ class HTMLOutputPlugin(BenchmarkOutputPlugin):
 
         ttft_rows = []
         for i, r in enumerate(
-            sorted(ok, key=lambda x: (x['ttft'] if isinstance(x['ttft'], (int, float)) else 999))[:10], 1
+            sorted(ok, key=lambda x: (x.get('ttft') if isinstance(x.get('ttft'), (int, float)) else 999))[:10], 1
         ):
-            ttft_rows.append((i, r["model"], r["ttft"]))
+            ttft = r.get('ttft')
+            ttft_rows.append((i, r["model"], ttft if ttft is not None else "-"))
 
         leaderboards = []
         for p in active_plugins:
