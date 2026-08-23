@@ -80,6 +80,38 @@ def _frame_text(lines):
     return "\n".join(text for text, _style in lines)
 
 
+class TestFrameCache(unittest.TestCase):
+    def test_frame_alignment_cache_reuses_unchanged_revision(self):
+        state = mock.Mock()
+        state.snapshot.return_value = {
+            "model-a": {
+                "status": "completed",
+                "source": "Local",
+                "judge_models": ["judge"],
+                "running_pids": [],
+                "p_score": 10.0,
+            },
+        }
+        state.completed = 1
+        state.total = 1
+        state.judge_activity_snapshot.return_value = []
+        state.judge_progress_snapshot.return_value = {}
+        state.judge_selected_snapshot.return_value = set()
+        state.has_live_work.return_value = False
+        state.revision = 1
+        state.recent_log.return_value = []
+        plugin = mock.Mock(id="p", supports_streaming=True)
+        with mock.patch("benchmark.cli._plugin_judge_alignment", return_value=(2, 0, 0)) as alignment:
+            cli._build_frame_lines(
+                state, [plugin], {"Local": "Loc"}, "#", "p", 1, 0, 0, (20, 80),
+            )
+            cli._build_frame_lines(
+                state, [plugin], {"Local": "Loc"}, "#", "p", 1, 0, 0, (20, 80),
+            )
+        self.assertEqual(alignment.call_count, 1)
+
+
+
 class TestFrameLinesToText(unittest.TestCase):
     def test_joins_lines_with_newlines_and_preserves_content(self):
         text = cli._frame_lines_to_text(
@@ -595,6 +627,13 @@ class TestFrameRowWidget(unittest.TestCase):
         row.update_line("hello", None, 8)
         self.assertTrue(row.update_line("heXlo", None, 8))
 
+    def test_resize_repaints_even_when_visible_prefix_is_unchanged(self):
+        row = cli._FrameRow()
+        row.update_line("hello", None, 8)
+        with mock.patch.object(row, "refresh") as refresh:
+            row.update_line("hello", None, 4)
+        refresh.assert_called_once()
+
     def test_style_change_repaints(self):
         row = cli._FrameRow()
         row.update_line("hello", None, 8)
@@ -671,6 +710,36 @@ class TestBenchmarkTUIAppRows(unittest.IsolatedAsyncioTestCase):
             self.assertGreater(len(app._rows), 3)
             self.assertIn("AI Benchmark", app._rows[0]._line_text)
             self.assertTrue(app._rows[0].id.startswith("row-"))
+
+    async def test_rapid_resize_keeps_rows_and_rendering_valid(self):
+        stop = threading.Event()
+        app = cli._BenchmarkTUIApp(
+            _FakeState(), stop, {"Local": "LC"},
+            "  #  S Model  St", "ratSc ratTok ratTm ratTPS",
+            1, [_plugin()], 0, {"Local": 2},
+        )
+        async with app.run_test(size=(30, 100)) as pilot:
+            for size in ((8, 32), (30, 100), (10, 40), (30, 100)):
+                await pilot.resize_terminal(*size)
+                await pilot.pause()
+            self.assertTrue(app.is_attached)
+            self.assertTrue(app._rows)
+            self.assertTrue(all(row.is_attached for row in app._rows))
+
+    async def test_resize_clamps_scroll_offsets(self):
+        stop = threading.Event()
+        app = cli._BenchmarkTUIApp(
+            _FakeState(), stop, {"Local": "LC"},
+            "  #  S Model  St", "x" * 300,
+            1, [_plugin()], 0, {"Local": 2},
+        )
+        async with app.run_test(size=(30, 100)) as pilot:
+            app.action_scroll_end()
+            app.action_scroll_end_x()
+            await pilot.resize_terminal(10, 32)
+            await pilot.pause()
+            self.assertLessEqual(app._scroll_y, app._max_row_offset())
+            self.assertLessEqual(app._scroll_x, app._max_col_offset())
 
     async def test_quit_cancels_requests_and_sets_stop_event(self):
         stop = threading.Event()

@@ -1246,12 +1246,26 @@ def _build_frame_lines(state, active_plugins, source_abbrevs, frozen_hdr,
         lines.append(line(frozen_hdr + " " + visible_plugin_hdr, "bold underline"))
     # Per-plugin-column judge marker slots, computed once over the FULL
     # snapshot (not just the visible slice) so like-emojis line up in the
-    # same columns regardless of scroll position.
-    judge_slots = {}
-    for plugin in active_plugins:
-        slots = _plugin_judge_alignment(snap.values(), plugin.id)
-        if slots is not None:
-            judge_slots[plugin.id] = slots
+    # same columns regardless of scroll position. Cache these derived widths
+    # by the state revision: scrolling changes the visible slice but not the
+    # alignment inputs, while any state mutation invalidates the cache.
+    alignment_key = (state.revision, tuple(plugin.id for plugin in active_plugins))
+    alignment_cache = getattr(state, "_tui_alignment_cache", None)
+    if not isinstance(alignment_cache, dict):
+        alignment_cache = {}
+        try:
+            state._tui_alignment_cache = alignment_cache
+        except Exception:  # pragma: no cover - defensive for read-only test doubles
+            pass
+    judge_slots = alignment_cache.get(alignment_key)
+    if judge_slots is None:
+        judge_slots = {}
+        for plugin in active_plugins:
+            slots = _plugin_judge_alignment(snap.values(), plugin.id)
+            if slots is not None:
+                judge_slots[plugin.id] = slots
+        alignment_cache.clear()
+        alignment_cache[alignment_key] = judge_slots
     for row_idx in range(visible_rows):
         abs_idx = scroll_y + row_idx
         if abs_idx >= len(snap_items):
@@ -1519,6 +1533,7 @@ class _FrameRow(Static):  # pragma: no cover - live interactive loop
         self._line_text = ""
         self._line_style = None
         self._line_cells = None
+        self._line_width = 0
 
     def render(self):
         from rich.text import Text
@@ -1548,12 +1563,13 @@ class _FrameRow(Static):  # pragma: no cover - live interactive loop
             return False
         cells = _line_cells(content, width)
         if (self._line_cells is not None and cells == self._line_cells
-                and style == self._line_style):
+                and style == self._line_style and width == self._line_width):
             return False
         spans = []
         if self._line_cells is not None:
             spans = _changed_cell_spans(self._line_cells, cells)
-            if not spans and style != self._line_style:
+            if (not spans
+                    and (style != self._line_style or width != self._line_width)):
                 spans = [(0, width)]
         else:
             spans = [(0, width)]
@@ -1565,6 +1581,7 @@ class _FrameRow(Static):  # pragma: no cover - live interactive loop
         self._line_text = "".join(cells)
         self._line_style = style
         self._line_cells = cells
+        self._line_width = width
         if spans:
             self.refresh(*[Region(x, 0, w, 1) for x, w in spans if w > 0])
         return True
@@ -1639,6 +1656,28 @@ class _BenchmarkTUIApp(App):  # pragma: no cover - live interactive loop
             del self._rows[len(lines):]
         for i, (content, style) in enumerate(lines):
             self._rows[i].update_line(content, style, width)
+
+    def on_resize(self, event) -> None:
+        """Clamp scroll and invalidate the frame during terminal resizes.
+
+        Textual can deliver intermediate zero/small dimensions while a mobile
+        terminal changes orientation. Keep offsets inside the new viewport and
+        let the normal timer perform row updates after layout settles; this
+        avoids issuing repaint regions against the previous row geometry.
+        """
+        height = max(0, event.size.height)
+        width = max(0, event.size.width)
+        visible_rows = max(0, height - 9 - max(3, self._num_sources + 1))
+        self._scroll_y = min(
+            self._scroll_y,
+            max(0, len(self._state.snapshot()) - visible_rows),
+        )
+        visible_cols = max(0, width - FROZEN_VIEW_WIDTH - 1)
+        self._scroll_x = min(
+            self._scroll_x,
+            max(0, _display_width(self._plugin_hdr) - visible_cols),
+        )
+        self._last_frame_key = None
 
     def _visible_rows(self) -> int:
         live_height = max(3, self._num_sources + 1)
