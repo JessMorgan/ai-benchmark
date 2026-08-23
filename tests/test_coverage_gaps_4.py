@@ -3,10 +3,8 @@ from __future__ import annotations
 
 import json
 import os
-from typing import Any
 from pathlib import Path
-
-
+from typing import Any
 
 # ---------------------------------------------------------------------------
 # benchmark.state – judge activity, models, and contracts
@@ -351,6 +349,7 @@ class TestValidatorHelpers:
 
     def test_stub_definitions(self) -> None:
         import ast
+
         from plugins.challenges._validators import stub_definitions
 
         tree = ast.parse("def foo(): pass\ndef bar(): pass\ndef baz(): pass")
@@ -383,6 +382,7 @@ class TestJudgeSidecarPath:
 class TestFindDefinitions:
     def test_find_definitions(self) -> None:
         import ast
+
         from plugins.challenges._validators import find_definitions
 
         tree = ast.parse("def foo(): pass\nclass Bar:\n    def baz(self): pass")

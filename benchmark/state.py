@@ -1627,7 +1627,7 @@ class BenchmarkState:
                 elif row.get("status") == "error":
                     info["status"] = "failed"
 
-        for name, info in state._model_info.items():
+        for info in state._model_info.values():
             if info.get("status") == "completed":
                 continue
             if not rerun_failed:

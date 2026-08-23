@@ -89,7 +89,7 @@ class ErrorRecoveryPlugin(BenchmarkTaskPlugin):
                 and all(
                     isinstance(arg.annotation, ast.Name)
                     and arg.annotation.id == expected
-                    for arg, expected in zip(gr.args.args, ("str", "WeatherClient"))
+                    for arg, expected in zip(gr.args.args, ("str", "WeatherClient"), strict=False)
                 )
             )
             signature_hits = sum([

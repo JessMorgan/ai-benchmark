@@ -2,12 +2,11 @@
 from __future__ import annotations
 
 import os
-from typing import Any
 from pathlib import Path
+from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
-
 
 # ---------------------------------------------------------------------------
 # benchmark.core – _resolve_pi_config exhaustive branches
@@ -276,7 +275,7 @@ class TestCompactJournalMore:
         # Journal should have been compacted (events older than snapshot removed)
         if os.path.exists(journal_path):
             with open(journal_path) as f:
-                lines = [l.strip() for l in f if l.strip()]
+                lines = [line.strip() for line in f if line.strip()]
             # Events should have been removed or retained based on sequence
             assert isinstance(lines, list)
 
@@ -399,6 +398,7 @@ class TestValidateSectionsMore:
 class TestFindDefinitionsMore:
     def test_find_definitions_async(self) -> None:
         import ast
+
         from plugins.challenges._validators import find_definitions
 
         tree = ast.parse("async def afunc(): pass\ndef sfunc(): pass")
@@ -408,6 +408,7 @@ class TestFindDefinitionsMore:
 
     def test_find_definitions_empty(self) -> None:
         import ast
+
         from plugins.challenges._validators import find_definitions
 
         tree = ast.parse("x = 1")

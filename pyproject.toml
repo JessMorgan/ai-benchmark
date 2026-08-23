@@ -105,6 +105,10 @@ warn_unused_configs = false
 disallow_untyped_defs = false
 disallow_incomplete_defs = false
 check_untyped_defs = false
+# Strict-adjacent flags that are cheap to hold: a stale ``# type: ignore``
+# or redundant cast is now a mypy error in CI (pre-commit mypy hook).
+warn_unused_ignores = true
+warn_redundant_casts = true
 
 [tool.ruff]
 target-version = "py310"
@@ -121,3 +125,11 @@ exclude = [
     "htmlcov/",
     ".omo/",
 ]
+
+[tool.ruff.lint]
+# Strict rule set: pyflakes (F), pycodestyle errors/warnings (E/W), bugbear
+# (B), import sorting (I), and pyupgrade (UP) are all enforced in CI via the
+# pre-commit ruff hook. E501 (line length) stays off: the codebase is written
+# at 100 columns but has never enforced a hard wrap.
+select = ["E", "F", "W", "B", "I", "UP"]
+ignore = ["E501"]

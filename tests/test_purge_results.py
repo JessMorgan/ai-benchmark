@@ -290,7 +290,7 @@ class TestPurgeResultsIdentifyTargets(unittest.TestCase):
         targets = self.purge.identify_targets(state, args, plugin_ids)
         self.assertEqual(len(targets), 14)
         # Make sure every match is `pluginA` (only plugin with 1 tok).
-        for m, pid, _lidx, _reason in targets:
+        for _m, pid, _lidx, _reason in targets:
             self.assertEqual(pid, "pluginA", f"unexpected plugin: {pid}")
 
     def test_orphan_is_matched_with_latest_idx_none(self):
@@ -354,7 +354,7 @@ class TestPurgeResultsIdentifyTargets(unittest.TestCase):
         plugin_ids = self.purge.discover_plugin_ids(state)
         args = _make_args(tok=1)
         targets = self.purge.identify_targets(state, args, plugin_ids)
-        for m, pid, _, _ in targets:
+        for _m, pid, _, _ in targets:
             self.assertEqual(pid, "pluginA")
 
     def test_no_filters_returns_empty(self):
@@ -509,7 +509,7 @@ class TestPurgeResultsDryRunVsApply(unittest.TestCase):
 
     def tearDown(self):
         # Clean up everything we wrote (script + state + .bak).
-        for root, dirs, files in os.walk(self.run_dir):
+        for root, _dirs, files in os.walk(self.run_dir):
             for f in files:
                 try:
                     os.remove(os.path.join(root, f))

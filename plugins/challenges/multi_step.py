@@ -65,7 +65,7 @@ class MultiStepPlugin(BenchmarkTaskPlugin):
         actual = node.args.args
         if [arg.arg for arg in actual] != [name for name, _ in args]:
             return False
-        for arg, (_, expected_type) in zip(actual, args):
+        for arg, (_, expected_type) in zip(actual, args, strict=False):
             if not isinstance(arg.annotation, ast.Name) or arg.annotation.id != expected_type:
                 return False
         return isinstance(node.returns, ast.Name) and node.returns.id == returns

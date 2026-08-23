@@ -10,8 +10,8 @@ from typing import Any
 
 from .sqlite_benchmarks import SQLiteBenchmarkStore
 from .sqlite_judges import SQLiteJudgeStore
-from .storage import project_result_rows
 from .sqlite_schema import connect_database
+from .storage import project_result_rows
 
 
 @dataclass(frozen=True)

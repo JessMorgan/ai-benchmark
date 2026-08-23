@@ -113,7 +113,7 @@ class MultiTurnConversationPlugin(BenchmarkTaskPlugin):
             if isinstance(state, dict):
                 state_values.append(state)
         transition_hits = 0
-        for state, target in zip(state_values, expected):
+        for state, target in zip(state_values, expected, strict=False):
             transition_hits += sum(state.get(key) == value for key, value in target.items())
         rubric.add_criterion("Requested state values", 5.0, 5.0 * transition_hits / 15.0)
         preserved = (

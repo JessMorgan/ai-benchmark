@@ -388,8 +388,8 @@ class TestBuildFrameLinesAdvanced(unittest.TestCase):
         text = _frame_text(lines)
         self.assertIn("Judging [judge-active:", text)
         self.assertIn("Judging [judge-stopped:", text)
-        stopped = next(l for l in lines if "judge-stopped:" in l[0])
-        active = next(l for l in lines if "judge-active:" in l[0])
+        stopped = next(line for line in lines if "judge-stopped:" in line[0])
+        active = next(line for line in lines if "judge-active:" in line[0])
         self.assertEqual(stopped[1], "red")
         self.assertIsNone(active[1])
 
@@ -409,7 +409,7 @@ class TestBuildFrameLinesAdvanced(unittest.TestCase):
         text = _frame_text(lines)
         self.assertIn("Judging [judge-stopped:", text)
         self.assertIn("All models complete", text)
-        stopped = next(l for l in lines if "judge-stopped:" in l[0])
+        stopped = next(line for line in lines if "judge-stopped:" in line[0])
         self.assertEqual(stopped[1], "red")
 
     def test_running_judge_renders_green(self):
@@ -433,7 +433,7 @@ class TestBuildFrameLinesAdvanced(unittest.TestCase):
             lines = _render_lines(state, num_sources=4)
         text = _frame_text(lines)
         self.assertIn("Judging [judge-run:", text)
-        run_line = next(l for l in lines if "judge-run:" in l[0])
+        run_line = next(line for line in lines if "judge-run:" in line[0])
         self.assertEqual(run_line[1], "green")
 
     def test_selected_judge_stays_green_without_active_request(self):
@@ -488,7 +488,7 @@ class TestBuildFrameLinesAdvanced(unittest.TestCase):
             lines = _render_lines(state, num_sources=4)
         text = _frame_text(lines)
         self.assertIn("Judging [judge-done:", text)
-        done_line = next(l for l in lines if "judge-done:" in l[0])
+        done_line = next(line for line in lines if "judge-done:" in line[0])
         self.assertEqual(done_line[1], "grey")
 
     def test_judge_footer_groups_by_state(self):
@@ -515,7 +515,7 @@ class TestBuildFrameLinesAdvanced(unittest.TestCase):
                 mock.patch("benchmark.cli.get_429_stats", return_value={}):
             lines = _render_lines(state, num_sources=4)
         styles = {
-            name: next(l[1] for l in lines if f"judge-{name}:" in l[0])
+            name: next(line[1] for line in lines if f"judge-{name}:" in line[0])
             for name in ("run", "wait", "done", "stop")
         }
         self.assertEqual(styles, {"run": "green", "wait": None,

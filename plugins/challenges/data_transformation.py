@@ -307,7 +307,7 @@ class DataTransformationPlugin(BenchmarkTaskPlugin):
         actual_order = actual_ids
         actual_ranks = [record.get("rank") for record in actual_records if isinstance(record, dict)]
         expected_order = [record["order_id"] for record in expected_records]
-        order_matches = sum(left == right for left, right in zip(actual_order, expected_order))
+        order_matches = sum(left == right for left, right in zip(actual_order, expected_order, strict=False))
         rank_matches = sum(rank == index for index, rank in enumerate(actual_ranks, 1))
         sorting_earned = 1.5 * order_matches / len(expected_order) + 1.5 * rank_matches / len(expected_order)
         self._criterion(
@@ -315,7 +315,7 @@ class DataTransformationPlugin(BenchmarkTaskPlugin):
             "Sorting and ranking",
             3.0,
             round(sorting_earned, 1),
-            evidence=[{"kind": "ordered-rank", "order_id": order_id, "rank": rank} for order_id, rank in zip(actual_order, actual_ranks)],
+            evidence=[{"kind": "ordered-rank", "order_id": order_id, "rank": rank} for order_id, rank in zip(actual_order, actual_ranks, strict=False)],
             findings=[] if actual_order == expected_order and actual_ranks == list(range(1, 6)) else [{"finding": "records are not sorted and ranked deterministically"}],
         )
 

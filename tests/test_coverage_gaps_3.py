@@ -10,7 +10,6 @@ from unittest.mock import MagicMock
 
 import pytest
 
-
 # ---------------------------------------------------------------------------
 # benchmark.state – journal, hydration, and edge cases
 # ---------------------------------------------------------------------------
@@ -499,6 +498,7 @@ class TestValidators:
 class TestFindDefinitions:
     def test_find_definitions(self) -> None:
         import ast
+
         from plugins.challenges._validators import find_definitions
 
         tree = ast.parse("def foo(): pass\ndef bar(): pass\nclass Foo:\n    def baz(self): pass")

@@ -58,7 +58,8 @@ class MarkdownOutputPlugin(BenchmarkOutputPlugin):
 
         has_runner = any(r.get("runner") for r in results)
         header = "| # | Model | Runner |"
-        if judge_enabled:                header += " Judge Models | Judge Status |"
+        if judge_enabled:
+            header += " Judge Models | Judge Status |"
         header += " Load (s) |" if has_runner else "| # | Model |"
         if not has_runner:
             if judge_enabled:

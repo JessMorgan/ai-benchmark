@@ -57,7 +57,7 @@ def _pearson(left: list[float], right: list[float]) -> float | None:
     if not left_var or not right_var:
         return None
     return round(
-        sum((a - left_mean) * (b - right_mean) for a, b in zip(left, right))
+        sum((a - left_mean) * (b - right_mean) for a, b in zip(left, right, strict=False))
         / math.sqrt(left_var * right_var),
         3,
     )
@@ -125,7 +125,7 @@ def judge_statistics(data: dict[str, Any]) -> dict[str, Any]:
             "medium_confidence": sum(vote["confidence"] == "medium" for vote in votes),
             "low_confidence": sum(vote["confidence"] == "low" for vote in votes),
             "deterministic_cells": len(deterministic),
-            "mean_deviation": _mean_or_none([b - a for a, b in zip(deterministic, judged)]),
+            "mean_deviation": _mean_or_none([b - a for a, b in zip(deterministic, judged, strict=False)]),
             "deterministic_correlation": _pearson(deterministic, judged),
         })
 
@@ -181,7 +181,7 @@ def build_disagreement_queue(
                 continue
             scores = [float(vote["score"]) for vote in votes]
             weights = [JUDGE_CONFIDENCE_WEIGHTS[vote["confidence"]] for vote in votes]
-            consensus = sum(score * weight for score, weight in zip(scores, weights)) / sum(weights)
+            consensus = sum(score * weight for score, weight in zip(scores, weights, strict=False)) / sum(weights)
             deterministic = result.get(f"{plugin_id}_score")
             deviation = (
                 consensus - float(cast(float, deterministic))

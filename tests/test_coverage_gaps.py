@@ -5,8 +5,8 @@ import gzip
 import json
 import os
 import sqlite3
-from pathlib import Path
 from concurrent.futures import Future
+from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -204,10 +204,10 @@ class TestSQLitePayloadStore:
 
     def test_get_text_non_utf8(self) -> None:
         conn, store = self._make_store()
-        from benchmark.sqlite_payloads import PayloadIntegrityError
-
         # Insert raw bytes that aren't valid UTF-8
         import hashlib
+
+        from benchmark.sqlite_payloads import PayloadIntegrityError
         data = b"\xff\xfe"
         digest = hashlib.sha256(data).hexdigest()
         compressed = gzip.compress(data, mtime=0)
@@ -858,7 +858,11 @@ class TestSQLiteSchema:
             configure_connection(conn, synchronous="INVALID")
 
     def test_initialize_schema_idempotent(self, tmp_path: Path) -> None:
-        from benchmark.sqlite_schema import configure_connection, connect_database, initialize_schema
+        from benchmark.sqlite_schema import (
+            configure_connection,
+            connect_database,
+            initialize_schema,
+        )
 
         db = str(tmp_path / "test.db")
         conn = connect_database(db)

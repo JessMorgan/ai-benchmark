@@ -215,6 +215,7 @@ class TestSQLiteRuntimeIntegration(unittest.TestCase):
             # Add a second logical run through the schema store, as an
             # explicit restart/import operation would.
             import sqlite3
+
             from benchmark.sqlite_benchmarks import SQLiteBenchmarkStore
             connection = sqlite3.connect(path)
             try:

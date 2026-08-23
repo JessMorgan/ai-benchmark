@@ -660,11 +660,11 @@ class TestSaveResponses(unittest.TestCase):
             self.assertFalse(os.path.isfile(think_path))
             self.assertTrue(os.path.isfile(content_path))
 
-            with open(prompt_path, "r", encoding="utf-8") as f:
+            with open(prompt_path, encoding="utf-8") as f:
                 prompt_content = f.read()
-            with open(response_path, "r", encoding="utf-8") as f:
+            with open(response_path, encoding="utf-8") as f:
                 response_content = f.read()
-            with open(content_path, "r", encoding="utf-8") as f:
+            with open(content_path, encoding="utf-8") as f:
                 content_content = f.read()
 
             self.assertEqual(prompt_content, plugins[0].get_prompt())
@@ -674,7 +674,7 @@ class TestSaveResponses(unittest.TestCase):
 
             meta_path = os.path.join(responses_dir, "rate-limiter.meta.json")
             self.assertTrue(os.path.isfile(meta_path))
-            with open(meta_path, "r", encoding="utf-8") as f:
+            with open(meta_path, encoding="utf-8") as f:
                 meta = json.load(f)
             self.assertEqual(meta["plugin"], "rate-limiter")
             self.assertEqual(meta["plugin_version"], plugins[0].version)
@@ -743,11 +743,11 @@ class TestSaveResponses(unittest.TestCase):
             self.assertTrue(os.path.isfile(think_path))
             self.assertTrue(os.path.isfile(content_path))
 
-            with open(response_path, "r", encoding="utf-8") as f:
+            with open(response_path, encoding="utf-8") as f:
                 response_content = f.read()
-            with open(think_path, "r", encoding="utf-8") as f:
+            with open(think_path, encoding="utf-8") as f:
                 think_content = f.read()
-            with open(content_path, "r", encoding="utf-8") as f:
+            with open(content_path, encoding="utf-8") as f:
                 content_content = f.read()
 
             # .txt = <thinking>\n{think_text}\n</thinking>\n\n{final_content}
@@ -1574,7 +1574,7 @@ class TestConfigFallback(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             run_info_path = os.path.join(output_dir, "run-info.json")
             self.assertTrue(os.path.isfile(run_info_path))
-            with open(run_info_path, "r", encoding="utf-8") as f:
+            with open(run_info_path, encoding="utf-8") as f:
                 run_info = json.load(f)
             self.assertEqual(os.path.basename(run_info["config_file"]), "benchmark-config.yaml")
             self.assertTrue(os.path.isfile(os.path.join(output_dir, "benchmark-config.yaml")))
@@ -1882,7 +1882,7 @@ class TestTimeCapsule(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             copied = os.path.join(output_dir, "config.json")
             self.assertTrue(os.path.isfile(copied))
-            with open(copied, "r", encoding="utf-8") as f:
+            with open(copied, encoding="utf-8") as f:
                 self.assertEqual(json.load(f)["output_dir"], output_dir)
 
 
@@ -1904,7 +1904,7 @@ class TestRunInfo(unittest.TestCase):
 
             run_info_path = os.path.join(output_dir, "run-info.json")
             self.assertTrue(os.path.isfile(run_info_path))
-            with open(run_info_path, "r", encoding="utf-8") as f:
+            with open(run_info_path, encoding="utf-8") as f:
                 run_info = json.load(f)
 
             self.assertEqual(run_info["config_file"], config_path)
@@ -1941,7 +1941,7 @@ class TestRunInfo(unittest.TestCase):
             ai_benchmark._write_run_info(tmpdir, run_info)
             run_info_path = os.path.join(tmpdir, "run-info.json")
             self.assertTrue(os.path.isfile(run_info_path))
-            with open(run_info_path, "r", encoding="utf-8") as f:
+            with open(run_info_path, encoding="utf-8") as f:
                 self.assertEqual(json.load(f)["status"], "running")
 
     def test_run_info_includes_backoff_429(self):
@@ -1966,7 +1966,7 @@ class TestRunInfo(unittest.TestCase):
 
             run_info_path = os.path.join(output_dir, "run-info.json")
             self.assertTrue(os.path.isfile(run_info_path))
-            with open(run_info_path, "r", encoding="utf-8") as f:
+            with open(run_info_path, encoding="utf-8") as f:
                 run_info = json.load(f)
 
             self.assertIn("backoff_429", run_info)
