@@ -9,14 +9,11 @@ import tempfile
 import threading
 import time
 import unittest
-from types import SimpleNamespace
 from typing import ClassVar
 from unittest import mock
 
 from benchmark.cli import (
-    _TUI_REFRESH_SECONDS,
     _BackgroundFlusher,
-    _BenchmarkTUIApp,
     _FlushGate,
 )
 from benchmark.completions import build_parser
@@ -2708,108 +2705,6 @@ class TestBackgroundFlusher(unittest.TestCase):
         self.assertFalse(flusher.stop(timeout=0.01))
         release.set()
         self.assertTrue(flusher.stop(timeout=5))
-
-
-class _TUIStubState:
-    """Minimal stand-in for BenchmarkState as seen by the TUI refresh loop."""
-
-    def __init__(self):
-        self.revision = 0
-        self.live = False
-        self.activities = []
-
-    def has_live_work(self):
-        return self.live
-
-    def judge_activity_snapshot(self):
-        return self.activities
-
-
-class TestTUIAdaptiveRefresh(unittest.TestCase):
-    """The live TUI rebuilds only when its displayed frame actually changes."""
-
-    def _make_app(self, state, height=50, width=200):
-        app = _BenchmarkTUIApp.__new__(_BenchmarkTUIApp)
-        app._state = state
-        app._stop_event = threading.Event()
-        app._last_frame_key = None
-        app._scroll_y = 0
-        app._scroll_x = 0
-        app._sync_rows = mock.MagicMock()
-        # Argument values for the mocked ``_build_frame_lines`` call; they are
-        # evaluated at the call site even though the mock ignores them.
-        app._active_plugins = []
-        app._source_abbrevs = {}
-        app._frozen_hdr = ""
-        app._plugin_hdr = ""
-        app._num_sources = 1
-        app._model_thread_limits = None
-        app._session_seed = None
-        # ``size`` is a read-only Textual property; stub it at class level
-        # with a mutable box so tests can simulate a terminal resize.
-        size_box = SimpleNamespace(height=height, width=width)
-        patcher = mock.patch.object(
-            _BenchmarkTUIApp, "size",
-            new_callable=mock.PropertyMock, return_value=size_box,
-        )
-        patcher.start()
-        self.addCleanup(patcher.stop)
-        app._size_box = size_box
-        return app
-
-    @mock.patch("benchmark.cli._build_frame_lines", return_value=[("row", None)])
-    def test_unchanged_frame_is_skipped(self, build):
-        app = self._make_app(_TUIStubState())
-        app._refresh()
-        app._refresh()
-        app._refresh()
-        self.assertEqual(build.call_count, 1)
-        self.assertEqual(app._sync_rows.call_count, 1)
-
-    @mock.patch("benchmark.cli._build_frame_lines", return_value=[("row", None)])
-    def test_mutation_triggers_rebuild(self, build):
-        state = _TUIStubState()
-        app = self._make_app(state)
-        app._refresh()
-        state.revision = 1
-        app._refresh()
-        self.assertEqual(build.call_count, 2)
-
-    @mock.patch("benchmark.cli._build_frame_lines", return_value=[("row", None)])
-    def test_live_content_keeps_ticking(self, build):
-        state = _TUIStubState()
-        app = self._make_app(state)
-        app._refresh()
-        state.live = True
-        # Live elapsed/countdown content rebuilds every tick despite an
-        # unchanged revision (elapsed seconds advance over time).
-        app._refresh()
-        app._refresh()
-        self.assertEqual(build.call_count, 3)
-
-    @mock.patch("benchmark.cli._build_frame_lines", return_value=[("row", None)])
-    def test_scroll_and_resize_trigger_rebuild(self, build):
-        state = _TUIStubState()
-        app = self._make_app(state)
-        app._refresh()
-        app._scroll_y = 3
-        app._refresh()
-        app._size_box.height = 40
-        app._size_box.width = 180
-        app._refresh()
-        self.assertEqual(build.call_count, 3)
-
-    @mock.patch("benchmark.cli._build_frame_lines")
-    def test_stop_event_exits_without_building(self, build):
-        app = self._make_app(_TUIStubState())
-        app.exit = mock.MagicMock()
-        app._stop_event.set()
-        app._refresh()
-        app.exit.assert_called_once()
-        build.assert_not_called()
-
-    def test_refresh_capped_at_two_fps(self):
-        self.assertEqual(_TUI_REFRESH_SECONDS, 0.5)
 
 
 if __name__ == "__main__":

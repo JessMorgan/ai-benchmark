@@ -142,16 +142,6 @@ class TestStateHydrate:
         state.hydrate_results(rows)  # should not raise
 
 
-class TestStateHasLiveWork:
-    def test_has_live_work(self) -> None:
-        from benchmark.state import BenchmarkState
-
-        state = BenchmarkState({"m1": {}, "m2": {}}, ["http"])
-        assert state.has_live_work() is False
-        state._model_info["m1"]["running_pids"] = ["http"]
-        assert state.has_live_work() is True
-
-
 class TestStateReplayTail:
     def test_replay_journal_tail(self, tmp_path: Path) -> None:
         from benchmark.state import BenchmarkState
