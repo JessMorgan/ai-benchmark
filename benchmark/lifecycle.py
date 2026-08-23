@@ -68,6 +68,7 @@ class ShutdownSupervisor:
     timeout: float
     results: list[ShutdownPhaseResult] = field(default_factory=list)
     _deadline: float = field(init=False, repr=False)
+    _unfinished_phase: str | None = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:
         if isinstance(self.timeout, bool) or not isinstance(self.timeout, (int, float)):
@@ -84,6 +85,10 @@ class ShutdownSupervisor:
         the background; callers receive a bounded shutdown result instead of
         hanging indefinitely.
         """
+        if self._unfinished_phase is not None:
+            skipped_error = f"skipped because phase {self._unfinished_phase!r} is still running"
+            self.results.append(ShutdownPhaseResult(name, 0.0, False, skipped_error))
+            return False
         started = time.monotonic()
         remaining = self._remaining()
         if remaining <= 0:
@@ -105,17 +110,18 @@ class ShutdownSupervisor:
         finished.wait(remaining)
         elapsed = time.monotonic() - started
         completed: bool
-        error: str | None
+        phase_error: str | None
         if not finished.is_set():
             completed = False
-            error = f"phase exceeded remaining deadline ({remaining:.3f}s)"
+            phase_error = f"phase exceeded remaining deadline ({remaining:.3f}s)"
+            self._unfinished_phase = name
         elif "error" in outcome:
             completed = False
-            error = outcome["error"]
+            phase_error = str(outcome["error"])
         else:
             completed = outcome.get("value") is not False
-            error = None if completed else "phase reported timeout"
-        self.results.append(ShutdownPhaseResult(name, elapsed, completed, error))
+            phase_error = None if completed else "phase reported timeout"
+        self.results.append(ShutdownPhaseResult(name, elapsed, completed, phase_error))
         return completed
 
     def _remaining(self) -> float:

@@ -87,6 +87,20 @@ def test_shutdown_supervisor_records_exception():
     assert supervisor.results[0].error == "RuntimeError: broken"
 
 
+def test_shutdown_supervisor_skips_later_phases_after_timeout():
+    supervisor = ShutdownSupervisor(0.01)
+    started = threading.Event()
+
+    def slow():
+        started.set()
+        time.sleep(0.03)
+
+    assert not supervisor.run("slow", slow)
+    assert started.is_set()
+    assert not supervisor.run("close", lambda: True)
+    assert "still running" in (supervisor.results[-1].error or "")
+
+
 def test_shutdown_supervisor_bounds_remaining_deadline():
     supervisor = ShutdownSupervisor(0.01)
     started = threading.Event()
