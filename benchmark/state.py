@@ -11,6 +11,7 @@ import tempfile
 import threading
 import time
 
+from .lifecycle import validate_snapshot
 from .plugin import SCORE_SCHEMA
 from .state_schema import StateSchemaError, validate_journal_event, validate_state_data
 from .storage import project_result_rows
@@ -1403,6 +1404,7 @@ class BenchmarkState:
 
     def save_state(self, path, plugin_versions=None, *, raise_on_error=False):
         with self._lock:
+            validate_snapshot(self._model_info)
             # Preload indicators are session-only. Copy model info while
             # holding the lock, then omit the transient probe fields so a
             # resumed process cannot display stale activity or treat an old

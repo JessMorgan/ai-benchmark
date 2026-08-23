@@ -76,6 +76,7 @@ from benchmark.http import (
     reset_429_stats,
 )
 from benchmark.judge_analysis import write_disagreement_queue
+from benchmark.lifecycle import ShutdownSupervisor
 from benchmark.opencode import (
     generate_config as generate_opencode_config,
 )
@@ -4527,20 +4528,24 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
         if tui_thread is not None:
             tui_thread.join(timeout=0.5)
 
-        # Drain pending state/journal work before the final snapshot, but do
-        # not wait forever if a filesystem operation is stuck. The synchronous
-        # final compaction below is the fallback and is always attempted.
-        if not flusher.stop(timeout=shutdown_timeout):
+        # Drain persistence through named, bounded phases so run-info can
+        # distinguish a flusher timeout from a final snapshot or backend-close
+        # failure. The synchronous save remains the durability fallback.
+        shutdown = ShutdownSupervisor(shutdown_timeout)
+
+        def stop_flusher():
+            if flusher.stop(timeout=shutdown_timeout):
+                return True
             report_persistence_failure(
                 "background flush shutdown timeout",
                 TimeoutError(f"state flusher did not stop within {shutdown_timeout:g}s"),
             )
+            return False
 
-        try:
+        shutdown.run("background-flusher", stop_flusher)
+
+        def save_final_state():
             with persistence_lock:
-                # This final snapshot is serialized with all worker saves and
-                # compacts the journal through the same sequence boundary.
-                # Reports are still generated separately below.
                 state.run_store.save_snapshot(
                     state_file,
                     plugin_versions=plugin_versions,
@@ -4549,18 +4554,23 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
                 journal_failures = state.consume_journal_failures()
                 if journal_failures:
                     raise RuntimeError("; ".join(journal_failures))
-        except Exception as exc:
-            report_persistence_failure("synchronous final state save", exc)
-            raise
+            return True
 
-        # Flush and close the storage backend with a bounded timeout so queued
-        # SQLite writes are drained before the process exits. Any remaining
-        # backend failures are surfaced rather than lost silently.
-        if not state.close_run_store(timeout=shutdown_timeout):
+        if not shutdown.run("final-state-snapshot", save_final_state):
+            error = shutdown.results[-1].error or "unknown final snapshot failure"
+            report_persistence_failure("synchronous final state save", RuntimeError(error))
+
+        def close_backend():
+            if state.close_run_store(timeout=shutdown_timeout):
+                return True
             report_persistence_failure(
                 "storage backend close timeout",
                 TimeoutError(f"storage backend did not close within {shutdown_timeout:g}s"),
             )
+            return False
+
+        shutdown.run("storage-backend-close", close_backend)
+        run_info["shutdown_phases"] = shutdown.as_dict()
         backend = getattr(state, "_run_store", None)
         if backend is not None and getattr(backend, "backend_name", "json") == "sqlite":
             for failure in backend.writer.failures:
