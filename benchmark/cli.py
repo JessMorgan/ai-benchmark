@@ -94,6 +94,7 @@ from benchmark.runtime_records import (
     PluginRecord,
     TargetRecord,
 )
+from benchmark.scheduler_policy import SourceSchedulingPolicy
 from benchmark.sqlite_import import LegacySQLiteImporter
 from benchmark.sqlite_reports import SQLiteReportSource, sqlite_path_from_report_path
 from benchmark.state import apply_state_recovery, prepare_state_recovery
@@ -2212,15 +2213,15 @@ def _configure_judge_source(benchmark_limits, source, full_limit,
     ``pool.expand_full()`` after draining its queue. Sources with no benchmark
     work can start their full judge pool immediately.
     """
-    full_limit = max(1, int(full_limit))
-    if benchmark_active:
-        # Keep the benchmark scheduler at its configured capacity and leave
-        # judges dormant. ``enqueue`` is safe with an inactive pool: jobs wait
-        # until the source completion callback expands the pool.
-        benchmark_limits[source] = full_limit
+    policy = SourceSchedulingPolicy(source, max(1, int(full_limit)))
+    benchmark_slots, judge_slots = policy.capacity(benchmark_active=benchmark_active)
+    benchmark_limits[source] = benchmark_slots
+    if not policy.can_start_judges(benchmark_active=benchmark_active):
+        # Jobs may already be queued, but no judge runner is activated until
+        # the benchmark completion callback releases the reserved capacity.
         pool.start(0)
     else:
-        pool.start(full_limit)
+        pool.start(judge_slots)
 
 
 class _CombinedStopEvent:
