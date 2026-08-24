@@ -1541,6 +1541,10 @@ class _BenchmarkTUIApp(_TUIBenchmarkApp):
         self._stop_event.set()
         close_active_requests()
 
+    def _refresh(self):
+        _tui._build_frame_lines = _build_frame_lines
+        return super()._refresh()
+
 # Wire the moved TUI to pure/rendering helpers that remain CLI-compatible.
 _tui._display_width = _display_width
 _tui._line_cells = _line_cells
