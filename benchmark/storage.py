@@ -220,8 +220,15 @@ class JsonRunStore:
         self._unsupported("record_judge_attempt")
 
     def get_cell_id(self, target_name: str, runner: str, plugin_id: str) -> int | None:
+        """Return no normalized cell because JSON has no identity graph.
+
+        Runtime callers use this lookup as an applicability check before
+        recording normalized benchmark or judge attempts. A missing cell is a
+        valid result for JSON; the write methods below still fail explicitly
+        if a caller attempts to use the normalized API directly.
+        """
         del target_name, runner, plugin_id
-        self._unsupported("get_cell_id")
+        return None
 
     def register_judge(self, judge_model: str, source: str,
                        config: dict[str, Any] | None = None) -> None:
