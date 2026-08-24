@@ -4,12 +4,15 @@ from unittest import mock
 from benchmark.http import NonStreamResult, StreamResult
 from benchmark.observer import TaskObserver
 from benchmark.opencode import OpenCodeProcessResult
-from benchmark.request_models import GenerationFields, HTTPRequest, OpenCodeRequest, RequestIdentityFields
+from benchmark.request_models import (
+    GenerationFields,
+    HTTPRequest,
+    OpenCodeRequest,
+    RequestIdentityFields,
+)
 from benchmark.transport import (
-    JUDGE_RETRY_POLICY,
     RequestIdentity,
     RetryPolicy,
-    TransportRequest,
     execute_task,
     execute_transport,
 )
