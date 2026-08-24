@@ -207,7 +207,7 @@ def _run_identity(output_dir, restart):
         try:
             with open(manifest, encoding="utf-8") as handle:
                 previous = json.load(handle)
-        except (OSError, json.JSONDecodeError, TypeError):
+        except (OSError, json.JSONDecodeError, TypeError, UnicodeDecodeError):
             previous = {}
     run_id = previous.get("run_id") or str(uuid.uuid4())
     try:
@@ -234,7 +234,7 @@ def _scan_judge_sidecars(judge_input_dir):
                     item = json.load(handle)
                 if all(key in item for key in ("target", "runner", "plugin", "prompt", "response")):
                     jobs.append((path, item))
-            except (OSError, json.JSONDecodeError, TypeError):
+            except (OSError, json.JSONDecodeError, TypeError, UnicodeDecodeError):
                 continue
     return jobs
 
@@ -1858,7 +1858,7 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
                 loaded_manifest = json.load(handle)
             if isinstance(loaded_manifest, dict):
                 manifest.update(loaded_manifest)
-        except (OSError, json.JSONDecodeError, TypeError):
+        except (OSError, json.JSONDecodeError, TypeError, UnicodeDecodeError):
             pass
         manifest.update({
             "run_id": summary.run_id,
@@ -2225,7 +2225,7 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
                 try:
                     with open(state_file, encoding="utf-8") as f:
                         saved_state = json.load(f)
-                except json.JSONDecodeError:
+                except (json.JSONDecodeError, UnicodeDecodeError):
                     recovery = prepare_state_recovery(state_file)
                     choice = _prompt_corrupt_state(recovery, scripted=args.scripted)
                     if choice == "restart":
@@ -2859,7 +2859,7 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
             try:
                 with open(sidecar, encoding="utf-8") as handle:
                     item = json.load(handle)
-            except (OSError, json.JSONDecodeError, TypeError):
+            except (OSError, json.JSONDecodeError, TypeError, UnicodeDecodeError):
                 # The sidecar is durable best-effort input. A producer may
                 # have failed between creating the path and completing its
                 # atomic replace; skip it here and let startup/final scans

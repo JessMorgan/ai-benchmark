@@ -233,19 +233,31 @@ class _BenchmarkTUIApp(App):  # pragma: no cover - live interactive loop
         if self._stop_event.is_set():
             self.exit()
             return
-        key = self._frame_key()
-        if key == self._last_frame_key and not self._live_content():
-            # Nothing the frame displays changed since the last tick.
-            return
-        self._last_frame_key = key
-        lines = _build_frame_lines(
-            self._state, self._active_plugins, self._source_abbrevs,
-            self._frozen_hdr, self._plugin_hdr, self._num_sources,
-            self._scroll_y, self._scroll_x, (self.size.height, self.size.width),
-            model_thread_limits=self._model_thread_limits,
-            session_seed=self._session_seed,
-        )
-        self._sync_rows(lines)
+        try:
+            key = self._frame_key()
+            if key == self._last_frame_key and not self._live_content():
+                # Nothing the frame displays changed since the last tick.
+                return
+            self._last_frame_key = key
+            lines = _build_frame_lines(
+                self._state, self._active_plugins, self._source_abbrevs,
+                self._frozen_hdr, self._plugin_hdr, self._num_sources,
+                self._scroll_y, self._scroll_x, (self.size.height, self.size.width),
+                model_thread_limits=self._model_thread_limits,
+                session_seed=self._session_seed,
+            )
+            self._sync_rows(lines)
+        except Exception:
+            # A render failure must never take the TUI down; log and recover
+            # on the next tick.  This defends against transient corruption in
+            # state data, binary escape sequences from mobile terminal
+            # emulators, and other malformed input that can leak into the
+            # rendering path.
+            try:
+                with open("tui_render_errors.log", "a", encoding="utf-8") as handle:
+                    traceback.print_exc(file=handle)
+            except Exception:
+                pass
 
     def _cancel_requests(self) -> None:
         """Cancel benchmark and judge HTTP requests before leaving the TUI."""

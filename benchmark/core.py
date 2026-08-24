@@ -613,8 +613,13 @@ def judge_response(source_config: dict[str, Any], judge_source: str, judge_api_m
                    plugin: Any = None, progress_callback: Callable[[str, str], None] | None = None,
                    attempt_callback: Callable[[int], None] | None = None) -> JudgeResult:
     """Run one streaming judge request, retrying once when its JSON is invalid."""
-    with open(sidecar, encoding="utf-8") as handle:
-        item = json.load(handle)
+    try:
+        with open(sidecar, encoding="utf-8") as handle:
+            item = json.load(handle)
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise ValueError(
+            f"Judge sidecar {sidecar} is corrupted or not valid UTF-8 JSON: {exc}"
+        ) from exc
     if plugin is None:
         # Fall back to a name/max_score stub when no plugin instance is
         # supplied (e.g. resume-only judging); the stub has no judge

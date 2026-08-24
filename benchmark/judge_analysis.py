@@ -250,8 +250,14 @@ def write_disagreement_queue(
     """Read a state file and write a JSON disagreement queue beside it."""
     state_path = Path(state_path)
     output_path = Path(output_path) if output_path else state_path.with_name("judge-disagreement-queue.json")
-    with state_path.open(encoding="utf-8") as handle:
-        data = json.load(handle)
+    try:
+        with state_path.open(encoding="utf-8") as handle:
+            data = json.load(handle)
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise ValueError(
+            f"Cannot read state file {state_path}: {exc}. "
+            f"The file may be corrupted or not a valid JSON state file."
+        ) from exc
     artifact_root = state_path.parent
     entries = build_disagreement_queue(
         data,

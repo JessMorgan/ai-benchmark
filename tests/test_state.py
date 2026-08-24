@@ -427,6 +427,18 @@ class TestBenchmarkState(unittest.TestCase):
             snap = loaded.snapshot()
             self.assertEqual(snap["model-a"]["status"], "completed")
 
+    def test_load_state_rejects_corrupt_utf8_file(self):
+        """load_state raises ValueError for binary/gzip data masquerading as JSON."""
+        models = {"model-a": "Source1"}
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, "state.json")
+            # Write gzip magic bytes that are NOT valid UTF-8 JSON
+            with open(path, "wb") as f:
+                f.write(b"\x1f\x8b\x08\x00\xb6\x01\x02\x03")
+            with self.assertRaises(ValueError) as ctx:
+                self.module.BenchmarkState.load_state(path, models, self.plugin_ids)
+            self.assertIn("Cannot load state", str(ctx.exception))
+
     def test_publish_result_updates_row_and_status_as_one_operation(self):
         state = self.module.BenchmarkState({"model-a": "Source1"}, ["p1"])
         state.publish_result(

@@ -974,7 +974,7 @@ class BenchmarkState:
                         # Compatibility with journals written before the event
                         # envelope was introduced.
                         events.append({"seq": None, "type": "result", "data": value})
-        except OSError:
+        except (OSError, UnicodeDecodeError):
             return []
         return events
 
@@ -1475,8 +1475,15 @@ class BenchmarkState:
 
     @classmethod
     def load_state(cls, path: str, models: dict[str, Any], plugin_ids: list[str], *, rerun_failed: bool = True) -> BenchmarkState:
-        with open(path) as f:
-            data = json.load(f)
+        try:
+            with open(path, encoding="utf-8") as f:
+                data = json.load(f)
+        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+            raise ValueError(
+                f"Cannot load state from {path}: {exc}. "
+                f"The file may be corrupted or not a valid JSON state file. "
+                f"Try repairing it with --restart or remove it to start fresh."
+            ) from exc
         validate_state_data(data)
         session_seed = data.get("session_seed")
         runner = data.get("runner", "http")
