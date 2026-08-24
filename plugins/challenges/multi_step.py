@@ -59,7 +59,7 @@ class MultiStepPlugin(BenchmarkTaskPlugin):
         }
 
     @staticmethod
-    def _signature_matches(node: Any, args: list[str], returns: str | Any) -> bool:
+    def _signature_matches(node: Any, args: tuple[tuple[str, str], ...], returns: str) -> bool:
         """Check a FunctionDef's positional argument names/types and return type.
 
         Uses the parsed AST instead of regex, so formatting (spaces, newlines)

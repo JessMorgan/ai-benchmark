@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import copy
 import json
-from typing import Any, cast
+from typing import Any
 
 from jsonschema import Draft202012Validator
 

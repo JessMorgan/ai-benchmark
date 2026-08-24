@@ -109,7 +109,7 @@ class ToolCallingPlugin(BenchmarkTaskPlugin):
             ("convert_currency", lambda a: a.get("amount") == 1000 and str(a.get("from_curr")).upper() == "USD" and str(a.get("to_curr")).upper() == "JPY", 1.0),
             ("send_email", lambda a: str(a.get("to", "")).lower() == "alice@example.com" and "tokyo trip itinerary" in str(a.get("subject", "")).lower() and bool(a.get("body")), 2.0),
         ]
-        arg_score = sum(float(weight) for name, predicate, weight in checks for call_name, call_args in zip(names, args, strict=False) if call_name == name and isinstance(call_args, dict) and predicate(call_args))
+        arg_score = sum(float(weight) for name, predicate, weight in checks for call_name, call_args in zip(names, args, strict=False) if call_name == name and isinstance(call_args, dict) and predicate(call_args))  # type: ignore[no-untyped-call,misc]
         rubric.add_criterion("Correct arguments", 8.0, arg_score)
         rubric.add_criterion("Correct ordering / dependencies", 3.0, 3.0 if names == expected else 0.0)
         final = text[text.rfind("</tool_call>") + len("</tool_call>"):] if "</tool_call>" in text else ""

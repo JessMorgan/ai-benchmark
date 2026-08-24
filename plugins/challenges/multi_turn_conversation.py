@@ -51,7 +51,7 @@ class MultiTurnConversationPlugin(BenchmarkTaskPlugin):
         return float(val) if isinstance(val, (int, float)) else None
 
     @staticmethod
-    def _state(section: Any | None) -> str | None:
+    def _state(section: Any | None) -> dict[str, Any] | None:
         if section is None:
             return None
         blocks = fenced_blocks(section.body, "json")
@@ -111,7 +111,7 @@ class MultiTurnConversationPlugin(BenchmarkTaskPlugin):
             {"start": "09:00", "duration_minutes": 25, "music": False, "calendar_event": True, "notification_minutes": None},
             {"start": "09:00", "duration_minutes": 50, "music": False, "calendar_event": True, "notification_minutes": 5},
         ]
-        state_values = []
+        state_values: list[dict[str, Any]] = []
         for state in states:
             if isinstance(state, dict):
                 state_values.append(state)

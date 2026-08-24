@@ -45,7 +45,7 @@ class WireframesPlugin(BenchmarkTaskPlugin):
         return float(val) if isinstance(val, (int, float)) else None
 
     @staticmethod
-    def _screen_name(heading: str) -> str:
+    def _screen_name(heading: str) -> str | None:
         normalized = normalize_heading(heading)
         for name in ("dashboard", "focus session", "calendar integration", "ai planning", "settings"):
             if re.search(rf"\b{re.escape(name)}\b", normalized):
@@ -70,6 +70,7 @@ class WireframesPlugin(BenchmarkTaskPlugin):
         screens = [(name, section) for name, section in screens if name]
         unique: dict[str, Any] = {}
         for name, section in screens:
+            assert name is not None
             unique.setdefault(name, section)
         screen_count = len(unique)
         rubric.record_validation(type("Validation", (), {
