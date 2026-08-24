@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import copy
 import json
-from typing import Any
+from typing import Any, cast
 
 from jsonschema import Draft202012Validator
 
@@ -203,14 +203,14 @@ class DataTransformationPlugin(BenchmarkTaskPlugin):
     @staticmethod
     def _record_map(data: dict[str, Any] | None) -> dict[str, dict[str, Any]]:
         return {
-            record.get("order_id"): record
+            str(record.get("order_id")): record
             for record in DataTransformationPlugin._records(data)
             if isinstance(record, dict) and isinstance(record.get("order_id"), str)
         }
 
     @staticmethod
     @staticmethod
-    def _criterion(rubric: Rubric, name: str, maximum: float, earned: float, evidence: list[dict[str, Any]] | None = None, findings: list[dict[str, str]] | None = None) -> None:
+    def _criterion(rubric: Rubric, name: str, maximum: float, earned: float, evidence: list[dict[str, Any]] | None = None, findings: list[dict[str, Any]] | None = None) -> None:
         rubric.add_criterion(
             name,
             maximum,
@@ -254,17 +254,17 @@ class DataTransformationPlugin(BenchmarkTaskPlugin):
         )
 
         actual_records = self._records(data)
-        actual_ids = [record.get("order_id") for record in actual_records if isinstance(record, dict)]
+        actual_ids = [str(record.get("order_id")) for record in actual_records if isinstance(record, dict) and record.get("order_id") is not None]
         expected_records = DATA_TRANSFORMATION_EXPECTED_OUTPUT["records"]
-        expected_ids = [record["order_id"] for record in expected_records]
+        expected_ids = [record["order_id"] for record in expected_records]  # type: ignore[index]
         expected_id_set = set(expected_ids)
         actual_id_set = set(actual_ids)
         matched_ids = expected_id_set & actual_id_set
         filtering_findings = []
         if actual_id_set - expected_id_set:
-            filtering_findings.append({"finding": "filtered-out or unknown order was returned", "orders": sorted(actual_id_set - expected_id_set)})
+            filtering_findings.append({"finding": "filtered-out or unknown order was returned", "orders": sorted(list(actual_id_set - expected_id_set))})
         if expected_id_set - actual_id_set:
-            filtering_findings.append({"finding": "eligible order was omitted", "orders": sorted(expected_id_set - actual_id_set)})
+            filtering_findings.append({"finding": "eligible order was omitted", "orders": sorted(list(expected_id_set - actual_id_set))})
         self._criterion(
             rubric,
             "Record selection and filtering",
@@ -297,9 +297,9 @@ class DataTransformationPlugin(BenchmarkTaskPlugin):
         )
 
         normalized_matches = [
-            record["order_id"] for record in expected_records
-            if actual_map.get(record["order_id"], {}).get("customer") == record["customer"]
-            and actual_map.get(record["order_id"], {}).get("total") == record["total"]
+            record["order_id"] for record in expected_records  # type: ignore[index]
+            if actual_map.get(record["order_id"], {}).get("customer") == record["customer"]  # type: ignore[index]
+            and actual_map.get(record["order_id"], {}).get("total") == record["total"]  # type: ignore[index]
         ]
         self._criterion(
             rubric,
@@ -310,9 +310,9 @@ class DataTransformationPlugin(BenchmarkTaskPlugin):
             findings=[] if len(normalized_matches) == len(expected_records) else [{"finding": "customer or total was not normalized exactly"}],
         )
 
-        actual_order = actual_ids
-        actual_ranks = [record.get("rank") for record in actual_records if isinstance(record, dict)]
-        expected_order = [record["order_id"] for record in expected_records]
+        actual_order: list[str] = actual_ids
+        actual_ranks: list[Any] = [record.get("rank") for record in actual_records if isinstance(record, dict)]
+        expected_order = [record["order_id"] for record in expected_records]  # type: ignore[index]
         order_matches = sum(left == right for left, right in zip(actual_order, expected_order, strict=False))
         rank_matches = sum(rank == index for index, rank in enumerate(actual_ranks, 1))
         sorting_earned = 1.5 * order_matches / len(expected_order) + 1.5 * rank_matches / len(expected_order)
@@ -325,8 +325,9 @@ class DataTransformationPlugin(BenchmarkTaskPlugin):
             findings=[] if actual_order == expected_order and actual_ranks == list(range(1, 6)) else [{"finding": "records are not sorted and ranked deterministically"}],
         )
 
-        expected_summary = DATA_TRANSFORMATION_EXPECTED_OUTPUT["summary"]
-        actual_summary = data.get("summary") if isinstance(data.get("summary"), dict) else {}
+        expected_summary: dict[str, Any] = dict(DATA_TRANSFORMATION_EXPECTED_OUTPUT.get("summary", {}))  # type: ignore[arg-type]
+        raw_summary = data.get("summary") if isinstance(data, dict) and isinstance(data.get("summary"), dict) else {}
+        actual_summary: dict[str, Any] = dict(raw_summary)  # type: ignore[arg-type]
         summary_fields = ["count", "total", "top_order_id"]
         summary_matches = [field for field in summary_fields if actual_summary.get(field) == expected_summary[field]]
         self._criterion(
