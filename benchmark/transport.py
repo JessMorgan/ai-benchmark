@@ -497,7 +497,7 @@ def _normalize_nonstream(request: TransportRequest, response: NonStreamResult,
     )
 
 
-def _execute_http_nonstream(request: TransportRequest, started: float, *,
+def _execute_http_nonstream(request: HTTPRequest, started: float, *,
                             nonstream_request_fn: Any = None,
                             stream_fallback_used: bool = False,
                             stream_fallback_error: str | None = None) -> TransportResult:
@@ -554,7 +554,7 @@ def _execute_http_nonstream(request: TransportRequest, started: float, *,
     )
 
 
-def _execute_http(request: TransportRequest, *, stream_request_fn: Any = None,
+def _execute_http(request: HTTPRequest, *, stream_request_fn: Any = None,
                   nonstream_request_fn: Any = None) -> TransportResult:
     started = time.time()
     stream_request_fn = stream_request_fn or stream_request
@@ -599,7 +599,7 @@ def _execute_http(request: TransportRequest, *, stream_request_fn: Any = None,
     return result
 
 
-def _execute_opencode(request: TransportRequest, *, run_process_fn: Any = None) -> TransportResult:
+def _execute_opencode(request: OpenCodeRequest, *, run_process_fn: Any = None) -> TransportResult:
     run_process_fn = run_process_fn or run_process
     opencode_options = _opencode_options(request)
     if not opencode_options.config_path or not opencode_options.model:
@@ -682,7 +682,7 @@ def _retry_plan(
     return next_alteration, instruction, reason
 
 
-def _execute_pi(request: TransportRequest) -> TransportResult:
+def _execute_pi(request: PiRequest) -> TransportResult:
     """Execute one isolated Pi SDK worker attempt."""
     pi_options = _pi_options(request)
     response: PiProcessResult = run_pi_process(
