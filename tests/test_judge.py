@@ -7,18 +7,20 @@ from benchmark import cli
 from benchmark.core import (
     JUDGE_DEFAULT_MAX_TOKENS,
     JUDGE_DEFAULT_REQUEST_PARAMS,
+    judge_response,
+    resolve_judge_request_params,
+)
+from benchmark.judging import (
     JUDGE_RESPONSE_SCHEMA,
     JudgeResult,
     build_judge_prompt,
     confidence_weighted_consensus,
     confidence_weighted_consensus_by_contract,
     judge_contract_id,
-    judge_response,
     judge_votes_for_contract,
     merge_judge_vote,
     parse_judge_response,
     prepare_judge_sidecar,
-    resolve_judge_request_params,
     save_judge_response,
     save_judge_response_metadata,
 )

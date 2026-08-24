@@ -5,9 +5,9 @@ from unittest import mock
 from benchmark.core import (
     SCHEMA_SENTINEL_SCHEMA,
     run_schema_sentinel,
-    summarize_schema_compatibility,
 )
 from benchmark.http import NonStreamResult
+from benchmark.judging import summarize_schema_compatibility
 from plugins.challenges.data_transformation import (
     DATA_TRANSFORMATION_EXPECTED_OUTPUT,
     DataTransformationPlugin,

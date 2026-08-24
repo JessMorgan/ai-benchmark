@@ -13,7 +13,7 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any, cast
 
-from .core import JUDGE_CONFIDENCE_WEIGHTS, is_successful_judge_vote
+from .judging import JUDGE_CONFIDENCE_WEIGHTS, is_successful_judge_vote
 from .outputs import sanitize_filename
 
 DEFAULT_SPREAD_THRESHOLD = 30.0

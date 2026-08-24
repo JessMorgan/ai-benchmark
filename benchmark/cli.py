@@ -50,24 +50,13 @@ from benchmark.core import (
     PreloadResult,
     _save_outputs,
     _unique_source_abbrevs,
-    confidence_weighted_consensus,
-    confidence_weighted_consensus_by_contract,
-    is_successful_judge_vote,
-    judge_contract,
-    judge_contract_id,
     judge_response,
-    judge_votes_for_contract,
-    merge_judge_vote,
     preload_model,
     resolve_judge_request_params,
     resolve_model_thread_limit,
     resolve_preload_timeout,
     run_model,
     run_schema_sentinel,
-    save_judge_response,
-    save_judge_response_metadata,
-    summarize_judge_criteria,
-    summarize_schema_compatibility,
 )
 from benchmark.http import (
     close_active_requests,
@@ -76,6 +65,19 @@ from benchmark.http import (
     reset_429_stats,
 )
 from benchmark.judge_analysis import write_disagreement_queue
+from benchmark.judging import (
+    confidence_weighted_consensus,
+    confidence_weighted_consensus_by_contract,
+    is_successful_judge_vote,
+    judge_contract,
+    judge_contract_id,
+    judge_votes_for_contract,
+    merge_judge_vote,
+    save_judge_response,
+    save_judge_response_metadata,
+    summarize_judge_criteria,
+    summarize_schema_compatibility,
+)
 from benchmark.lifecycle import ShutdownSupervisor
 from benchmark.opencode import (
     generate_config as generate_opencode_config,
