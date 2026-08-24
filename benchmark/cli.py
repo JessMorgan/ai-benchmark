@@ -10,7 +10,6 @@ import faulthandler
 import glob
 import json
 import os
-import queue
 import random
 import shutil
 import signal
@@ -22,8 +21,6 @@ import time
 import traceback
 import unicodedata
 import uuid
-from collections import deque
-from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from datetime import datetime, timezone
 from typing import ClassVar
 
@@ -32,7 +29,7 @@ from textual.geometry import Region
 from textual.widgets import Static
 from wcwidth import wcswidth, wcwidth
 
-from benchmark.completions import build_parser, generate_shell_completion
+from benchmark.cli_parser import build_parser, generate_shell_completion
 from benchmark.core import (
     FLUSH_INTERVAL_SECONDS,
     FLUSH_MAX_VOTES,
@@ -105,7 +102,19 @@ from benchmark.runtime_records import (
     PluginRecord,
     TargetRecord,
 )
-from benchmark.scheduler_policy import SourceSchedulingPolicy
+from benchmark.scheduling import (
+    SourceJudgeWorkerPool,
+    SourceModelScheduler,
+    _BackgroundFlusher,
+    _build_runner_queues,
+    _CombinedStopEvent,
+    _configure_judge_source,
+    _FlushGate,
+    _resolve_judge_plugin_limit,
+    _runner_state_key,
+    _runner_suffix,
+    _targets_for_runner,
+)
 from benchmark.state import apply_state_recovery, prepare_state_recovery
 from benchmark.tui_format import (
     FROZEN_VIEW_WIDTH,
@@ -113,20 +122,6 @@ from benchmark.tui_format import (
     PLUGIN_BLOCK_WIDTH,
     SCORE_COLUMN_WIDTH,
     row_style,
-)
-from benchmark.scheduling import (
-    SourceModelScheduler,
-    SourceJudgeWorkerPool,
-    _BackgroundFlusher,
-    _CombinedStopEvent,
-    _FlushGate,
-    _JudgeQueue,
-    _build_runner_queues,
-    _configure_judge_source,
-    _resolve_judge_plugin_limit,
-    _runner_state_key,
-    _runner_suffix,
-    _targets_for_runner,
 )
 from plugins import discover_plugins, format_plugin_list
 
