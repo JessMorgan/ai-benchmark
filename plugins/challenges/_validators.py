@@ -10,7 +10,7 @@ from typing import Any
 try:
     import yaml
 except ImportError:  # pragma: no cover
-    yaml = None  # type: ignore[assignment]
+    yaml = None
 
 _YAML_ERROR = yaml.YAMLError if yaml is not None else ()
 

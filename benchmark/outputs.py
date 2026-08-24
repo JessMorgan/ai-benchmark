@@ -9,7 +9,7 @@ import contextlib
 import os
 import re
 import tempfile
-from typing import Any, cast
+from typing import Any
 
 from .plugin import BenchmarkOutputPlugin, BenchmarkTaskPlugin, normalize_score
 
@@ -132,7 +132,7 @@ def _get_output_plugin(plugin_id: str) -> BenchmarkOutputPlugin | None:
     from plugins import discover_output_plugins
     for plugin in discover_output_plugins():
         if plugin.id == plugin_id:
-            return cast(BenchmarkOutputPlugin, plugin)
+            return plugin
     return None
 
 
