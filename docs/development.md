@@ -195,9 +195,9 @@ pre-commit install
 
 ## Contribution Checklist
 
-- [ ] Tests pass (`uv run pytest tests/ plugins/challenges/ plugins/outputs/ -q`)
-- [ ] Type checks pass (`uv run mypy benchmark/ ai-benchmark.py`)
-- [ ] Lint passes (`ruff check .`)
+- [x] Tests pass (`uv run pytest tests/ plugins/challenges/ plugins/outputs/ -q`)
+- [ ] Strict production type checks pass (`uv run mypy --strict benchmark/ plugins/`)
+- [x] Lint passes (`uv run ruff check benchmark plugins tests`)
 - [ ] New plugins include documentation in `docs/plugins/`
 - [ ] Code-generation plugins have executable API tests and adversarial contract fixtures
 - [ ] No source or test directly references a dated historical benchmark directory

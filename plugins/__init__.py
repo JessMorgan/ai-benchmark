@@ -3,6 +3,9 @@ import importlib.util
 import inspect
 import os
 import sys
+from collections.abc import Iterable
+from types import ModuleType
+from typing import Any, cast
 
 from benchmark.plugin import BenchmarkOutputPlugin, BenchmarkTaskPlugin
 
@@ -11,9 +14,13 @@ class PluginDiscoveryError(RuntimeError):
     """Raised when a discovered plugin violates the plugin contract."""
 
 
-def _validate_plugin(plugin, path, base_class):
+def _validate_plugin(
+    plugin: BenchmarkTaskPlugin | BenchmarkOutputPlugin,
+    path: str,
+    base_class: type[BenchmarkTaskPlugin] | type[BenchmarkOutputPlugin],
+) -> None:
     """Validate required metadata before exposing a plugin instance."""
-    required = ("id", "name")
+    required: tuple[str, ...] = ("id", "name")
     if base_class is BenchmarkTaskPlugin:
         required += ("version", "max_score")
     else:
@@ -49,9 +56,11 @@ def _validate_plugin(plugin, path, base_class):
             )
 
 
-def _validate_unique_ids(plugins, directory):
+def _validate_unique_ids(
+    plugins: Iterable[BenchmarkTaskPlugin | BenchmarkOutputPlugin], directory: str,
+) -> None:
     """Reject duplicate IDs so resume/report keys cannot collide."""
-    seen = {}
+    seen: dict[str, str] = {}
     for plugin in plugins:
         previous = seen.get(plugin.id)
         if previous is not None:
@@ -62,7 +71,9 @@ def _validate_unique_ids(plugins, directory):
         seen[plugin.id] = type(plugin).__name__
 
 
-def _plugin_inventory(plugins):
+def _plugin_inventory(
+    plugins: Iterable[BenchmarkTaskPlugin],
+) -> list[dict[str, Any]]:
     """Return a stable, serializable inventory for CLI/docs/tests."""
     return [
         {
@@ -81,7 +92,7 @@ CHALLENGES_DIR = os.path.join(BASE_PLUGIN_DIR, "challenges")
 OUTPUTS_DIR = os.path.join(BASE_PLUGIN_DIR, "outputs")
 
 
-def format_plugin_list(plugins):
+def format_plugin_list(plugins: Iterable[BenchmarkTaskPlugin]) -> str:
     """Return a formatted table generated from validated plugin metadata."""
     inventory = _plugin_inventory(plugins)
     if not inventory:
@@ -98,7 +109,11 @@ def format_plugin_list(plugins):
     return "\n".join(lines)
 
 
-def _discover_plugins_in_dir(directory, package_name, base_class):
+def _discover_plugins_in_dir(
+    directory: str,
+    package_name: str,
+    base_class: type[BenchmarkTaskPlugin] | type[BenchmarkOutputPlugin],
+) -> list[Any]:
     """Discover and instantiate plugins from a directory.
 
     Args:
@@ -109,7 +124,7 @@ def _discover_plugins_in_dir(directory, package_name, base_class):
     Returns:
         A list of plugin instances ordered by module name.
     """
-    plugins = []
+    plugins: list[Any] = []
     if not os.path.isdir(directory):
         return plugins
 
@@ -119,7 +134,9 @@ def _discover_plugins_in_dir(directory, package_name, base_class):
         path = os.path.join(directory, filename)
         module_name = f"{package_name}.{filename[:-3]}"
         spec = importlib.util.spec_from_file_location(module_name, path)
-        module = importlib.util.module_from_spec(spec)
+        if spec is None or spec.loader is None:
+            raise PluginDiscoveryError(f"{path}: could not create import specification")
+        module: ModuleType = importlib.util.module_from_spec(spec)
         # Make the parent package importable for relative imports if needed
         sys.modules[module_name] = module
         spec.loader.exec_module(module)
@@ -141,7 +158,10 @@ def _discover_plugins_in_dir(directory, package_name, base_class):
     return plugins
 
 
-def discover_plugins(whitelist=None, blacklist=None):
+def discover_plugins(
+    whitelist: Iterable[str] | None = None,
+    blacklist: Iterable[str] | None = None,
+) -> list[BenchmarkTaskPlugin]:
     """Discover and instantiate challenge plugins from the plugins/challenges/ directory.
 
     Args:
@@ -156,22 +176,29 @@ def discover_plugins(whitelist=None, blacklist=None):
     if whitelist and blacklist:
         raise ValueError("Cannot specify both plugin whitelist and blacklist")
 
-    plugins = _discover_plugins_in_dir(CHALLENGES_DIR, "plugins.challenges", BenchmarkTaskPlugin)
+    plugins = _discover_plugins_in_dir(
+        CHALLENGES_DIR,
+        "plugins.challenges",
+        BenchmarkTaskPlugin,
+    )
 
     if whitelist:
         plugins = [p for p in plugins if p.id in whitelist]
     if blacklist:
         plugins = [p for p in plugins if p.id not in blacklist]
 
-    return plugins
+    return cast(list[BenchmarkTaskPlugin], plugins)
 
 
-def plugin_inventory(plugins=None):
+def plugin_inventory(plugins: Iterable[BenchmarkTaskPlugin] | None = None) -> list[dict[str, Any]]:
     """Return metadata for all discovered challenge plugins."""
     return _plugin_inventory(plugins if plugins is not None else discover_plugins())
 
 
-def discover_output_plugins(whitelist=None, blacklist=None):
+def discover_output_plugins(
+    whitelist: Iterable[str] | None = None,
+    blacklist: Iterable[str] | None = None,
+) -> list[BenchmarkOutputPlugin]:
     """Discover and instantiate output plugins from the plugins/outputs/ directory.
 
     Args:
@@ -186,11 +213,15 @@ def discover_output_plugins(whitelist=None, blacklist=None):
     if whitelist and blacklist:
         raise ValueError("Cannot specify both plugin whitelist and blacklist")
 
-    plugins = _discover_plugins_in_dir(OUTPUTS_DIR, "plugins.outputs", BenchmarkOutputPlugin)
+    plugins = _discover_plugins_in_dir(
+        OUTPUTS_DIR,
+        "plugins.outputs",
+        BenchmarkOutputPlugin,
+    )
 
     if whitelist:
         plugins = [p for p in plugins if p.id in whitelist]
     if blacklist:
         plugins = [p for p in plugins if p.id not in blacklist]
 
-    return plugins
+    return cast(list[BenchmarkOutputPlugin], plugins)
