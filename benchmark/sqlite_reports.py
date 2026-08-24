@@ -16,6 +16,7 @@ class SQLiteReportSource:
         self.connection = connection
         self.payloads = SQLitePayloadStore(connection)
         self._owned_connection: sqlite3.Connection | None = None
+        self._revision_cache: dict[int, dict[str, Any]] = {}
 
     @classmethod
     def open(cls, path: str) -> SQLiteReportSource:
@@ -53,6 +54,7 @@ class SQLiteReportSource:
             (revision_id,),
         ).fetchall()
         active_plugins = [str(row[0]) for row in plugin_rows]
+        bulk = self._load_revision_cache(revision_id)
         results: dict[tuple[int, int], dict[str, Any]] = {}
         # Report generation reads only scheduled cells. Resume hydration also
         # needs reused (scheduled=0) cells so their copied selections surface
@@ -93,6 +95,7 @@ class SQLiteReportSource:
                 "is_agent": bool(row["is_agent"]),
                 "status": "ok",
                 "session_seed": revision_row[0],
+                "_target_instance_id": int(row["target_instance_id"]),
             })
             runtime_json = self._json_load(row["runtime_json"])
             if isinstance(runtime_json, dict):
@@ -104,10 +107,7 @@ class SQLiteReportSource:
                 result["status"] = "error"
                 result[f"{pid}_score"] = "fail"
                 continue
-            attempt = self.connection.execute(
-                "SELECT * FROM benchmark_attempts WHERE attempt_id = ?",
-                (attempt_id,),
-            ).fetchone()
+            attempt = bulk["attempts"].get(int(attempt_id))
             if attempt is None:
                 result["status"] = "error"
                 result[f"{pid}_score"] = "fail"
@@ -151,9 +151,10 @@ class SQLiteReportSource:
             runtime_json = result.pop("_runtime_json", None)
             if isinstance(runtime_json, dict):
                 result.update(runtime_json)
-            self._attach_model_level(result, revision_id)
-            self._attach_judges(result, revision_id)
-            self._attach_attempt_meta(result, revision_id)
+            self._attach_model_level(result, revision_id, bulk)
+            self._attach_judges(result, revision_id, bulk)
+            self._attach_attempt_meta(result, revision_id, bulk)
+            result.pop("_target_instance_id", None)
             first_tok_time = None
             for plugin_id in active_plugins:
                 if not result.get(f"{plugin_id}_stream_ok"):
@@ -167,58 +168,141 @@ class SQLiteReportSource:
                 result["ttft"] = round(first_tok_time, 3)
         return rows, active_plugins, revision_row[0], revision_id
 
-    def _attach_model_level(self, result: dict[str, Any], revision_id: int) -> None:
-        """Attach model-level judge identities from the current revision."""
-        judges = self.connection.execute(
-            "SELECT judge_model, active FROM revision_judges WHERE revision_id = ?",
+    def _load_revision_cache(self, revision_id: int) -> dict[str, Any]:
+        """Load revision-wide hydration data with bounded bulk queries."""
+        cached = self._revision_cache.get(revision_id)
+        if cached is not None:
+            return cached
+        judge_models = [
+            str(row["judge_model"])
+            for row in self.connection.execute(
+                "SELECT judge_model FROM revision_judges WHERE revision_id = ? AND active = 1",
+                (revision_id,),
+            )
+        ]
+        cell_rows = self.connection.execute(
+            """
+            SELECT c.cell_id, c.target_instance_id, c.plugin_id
+            FROM revision_cells rc
+            JOIN cells c ON c.cell_id = rc.cell_id
+            JOIN revision_targets rt
+              ON rt.revision_id = rc.revision_id
+             AND rt.target_instance_id = c.target_instance_id
+             AND rt.active = 1
+            JOIN revision_plugins rp
+              ON rp.revision_id = rc.revision_id
+             AND rp.plugin_id = c.plugin_id
+             AND rp.plugin_version = c.plugin_version
+             AND rp.active = 1
+            WHERE rc.revision_id = ?
+            """,
             (revision_id,),
         ).fetchall()
-        models = [str(row[0]) for row in judges if row["active"]]
+        cells_by_target: dict[int, list[tuple[int, str]]] = {}
+        cell_ids: list[int] = []
+        for row in cell_rows:
+            cell_id = int(row["cell_id"])
+            cell_ids.append(cell_id)
+            cells_by_target.setdefault(int(row["target_instance_id"]), []).append(
+                (cell_id, str(row["plugin_id"])),
+            )
+        selection_rows = self.connection.execute(
+            "SELECT cell_id, attempt_id FROM benchmark_selections WHERE revision_id = ?",
+            (revision_id,),
+        ).fetchall()
+        selected_attempt_ids = [int(row["attempt_id"]) for row in selection_rows]
+        attempt_rows: list[sqlite3.Row] = []
+        if cell_ids or selected_attempt_ids:
+            clauses: list[str] = []
+            params: list[Any] = []
+            if cell_ids:
+                placeholders = ",".join("?" for _ in cell_ids)
+                clauses.append(f"(revision_id = ? AND cell_id IN ({placeholders}))")
+                params.extend([revision_id, *cell_ids])
+            if selected_attempt_ids:
+                placeholders = ",".join("?" for _ in selected_attempt_ids)
+                clauses.append(f"attempt_id IN ({placeholders})")
+                params.extend(selected_attempt_ids)
+            attempt_rows = self.connection.execute(
+                f"SELECT * FROM benchmark_attempts WHERE {' OR '.join(clauses)}",
+                params,
+            ).fetchall()
+        attempts = {int(row["attempt_id"]): dict(row) for row in attempt_rows}
+        attempts_by_cell: dict[int, list[dict[str, Any]]] = {}
+        for row in attempt_rows:
+            attempts_by_cell.setdefault(int(row["cell_id"]), []).append(dict(row))
+        for values in attempts_by_cell.values():
+            values.sort(key=lambda row: int(row["attempt_number"]))
+        vote_rows = self.connection.execute(
+            """
+            SELECT c.cell_id, c.judge_model AS model, c.contract_id AS judge_contract_id,
+                   v.vote_attempt_id, v.score, v.confidence, v.rationale,
+                   v.error, v.usable
+            FROM current_judge_votes c
+            JOIN judge_vote_attempts v ON v.vote_attempt_id = c.vote_attempt_id
+            WHERE c.revision_id = ?
+            ORDER BY c.cell_id, c.judge_model
+            """,
+            (revision_id,),
+        ).fetchall()
+        votes_by_cell: dict[int, list[dict[str, Any]]] = {}
+        vote_ids: list[int] = []
+        for row in vote_rows:
+            vote = dict(row)
+            cell_id = int(vote.pop("cell_id"))
+            votes_by_cell.setdefault(cell_id, []).append(vote)
+            vote_ids.append(int(vote["vote_attempt_id"]))
+        criteria_by_vote: dict[int, list[dict[str, Any]]] = {}
+        if vote_ids:
+            placeholders = ",".join("?" for _ in vote_ids)
+            criteria_rows = self.connection.execute(
+                f"""
+                SELECT vote_attempt_id, criterion_key, criterion, status, evidence
+                FROM judge_criteria
+                WHERE vote_attempt_id IN ({placeholders}) ORDER BY vote_attempt_id, ordinal
+                """,
+                vote_ids,
+            ).fetchall()
+            for row in criteria_rows:
+                criteria_by_vote.setdefault(int(row["vote_attempt_id"]), []).append({
+                    "id": row["criterion_key"],
+                    "criterion": row["criterion"],
+                    "status": row["status"],
+                    "evidence": row["evidence"],
+                })
+        cache = {
+            "judge_models": judge_models,
+            "cells_by_target": cells_by_target,
+            "attempts": attempts,
+            "attempts_by_cell": attempts_by_cell,
+            "votes_by_cell": votes_by_cell,
+            "criteria_by_vote": criteria_by_vote,
+        }
+        self._revision_cache[revision_id] = cache
+        return cache
+
+    def _attach_model_level(self, result: dict[str, Any], revision_id: int,
+                            bulk: dict[str, Any]) -> None:
+        """Attach model-level judge identities from the cached revision model."""
+        del revision_id
+        models = bulk["judge_models"]
         if models:
             result["judge_models"] = models
             result.setdefault("judge_status", "pending")
 
-    def _attach_attempt_meta(self, result: dict[str, Any], revision_id: int) -> None:
+    def _attach_attempt_meta(self, result: dict[str, Any], revision_id: int,
+                             bulk: dict[str, Any]) -> None:
         """Attach per-plugin attempt counts and retry reasons.
 
         Legacy JSON rows carry ``{pid}_attempt_count`` and ``{pid}_retry_reasons``
         computed from the per-attempt list; SQLite stores one row per transport
         attempt, so reconstruct the aggregates from the attempt table.
         """
-        target = result.get("model")
-        runner = result.get("runner")
-        target_id = self.connection.execute(
-            """
-            SELECT t.target_instance_id
-            FROM target_instances t
-            JOIN revision_targets rt ON rt.target_instance_id = t.target_instance_id
-            WHERE rt.revision_id = ? AND rt.active = 1
-              AND t.logical_name = ? AND t.runner = ?
-            ORDER BY t.target_instance_id DESC
-            LIMIT 1
-            """,
-            (revision_id, target, runner),
-        ).fetchone()
+        target_id = result.get("_target_instance_id")
         if target_id is None:
             return
-        cells = self.connection.execute(
-            """
-            SELECT c.cell_id, c.plugin_id
-            FROM cells c
-            JOIN revision_cells rc ON rc.cell_id = c.cell_id
-            WHERE c.target_instance_id = ? AND rc.revision_id = ?
-            """,
-            (target_id[0], revision_id),
-        ).fetchall()
-        for cell in cells:
-            pid = str(cell["plugin_id"])
-            attempts = self.connection.execute(
-                """
-                SELECT retry_reason FROM benchmark_attempts
-                WHERE revision_id = ? AND cell_id = ? ORDER BY attempt_number
-                """,
-                (revision_id, cell["cell_id"]),
-            ).fetchall()
+        for cell_id, pid in bulk["cells_by_target"].get(int(target_id), []):
+            attempts = bulk["attempts_by_cell"].get(cell_id, [])
             if not attempts:
                 continue
             result[f"{pid}_attempt_count"] = len(attempts)
@@ -229,70 +313,24 @@ class SQLiteReportSource:
             if retry_reasons:
                 result[f"{pid}_retry_reasons"] = retry_reasons
 
-    def _attach_judges(self, result: dict[str, Any], revision_id: int) -> None:
-        target = result.get("model")
-        runner = result.get("runner")
-        target_id = self.connection.execute(
-            """
-            SELECT t.target_instance_id
-            FROM target_instances t
-            JOIN revision_targets rt ON rt.target_instance_id = t.target_instance_id
-            WHERE rt.revision_id = ? AND rt.active = 1
-              AND t.logical_name = ? AND t.runner = ?
-            ORDER BY t.target_instance_id DESC
-            LIMIT 1
-            """,
-            (revision_id, target, runner),
-        ).fetchone()
+    def _attach_judges(self, result: dict[str, Any], revision_id: int,
+                       bulk: dict[str, Any]) -> None:
+        del revision_id
+        target_id = result.get("_target_instance_id")
         if target_id is None:
             return
-        cells = self.connection.execute(
-            """
-            SELECT c.cell_id, c.plugin_id
-            FROM cells c
-            JOIN revision_cells rc ON rc.cell_id = c.cell_id
-            WHERE c.target_instance_id = ? AND rc.revision_id = ?
-            """,
-            (target_id[0], revision_id),
-        ).fetchall()
-        for cell in cells:
-            votes = self.connection.execute(
-                """
-                SELECT c.judge_model AS model, c.contract_id AS judge_contract_id,
-                       v.vote_attempt_id, v.score, v.confidence, v.rationale,
-                       v.error, v.usable
-                FROM current_judge_votes c
-                JOIN judge_vote_attempts v ON v.vote_attempt_id = c.vote_attempt_id
-                WHERE c.revision_id = ? AND c.cell_id = ?
-                ORDER BY c.judge_model
-                """,
-                (revision_id, cell["cell_id"]),
-            ).fetchall()
+        for cell_id, pid in bulk["cells_by_target"].get(int(target_id), []):
+            votes = bulk["votes_by_cell"].get(cell_id, [])
             if not votes:
                 continue
-            pid = str(cell["plugin_id"])
             vote_dicts = [dict(vote) for vote in votes]
             # Attach each vote's stored criteria/evidence rows so report
             # helpers (and the resume projection) see the same shape the
             # legacy JSON path produced.
             for vote in vote_dicts:
-                vote["criteria"] = [
-                    {
-                        "id": row["criterion_key"],
-                        "criterion": row["criterion"],
-                        "status": row["status"],
-                        "evidence": row["evidence"],
-                    }
-                    for row in self.connection.execute(
-                        """
-                        SELECT criterion_key, criterion, status, evidence
-                        FROM judge_criteria
-                        WHERE vote_attempt_id = ?
-                        ORDER BY ordinal
-                        """,
-                        (vote["vote_attempt_id"],),
-                    )
-                ]
+                vote["criteria"] = bulk["criteria_by_vote"].get(
+                    int(vote["vote_attempt_id"]), []
+                )
             result[f"{pid}_judge_votes"] = vote_dicts
             usable = [vote["score"] for vote in votes if vote["usable"] and vote["score"] is not None]
             result[f"{pid}_judge_score"] = sum(usable) / len(usable) if usable else None

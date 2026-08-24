@@ -416,15 +416,65 @@ class SQLiteRunStore:
 
     def prepare_run(self, targets: Iterable[TargetRecord],
                     plugins: Iterable[PluginRecord]) -> None:
+        """Register the identity graph in one writer operation.
+
+        Registration is startup work, so waiting after every plugin, target,
+        and cell turns a batch-capable writer into a sequence of transactions.
+        Execute the complete graph as one operation; the queue still isolates
+        it with a savepoint and commits it atomically.
+        """
         target_list = list(targets)
         plugin_list = list(plugins)
-        for plugin in plugin_list:
-            self.register_plugin(plugin)
-        for target in target_list:
-            self.register_target(target)
-        for target in target_list:
+        if self.identity is None or self._revision_id is None:
+            raise RuntimeError("SQLite run must be started before preparing a run")
+
+        def operation(connection):
+            benchmark = SQLiteBenchmarkStore(connection)
+            plugin_ids: list[str] = []
             for plugin in plugin_list:
-                self.ensure_cell(target, plugin)
+                benchmark.register_plugin(
+                    plugin.plugin_id, plugin.plugin_version, name=plugin.name,
+                    max_score=plugin.max_score,
+                    supports_streaming=plugin.supports_streaming,
+                    metadata=plugin.metadata,
+                )
+                benchmark.activate_plugin(
+                    self._revision_id, plugin.plugin_id, plugin.plugin_version,
+                )
+                plugin_ids.append(plugin.plugin_id)
+            target_ids: dict[tuple[str, str, str], int] = {}
+            for target in target_list:
+                target_id = benchmark.register_target(
+                    self._revision_id,
+                    run_id=self.identity.run_id,
+                    logical_name=target.logical_name,
+                    runner=target.runner,
+                    source=target.source,
+                    api_model=target.api_model,
+                    target_signature=target.target_signature,
+                    is_agent=target.is_agent,
+                    system_prompt=target.system_prompt,
+                    target_config=target.target_config,
+                    order_index=target.order_index,
+                )
+                target_ids[(target.logical_name, target.runner, target.target_signature)] = target_id
+            cell_ids: dict[tuple[str, str, str], int] = {}
+            for target in target_list:
+                target_id = target_ids[(target.logical_name, target.runner, target.target_signature)]
+                for plugin in plugin_list:
+                    cell_ids[(target.logical_name, target.runner, plugin.plugin_id)] = benchmark.ensure_cell(
+                        self._revision_id, target_id,
+                        plugin.plugin_id, plugin.plugin_version,
+                    )
+            return target_ids, cell_ids
+
+        target_ids, cell_ids = self._connection_operation(operation)
+        self._target_ids.update(target_ids)
+        self._cell_ids.update(cell_ids)
+        self._target_records.update({
+            (target.logical_name, target.runner): target for target in target_list
+        })
+        self._plugin_records.update({plugin.plugin_id: plugin for plugin in plugin_list})
 
     def register_target(self, target: TargetRecord) -> int | None:
         if self.identity is None or self._revision_id is None:

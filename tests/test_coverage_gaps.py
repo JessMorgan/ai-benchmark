@@ -129,7 +129,7 @@ class TestLatestResultRows:
 
 
 class TestJsonRunStoreFacade:
-    def test_all_noop_methods(self) -> None:
+    def test_unsupported_normalized_methods_are_explicit(self) -> None:
         from benchmark.storage import (
             BenchmarkAttemptRecord,
             JsonRunStore,
@@ -144,20 +144,23 @@ class TestJsonRunStoreFacade:
         store.start_run(RunIdentity("run1", 1))
         assert store.identity is not None and store.identity.run_id == "run1"
 
-        # No-op methods
         store.prepare_run([], [])
         target = TargetRecord(logical_name="m", runner="http", source="local", api_model="m", target_signature="s")
-        assert store.register_target(target) is None
         plugin = PluginRecord(plugin_id="p", plugin_version="1", name="P", max_score=20, supports_streaming=True)
-        store.register_plugin(plugin)
-        assert store.ensure_cell(target, plugin) is None
-        assert store.record_benchmark_attempt(1, BenchmarkAttemptRecord(attempt_number=1)) is None
-        assert store.record_judge_attempt(1, JudgeAttemptRecord(judge_model="j", contract_id="c", attempt_number=1)) is None
-        assert store.get_cell_id("m", "http", "p") is None
-        store.register_judge("judge", "http")
-        store.register_contract("c", plugin_id="p", plugin_version="1",
-                                prompt_version="1", instructions_version="1")
-        store.flush()
+        unsupported = [
+            lambda: store.register_target(target),
+            lambda: store.register_plugin(plugin),
+            lambda: store.ensure_cell(target, plugin),
+            lambda: store.record_benchmark_attempt(1, BenchmarkAttemptRecord(attempt_number=1)),
+            lambda: store.record_judge_attempt(1, JudgeAttemptRecord(judge_model="j", contract_id="c", attempt_number=1)),
+            lambda: store.get_cell_id("m", "http", "p"),
+            lambda: store.register_judge("judge", "http"),
+            lambda: store.register_contract("c", plugin_id="p", plugin_version="1",
+                                            prompt_version="1", instructions_version="1"),
+        ]
+        for operation in unsupported:
+            with pytest.raises(NotImplementedError, match="normalized operation"):
+                operation()
         assert store.close() is True
 
     def test_save_snapshot_none_path_raises(self) -> None:
