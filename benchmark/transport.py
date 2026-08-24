@@ -13,7 +13,7 @@ import time
 from collections.abc import Callable, Iterator
 from concurrent.futures import Future
 from dataclasses import dataclass, field, replace
-from typing import Any, Literal
+from typing import Any
 
 from .http import NonStreamResult, StreamResult, nonstream_request, stream_request
 from .observer import TaskObserver

@@ -15,9 +15,9 @@ import time
 from typing import Any, cast
 
 from .lifecycle import validate_snapshot
+from .persistence.storage import project_result_rows
 from .plugin import SCORE_SCHEMA
 from .state_schema import StateSchemaError, validate_journal_event, validate_state_data
-from .persistence.storage import project_result_rows
 
 # State saves intentionally retain the historical ``<state>.tmp`` path for
 # operational compatibility. Serialize all writers so two threads cannot

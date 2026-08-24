@@ -44,7 +44,13 @@ from .plugin import (
     normalize_score,
     serialize_rubric,
 )
-from .request_models import GenerationFields, HTTPRequest, OpenCodeRequest, PiRequest, TransportRequest
+from .request_models import (
+    GenerationFields,
+    HTTPRequest,
+    OpenCodeRequest,
+    PiRequest,
+    TransportRequest,
+)
 from .response_classification import (  # noqa: F401 - compatibility exports
     classify_empty_reason,
     count_tokens,

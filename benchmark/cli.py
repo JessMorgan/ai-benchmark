@@ -87,6 +87,15 @@ from benchmark.opencode import (
     resolve_opencode_binary,
 )
 from benchmark.outputs import save_outputs
+from benchmark.persistence.sqlite_import import LegacySQLiteImporter
+from benchmark.persistence.sqlite_integrity import check_integrity
+from benchmark.persistence.sqlite_reports import SQLiteReportSource, sqlite_path_from_report_path
+from benchmark.persistence.storage import (
+    JsonReportSource,
+    RunIdentity,
+    SQLiteRunStore,
+    latest_result_rows,
+)
 from benchmark.pi import pi_version, resolve_pi_worker, run_pi_probe
 from benchmark.plugin import SCORE_SCHEMA
 from benchmark.results import save_judge_result
@@ -97,11 +106,7 @@ from benchmark.runtime_records import (
     TargetRecord,
 )
 from benchmark.scheduler_policy import SourceSchedulingPolicy
-from benchmark.persistence.sqlite_import import LegacySQLiteImporter
-from benchmark.persistence.sqlite_integrity import check_integrity
-from benchmark.persistence.sqlite_reports import SQLiteReportSource, sqlite_path_from_report_path
 from benchmark.state import apply_state_recovery, prepare_state_recovery
-from benchmark.persistence.storage import JsonReportSource, RunIdentity, SQLiteRunStore, latest_result_rows
 from benchmark.tui_format import (
     FROZEN_VIEW_WIDTH,
     MODEL_NUMBER_COLUMN_WIDTH,

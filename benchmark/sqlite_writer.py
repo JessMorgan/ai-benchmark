@@ -1,2 +1,4 @@
 """Compatibility imports for the SQLite writer."""
-from .persistence.sqlite_writer import *  # noqa: F401,F403
+from .persistence.sqlite_writer import SQLiteWriteQueue, _WorkItem
+
+__all__ = ["SQLiteWriteQueue", "_WorkItem"]
