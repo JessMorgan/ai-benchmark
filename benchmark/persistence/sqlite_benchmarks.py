@@ -308,7 +308,7 @@ class SQLiteBenchmarkStore:
             )
         self.connection.execute(
             "UPDATE revision_cells SET status = ?, updated_at = ? WHERE revision_id = ? AND cell_id = ?",
-            ("completed" if score is not None and values["error"] is None else "failed",
+            ("completed" if score is not None else "failed",
              int(time.time()), revision_id, cell_id),
         )
         self.connection.commit()
@@ -348,6 +348,12 @@ class SQLiteBenchmarkStore:
         ).fetchone()
         if row is None:
             return True
+        # A numeric score means the returned content was graded, including
+        # responses that ended with finish_reason=length after exhausting
+        # their final logical attempt. Transport metadata remains diagnostic;
+        # it must not make a graded token-limited result rerun on continuation.
+        if isinstance(row[0], (int, float)) and not isinstance(row[0], bool):
+            return False
         if row[0] is None or row[1] is not None:
             return rerun_failed
         return False

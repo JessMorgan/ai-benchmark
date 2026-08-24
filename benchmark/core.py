@@ -2090,7 +2090,13 @@ def _run_plugin_task(target_name: str, api_model: str, source: str, plugin: Any,
     )
 
     task_error = score_error
-    if selected_nature in {"transport_error", "cancelled"} and not selected_text.strip():
+    if selected_nature == "token_limit" and isinstance(score, (int, float)) \
+            and not isinstance(score, bool):
+        # A token-limited response is still a valid benchmark observation:
+        # grade the content that was returned and make it reusable on resume.
+        # The truncation remains recorded in per-attempt metadata.
+        task_error = score_error
+    elif selected_nature in {"transport_error", "cancelled"} and not selected_text.strip():
         task_error = selected_error or score_error or selected_nature
     result = save_task_result(
         execution,

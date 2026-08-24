@@ -242,6 +242,48 @@ class TestRunStoreContract(unittest.TestCase):
             self.assertTrue(report.equivalent, report.as_dict())
             self.assertTrue(sqlite_store.close(timeout=2))
 
+    def test_sqlite_token_limited_scored_attempt_is_reusable(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = SQLiteRunStore(os.path.join(tmp, "run.sqlite3"), flush_interval=0.01)
+            store.start_run(RunIdentity("run", 1))
+            target = TargetRecord(
+                logical_name="m", runner="http", source="Local",
+                api_model="m", target_signature="Local/m",
+            )
+            plugin = PluginRecord(
+                plugin_id="p", plugin_version="1.0.0", name="Plugin",
+                max_score=20.0, supports_streaming=True,
+            )
+            store.prepare_run([target], [plugin])
+            cell_id = store.get_cell_id("m", "http", "p")
+            self.assertIsNotNone(cell_id)
+            store.record_benchmark_attempt(
+                cell_id,
+                BenchmarkAttemptRecord(
+                    attempt_number=2, content="partial answer",
+                    output_tokens=2, thinking_tokens=8, total_tokens=10,
+                    finish_reason="length", response_nature="token_limit",
+                    failure_cause="finish_reason:length", error="diagnostic",
+                    score=9, status="completed",
+                ),
+                selected=True,
+            )
+            store.flush(timeout=5)
+            def should_run(connection):
+                from benchmark.persistence.sqlite_benchmarks import SQLiteBenchmarkStore
+                benchmark = SQLiteBenchmarkStore(connection)
+                return (
+                    benchmark.should_run_cell(
+                        store.revision_id, cell_id, rerun_failed=True,
+                    ),
+                    benchmark.should_run_cell(
+                        store.revision_id, cell_id, rerun_failed=False,
+                    ),
+                )
+            self.assertEqual(store._connection_operation(should_run), (False, False))
+            self.assertEqual(store.latest_results()[0]["p_score"], 9)
+            self.assertTrue(store.close(timeout=2))
+
     def test_sqlite_continuation_reuses_completed_cell(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = os.path.join(tmp, "run.sqlite3")
