@@ -21,12 +21,15 @@ which also tears down the browser session. Pure helpers (``credentials``,
 which never imports Playwright itself.
 """
 
+from __future__ import annotations
+
 import contextlib
 import faulthandler
 import json
 import sys
 import threading
 import time
+from typing import Any
 
 from . import chatplayground as _cp
 
@@ -75,7 +78,7 @@ _LIST_MODELS_JS = """
 """
 
 
-def _close_session():
+def _close_session() -> None:
     """Tear down the cached browser session, if any."""
     global _state
     if _state is None:
@@ -88,7 +91,7 @@ def _close_session():
     _state = None
 
 
-def _login(page, email, password, base_url, sel):
+def _login(page: Any, email: str, password: str, base_url: str, sel: dict[str, Any]) -> None:
     """Navigate to the Clerk login form and authenticate with email/password."""
     page.goto(base_url.rstrip("/") + (sel.get("login_url") or "/login"))
     page.fill(sel["email_input"], email)
@@ -98,7 +101,7 @@ def _login(page, email, password, base_url, sel):
     page.wait_for_selector(sel["prompt_input"], timeout=sel.get("wait_timeout_ms", 30000))
 
 
-def _get_page(cfg):
+def _get_page(cfg: dict[str, Any]) -> Any:
     """Return a logged-in page, reusing (or re-establishing) the cached session."""
     global _state
     email, password = credentials(cfg)
@@ -130,18 +133,18 @@ def _get_page(cfg):
     return _state["page"]
 
 
-def _submit_prompt(page, prompt, sel):
+def _submit_prompt(page: Any, prompt: str, sel: dict[str, Any]) -> None:
     """Type the prompt and send it."""
     page.fill(sel["prompt_input"], prompt)
     page.get_by_role("button", name=sel["send_button"], exact=True).click()
 
 
-def _has_response(page, sel):
+def _has_response(page: Any, sel: dict[str, Any]) -> bool:
     """Return whether an assistant answer has appeared yet."""
-    return page.get_by_text(sel["assistant_label"], exact=True).count() > 0
+    return int(page.get_by_text(sel["assistant_label"], exact=True).count()) > 0
 
 
-def _wait_for_completion(page, timeout, stop_event, sel):
+def _wait_for_completion(page: Any, timeout: float, stop_event: threading.Event | None, sel: dict[str, Any]) -> bool:
     """Wait for the in-flight answer to finish, honouring ``stop_event``.
 
     The "Stop" affordance is present while a response is generating. A turn is
@@ -173,12 +176,12 @@ def _wait_for_completion(page, timeout, stop_event, sel):
     return True
 
 
-def _read_response(page, sel):
+def _read_response(page: Any, sel: dict[str, Any]) -> str:
     """Return the text of the last completed assistant message."""
     return str(page.evaluate(_READ_RESPONSE_JS, sel["assistant_label"]) or "")
 
 
-def _send_prompt(page, model, prompt, timeout, stop_event, cfg):
+def _send_prompt(page: Any, model: str, prompt: str, timeout: float, stop_event: threading.Event | None, cfg: dict[str, Any]) -> str:
     """Run one chat turn on ``model`` and return the buffered answer text."""
     sel = selectors(cfg)
     base_url = cfg.get("base_url", DEFAULT_BASE_URL)
@@ -194,7 +197,7 @@ def _send_prompt(page, model, prompt, timeout, stop_event, cfg):
     return _read_response(page, sel)
 
 
-def _browser_send(cfg, model, prompt, *, timeout, system_prompt=None):
+def _browser_send(cfg: dict[str, Any], model: str, prompt: str, *, timeout: float, system_prompt: str | None = None) -> tuple[str, str | None, float]:
     """Run one chat turn and return ``(text, error, elapsed_seconds)``."""
     started = time.time()
     text = ""
@@ -210,20 +213,20 @@ def _browser_send(cfg, model, prompt, *, timeout, system_prompt=None):
     return text, error, round(time.time() - started, 1)
 
 
-def _browser_list_models_locked(page) -> list[str]:
+def _browser_list_models_locked(page: Any) -> list[str]:
     """Enumerate model slugs from an already-obtained page (lock held)."""
     slugs = page.evaluate(_LIST_MODELS_JS) or []
     return [str(slug) for slug in slugs if slug]
 
 
-def _browser_list_models(cfg) -> list[str]:
+def _browser_list_models(cfg: dict[str, Any]) -> list[str]:
     """Enumerate the model slugs exposed by the sidebar's "AI MODELS" list."""
     with _lock:
         page = _get_page(cfg)
         return _browser_list_models_locked(page)
 
 
-def _browser_probe(cfg) -> dict:
+def _browser_probe(cfg: dict[str, Any]) -> dict[str, Any]:
     """Capture diagnostic DOM information for selector finalization."""
     with _lock:
         page = _get_page(cfg)
@@ -241,7 +244,7 @@ def _browser_probe(cfg) -> dict:
         return info
 
 
-def handle(msg) -> dict:
+def handle(msg: dict[str, Any]) -> dict[str, Any]:
     """Dispatch one request message and return the response dict."""
     req_id = msg.get("id")
     op = msg.get("op")
@@ -250,8 +253,8 @@ def handle(msg) -> dict:
         if op == "send":
             text, error, _elapsed = _browser_send(
                 cfg,
-                msg.get("model"),
-                msg.get("prompt", ""),
+                str(msg.get("model") or ""),
+                str(msg.get("prompt", "")),
                 timeout=float(msg.get("timeout") or 0),
                 system_prompt=msg.get("system_prompt"),
             )

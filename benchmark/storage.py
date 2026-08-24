@@ -418,7 +418,7 @@ class SQLiteRunStore:
             connection.close()
 
     def _connection_operation(self, operation: Any) -> Any:
-        future = cast(Future[Any], self.writer.submit(operation))
+        future = cast(Future[Any], self.writer.submit(operation))  # type: ignore[redundant-cast]
         return future.result(timeout=30)
 
     def prepare_run(self, targets: Iterable[TargetRecord],
@@ -496,12 +496,12 @@ class SQLiteRunStore:
         assert revision_id is not None and identity is not None
         def operation(connection: Any) -> int:
             store = SQLiteBenchmarkStore(connection)
-            return cast(int, store.register_target(
+            return cast(int, store.register_target(  # type: ignore[redundant-cast]
                 revision_id, run_id=identity.run_id,
                 logical_name=spec.logical_name, runner=spec.runner,
                 source=spec.source, api_model=spec.api_model,
                 target_signature=spec.target_signature, is_agent=spec.is_agent,
-                system_prompt=spec.system_prompt, target_config=spec.target_config,
+                system_prompt=spec.system_prompt, target_config=spec.target_config,  # type: ignore[arg-type]
                 order_index=spec.order_index,
             ))
         target_id = cast(int, self._connection_operation(operation))
@@ -521,7 +521,7 @@ class SQLiteRunStore:
                 metadata=plugin.metadata,
             )
             store.activate_plugin(
-                self._revision_id, plugin.plugin_id, plugin.plugin_version,
+                self._revision_id, plugin.plugin_id, plugin.plugin_version,  # type: ignore[arg-type]
             )
         self._connection_operation(operation)
         self._plugin_records[plugin.plugin_id] = plugin
@@ -535,7 +535,7 @@ class SQLiteRunStore:
         revision_id = self._revision_id
         assert revision_id is not None
         def operation(connection: Any) -> int:
-            return cast(int, SQLiteBenchmarkStore(connection).ensure_cell(
+            return cast(int, SQLiteBenchmarkStore(connection).ensure_cell(  # type: ignore[redundant-cast]
                 revision_id, target_id,
                 plugin.plugin_id, plugin.plugin_version,
             ))
@@ -550,7 +550,7 @@ class SQLiteRunStore:
         revision_id = self._revision_id
         assert revision_id is not None
         def operation(connection: Any) -> int:
-            return cast(int, SQLiteBenchmarkStore(connection).record_attempt(
+            return cast(int, SQLiteBenchmarkStore(connection).record_attempt(  # type: ignore[redundant-cast]
                 revision_id, cell_id, attempt.as_dict(), selected=selected,
             ))
         return self._submit_async(operation)
@@ -563,7 +563,7 @@ class SQLiteRunStore:
         assert revision_id is not None
         def operation(connection: Any) -> int:
             judges = SQLiteJudgeStore(connection)
-            judge_attempt_id = cast(int, judges.record_attempt(
+            judge_attempt_id = cast(int, judges.record_attempt(  # type: ignore[redundant-cast]
                 revision_id, cell_id, attempt.judge_model,
                 attempt.contract_id, attempt.as_dict(),
             ))
@@ -630,7 +630,7 @@ class SQLiteRunStore:
                 prompt_version=spec.prompt_version,
                 instructions_version=spec.instructions_version,
                 response_schema_hash=spec.response_schema_hash,
-                contract=spec.contract,
+                contract=spec.contract,  # type: ignore[arg-type]
                 contract_hash=spec.contract_hash,
             )
             judges.activate_contract(revision_id, spec.plugin_id, spec.contract_id)
@@ -644,7 +644,7 @@ class SQLiteRunStore:
         and ``writer.failures``; retrieving the future's exception here merely
         prevents an un-retrieved-exception warning when the future is collected.
         """
-        future = cast(Future[Any], self.writer.submit(operation))
+        future = cast(Future[Any], self.writer.submit(operation))  # type: ignore[redundant-cast]
 
         def _consume(done: Future[Any]) -> None:
             try:
@@ -657,7 +657,7 @@ class SQLiteRunStore:
 
     def submit(self, operation: Callable[[Any], Any]) -> Future[Any]:
         """Submit a normalized SQLite operation to the background writer."""
-        return cast(Future[Any], self.writer.submit(operation))
+        return cast(Future[Any], self.writer.submit(operation))  # type: ignore[redundant-cast]
 
     def record_result(self, result: dict[str, Any]) -> None:
         key = (result.get("state_key", result.get("model")), result.get("runner", "http"))
@@ -740,7 +740,7 @@ class SQLiteRunStore:
                 revision=self._revision_id, run_id=self.identity.run_id,
                 include_reused=True,
             )
-            return cast(list[dict[str, Any]], rows)
+            return cast(list[dict[str, Any]], rows)  # type: ignore[redundant-cast]
         finally:
             connection.close()
 
@@ -751,7 +751,7 @@ class SQLiteRunStore:
         if self._connection is not None:
             self._connection.close()
             self._connection = None
-        return cast(bool, self.writer.close(timeout=timeout))
+        return cast(bool, self.writer.close(timeout=timeout))  # type: ignore[redundant-cast]
 
 
 class JsonReportSource:

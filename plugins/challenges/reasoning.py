@@ -3,32 +3,33 @@ from __future__ import annotations
 
 import re
 
-from benchmark.plugin import BenchmarkTaskPlugin
+from benchmark.plugin import BenchmarkTaskPlugin, EvaluationResult
+from benchmark.types import ConfigMap
 from plugins.challenges._rubric import Rubric
 
 
 class ReasoningPlugin(BenchmarkTaskPlugin):
     @property
-    def id(self):
+    def id(self) -> str:
         return "reasoning"
 
     @property
-    def version(self):
+    def version(self) -> str:
         return "1.1.0"
 
     @property
-    def name(self):
+    def name(self) -> str:
         return "Logical Reasoning"
 
     @property
-    def max_score(self):
-        return 20.0
+    def max_score(self) -> int:
+        return int(20.0)
 
     @property
-    def supports_streaming(self):
+    def supports_streaming(self) -> bool:
         return True
 
-    def get_prompt(self):
+    def get_prompt(self) -> str:
         return (
             "Solve this exact logic puzzle. Give numbered deductions, then exactly four final lines. "
             "Six services occupy 09:00, 09:15, 09:30, 09:45, 10:00, 10:15: Auth, Billing, Search, "
@@ -41,14 +42,15 @@ class ReasoningPlugin(BenchmarkTaskPlugin):
             "PRIORITY: <P1/P2/P3/P4/P5/P6>\nTIME: <HH:MM>"
         )
 
-    def get_temperature(self, global_config):
-        return global_config.get("reasoning_temperature")
+    def get_temperature(self, global_config: ConfigMap) -> float | None:
+        val = global_config.get("reasoning_temperature")
+        return float(val) if isinstance(val, (int, float)) else None
 
     @staticmethod
-    def _has(text, pattern):
+    def _has(text: str, pattern: str) -> bool:
         return bool(re.search(pattern, text, re.IGNORECASE))
 
-    def evaluate(self, response_text):
+    def evaluate(self, response_text: str) -> EvaluationResult:
         text = response_text.strip()
         rubric = Rubric(self.max_score)
         if not text:
@@ -99,5 +101,5 @@ class ReasoningPlugin(BenchmarkTaskPlugin):
             rubric.penalize_criterion("Derived time assignments", 1.0, "response contains a contradictory service/time assignment")
         return rubric.results()
 
-    def score(self, response_text):
+    def score(self, response_text: str) -> float:
         return self.evaluate(response_text).score

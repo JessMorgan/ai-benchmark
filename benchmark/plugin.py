@@ -6,9 +6,11 @@ from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from numbers import Real
 from typing import Any
 
+from .types import ConfigMap, JSONObject
+
 SCORE_SCHEMA = "percentage-v1"
 
-def _decimal_value(value, name):
+def _decimal_value(value: Any, name: str) -> Decimal:
     """Convert a numeric value to Decimal without accepting non-finite values."""
     if isinstance(value, bool) or not isinstance(value, (Real, Decimal)):
         raise ValueError(  # noqa: TRY004 - public numeric contract uses ValueError
@@ -94,7 +96,7 @@ class EvaluationResult:
     rubric: list[dict[str, Any]]
     diagnostics: dict[str, Any] | None = None
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         """Give every evaluation, including direct early returns, diagnostics."""
         if self.diagnostics is None:
             object.__setattr__(self, "diagnostics", {
@@ -151,7 +153,13 @@ class BenchmarkOutputPlugin(abc.ABC):
         raise NotImplementedError
 
     @abc.abstractmethod
-    def generate(self, results, active_plugins, output_dir=None, session_seed=None):
+    def generate(
+        self,
+        results: list[dict[str, Any]],
+        active_plugins: list["BenchmarkTaskPlugin"],
+        output_dir: str | None = None,
+        session_seed: int | None = None,
+    ) -> str | None:
         """Write the report file into *output_dir* and return the file path."""
         raise NotImplementedError
 
@@ -194,11 +202,11 @@ class BenchmarkTaskPlugin(abc.ABC):
         raise NotImplementedError
 
     @abc.abstractmethod
-    def get_temperature(self, global_config: dict) -> float | None:
+    def get_temperature(self, global_config: ConfigMap) -> float | None:
         """Return the temperature to use for this task, or None to omit it."""
         raise NotImplementedError
 
-    def get_request_params(self, global_config: dict) -> dict:
+    def get_request_params(self, global_config: ConfigMap) -> JSONObject:
         """Return additional OpenAI-compatible request parameters.
 
         The default is empty so normal benchmark tasks are not constrained by

@@ -3,7 +3,8 @@ from __future__ import annotations
 
 import re
 
-from benchmark.plugin import BenchmarkTaskPlugin
+from benchmark.plugin import BenchmarkTaskPlugin, EvaluationResult
+from benchmark.types import ConfigMap
 from plugins.challenges._analysis import (
     exact_section,
     markdown_sections,
@@ -14,26 +15,26 @@ from plugins.challenges._rubric import Rubric
 
 class PRDCreationPlugin(BenchmarkTaskPlugin):
     @property
-    def id(self):
+    def id(self) -> str:
         return "prd-creation"
 
     @property
-    def version(self):
+    def version(self) -> str:
         return "1.0.0"
 
     @property
-    def name(self):
+    def name(self) -> str:
         return "PRD Creation"
 
     @property
-    def max_score(self):
-        return 22.0
+    def max_score(self) -> int:
+        return int(22.0)
 
     @property
-    def supports_streaming(self):
+    def supports_streaming(self) -> bool:
         return True
 
-    def get_prompt(self):
+    def get_prompt(self) -> str:
         return (
             "Create a detailed FlowState PRD with exactly these sections: Executive Summary, "
             "Problem Statement, Goals & Objectives, Target Users & Personas, User Stories, "
@@ -45,10 +46,11 @@ class PRDCreationPlugin(BenchmarkTaskPlugin):
             "milestones, and risks/questions. Use section-local content."
         )
 
-    def get_temperature(self, global_config):
-        return global_config.get("prd_creation_temperature")
+    def get_temperature(self, global_config: ConfigMap) -> float | None:
+        val = global_config.get("prd_creation_temperature")
+        return float(val) if isinstance(val, (int, float)) else None
 
-    def evaluate(self, response_text):
+    def evaluate(self, response_text: str) -> EvaluationResult:
         text = response_text.strip()
         rubric = Rubric(self.max_score)
         if not text:
@@ -59,7 +61,7 @@ class PRDCreationPlugin(BenchmarkTaskPlugin):
             "evidence": [{"kind": "section", "heading": section.heading, "chars": len(section.body)} for section in sections],
             "errors": [],
         })())
-        def body(names):
+        def body(names: list[str]) -> str:
             section = exact_section(text, names[0], names[1:])
             return section.body if section else ""
         executive = body(["Executive Summary"])
@@ -96,5 +98,5 @@ class PRDCreationPlugin(BenchmarkTaskPlugin):
         rubric.add_criterion("Open Questions / Risks", 1.0, 1.0 if re.search(r"\?|risk|mitigation|assumption|dependency", risks, re.IGNORECASE) else 0.0)
         return rubric.results()
 
-    def score(self, response_text):
+    def score(self, response_text: str) -> float:
         return self.evaluate(response_text).score

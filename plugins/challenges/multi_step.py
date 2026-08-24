@@ -3,8 +3,10 @@ from __future__ import annotations
 
 import ast
 import re
+from typing import Any
 
 from benchmark.plugin import BenchmarkTaskPlugin, EvaluationResult
+from benchmark.types import ConfigMap
 from plugins.challenges._analysis import fenced_blocks, text_without_fences
 from plugins.challenges._execution import extract_python_source, run_python_check
 from plugins.challenges._rubric import Rubric
@@ -13,26 +15,26 @@ from plugins.challenges._validators import parse_python, stub_definitions
 
 class MultiStepPlugin(BenchmarkTaskPlugin):
     @property
-    def id(self):
+    def id(self) -> str:
         return "multi-step"
 
     @property
-    def version(self):
+    def version(self) -> str:
         return "1.1.0"
 
     @property
-    def name(self):
+    def name(self) -> str:
         return "Multi-Step Instructions"
 
     @property
-    def max_score(self):
-        return 20.0
+    def max_score(self) -> int:
+        return int(20.0)
 
     @property
-    def supports_streaming(self):
+    def supports_streaming(self) -> bool:
         return True
 
-    def get_prompt(self):
+    def get_prompt(self) -> str:
         return (
             "Implement exactly the three functions below. Return exactly three fenced Python "
             "code blocks followed by the summary line; do not include prose or a main block.\n\n"
@@ -45,8 +47,9 @@ class MultiStepPlugin(BenchmarkTaskPlugin):
             "[SUMMARY: 3 functions, 3 code blocks, completed all steps]."
         )
 
-    def get_temperature(self, global_config):
-        return global_config.get("multi_step_temperature")
+    def get_temperature(self, global_config: ConfigMap) -> float | None:
+        val = global_config.get("multi_step_temperature")
+        return float(val) if isinstance(val, (int, float)) else None
 
     @staticmethod
     def _definitions(tree: ast.AST) -> set[str]:
@@ -56,7 +59,7 @@ class MultiStepPlugin(BenchmarkTaskPlugin):
         }
 
     @staticmethod
-    def _signature_matches(node, args, returns):
+    def _signature_matches(node: Any, args: tuple[tuple[str, str], ...], returns: str) -> bool:
         """Check a FunctionDef's positional argument names/types and return type.
 
         Uses the parsed AST instead of regex, so formatting (spaces, newlines)
@@ -70,7 +73,7 @@ class MultiStepPlugin(BenchmarkTaskPlugin):
                 return False
         return isinstance(node.returns, ast.Name) and node.returns.id == returns
 
-    def evaluate(self, response_text):
+    def evaluate(self, response_text: str) -> EvaluationResult:
         if not response_text or not response_text.strip():
             return EvaluationResult(0.0, [])
         text = response_text.strip()
@@ -199,5 +202,5 @@ assert format_greeting("Hi", 0) == ""
 
         return rubric.results()
 
-    def score(self, response_text):
+    def score(self, response_text: str) -> float:
         return self.evaluate(response_text).score

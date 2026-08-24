@@ -4,31 +4,32 @@ from __future__ import annotations
 import re
 
 from benchmark.plugin import BenchmarkTaskPlugin, EvaluationResult
+from benchmark.types import ConfigMap
 from plugins.challenges._rubric import Rubric
 
 
 class InstructionFollowingPlugin(BenchmarkTaskPlugin):
     @property
-    def id(self):
+    def id(self) -> str:
         return "instruction-following"
 
     @property
-    def version(self):
+    def version(self) -> str:
         return "1.0.0"
 
     @property
-    def name(self):
+    def name(self) -> str:
         return "Instruction Following"
 
     @property
-    def max_score(self):
-        return 20.0
+    def max_score(self) -> int:
+        return int(20.0)
 
     @property
-    def supports_streaming(self):
+    def supports_streaming(self) -> bool:
         return True
 
-    def get_prompt(self):
+    def get_prompt(self) -> str:
         return (
             "Return only four ORDER lines followed by the SUMMARY line; do not explain.\n"
             "Input orders:\n"
@@ -43,8 +44,9 @@ class InstructionFollowingPlugin(BenchmarkTaskPlugin):
             "<NAME> | TOTAL <amount>`. Then write exactly `[SUMMARY] count=4; total=404.90; top_order=T-02`."
         )
 
-    def get_temperature(self, global_config):
-        return global_config.get("instruction_following_temperature")
+    def get_temperature(self, global_config: ConfigMap) -> float | None:
+        val = global_config.get("instruction_following_temperature")
+        return float(val) if isinstance(val, (int, float)) else None
 
     _ORDER_RE = re.compile(r"^ORDER (T-\d{2}) \| CUSTOMER ([A-Z]+) \| TOTAL (\d+\.\d{2})$")
     _EXPECTED = (
@@ -55,7 +57,7 @@ class InstructionFollowingPlugin(BenchmarkTaskPlugin):
     )
     _SUMMARY = "[SUMMARY] count=4; total=404.90; top_order=T-02"
 
-    def evaluate(self, response_text):
+    def evaluate(self, response_text: str) -> EvaluationResult:
         if not response_text or not response_text.strip():
             return EvaluationResult(0.0, [])
         text = response_text.strip()
@@ -100,5 +102,5 @@ class InstructionFollowingPlugin(BenchmarkTaskPlugin):
         )
         return rubric.results()
 
-    def score(self, response_text):
+    def score(self, response_text: str) -> float:
         return self.evaluate(response_text).score

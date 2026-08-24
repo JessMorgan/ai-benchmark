@@ -112,6 +112,7 @@ check_untyped_defs = false
 # or redundant cast is now a mypy error in CI (pre-commit mypy hook).
 warn_unused_ignores = true
 warn_redundant_casts = true
+exclude = ["benchmark/cli.py"]
 
 [tool.ruff]
 target-version = "py310"

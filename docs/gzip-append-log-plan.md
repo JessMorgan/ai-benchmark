@@ -1,6 +1,6 @@
 # Gzip Concatenated-Member Log Plan
 
-**Status:** Core implementation and subprocess rollout complete; codec benchmarking remains open
+**Status:** Implementation and crash/codec validation complete; production-sized codec measurement remains open
 **Primary use:** compressed debug and failure transcripts for benchmark, judge, OpenCode, and Pi execution.
 
 ## Goals
@@ -267,42 +267,42 @@ Create `tests/test_compressed_logs.py`.
 
 ### Round-trip and append tests
 
-- [ ] One-member round trip preserves exact bytes.
+- [x] One-member round trip preserves exact bytes.
 - [x] Multiple concatenated members are read in order.
 - [x] Appending does not rewrite existing member bytes.
 - [x] UTF-8, emoji, multiline, and empty records round-trip.
-- [ ] Large streamed input remains bounded-memory.
-- [ ] Python gzip readers and the tolerant reader see the same complete data.
+- [x] Large streamed input remains bounded-memory.
+- [x] Python gzip readers and the tolerant reader see the same complete data.
 
 ### Crash and corruption tests
 
 - [x] Gzip header-only final member is detected as truncated.
-- [ ] Every truncation point within a final compressed member preserves all
+- [x] Every truncation point within a final compressed member preserves all
       preceding members.
-- [ ] Truncated footer is detected correctly.
-- [ ] Abrupt child-process termination leaves earlier members readable.
-- [ ] Recovery truncates only a provably incomplete final member.
-- [ ] Appending after recovery yields all prior complete records plus the new
+- [x] Truncated footer is detected correctly.
+- [x] Abrupt child-process termination leaves earlier members readable.
+- [x] Recovery truncates only a provably incomplete final member.
+- [x] Appending after recovery yields all prior complete records plus the new
       record.
-- [ ] Corruption in a non-final member is reported and never auto-truncated.
-- [ ] Trailing non-gzip bytes are reported as invalid tail data.
+- [x] Corruption in a non-final member is reported and never auto-truncated.
+- [x] Trailing non-gzip bytes are reported as invalid tail data.
 
 ### Concurrency and failure tests
 
 - [x] Concurrent append calls do not interleave records.
-- [ ] Concurrent recovery/open operations are serialized.
-- [ ] Write failures are surfaced without crashing benchmark workers.
-- [ ] `fsync()` failures are reported through persistence diagnostics.
-- [ ] Final shutdown flush is durable when configured.
+- [x] Concurrent recovery/open operations are serialized.
+- [x] Write failures are surfaced without crashing benchmark workers.
+- [x] `fsync()` failures are reported through persistence diagnostics.
+- [x] Final shutdown flush is durable when configured.
 
 ### Policy integration tests
 
 - [x] Compact mode creates no full successful judge transcript.
 - [x] Debug mode creates `.log.gz` and not plaintext judge logs.
-- [ ] Debug log content includes attempt/version/contract metadata.
+- [x] Debug log content includes attempt/version/contract metadata.
 - [x] Credentials never appear in compressed or exported logs.
-- [ ] Legacy plaintext logs remain readable.
-- [ ] Incomplete gzip tails are reported in run metadata.
+- [x] Legacy plaintext logs remain readable.
+- [x] Incomplete gzip tails are reported in run metadata.
 
 ## Implementation order
 
@@ -315,5 +315,6 @@ Create `tests/test_compressed_logs.py`.
 7. [x] Integrate judge debug logs.
 8. [x] Integrate HTTP diagnostic streams.
 9. [x] Integrate OpenCode/Pi diagnostic streams.
-10. [ ] Benchmark gzip against bz2 on representative judge logs.
-11. [ ] Reconsider zstd only if gzip measurements justify a dependency.
+10. [x] Add a reproducible gzip-vs-bz2 measurement helper and representative-log test.
+11. [ ] Run the helper against a production-sized judge log before deciding whether
+    zstd justifies a dependency.

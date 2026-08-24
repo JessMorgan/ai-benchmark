@@ -49,7 +49,7 @@ class SSEParseResult:
     # Accumulated native ``tool_calls`` deltas (merged by index, with
     # ``function.arguments`` fragments concatenated). Empty when the model
     # emitted no tool calls. See ``_merge_tool_calls``.
-    tool_calls: list = field(default_factory=list)
+    tool_calls: list[dict[str, Any]] = field(default_factory=list)
     # Server-side error surfaced inside the SSE stream (e.g. litellm/Ollama
     # emitting ``{"error": {...}}`` as a final data line before closing the
     # connection mid-reasoning). None for healthy streams. Detecting this is
@@ -73,7 +73,7 @@ class StreamResult:
     # also rendered into ``text`` as ``<tool_call>{...}</tool_call>`` blocks
     # so the tool-calling plugin can score them. Empty when the model
     # emitted no tool calls.
-    tool_calls: list = field(default_factory=list)
+    tool_calls: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -89,7 +89,7 @@ class NonStreamResult:
     # Native tool calls from the response message (also rendered into
     # ``text`` as ``<tool_call>{...}</tool_call>`` blocks). Empty when the
     # model emitted no tool calls.
-    tool_calls: list = field(default_factory=list)
+    tool_calls: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -107,7 +107,7 @@ class _StreamLineError:
     error: str
 
 
-def _safe_iter_lines(resp: requests.Response):
+def _safe_iter_lines(resp: requests.Response) -> Any:
     """Yield SSE lines while converting iterator failures to a sentinel."""
     try:
         yield from resp.iter_lines(decode_unicode=True)
@@ -115,7 +115,7 @@ def _safe_iter_lines(resp: requests.Response):
         yield _StreamLineError(f"{type(exc).__name__}: {exc}")
 
 
-def _api_protocol(cfg) -> str:
+def _api_protocol(cfg: dict[str, Any]) -> str:
     """Return the request/response protocol for a source config.
 
     ``"openai"`` is the default OpenAI-compatible format used by every
@@ -128,11 +128,11 @@ def _api_protocol(cfg) -> str:
     to the OpenAI format.
     """
     if isinstance(cfg, dict) and cfg.get("api_protocol") in ("1min", "chatplayground"):
-        return cfg["api_protocol"]
+        return str(cfg["api_protocol"])
     return "openai"
 
 
-def _build_1min_request_body(model, prompt, system_prompt=None):
+def _build_1min_request_body(model: str, prompt: str, system_prompt: str | None = None) -> dict[str, Any]:
     """Build the 1min.ai ``/api/chat-with-ai`` request body.
 
     The 1min.ai chat endpoint accepts ``type``, ``model``, and a
@@ -151,7 +151,7 @@ def _build_1min_request_body(model, prompt, system_prompt=None):
     }
 
 
-def _parse_1min_result(data):
+def _parse_1min_result(data: dict[str, Any]) -> tuple[str | None, str | None]:
     """Extract ``(text, error)`` from a 1min.ai non-streaming response body.
 
     A success body carries the generated text under
@@ -232,7 +232,7 @@ class _StopAwareRequestWatchdog:
     stale connection.
     """
 
-    def __init__(self, resp, timeout: float, stop_event) -> None:
+    def __init__(self, resp: Any, timeout: float, stop_event: threading.Event | None) -> None:
         self._resp = resp
         self._timeout = max(0.0, float(timeout))
         self._stop_event = stop_event
@@ -265,10 +265,10 @@ class _StopAwareRequestWatchdog:
 
 # Active HTTP responses so Ctrl+C can close them and unblock plugin threads.
 _active_requests_lock = threading.Lock()
-_active_requests: set = set()
+_active_requests: set[Any] = set()
 
 
-def close_active_requests():
+def close_active_requests() -> None:
     """Close all in-flight HTTP responses to unblock worker threads."""
     with _active_requests_lock:
         for resp in list(_active_requests):
@@ -281,7 +281,7 @@ def close_active_requests():
 # *that* a source/model is in backoff but also *which* plugin is blocked.
 # All mutations and reads happen under ``_429_lock``.
 _429_lock = threading.Lock()
-_429_stats: dict = {
+_429_stats: dict[str, Any] = {
     # Total number of times any request entered a 429 backoff sleep this run.
     "total_retries": 0,
     # Map ``(source, model, pid) -> {wake_ts, attempts, max_attempts}``. Entries
@@ -305,7 +305,7 @@ def get_active_request_count() -> int:
         return len(_active_requests)
 
 
-def get_429_stats() -> dict:
+def get_429_stats() -> dict[str, Any]:
     """Return a thread-safe snapshot of HTTP 429 retry/backoff state.
 
     The snapshot is decoupled from the internal ``_429_stats`` dict so a
@@ -324,14 +324,14 @@ def get_429_stats() -> dict:
         }
 
 
-def reset_429_stats():
+def reset_429_stats() -> None:
     """Reset 429 activity tracking. Intended for unit tests only."""
     global _429_stats
     with _429_lock:
         _429_stats = {"total_retries": 0, "sleeping": {}, "plugin_stats": {}}
 
 
-def _set_429_sleep(source, model, pid, wake_ts, attempts, max_attempts, delay):
+def _set_429_sleep(source: str, model: str, pid: str, wake_ts: float, attempts: int, max_attempts: int, delay: float) -> None:
     """Record that ``(source, model, pid)`` is entering a 429 backoff sleep."""
     with _429_lock:
         _429_stats["total_retries"] += 1
@@ -349,13 +349,13 @@ def _set_429_sleep(source, model, pid, wake_ts, attempts, max_attempts, delay):
         p_stats["total_sleep_time"] += float(delay)
 
 
-def _clear_429_sleep(source, model, pid):
+def _clear_429_sleep(source: str, model: str, pid: str) -> None:
     """Remove a ``(source, model, pid)`` entry from the 429 sleeping set, if any."""
     with _429_lock:
         _429_stats["sleeping"].pop((source, model, pid), None)
 
 
-def fetch_models_v1(base_url, api_key=None):
+def fetch_models_v1(base_url: str, api_key: str | None = None) -> list[str]:
     """Call GET {base_url}/v1/models and return a list of model IDs."""
     url = base_url.rstrip("/") + "/v1/models"
     headers = {"Content-Type": "application/json"}
@@ -368,8 +368,8 @@ def fetch_models_v1(base_url, api_key=None):
     return [m["id"] for m in models if "id" in m]
 
 
-def build_curl_cmd(model, prompt, max_tokens, stream, api_url, headers, system_prompt=None,
-                   request_body=None):
+def build_curl_cmd(model: str, prompt: str, max_tokens: int, stream: bool, api_url: str, headers: dict[str, str], system_prompt: str | None = None,
+                   request_body: dict[str, Any] | None = None) -> str:
     """Build a curl command string for the given API request.
 
     ``request_body`` is the already-merged body passed to ``requests.post``.
@@ -405,7 +405,7 @@ def build_curl_cmd(model, prompt, max_tokens, stream, api_url, headers, system_p
     )
 
 
-def log_request_entry(log_path, curl_cmd, response_body, request_label=None):
+def log_request_entry(log_path: str, curl_cmd: str, response_body: str, request_label: str | None = None) -> None:
     """Append a request/response block as plaintext or a gzip member."""
     block = ""
     if request_label:
@@ -431,21 +431,21 @@ def log_request_entry(log_path, curl_cmd, response_body, request_label=None):
             f.write(block)
 
 
-def _check_total_timeout(start_time, timeout, error, finish_reason=None):
+def _check_total_timeout(start_time: float, timeout: float, error: str | None, finish_reason: str | None = None) -> str | None:
     """Return a timeout error if the overall request duration was exceeded."""
     if not error and not finish_reason and time.time() - start_time > timeout:
         return f"Total timeout ({timeout}s) exceeded"
     return error
 
 
-def _log_response(log_path, curl_cmd, response_body, log_label):
+def _log_response(log_path: str | None, curl_cmd: str | None, response_body: str | None, log_label: str | None) -> None:
     """Write the response body to the request log if logging is enabled."""
     if log_path and curl_cmd:
         log_request_entry(log_path, curl_cmd, response_body or "(empty response)", log_label)
 
 
-def _build_request_body(model, prompt, max_tokens, session_seed, temperature, drop_params, stream,
-                        system_prompt=None, request_params=None):
+def _build_request_body(model: str, prompt: str, max_tokens: int, session_seed: int, temperature: float | None, drop_params: list[str] | None, stream: bool,
+                        system_prompt: str | None = None, request_params: dict[str, Any] | None = None) -> dict[str, Any]:
     """Build the JSON body for an API request."""
     messages = []
     if system_prompt:
@@ -469,8 +469,8 @@ def _build_request_body(model, prompt, max_tokens, session_seed, temperature, dr
 
 
 @contextmanager
-def _post_request_context(source_config, source, body, timeout, stream, log_path, log_label,
-                          stop_event=None, pid=None, on_retry=None) -> Iterator[PostRequestResult]:
+def _post_request_context(source_config: dict[str, Any], source: str, body: dict[str, Any], timeout: float, stream: bool, log_path: str | None, log_label: str | None,
+                          stop_event: threading.Event | None = None, pid: str | None = None, on_retry: Callable[[], None] | None = None) -> Iterator[PostRequestResult]:
     """Make a POST request and yield the response, handling cleanup.
 
     Yields a :class:`PostRequestResult`. ``response`` is the
@@ -710,7 +710,7 @@ def _post_request_context(source_config, source, body, timeout, stream, log_path
                 resp.close()
 
 
-def _merge_tool_calls(acc: list, fragments) -> list:
+def _merge_tool_calls(acc: list[dict[str, Any]], fragments: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Merge SSE ``tool_calls`` delta fragments into the accumulated list.
 
     Streaming APIs send tool calls as partial objects keyed by ``index``:
@@ -740,7 +740,7 @@ def _merge_tool_calls(acc: list, fragments) -> list:
     return result
 
 
-def _render_tool_calls(tool_calls: list) -> str:
+def _render_tool_calls(tool_calls: list[dict[str, Any]]) -> str:
     """Render accumulated native tool calls as ``<tool_call>`` blocks.
 
     Converts the OpenAI-style ``{id, type, function: {name, arguments}}``
@@ -803,15 +803,15 @@ class _StreamGuards:
     last call, so an idle/heartbeat stream costs nothing.
     """
 
-    def __init__(self, max_content_tokens=None, max_thinking_tokens=None,
-                 repetition_guard=False):
+    def __init__(self, max_content_tokens: int | None = None, max_thinking_tokens: int | None = None,
+                 repetition_guard: int | bool = False) -> None:
         self.max_content_tokens = max_content_tokens or 0
         self.max_thinking_tokens = max_thinking_tokens or 0
         self.repetition_guard = repetition_guard
         self._checked_content_len = 0
         self._checked_think_len = 0
 
-    def check(self, text, think_text):
+    def check(self, text: str, think_text: str) -> str | None:
         """Return an abort error message, or ``None`` when the stream is fine."""
         if len(text) > self._checked_content_len:
             self._checked_content_len = len(text)
@@ -828,7 +828,7 @@ class _StreamGuards:
         return None
 
 
-def _decorative_block(block):
+def _decorative_block(block: str) -> bool:
     """Return whether ``block`` is mostly typographic decoration.
 
     ASCII architecture/wireframe diagrams legitimately repeat box-drawing
@@ -841,7 +841,7 @@ def _decorative_block(block):
     return meaningful / len(block) < REPETITION_GUARD_DECORATION_RATIO
 
 
-def _repeats_detected(text):
+def _repeats_detected(text: str) -> bool:
     """Return whether ``text`` is stuck in a dense echo loop.
 
     The newest ``REPETITION_GUARD_MIN_SEQ``-char tail must appear
@@ -867,7 +867,7 @@ def _repeats_detected(text):
 def _parse_sse_line(line: str, first_tok: float | None, text: str,
                     think_text: str, finish_reason: str | None,
                     usage: dict[str, Any],
-                    tool_calls: list | None = None) -> SSEParseResult:
+                    tool_calls: list[dict[str, Any]] | None = None) -> SSEParseResult:
     """Parse a single Server-Sent Events line and update streaming state.
 
     Returns an :class:`SSEParseResult`. ``done`` is True when the ``[DONE]``
@@ -923,17 +923,17 @@ def _parse_sse_line(line: str, first_tok: float | None, text: str,
     return SSEParseResult(first_tok, text, think_text, finish_reason, usage, False, tool_calls, error)
 
 
-def stream_request(source_config, timeout, model, source, prompt, max_tokens=2048,
-                   log_path=None, log_label=None, session_seed=0, temperature=None,
-                   drop_params=None, stop_event=None, system_prompt=None,
-                   request_params=None,
+def stream_request(source_config: dict[str, Any], timeout: float, model: str, source: str, prompt: str, max_tokens: int = 2048,
+                   log_path: str | None = None, log_label: str | None = None, session_seed: int = 0, temperature: float | None = None,
+                   drop_params: list[str] | None = None, stop_event: threading.Event | None = None, system_prompt: str | None = None,
+                   request_params: dict[str, Any] | None = None,
                    observer: TaskObserver | None = None,
                    on_chunk: Callable[[str], None] | None = None,
                    on_think_chunk: Callable[[str], None] | None = None,
                    pid: str | None = None,
                    on_retry: Callable[[], None] | None = None,
-                   max_content_tokens=None, max_thinking_tokens=None,
-                   repetition_guard=False) -> StreamResult:
+                   max_content_tokens: int | None = None, max_thinking_tokens: int | None = None,
+                   repetition_guard: int | bool = False) -> StreamResult:
     """Make a streaming chat-completion request and return parsed results.
 
     Returns a :class:`StreamResult` with parsed fields for the assembled
@@ -970,7 +970,7 @@ def stream_request(source_config, timeout, model, source, prompt, max_tokens=204
     error = None
     finish_reason = None
     usage: dict[str, Any] = {}
-    tool_calls: list = []
+    tool_calls: list[dict[str, Any]] = []
     guards = _StreamGuards(max_content_tokens, max_thinking_tokens, repetition_guard)
     cfg = source_config.get(source) or {}
     protocol = _api_protocol(cfg)
@@ -1111,7 +1111,7 @@ def stream_request(source_config, timeout, model, source, prompt, max_tokens=204
                         finish_reason, usage, tool_calls)
 
 
-def _read_response_body(resp: requests.Response, stop_event) -> ResponseBodyResult:
+def _read_response_body(resp: requests.Response, stop_event: threading.Event | None) -> ResponseBodyResult:
     """Read a non-streaming response body in chunks, honouring cancellation."""
     chunks = []
     try:
@@ -1127,15 +1127,15 @@ def _read_response_body(resp: requests.Response, stop_event) -> ResponseBodyResu
     )
 
 
-def nonstream_request(source_config, timeout, model, source, prompt, max_tokens=2048,
-                      log_path=None, log_label=None, session_seed=0, temperature=None,
-                      drop_params=None, stop_event=None, system_prompt=None,
-                      request_params=None,
+def nonstream_request(source_config: dict[str, Any], timeout: float, model: str, source: str, prompt: str, max_tokens: int = 2048,
+                      log_path: str | None = None, log_label: str | None = None, session_seed: int = 0, temperature: float | None = None,
+                      drop_params: list[str] | None = None, stop_event: threading.Event | None = None, system_prompt: str | None = None,
+                      request_params: dict[str, Any] | None = None,
                       observer: TaskObserver | None = None,
                       pid: str | None = None,
                       on_retry: Callable[[], None] | None = None,
-                      max_content_tokens=None, max_thinking_tokens=None,
-                      repetition_guard=False) -> NonStreamResult:
+                      max_content_tokens: int | None = None, max_thinking_tokens: int | None = None,
+                      repetition_guard: int | bool = False) -> NonStreamResult:
     """Make a non-streaming chat-completion request and return parsed results.
 
     Returns a :class:`NonStreamResult` with named fields for response text,
@@ -1159,7 +1159,7 @@ def nonstream_request(source_config, timeout, model, source, prompt, max_tokens=
     think_text = ""
     usage: dict[str, Any] = {}
     finish_reason = None
-    tool_calls: list = []
+    tool_calls: list[dict[str, Any]] = []
     guards = _StreamGuards(max_content_tokens, max_thinking_tokens, repetition_guard)
     cfg = source_config.get(source) or {}
     protocol = _api_protocol(cfg)
@@ -1207,7 +1207,8 @@ def nonstream_request(source_config, timeout, model, source, prompt, max_tokens=
             except json.JSONDecodeError as exc:
                 error = f"Invalid 1min response: {type(exc).__name__}: {exc}"
             else:
-                text, one_min_error = _parse_1min_result(data)
+                parsed_text, one_min_error = _parse_1min_result(data)
+                text = parsed_text or ""
                 if one_min_error:
                     error = one_min_error
         else:

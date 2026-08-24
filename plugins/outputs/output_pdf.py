@@ -1,5 +1,6 @@
 import os
 from datetime import datetime, timezone
+from typing import Any
 
 from benchmark.outputs import (
     _judge_consensus_by_contract,
@@ -12,7 +13,7 @@ from benchmark.outputs import (
 from benchmark.plugin import BenchmarkOutputPlugin
 
 
-def _atomic_write_pdf(path, pdf):
+def _atomic_write_pdf(path: str, pdf: Any) -> None:
     import tempfile
     fd, temporary = tempfile.mkstemp(prefix=f".{os.path.basename(path)}.", dir=os.path.dirname(path) or ".")
     os.close(fd)
@@ -29,18 +30,24 @@ def _atomic_write_pdf(path, pdf):
 
 class PDFOutputPlugin(BenchmarkOutputPlugin):
     @property
-    def id(self):
+    def id(self) -> str:
         return "output-pdf"
 
     @property
-    def name(self):
+    def name(self) -> str:
         return "PDF Report"
 
     @property
-    def extension(self):
+    def extension(self) -> str:
         return "pdf"
 
-    def generate(self, results, active_plugins, output_dir=None, session_seed=None):
+    def generate(
+        self,
+        results: list[dict[str, Any]],
+        active_plugins: list[Any],
+        output_dir: str | None = None,
+        session_seed: int | None = None,
+    ) -> str | None:
         if not output_dir:
             return None
 

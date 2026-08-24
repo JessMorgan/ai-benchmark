@@ -3,7 +3,8 @@ from __future__ import annotations
 
 import re
 
-from benchmark.plugin import BenchmarkTaskPlugin
+from benchmark.plugin import BenchmarkTaskPlugin, EvaluationResult
+from benchmark.types import ConfigMap
 from plugins.challenges._analysis import first_section, markdown_sections
 from plugins.challenges._execution import extract_python_source, run_python_check
 from plugins.challenges._rubric import Rubric
@@ -11,26 +12,26 @@ from plugins.challenges._rubric import Rubric
 
 class DebugTraversalPlugin(BenchmarkTaskPlugin):
     @property
-    def id(self):
+    def id(self) -> str:
         return "debug-traversal"
 
     @property
-    def version(self):
+    def version(self) -> str:
         return "1.0.0"
 
     @property
-    def name(self):
+    def name(self) -> str:
         return "Debug Traversal"
 
     @property
-    def max_score(self):
-        return 20.0
+    def max_score(self) -> int:
+        return int(20.0)
 
     @property
-    def supports_streaming(self):
+    def supports_streaming(self) -> bool:
         return True
 
-    def get_prompt(self):
+    def get_prompt(self) -> str:
         return (
             "Debug the following real bug. The function must return user IDs that occur in at "
             "least two different log entries. With the supplied data it should return ['abc123'], "
@@ -54,10 +55,11 @@ class DebugTraversalPlugin(BenchmarkTaskPlugin):
             "write a pytest-style test, and discuss ordering/empty-ID side effects."
         )
 
-    def get_temperature(self, global_config):
-        return global_config.get("debug_traversal_temperature")
+    def get_temperature(self, global_config: ConfigMap) -> float | None:
+        val = global_config.get("debug_traversal_temperature")
+        return float(val) if isinstance(val, (int, float)) else None
 
-    def evaluate(self, response_text):
+    def evaluate(self, response_text: str) -> EvaluationResult:
         text = response_text.strip()
         rubric = Rubric(self.max_score)
         if not text:
@@ -131,5 +133,5 @@ assert find_duplicate_users([
             rubric.add_criterion("Executable fix verification", 3.0, 0.0, negative_findings=[{"finding": "no corrected Python block"}])
         return rubric.results()
 
-    def score(self, response_text):
+    def score(self, response_text: str) -> float:
         return self.evaluate(response_text).score

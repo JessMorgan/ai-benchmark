@@ -3,33 +3,34 @@ from __future__ import annotations
 
 import re
 
-from benchmark.plugin import BenchmarkTaskPlugin
+from benchmark.plugin import BenchmarkTaskPlugin, EvaluationResult
+from benchmark.types import ConfigMap
 from plugins.challenges._analysis import exact_section, markdown_sections
 from plugins.challenges._rubric import Rubric
 
 
 class SoftwareArchitecturePlugin(BenchmarkTaskPlugin):
     @property
-    def id(self):
+    def id(self) -> str:
         return "software-architecture"
 
     @property
-    def version(self):
+    def version(self) -> str:
         return "1.0.0"
 
     @property
-    def name(self):
+    def name(self) -> str:
         return "Software Architecture"
 
     @property
-    def max_score(self):
-        return 20.0
+    def max_score(self) -> int:
+        return int(20.0)
 
     @property
-    def supports_streaming(self):
+    def supports_streaming(self) -> bool:
         return True
 
-    def get_prompt(self):
+    def get_prompt(self) -> str:
         return (
             "Produce a FlowState architecture document with headings Executive Summary, Requirements Summary, "
             "Architecture Style, Component Diagram / Description, Data Model, API Design, Technology Stack, "
@@ -38,10 +39,11 @@ class SoftwareArchitecturePlugin(BenchmarkTaskPlugin):
             "analytics, and 1M DAU. Include concrete entities/endpoints, capacity numbers, failure handling, and rationale."
         )
 
-    def get_temperature(self, global_config):
-        return global_config.get("software_architecture_temperature")
+    def get_temperature(self, global_config: ConfigMap) -> float | None:
+        val = global_config.get("software_architecture_temperature")
+        return float(val) if isinstance(val, (int, float)) else None
 
-    def evaluate(self, response_text):
+    def evaluate(self, response_text: str) -> EvaluationResult:
         text = response_text.strip()
         rubric = Rubric(self.max_score)
         if not text:
@@ -78,7 +80,7 @@ class SoftwareArchitecturePlugin(BenchmarkTaskPlugin):
             evidence=[{"kind": "section", "heading": name} for name, section in matched.items() if section],
             negative_findings=[{"finding": f"missing section: {name}"} for name, section in matched.items() if section is None],
         )
-        def body(name):
+        def body(name: str) -> str:
             section = matched[name]
             return section.body if section else ""
         architecture = " ".join((body("Architecture Style"), body("Component Diagram / Description")))
@@ -111,5 +113,5 @@ class SoftwareArchitecturePlugin(BenchmarkTaskPlugin):
             rubric.penalize_criterion("Observability & SLOs", 0.5, "availability target lacks supporting failure handling")
         return rubric.results()
 
-    def score(self, response_text):
+    def score(self, response_text: str) -> float:
         return self.evaluate(response_text).score

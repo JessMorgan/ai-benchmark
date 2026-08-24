@@ -5,32 +5,33 @@ import json
 import re
 
 from benchmark.plugin import BenchmarkTaskPlugin, EvaluationResult
+from benchmark.types import ConfigMap
 from plugins.challenges._rubric import Rubric
 from plugins.challenges._validators import parse_structured
 
 
 class CodeReviewPlugin(BenchmarkTaskPlugin):
     @property
-    def id(self):
+    def id(self) -> str:
         return "code-review"
 
     @property
-    def version(self):
+    def version(self) -> str:
         return "1.0.0"
 
     @property
-    def name(self):
+    def name(self) -> str:
         return "Code Review"
 
     @property
-    def max_score(self):
-        return 15.0
+    def max_score(self) -> int:
+        return int(15.0)
 
     @property
-    def supports_streaming(self):
+    def supports_streaming(self) -> bool:
         return False
 
-    def get_prompt(self):
+    def get_prompt(self) -> str:
         return (
             "Review this Python function. Identify the concrete defects, cite the relevant "
             "construct, and give a remediation. Return JSON `{\"issues\": [{\"description\": "
@@ -42,8 +43,9 @@ class CodeReviewPlugin(BenchmarkTaskPlugin):
             "    f.write(str(results))\n    return results\n```"
         )
 
-    def get_temperature(self, global_config):
-        return global_config.get("code_review_temperature")
+    def get_temperature(self, global_config: ConfigMap) -> float | None:
+        val = global_config.get("code_review_temperature")
+        return float(val) if isinstance(val, (int, float)) else None
 
     @staticmethod
     def _descriptions(text: str) -> list[str]:
@@ -81,7 +83,7 @@ class CodeReviewPlugin(BenchmarkTaskPlugin):
                 return True, finding
         return False, ""
 
-    def evaluate(self, response_text):
+    def evaluate(self, response_text: str) -> EvaluationResult:
         text = response_text.strip()
         rubric = Rubric(self.max_score)
         if not text:
@@ -149,5 +151,5 @@ class CodeReviewPlugin(BenchmarkTaskPlugin):
         )
         return rubric.results()
 
-    def score(self, response_text):
+    def score(self, response_text: str) -> float:
         return self.evaluate(response_text).score

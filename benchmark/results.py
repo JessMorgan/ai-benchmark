@@ -12,6 +12,7 @@ from typing import Any
 
 from .outputs import sanitize_filename
 from .plugin import SCORE_SCHEMA
+from .types import JSONObject
 
 
 def _write_text(path: str, content: str) -> None:
@@ -45,8 +46,8 @@ def save_task_result(
     runner: str = "http",
     request_applied: bool = True,
     score: Any = None,
-    rubric: list | None = None,
-    diagnostics: dict | None = None,
+    rubric: list[dict[str, Any]] | None = None,
+    diagnostics: JSONObject | None = None,
     score_error: str | None = None,
     score_traceback: str | None = None,
     selected_prompt: str = "",

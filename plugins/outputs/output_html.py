@@ -2,6 +2,7 @@ import html as html_lib
 import os
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 import jinja2
 
@@ -17,7 +18,12 @@ from benchmark.outputs import (
 from benchmark.plugin import BenchmarkOutputPlugin
 
 
-def _atomic_write(path, content):
+def _ttft_sort_key(result: dict[str, Any]) -> float:
+    value = result.get("ttft")
+    return float(value) if isinstance(value, (int, float)) else 999.0
+
+
+def _atomic_write(path: str, content: str) -> None:
     from benchmark.outputs import _atomic_replace_report
     _atomic_replace_report(path, content)
 
@@ -35,18 +41,24 @@ _ENV = jinja2.Environment(
 
 class HTMLOutputPlugin(BenchmarkOutputPlugin):
     @property
-    def id(self):
+    def id(self) -> str:
         return "output-html"
 
     @property
-    def name(self):
+    def name(self) -> str:
         return "HTML Report"
 
     @property
-    def extension(self):
+    def extension(self) -> str:
         return "html"
 
-    def generate(self, results, active_plugins, output_dir=None, session_seed=None):
+    def generate(
+        self,
+        results: list[dict[str, Any]],
+        active_plugins: list[Any],
+        output_dir: str | None = None,
+        session_seed: int | None = None,
+    ) -> str | None:
         ok = [r for r in results if r["status"] == "ok"]
         judge_enabled = any(
             r.get("judge_models")
@@ -111,7 +123,7 @@ class HTMLOutputPlugin(BenchmarkOutputPlugin):
 
         ttft_rows = []
         for i, r in enumerate(
-            sorted(ok, key=lambda x: (x.get('ttft') if isinstance(x.get('ttft'), (int, float)) else 999))[:10], 1
+            sorted(ok, key=_ttft_sort_key)[:10], 1
         ):
             ttft = r.get('ttft')
             ttft_rows.append((i, r["model"], ttft if ttft is not None else "-"))
@@ -120,7 +132,7 @@ class HTMLOutputPlugin(BenchmarkOutputPlugin):
         for p in active_plugins:
             lb_rows = []
             for i, r in enumerate(
-                sorted(ok, key=lambda x: _numeric_score(x, p.id), reverse=True)[:10], 1
+                sorted(ok, key=lambda x: float(_numeric_score(x, p.id)), reverse=True)[:10], 1
             ):
                 lb_rows.append((i, r["model"], r.get(f"{p.id}_score", "-")))
             leaderboards.append((p.name, lb_rows))
@@ -209,11 +221,18 @@ class HTMLOutputPlugin(BenchmarkOutputPlugin):
         header_cells += "<th>Overall Score (0–100)</th><th>Scored Plugins</th><th>Time</th><th>Mode</th><th>Status</th>"
 
         seed_html = f"<br><strong>Seed:</strong> {session_seed}" if session_seed is not None else ""
-        judges_line = html_lib.escape(
-            ', '.join(next((r.get('judge_models') for r in results if r.get('judge_models')), [])
-                      or ([next((r.get('judge_model') for r in results if r.get('judge_model')), '')]
-                          if any(r.get('judge_model') for r in results) else [])) or '—'
-        )
+        judge_models: list[str] = []
+        for result in results:
+            configured = result.get("judge_models")
+            if isinstance(configured, list):
+                judge_models = [str(model) for model in configured]
+                if judge_models:
+                    break
+            single_judge = result.get("judge_model")
+            if single_judge:
+                judge_models = [str(single_judge)]
+                break
+        judges_line = html_lib.escape(", ".join(judge_models) or "—")
         judge_status = html_lib.escape(str(next((r.get('judge_status') for r in results if r.get('judge_status')), '—')))
 
         content = _ENV.get_template("results.html.j2").render(
@@ -228,9 +247,9 @@ class HTMLOutputPlugin(BenchmarkOutputPlugin):
             judges_line=judges_line,
             judge_status=judge_status,
             header_cells=header_cells,
-            rows=rows,
-            rubric_html=rubric_html,
-            judge_criteria_html=judge_criteria_html,
+            rows=[(str(row_class), str(row_cells)) for row_class, row_cells in rows],
+            rubric_html=str(rubric_html),
+            judge_criteria_html=str(judge_criteria_html),
         )
 
         if output_dir:
@@ -240,4 +259,4 @@ class HTMLOutputPlugin(BenchmarkOutputPlugin):
                 return path
             except OSError:
                 pass
-        return content
+        return str(content)

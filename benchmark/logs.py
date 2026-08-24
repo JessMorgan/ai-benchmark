@@ -11,7 +11,7 @@ import os
 import re
 import threading
 import zlib
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from typing import Any
 
@@ -107,6 +107,18 @@ def _scan_log(path: str, chunk_size: int = 64 * 1024) -> _ScanResult:
                         break
                     continue
                 if not pending.startswith(b"\x1f\x8b"):
+                    if b"\x1f\x8b".startswith(pending):
+                        if eof:
+                            truncated_tail = True
+                            break
+                        chunk = reader.read(chunk_size)
+                        if chunk:
+                            total_bytes += len(chunk)
+                            pending += chunk
+                            continue
+                        eof = True
+                        truncated_tail = True
+                        break
                     invalid_tail = True
                     if not eof:
                         total_bytes += len(reader.read())
@@ -183,8 +195,14 @@ def recover_log(path: str, *, repair: bool = False) -> LogRecovery:
     return recovery
 
 
-def iter_log_members(path: str, *, tolerate_truncated_tail: bool = True):
-    """Yield complete member contents, optionally tolerating a damaged tail."""
+def iter_log_members(path: str, *, tolerate_truncated_tail: bool = True) -> Iterator[bytes]:
+    """Yield complete gzip members or one legacy plaintext log."""
+    with open(path, "rb") as probe:
+        magic = probe.read(2)
+    if magic != b"\x1f\x8b":
+        with open(path, "rb") as handle:
+            yield handle.read()
+        return
     scanned = _scan_log(path)
     recovery = scanned.recovery
     if recovery.invalid_tail:
@@ -267,7 +285,7 @@ class AppendOnlyGzipLog:
             self._flush_locked(sync=sync or self.sync_policy == "batch")
 
     def recover(self) -> LogRecovery:
-        """Scan the current file without modifying it."""
+        """Scan the current gzip file without modifying it."""
         with self._lock:
             return recover_log(self.path, repair=False)
 

@@ -2,34 +2,36 @@
 from __future__ import annotations
 
 import json
+from typing import Any
 
-from benchmark.plugin import BenchmarkTaskPlugin
+from benchmark.plugin import BenchmarkTaskPlugin, EvaluationResult
+from benchmark.types import ConfigMap
 from plugins.challenges._analysis import exact_section, fenced_blocks, markdown_sections
 from plugins.challenges._rubric import Rubric
 
 
 class MultiTurnConversationPlugin(BenchmarkTaskPlugin):
     @property
-    def id(self):
+    def id(self) -> str:
         return "multi-turn-conversation"
 
     @property
-    def version(self):
+    def version(self) -> str:
         return "1.0.0"
 
     @property
-    def name(self):
+    def name(self) -> str:
         return "Multi-Turn Conversation"
 
     @property
-    def max_score(self):
-        return 20.0
+    def max_score(self) -> int:
+        return int(20.0)
 
     @property
-    def supports_streaming(self):
+    def supports_streaming(self) -> bool:
         return True
 
-    def get_prompt(self):
+    def get_prompt(self) -> str:
         return (
             "Simulate this three-turn assistant conversation as a stateful agent. Return exactly "
             "one fenced JSON object under each heading and no prose outside the objects.\n\n"
@@ -44,11 +46,12 @@ class MultiTurnConversationPlugin(BenchmarkTaskPlugin):
             "(array of strings), notification_minutes (integer or null), and changes (array of strings)."
         )
 
-    def get_temperature(self, global_config):
-        return global_config.get("multi_turn_conversation_temperature")
+    def get_temperature(self, global_config: ConfigMap) -> float | None:
+        val = global_config.get("multi_turn_conversation_temperature")
+        return float(val) if isinstance(val, (int, float)) else None
 
     @staticmethod
-    def _state(section):
+    def _state(section: Any | None) -> dict[str, Any] | None:
         if section is None:
             return None
         blocks = fenced_blocks(section.body, "json")
@@ -60,7 +63,7 @@ class MultiTurnConversationPlugin(BenchmarkTaskPlugin):
             return None
         return value if isinstance(value, dict) else None
 
-    def evaluate(self, response_text):
+    def evaluate(self, response_text: str) -> EvaluationResult:
         text = response_text.strip()
         rubric = Rubric(self.max_score)
         if not text:
@@ -108,7 +111,7 @@ class MultiTurnConversationPlugin(BenchmarkTaskPlugin):
             {"start": "09:00", "duration_minutes": 25, "music": False, "calendar_event": True, "notification_minutes": None},
             {"start": "09:00", "duration_minutes": 50, "music": False, "calendar_event": True, "notification_minutes": 5},
         ]
-        state_values = []
+        state_values: list[dict[str, Any]] = []
         for state in states:
             if isinstance(state, dict):
                 state_values.append(state)
@@ -138,13 +141,13 @@ class MultiTurnConversationPlugin(BenchmarkTaskPlugin):
             and all(section is not None and len(fenced_blocks(section.body, "json")) == 1 for section in turns)
             and summary is not None
             and all(
-                section.body.strip().lower().startswith("```json")
-                and section.body.strip().endswith("```")
+                (section.body.strip().lower().startswith("```json")  # type: ignore[union-attr]
+                and section.body.strip().endswith("```"))  # type: ignore[union-attr]
                 for section in turns
             )
         )
         rubric.add_criterion("Conversation response contract", 3.0, 3.0 if structure_ok else 0.0)
         return rubric.results()
 
-    def score(self, response_text):
+    def score(self, response_text: str) -> float:
         return self.evaluate(response_text).score

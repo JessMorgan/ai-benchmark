@@ -3,22 +3,25 @@
 This module contains the report generators (Markdown, CSV, HTML, PDF) and the
 helper used to persist them to disk.
 """
+from __future__ import annotations
+
 import contextlib
 import os
 import re
 import tempfile
+from typing import Any
 
-from .plugin import normalize_score
+from .plugin import BenchmarkOutputPlugin, BenchmarkTaskPlugin, normalize_score
 
 
-def sanitize_filename(name):
+def sanitize_filename(name: str) -> str:
     """Sanitize a model name for use as a filename."""
     s = re.sub(r'[^\w\-\.\(\) ]', '_', name)
     s = re.sub(r'\s+', '_', s.strip())
     return s
 
 
-def _numeric_plugin_scores(result, active_plugins):
+def _numeric_plugin_scores(result: dict[str, Any], active_plugins: list[BenchmarkTaskPlugin]) -> list[Any]:
     """Return normalized numeric plugin scores, excluding failures."""
     return [
         score
@@ -28,18 +31,18 @@ def _numeric_plugin_scores(result, active_plugins):
     ]
 
 
-def _plugin_total_score(result, active_plugins):
+def _plugin_total_score(result: dict[str, Any], active_plugins: list[BenchmarkTaskPlugin]) -> int | None:
     """Return the normalized overall mean score, or ``None`` if unscored."""
     scores = _numeric_plugin_scores(result, active_plugins)
     return normalize_score(sum(scores) / len(scores), 100) if scores else None
 
 
-def _scored_plugin_count(result, active_plugins):
+def _scored_plugin_count(result: dict[str, Any], active_plugins: list[BenchmarkTaskPlugin]) -> int:
     """Return the number of active plugins with numeric public scores."""
     return len(_numeric_plugin_scores(result, active_plugins))
 
 
-def _plugin_token_counts(result, plugin_id):
+def _plugin_token_counts(result: dict[str, Any], plugin_id: str) -> tuple[Any, Any, Any]:
     """Return ``(thinking, content, total)`` token counts for a plugin result.
 
     ``{pid}_output_tokens`` is the content-only count (backward compatible);
@@ -68,7 +71,7 @@ def _plugin_token_counts(result, plugin_id):
     return thinking, content, total
 
 
-def _numeric_score(result, plugin_id, default=0):
+def _numeric_score(result: dict[str, Any], plugin_id: str, default: Any = 0) -> Any:
     """Return a normalized numeric score for sorting, or ``default``."""
     score = result.get(f"{plugin_id}_score", default)
     if isinstance(score, (int, float)):
@@ -76,7 +79,7 @@ def _numeric_score(result, plugin_id, default=0):
     return default
 
 
-def _numeric_judge_score(result, plugin_id, default=0):
+def _numeric_judge_score(result: dict[str, Any], plugin_id: str, default: Any = 0) -> Any:
     """Return a numeric semantic judge score for sorting."""
     score = result.get(f"{plugin_id}_judge_score", default)
     if isinstance(score, (int, float)) and not isinstance(score, bool):
@@ -84,7 +87,7 @@ def _numeric_judge_score(result, plugin_id, default=0):
     return default
 
 
-def _judge_consensus_by_contract(result, plugin_id):
+def _judge_consensus_by_contract(result: dict[str, Any], plugin_id: str) -> dict[str, Any]:
     """Return versioned consensus, with a legacy vote fallback."""
     consensus = result.get(f"{plugin_id}_judge_consensus_by_contract")
     if isinstance(consensus, dict) and consensus:
@@ -92,7 +95,7 @@ def _judge_consensus_by_contract(result, plugin_id):
     return {}
 
 
-def _judge_criteria(result, plugin_id):
+def _judge_criteria(result: dict[str, Any], plugin_id: str) -> list[dict[str, Any]]:
     """Return structured judge criteria, including contract identity."""
     votes = result.get(f"{plugin_id}_judge_votes", [])
     if isinstance(votes, list):
@@ -113,7 +116,7 @@ def _judge_criteria(result, plugin_id):
     return criteria if isinstance(criteria, list) else []
 
 
-def _judge_enabled(results):
+def _judge_enabled(results: list[dict[str, Any]]) -> bool:
     """Return whether any result carries judge metadata."""
     return any(
         result.get("judge_models")
@@ -124,7 +127,7 @@ def _judge_enabled(results):
     )
 
 
-def _get_output_plugin(plugin_id):
+def _get_output_plugin(plugin_id: str) -> BenchmarkOutputPlugin | None:
     """Get an output plugin by ID."""
     from plugins import discover_output_plugins
     for plugin in discover_output_plugins():
@@ -133,35 +136,39 @@ def _get_output_plugin(plugin_id):
     return None
 
 
-def gen_markdown(results, active_plugins, output_dir=None, session_seed=None):
+def gen_markdown(results: list[dict[str, Any]], active_plugins: list[BenchmarkTaskPlugin], output_dir: str | None = None, session_seed: int | None = None) -> str | None:
     """Backward-compatible wrapper that delegates to MarkdownOutputPlugin."""
     plugin = _get_output_plugin("output-markdown")
     if plugin:
-        return plugin.generate(results, active_plugins, output_dir=output_dir, session_seed=session_seed)
+        generated = plugin.generate(results, active_plugins, output_dir=output_dir, session_seed=session_seed)
+        return generated if isinstance(generated, str) else None
     return None
 
 
-def gen_csv(results, active_plugins):
+def gen_csv(results: list[dict[str, Any]], active_plugins: list[BenchmarkTaskPlugin]) -> str | None:
     """Backward-compatible wrapper that delegates to CSVOutputPlugin."""
     plugin = _get_output_plugin("output-csv")
     if plugin:
-        return plugin.generate(results, active_plugins)
+        generated = plugin.generate(results, active_plugins)
+        return generated if isinstance(generated, str) else None
     return None
 
 
-def gen_html(results, active_plugins, output_dir=None, session_seed=None):
+def gen_html(results: list[dict[str, Any]], active_plugins: list[BenchmarkTaskPlugin], output_dir: str | None = None, session_seed: int | None = None) -> str | None:
     """Backward-compatible wrapper that delegates to HTMLOutputPlugin."""
     plugin = _get_output_plugin("output-html")
     if plugin:
-        return plugin.generate(results, active_plugins, output_dir=output_dir, session_seed=session_seed)
+        generated = plugin.generate(results, active_plugins, output_dir=output_dir, session_seed=session_seed)
+        return generated if isinstance(generated, str) else None
     return None
 
 
-def gen_pdf(results, active_plugins, output_dir, session_seed=None):
+def gen_pdf(results: list[dict[str, Any]], active_plugins: list[BenchmarkTaskPlugin], output_dir: str, session_seed: int | None = None) -> str | None:
     """Backward-compatible wrapper that delegates to PDFOutputPlugin."""
     plugin = _get_output_plugin("output-pdf")
     if plugin:
-        return plugin.generate(results, active_plugins, output_dir=output_dir, session_seed=session_seed)
+        generated = plugin.generate(results, active_plugins, output_dir=output_dir, session_seed=session_seed)
+        return generated if isinstance(generated, str) else None
     return None
 
 
@@ -173,7 +180,7 @@ _OUTPUT_FORMAT_PLUGIN_IDS = {
 }
 
 
-def normalize_output_formats(output_formats):
+def normalize_output_formats(output_formats: list[str] | None) -> list[str]:
     """Return valid report formats once, preserving the caller's order."""
     if output_formats is None:
         return list(_OUTPUT_FORMAT_PLUGIN_IDS)
@@ -186,17 +193,25 @@ def normalize_output_formats(output_formats):
     return formats
 
 
-def _atomic_replace_report(path, content, *, binary=False):
+def _atomic_replace_report(path: str, content: str | bytes, *, binary: bool = False) -> None:
     """Write report content through a sibling temporary file and replace atomically."""
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-    mode = "wb" if binary else "w"
-    kwargs = {} if binary else {"encoding": "utf-8"}
     fd, temporary = tempfile.mkstemp(prefix=f".{os.path.basename(path)}.", dir=os.path.dirname(path) or ".")
     try:
-        with os.fdopen(fd, mode, **kwargs) as handle:
-            handle.write(content)
-            handle.flush()
-            os.fsync(handle.fileno())
+        if binary:
+            if not isinstance(content, bytes):
+                raise TypeError("binary reports require bytes")
+            with os.fdopen(fd, "wb") as handle:
+                handle.write(content)
+                handle.flush()
+                os.fsync(handle.fileno())
+        else:
+            if not isinstance(content, str):
+                raise TypeError("text reports require str")
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(content)
+                handle.flush()
+                os.fsync(handle.fileno())
         os.replace(temporary, path)
     except Exception:
         with contextlib.suppress(OSError):
@@ -204,42 +219,43 @@ def _atomic_replace_report(path, content, *, binary=False):
         raise
 
 
-def save_outputs(results, output_dir, active_plugins, *, output_formats=None,
-                 session_seed=None):
+def save_outputs(results: list[dict[str, Any]], output_dir: str, active_plugins: list[BenchmarkTaskPlugin], *, output_formats: list[str] | None = None, session_seed: int | None = None) -> list[str]:
     """Generate the selected report formats from result dictionaries."""
     from plugins import discover_output_plugins
 
     output_plugins_list = discover_output_plugins()
     if output_formats is None:
-        generated = []
+        generated: list[str] = []
         for plugin in output_plugins_list:
             with contextlib.suppress(Exception):
                 path = plugin.generate(
                     results, active_plugins, output_dir=output_dir,
                     session_seed=session_seed,
                 )
-                if path:
+                if isinstance(path, str):
                     generated.append(path)
         return generated
 
     selected = normalize_output_formats(output_formats)
-    output_plugins = {plugin.id: plugin for plugin in output_plugins_list}
-    generated = []
+    output_plugins = {p.id: p for p in output_plugins_list}
+    selected_generated: list[str] = []
     for output_format in selected:
-        plugin = output_plugins.get(_OUTPUT_FORMAT_PLUGIN_IDS[output_format])
-        if plugin is None:
+        selected_plugin: BenchmarkOutputPlugin | None = output_plugins.get(
+            _OUTPUT_FORMAT_PLUGIN_IDS[output_format]
+        )
+        if selected_plugin is None:
             continue
         with contextlib.suppress(Exception):
-            path = plugin.generate(
+            path = selected_plugin.generate(
                 results, active_plugins, output_dir=output_dir,
                 session_seed=session_seed,
             )
-            if path:
-                generated.append(path)
-    return generated
+            if isinstance(path, str):
+                selected_generated.append(path)
+    return selected_generated
 
 
-def _save_outputs(state, output_dir, active_plugins, output_formats=None):
+def _save_outputs(state: Any, output_dir: str, active_plugins: list[BenchmarkTaskPlugin], output_formats: list[str] | None = None) -> list[str]:
     """Regenerate selected reports from latest deduplicated results.
 
     ``output_formats=None`` preserves the historical helper behavior for

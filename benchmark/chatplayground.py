@@ -26,6 +26,8 @@ serializes browser operations under its own lock, so a single logged-in session
 is reused across plugin tasks instead of re-authenticating for every request.
 """
 
+from __future__ import annotations
+
 import atexit
 import contextlib
 import json
@@ -35,6 +37,7 @@ import subprocess
 import sys
 import threading
 import time
+from typing import Any
 
 from .process_supervisor import terminate_and_close, terminate_process_tree
 
@@ -86,19 +89,19 @@ _OP_CEILING = 180.0
 # All requests are serialized under this lock: only one browser operation is in
 # flight at a time, matching the single-session model of the worker.
 _lock = threading.RLock()
-_proc: subprocess.Popen | None = None
-_queue: queue.Queue | None = None
+_proc: subprocess.Popen[str] | None = None
+_queue: queue.Queue[tuple[str, Any]] | None = None
 _reader: threading.Thread | None = None
 _stderr_chunks: list[str] = []
 _next_id = 0
 
 
-def is_chatplayground(cfg) -> bool:
+def is_chatplayground(cfg: Any) -> bool:
     """Return whether a source config selects the ChatPlayground protocol."""
     return isinstance(cfg, dict) and cfg.get("api_protocol") == "chatplayground"
 
 
-def credentials(cfg) -> tuple[str, str]:
+def credentials(cfg: Any) -> tuple[str, str]:
     """Return ``(email, password)`` from a ChatPlayground source config."""
     if not isinstance(cfg, dict):
         return "", ""
@@ -107,7 +110,7 @@ def credentials(cfg) -> tuple[str, str]:
     return str(email), str(password)
 
 
-def selectors(cfg) -> dict:
+def selectors(cfg: Any) -> dict[str, Any]:
     """Merge the default selectors with any per-source ``selectors`` overrides."""
     merged = dict(DEFAULT_SELECTORS)
     if isinstance(cfg, dict) and isinstance(cfg.get("selectors"), dict):
@@ -120,10 +123,12 @@ def _worker_command() -> list[str]:
     return [sys.executable, "-m", "benchmark.chatplayground_worker"]
 
 
-def _reader_loop(proc, out_queue) -> None:
+def _reader_loop(proc: subprocess.Popen[str], out_queue: queue.Queue[tuple[str, Any]]) -> None:
     """Pump worker stdout lines onto ``out_queue``; signal EOF on close."""
     try:
-        for line in proc.stdout:
+        stdout = proc.stdout
+        assert stdout is not None
+        for line in stdout:
             line = line.strip()
             if not line:
                 continue
@@ -138,10 +143,12 @@ def _reader_loop(proc, out_queue) -> None:
         out_queue.put(("eof", None))
 
 
-def _stderr_loop(proc, chunks) -> None:
+def _stderr_loop(proc: subprocess.Popen[str], chunks: list[str]) -> None:
     """Append worker stderr lines to ``chunks`` (bounded) for crash diagnostics."""
     try:
-        for line in proc.stderr:
+        stderr = proc.stderr
+        assert stderr is not None
+        for line in stderr:
             chunks.append(line)
             if len(chunks) > 200:
                 chunks.pop(0)
@@ -149,7 +156,7 @@ def _stderr_loop(proc, chunks) -> None:
         pass
 
 
-def _terminate(proc) -> None:
+def _terminate(proc: subprocess.Popen[str]) -> None:
     """Compatibility wrapper around the shared process-tree supervisor."""
     terminate_process_tree(proc)
 
@@ -168,7 +175,7 @@ def _teardown_worker() -> None:
     terminate_and_close(proc, grace_seconds=1.0)
 
 
-def _ensure_worker() -> subprocess.Popen:
+def _ensure_worker() -> subprocess.Popen[str]:
     """Return a live worker subprocess, spawning one if needed."""
     global _proc, _queue, _reader, _stderr_chunks
     if _proc is not None and _proc.poll() is None:
@@ -211,7 +218,7 @@ def _worker_diag() -> str:
     return code
 
 
-def _send_request(op, cfg, *, stop_event=None, timeout=None, **payload) -> dict:
+def _send_request(op: str, cfg: Any, *, stop_event: threading.Event | None = None, timeout: float | None = None, **payload: Any) -> dict[str, Any]:
     """Send one op to the worker and wait for its response.
 
     Serialized under the module lock (one browser operation at a time). A
@@ -271,7 +278,7 @@ def _send_request(op, cfg, *, stop_event=None, timeout=None, **payload) -> dict:
                 return data
 
 
-def request(cfg, model, prompt, *, timeout, stop_event=None, system_prompt=None):
+def request(cfg: Any, model: str, prompt: str, *, timeout: float, stop_event: threading.Event | None = None, system_prompt: str | None = None) -> tuple[str, str | None, float]:
     """Send ``prompt`` through a logged-in ChatPlayground session.
 
     Returns ``(text, error, elapsed_seconds)``. The whole browser turn runs in
@@ -291,7 +298,7 @@ def request(cfg, model, prompt, *, timeout, stop_event=None, system_prompt=None)
     return "", resp.get("error", "ChatPlayground request failed"), elapsed
 
 
-def list_models(cfg) -> list[str]:
+def list_models(cfg: Any) -> list[str]:
     """Enumerate the model slugs exposed by the sidebar's "AI MODELS" list."""
     resp = _send_request("list_models", cfg)
     if resp.get("ok"):
@@ -299,7 +306,7 @@ def list_models(cfg) -> list[str]:
     raise RuntimeError(resp.get("error", "ChatPlayground model enumeration failed"))
 
 
-def probe(cfg) -> dict:
+def probe(cfg: Any) -> dict[str, Any]:
     """Capture diagnostic DOM information for selector finalization."""
     resp = _send_request("probe", cfg)
     if resp.get("ok"):
@@ -307,7 +314,7 @@ def probe(cfg) -> dict:
     raise RuntimeError(resp.get("error", "ChatPlayground probe failed"))
 
 
-def config_from_env() -> dict:
+def config_from_env() -> dict[str, Any]:
     """Build a ChatPlayground source config from environment variables.
 
     ``CHATPLAYGROUND_EMAIL``/``CHATPLAYGROUND_PASSWORD`` supply the Clerk
@@ -323,7 +330,7 @@ def config_from_env() -> dict:
     }
 
 
-def _complete_source_config(source_cfg: dict) -> dict:
+def _complete_source_config(source_cfg: dict[str, Any]) -> dict[str, Any]:
     """Return ``source_cfg`` with the browser-safe defaults benchmark needs.
 
     Browser work is serialized under a module lock regardless of scheduler
@@ -338,7 +345,7 @@ def _complete_source_config(source_cfg: dict) -> dict:
     return cfg
 
 
-def generate_config(source_cfg: dict | None = None, models: list[str] | None = None) -> dict:
+def generate_config(source_cfg: dict[str, Any] | None = None, models: list[str] | None = None) -> dict[str, Any]:
     """Return a ready-to-run benchmark config dict for a ChatPlayground source.
 
     When ``source_cfg`` is omitted it is built from the environment (see
@@ -369,7 +376,7 @@ def generate_config(source_cfg: dict | None = None, models: list[str] | None = N
     }
 
 
-def _cli_probe() -> dict:
+def _cli_probe() -> dict[str, Any]:
     """Run a probe from a minimal source config built out of environment vars."""
     return probe(config_from_env())
 

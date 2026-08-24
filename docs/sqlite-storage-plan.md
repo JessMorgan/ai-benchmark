@@ -1,6 +1,6 @@
 # SQLite Run Storage Plan
 
-**Status:** Stages 0–10 complete; Stage 11 validation/rollout partially complete
+**Status:** Runtime implementation complete; empirical rollout validation remains open
 **Last updated:** 2026-08-23
 **Primary goals:** fast writes, small output directories, reduced duplication, reliable resume, and reproducible reports.
 
@@ -719,9 +719,9 @@ faster ordering; format them at report boundaries.
       [gzip-append-log-plan.md](gzip-append-log-plan.md).
 - [x] Add gzip concatenated-member, truncation, corruption, append-after-recovery,
       concurrency, redaction, and policy integration tests.
-- [ ] Benchmark gzip against bz2 using representative logs.
-- [ ] Consider zstd only if measurements justify a dependency; do not use 7z
-      for active append-only logs.
+- [x] Add a reproducible gzip-vs-bz2 measurement helper and representative-log test.
+- [ ] Run the measurement against a production-sized judge log before deciding
+      whether zstd is worth a dependency; do not use 7z for active append-only logs.
 
 ### Stage 6 — benchmark task persistence
 

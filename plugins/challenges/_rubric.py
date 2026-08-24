@@ -1,5 +1,6 @@
 """Shared rubric helper for challenge plugins."""
 import re
+from collections.abc import Iterable, Sequence
 from typing import Any
 
 from benchmark.plugin import EvaluationResult
@@ -14,16 +15,24 @@ class Rubric:
     overall max score.
     """
 
-    def __init__(self, max_score: float):
+    def __init__(self, max_score: float) -> None:
         self.max_score = max_score
         self.criteria: list[dict[str, Any]] = []
         self.total = 0.0
         self.errors: list[str] = []
         self.validations: list[dict[str, Any]] = []
 
-    def add_criterion(self, name: str, max_points: float, earned: float,
-                      *, evidence=None, matched=None, negative_findings=None,
-                      errors=None):
+    def add_criterion(
+        self,
+        name: str,
+        max_points: float,
+        earned: float,
+        *,
+        evidence: Iterable[Any] | None = None,
+        matched: bool | None = None,
+        negative_findings: Iterable[Any] | None = None,
+        errors: Iterable[Any] | None = None,
+    ) -> None:
         """Add a manually scored criterion and its diagnostic evidence.
 
         Every criterion carries JSON-safe diagnostic containers. ``matched``
@@ -46,7 +55,14 @@ class Rubric:
         self.errors.extend(str(error) for error in (errors or []))
         self.criteria.append(item)
 
-    def eval_regex(self, name: str, max_points: float, text: str, patterns, flags=re.IGNORECASE):
+    def eval_regex(
+        self,
+        name: str,
+        max_points: float,
+        text: str,
+        patterns: Sequence[tuple[str, float]],
+        flags: int = re.IGNORECASE,
+    ) -> None:
         """Score a criterion by summing points for each matched regex pattern."""
         earned = 0.0
         evidence = []
@@ -66,7 +82,7 @@ class Rubric:
             matched=bool(evidence),
         )
 
-    def credit_criterion(self, name: str, points: float, evidence=None) -> None:
+    def credit_criterion(self, name: str, points: float, evidence: Any = None) -> None:
         """Add bounded credit when a stronger validator proves a criterion.
 
         This is useful when execution or typed validation establishes
@@ -110,7 +126,7 @@ class Rubric:
             return
         self.errors.append(f"cannot penalize unknown criterion {name!r}")
 
-    def record_validation(self, validation) -> None:
+    def record_validation(self, validation: Any) -> None:
         """Attach a typed-validator result without changing score totals."""
         if hasattr(validation, "as_evidence"):
             self.validations.append(validation.as_evidence())
@@ -122,8 +138,14 @@ class Rubric:
         })
         self.errors.extend(str(error) for error in (validation.errors or []))
 
-    def record_execution(self, execution, *, criterion=None, penalty=0.0,
-                         failure_reason="isolated execution check failed") -> None:
+    def record_execution(
+        self,
+        execution: Any,
+        *,
+        criterion: str | None = None,
+        penalty: float = 0.0,
+        failure_reason: str = "isolated execution check failed",
+    ) -> None:
         """Record an execution result and optionally deduct only on failure."""
         self.validations.append(execution.as_evidence())
         if criterion and execution.status in {"failed", "timeout"}:

@@ -3,33 +3,34 @@ from __future__ import annotations
 
 import re
 
-from benchmark.plugin import BenchmarkTaskPlugin
+from benchmark.plugin import BenchmarkTaskPlugin, EvaluationResult
+from benchmark.types import ConfigMap
 from plugins.challenges._analysis import first_section, markdown_sections
 from plugins.challenges._rubric import Rubric
 
 
 class DebugConsistencyPlugin(BenchmarkTaskPlugin):
     @property
-    def id(self):
+    def id(self) -> str:
         return "debug-consistency"
 
     @property
-    def version(self):
+    def version(self) -> str:
         return "0.1.0"
 
     @property
-    def name(self):
+    def name(self) -> str:
         return "Debug Report Consistency"
 
     @property
-    def max_score(self):
-        return 20.0
+    def max_score(self) -> int:
+        return int(20.0)
 
     @property
-    def supports_streaming(self):
+    def supports_streaming(self) -> bool:
         return True
 
-    def get_prompt(self):
+    def get_prompt(self) -> str:
         return (
             "Assess whether this bug report is reproducible; do not invent a defect.\n\n"
             "Bug report: `find_duplicate_users` is said to return [] for duplicate IDs.\n"
@@ -46,10 +47,11 @@ class DebugConsistencyPlugin(BenchmarkTaskPlugin):
             "from the code, and identify what evidence would be needed if the report persists."
         )
 
-    def get_temperature(self, global_config):
-        return global_config.get("debug_consistency_temperature")
+    def get_temperature(self, global_config: ConfigMap) -> float | None:
+        val = global_config.get("debug_consistency_temperature")
+        return float(val) if isinstance(val, (int, float)) else None
 
-    def evaluate(self, response_text):
+    def evaluate(self, response_text: str) -> EvaluationResult:
         text = response_text.strip()
         rubric = Rubric(self.max_score)
         if not text:
@@ -85,5 +87,5 @@ class DebugConsistencyPlugin(BenchmarkTaskPlugin):
         rubric.add_criterion("Required report structure", 2.0, float(sum(section is not None for section in (reproduction, consistency, diagnosis, evidence, recommendation)) >= 5) * 2.0)
         return rubric.results()
 
-    def score(self, response_text):
+    def score(self, response_text: str) -> float:
         return self.evaluate(response_text).score

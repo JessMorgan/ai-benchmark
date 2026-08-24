@@ -12,7 +12,7 @@ from collections.abc import Callable
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 import yaml
 from jsonschema import Draft202012Validator
@@ -26,7 +26,6 @@ from .http import (  # noqa: F401
 )
 from .observer import TaskObserver
 from .opencode import (
-    OPENCODE_BINARY,
     OPENCODE_NO_OUTPUT_GRACE,
     resolve_opencode_timeout,
     run_process,
@@ -45,14 +44,18 @@ from .plugin import (
     normalize_score,
     serialize_rubric,
 )
+from .request_models import GenerationFields, HTTPRequest, OpenCodeRequest, PiRequest
+from .response_classification import (  # noqa: F401 - compatibility exports
+    classify_empty_reason,
+    count_tokens,
+    response_nature,
+)
 from .results import save_task_result
 from .runtime_records import BenchmarkAttemptRecord
 from .state import BenchmarkState  # noqa: F401
 from .transport import (
-    BENCHMARK_DEFAULT_MAX_TOKENS,
     BENCHMARK_RETRY_POLICY,
     JUDGE_RETRY_POLICY,
-    TransportRequest,
     TransportResult,
     _retry_prompt_alteration,
     _split_token_budget,
@@ -63,7 +66,6 @@ from .transport_options import (
     HTTPTransportOptions,
     OpenCodeTransportOptions,
     PiTransportOptions,
-    TransportOptions,
 )
 
 PRELOAD_PROMPT = "Reply with the single word OK."
@@ -93,7 +95,7 @@ FLUSH_MAX_VOTES = 50
 PERSISTENCE_SHUTDOWN_TIMEOUT = 10.0
 
 
-def _thinking_budget_retry_instruction(token_budget, fallback=JUDGE_DEFAULT_MAX_TOKENS):
+def _thinking_budget_retry_instruction(token_budget: Any | int, fallback: int = JUDGE_DEFAULT_MAX_TOKENS) -> str:
     """Return retry-only guidance reserving half the budget for the answer."""
     reported, thinking_budget, answer_budget = _split_token_budget(token_budget, fallback)
     return (
@@ -104,7 +106,7 @@ def _thinking_budget_retry_instruction(token_budget, fallback=JUDGE_DEFAULT_MAX_
     )
 
 
-def _judge_system_prompt(total_budget):
+def _judge_system_prompt(total_budget: Any | int) -> str:
     """Return a system prompt that sets token budgets before the judge prompt.
 
     Thinking models allocate most of their generation budget to
@@ -179,13 +181,13 @@ JUDGE_DEFAULT_REQUEST_PARAMS = {
 JUDGE_CONFIDENCE_WEIGHTS = {"high": 1.0, "medium": 0.6, "low": 0.3}
 
 
-def judge_instructions_version(plugin) -> str:
+def judge_instructions_version(plugin: Any) -> str:
     """Return a stable version for a plugin's optional judge guidance."""
     value = getattr(plugin, "judge_instructions_version", "1.0.0")
     return str(value) if value is not None else "1.0.0"
 
 
-def judge_contract(plugin) -> JudgeContract:
+def judge_contract(plugin: Any) -> JudgeContract:
     """Build the complete canonical contract for one plugin."""
     getter = getattr(plugin, "get_judge_instructions", None)
     instructions = getter() if callable(getter) else ""
@@ -201,9 +203,10 @@ def judge_contract(plugin) -> JudgeContract:
     )
 
 
-def judge_contract_id(plugin) -> str:
+def judge_contract_id(plugin: Any) -> str:
     """Return the deterministic identity of one plugin judge contract."""
-    return judge_contract(plugin).contract_id
+    contract = judge_contract(plugin)
+    return str(contract.contract_id)
 
 SCHEMA_SENTINEL_SCHEMA = {
     "type": "object",
@@ -234,7 +237,7 @@ class PreloadResult:
     text: str = ""
 
 
-def resolve_preload_timeout(source_config, source, default=PRELOAD_DEFAULT_TIMEOUT):
+def resolve_preload_timeout(source_config: dict[str, Any], source: str, default: int = PRELOAD_DEFAULT_TIMEOUT) -> int:
     """Return a positive per-source preload timeout, or the default."""
     cfg = source_config.get(source) or {}
     value = cfg.get("preload_timeout", default) if isinstance(cfg, dict) else default
@@ -245,7 +248,7 @@ def resolve_preload_timeout(source_config, source, default=PRELOAD_DEFAULT_TIMEO
     return value if value > 0 else default
 
 
-def resolve_model_thread_limit(source_config, source, top_level=1):
+def resolve_model_thread_limit(source_config: dict[str, Any], source: str, top_level: int = 1) -> int:
     """Return the validated positive model concurrency for ``source``.
 
     Unlike ``plugin_thread_limit``, zero is never an unlimited value here:
@@ -274,7 +277,7 @@ DEFAULT_MAX_THINKING_TOKENS = 32768
 DEFAULT_MAX_CONTENT_TOKENS = 16384
 
 
-def resolve_stream_guards(source_config, source):
+def resolve_stream_guards(source_config: dict[str, Any], source: str) -> tuple[int, int, bool]:
     """Return ``(max_content_tokens, max_thinking_tokens, repetition_guard)``.
 
     Reads the per-source ``max_content_tokens``, ``max_thinking_tokens`` and
@@ -287,7 +290,7 @@ def resolve_stream_guards(source_config, source):
     if not isinstance(cfg, dict):
         return (DEFAULT_MAX_CONTENT_TOKENS, DEFAULT_MAX_THINKING_TOKENS, True)
 
-    def _tokens(key, default):
+    def _tokens(key: str, default: int) -> int:
         value = cfg.get(key, default)
         try:
             value = int(value)
@@ -302,9 +305,9 @@ def resolve_stream_guards(source_config, source):
     )
 
 
-def preload_model(source_config, source, api_model, timeout,
-                  session_seed=0, stop_event=None, drop_params=None,
-                  log_path=None) -> PreloadResult:
+def preload_model(source_config: dict[str, Any], source: str, api_model: str, timeout: float,
+                  session_seed: int = 0, stop_event: threading.Event | None = None, drop_params: list[str] | None = None,
+                  log_path: str | None = None) -> PreloadResult:
     """Warm one model with a small, non-scoring HTTP request.
 
     The probe deliberately disables HTTP 429 retries: a source that cannot
@@ -373,12 +376,12 @@ class JudgeResult:
     criteria: list[dict[str, Any]] | None = None
 
 
-def _is_exhausted_429(error):
+def _is_exhausted_429(error: Any) -> bool:
     """Return whether an HTTP error is an exhausted rate-limit response."""
     return isinstance(error, str) and error.lstrip().startswith("HTTP 429:")
 
 
-def _schema_probe_error_status(error):
+def _schema_probe_error_status(error: Any) -> str:
     """Classify a sentinel request failure without conflating it with a model score."""
     lowered = str(error or "").lower()
     schema_words = ("schema", "grammar", "response_format", "structured output", "format")
@@ -389,7 +392,7 @@ def _schema_probe_error_status(error):
     return "schema_transport_error"
 
 
-def _is_schema_grammar_error(error):
+def _is_schema_grammar_error(error: Any) -> bool:
     """Return whether a provider failed while compiling a response grammar."""
     lowered = str(error or "").lower()
     compiler_markers = (
@@ -401,7 +404,7 @@ def _is_schema_grammar_error(error):
     return any(marker in lowered for marker in compiler_markers)
 
 
-def _json_object_fallback_params(request_params):
+def _json_object_fallback_params(request_params: dict[str, Any] | None) -> dict[str, Any] | None:
     """Replace a JSON-schema response format with provider JSON mode."""
     if not isinstance(request_params, dict):
         return None
@@ -413,8 +416,8 @@ def _json_object_fallback_params(request_params):
     return fallback
 
 
-def run_schema_sentinel(source_config, source, api_model, *, timeout=120,
-                        session_seed=0, drop_params=None):
+def run_schema_sentinel(source_config: dict[str, Any], source: str, api_model: str, *, timeout: float = 120,
+                        session_seed: int = 0, drop_params: list[str] | None = None) -> dict[str, Any]:
     """Probe whether a source accepts and appears to enforce JSON schemas.
 
     The prompt requests a deliberately schema-invalid value while the schema
@@ -486,7 +489,7 @@ def run_schema_sentinel(source_config, source, api_model, *, timeout=120,
     }
 
 
-def resolve_judge_request_params(cfg):
+def resolve_judge_request_params(cfg: dict[str, Any]) -> dict[str, Any]:
     """Return provider-specific request parameters for semantic judges.
 
     The defaults preserve each model's native behavior and request a JSON
@@ -507,9 +510,9 @@ def resolve_judge_request_params(cfg):
     return params
 
 
-def _schema_request_metadata(plugin, request_params=None, *, response_schema_valid=None,
-                             error=None, request_applied=True, schema_fallback_used=False,
-                             schema_fallback_error=None):
+def _schema_request_metadata(plugin: Any, request_params: dict[str, Any] | None = None, *, response_schema_valid: bool | None = None,
+                             error: str | None = None, request_applied: bool = True, schema_fallback_used: bool = False,
+                             schema_fallback_error: str | None = None) -> dict[str, Any]:
     """Return non-scoring metadata for a plugin's structured-output contract.
 
     A completed valid response does not prove that the provider enforced the
@@ -577,11 +580,11 @@ def _schema_request_metadata(plugin, request_params=None, *, response_schema_val
     }
 
 
-def summarize_judge_criteria(results, plugins):
+def summarize_judge_criteria(results: list[dict[str, Any]], plugins: list[Any]) -> dict[str, Any]:
     """Aggregate judge criterion statuses for machine-readable run reports."""
-    summary = {"criterion_reports": 0, "criteria": 0, "by_plugin": {}}
+    summary: dict[str, Any] = {"criterion_reports": 0, "criteria": 0, "by_plugin": {}}
     for plugin in plugins:
-        status_counts = {}
+        status_counts: dict[str, int] = {}
         reports = 0
         criteria_count = 0
         evidence_count = 0
@@ -616,12 +619,12 @@ def summarize_judge_criteria(results, plugins):
     return summary
 
 
-def summarize_schema_compatibility(results, plugins):
+def summarize_schema_compatibility(results: list[dict[str, Any]], plugins: list[Any]) -> dict[str, Any]:
     """Aggregate per-plugin schema metadata without changing task scores."""
-    summary = {"requested_cells": 0, "response_valid_cells": 0, "enforcement_verified_cells": 0, "by_plugin": {}}
+    summary: dict[str, Any] = {"requested_cells": 0, "response_valid_cells": 0, "enforcement_verified_cells": 0, "by_plugin": {}}
     for plugin in plugins:
         prefix = plugin.id
-        statuses = {}
+        statuses: dict[str, int] = {}
         requested = valid = verified = 0
         for result in results:
             if result.get(f"{prefix}_schema_requested") is not True:
@@ -653,7 +656,7 @@ def summarize_schema_compatibility(results, plugins):
     return summary
 
 
-def build_judge_prompt(plugin, original_prompt, response_text):
+def build_judge_prompt(plugin: Any, original_prompt: str, response_text: str) -> str:
     """Build a data-delimited, procedural, JSON-only judging prompt."""
     sanitize = getattr(plugin, "sanitize_for_judge", None)
     if callable(sanitize):
@@ -748,7 +751,7 @@ criterion descriptions and evidence concise enough to cover every requirement.
 """
 
 
-def parse_judge_response(text):
+def parse_judge_response(text: str) -> JudgeResult:
     """Parse and validate a judge JSON response, accepting one fenced object."""
     candidate = text.strip()
     if candidate.startswith("```"):
@@ -804,7 +807,7 @@ def parse_judge_response(text):
     )
 
 
-def prepare_judge_sidecar(path, plugin, prompt, response_text, *, target, runner, state_key=None):
+def prepare_judge_sidecar(path: str, plugin: Any, prompt: str, response_text: str, *, target: str, runner: str, state_key: str | None = None) -> None:
     """Atomically retain the exact prompt/response input for resumable judging."""
     payload = {
         "target": target,
@@ -829,17 +832,18 @@ def prepare_judge_sidecar(path, plugin, prompt, response_text, *, target, runner
         handle.flush()
         os.fsync(handle.fileno())
     os.replace(tmp, path)
+    return None
 
 
-def judge_sidecar_path(judge_input_dir, target, runner, plugin_id):
+def judge_sidecar_path(judge_input_dir: str, target: str, runner: str, plugin_id: str) -> str:
     """Return the stable path for one retained judge input."""
     return os.path.join(
         judge_input_dir, runner, sanitize_filename(target), f"{plugin_id}.json"
     )
 
 
-def judge_response_path(output_dir, target, runner, plugin_id, judge_model,
-                        contract_id=None):
+def judge_response_path(output_dir: str, target: str, runner: str, plugin_id: str, judge_model: str,
+                        contract_id: str | None = None) -> str:
     """Return the response artifact path for one judge contract's output."""
     suffix = sanitize_filename(judge_model)
     if contract_id:
@@ -853,8 +857,8 @@ def judge_response_path(output_dir, target, runner, plugin_id, judge_model,
     )
 
 
-def save_judge_response(output_dir, target, runner, plugin_id, judge_model, text,
-                        contract_id=None):
+def save_judge_response(output_dir: str, target: str, runner: str, plugin_id: str, judge_model: str, text: str,
+                        contract_id: str | None = None) -> str:
     """Persist a judge's raw response beside the benchmark response artifacts."""
     path = judge_response_path(output_dir, target, runner, plugin_id, judge_model, contract_id)
     os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -867,8 +871,8 @@ def save_judge_response(output_dir, target, runner, plugin_id, judge_model, text
     return path
 
 
-def judge_response_metadata_path(output_dir, target, runner, plugin_id, judge_model,
-                                 contract_id=None):
+def judge_response_metadata_path(output_dir: str, target: str, runner: str, plugin_id: str, judge_model: str,
+                                 contract_id: str | None = None) -> str:
     """Return the metadata path paired with one raw judge response."""
     response_path = judge_response_path(
         output_dir, target, runner, plugin_id, judge_model, contract_id,
@@ -876,8 +880,8 @@ def judge_response_metadata_path(output_dir, target, runner, plugin_id, judge_mo
     return response_path.removesuffix(".txt") + ".meta.json"
 
 
-def save_judge_response_metadata(output_dir, target, runner, plugin_id,
-                                 judge_model, metadata, contract_id=None):
+def save_judge_response_metadata(output_dir: str, target: str, runner: str, plugin_id: str,
+                                 judge_model: str, metadata: dict[str, Any], contract_id: str | None = None) -> str:
     """Persist status/error metadata for every judge attempt.
 
     The metadata sidecar exists even when the judge transport produced no raw
@@ -897,7 +901,7 @@ def save_judge_response_metadata(output_dir, target, runner, plugin_id,
     return path
 
 
-def publish_judge_sidecars(judge_input_dir, target, runner, plugins, callback):
+def publish_judge_sidecars(judge_input_dir: str | None, target: str, runner: str, plugins: list[Any], callback: Callable[[str, str, str, str], Any] | None) -> None:
     """Publish durable judge inputs after their benchmark result is visible."""
     if not judge_input_dir or callback is None:
         return
@@ -907,14 +911,14 @@ def publish_judge_sidecars(judge_input_dir, target, runner, plugins, callback):
             callback(sidecar, target, runner, plugin.id)
 
 
-def judge_vote_identity(vote):
+def judge_vote_identity(vote: dict[str, Any] | None) -> tuple[Any | None, Any | None]:
     """Return the stable storage identity for one versioned judge vote."""
     if not isinstance(vote, dict):
         return (None, None)
     return (vote.get("model"), vote.get("judge_contract_id"))
 
 
-def judge_votes_for_contract(votes, contract_id):
+def judge_votes_for_contract(votes: list[dict[str, Any]], contract_id: str) -> list[dict[str, Any]]:
     """Return votes belonging to one judge contract."""
     return [
         vote for vote in votes
@@ -923,7 +927,7 @@ def judge_votes_for_contract(votes, contract_id):
     ]
 
 
-def merge_judge_vote(votes, vote):
+def merge_judge_vote(votes: list[dict[str, Any]], vote: dict[str, Any]) -> list[dict[str, Any]]:
     """Replace only the same model/contract vote, preserving other versions."""
     identity = judge_vote_identity(vote)
     return [
@@ -932,7 +936,7 @@ def merge_judge_vote(votes, vote):
     ] + [vote]
 
 
-def is_successful_judge_vote(vote):
+def is_successful_judge_vote(vote: dict[str, Any] | None) -> bool:
     """Return whether a persisted judge vote contains usable judgment data.
 
     Failed/empty attempts may be retained for diagnostics and resume, but they
@@ -951,9 +955,9 @@ def is_successful_judge_vote(vote):
     )
 
 
-def confidence_weighted_consensus_by_contract(votes):
+def confidence_weighted_consensus_by_contract(votes: list[dict[str, Any]]) -> dict[str, Any]:
     """Return independent confidence-weighted consensus for each contract."""
-    grouped = {}
+    grouped: dict[str, list[dict[str, Any]]] = {}
     for vote in votes:
         if not isinstance(vote, dict):
             continue
@@ -974,7 +978,7 @@ def confidence_weighted_consensus_by_contract(votes):
     }
 
 
-def confidence_weighted_consensus(votes):
+def confidence_weighted_consensus(votes: list[dict[str, Any]]) -> dict[str, Any]:
     """Combine valid judge votes using confidence weights.
 
     High/medium/low confidence maps to 1.0/0.6/0.3. Invalid votes are
@@ -1014,7 +1018,7 @@ def confidence_weighted_consensus(votes):
     }
 
 
-def _judge_response_diagnostics(response, request_params, max_tokens):
+def _judge_response_diagnostics(response: Any, request_params: dict[str, Any] | None, max_tokens: int) -> dict[str, Any]:
     """Summarize request settings and response evidence for judge debugging.
 
     OpenAI-compatible providers do not consistently expose whether a
@@ -1084,11 +1088,11 @@ def _judge_response_diagnostics(response, request_params, max_tokens):
     }
 
 
-def judge_response(source_config, judge_source, judge_api_model, sidecar,
-                   *, timeout, max_tokens=None, temperature=0.0,
-                   drop_params=None, request_params=None, stop_event=None, log_path=None,
-                   plugin=None, progress_callback: Callable[[str, str], None] | None = None,
-                   attempt_callback: Callable[[int], None] | None = None):
+def judge_response(source_config: dict[str, Any], judge_source: str, judge_api_model: str, sidecar: str,
+                   *, timeout: float, max_tokens: int | None = None, temperature: float = 0.0,
+                   drop_params: list[str] | None = None, request_params: dict[str, Any] | None = None, stop_event: threading.Event | None = None, log_path: str | None = None,
+                   plugin: Any = None, progress_callback: Callable[[str, str], None] | None = None,
+                   attempt_callback: Callable[[int], None] | None = None) -> JudgeResult:
     """Run one streaming judge request, retrying once when its JSON is invalid."""
     with open(sidecar, encoding="utf-8") as handle:
         item = json.load(handle)
@@ -1107,7 +1111,7 @@ def judge_response(source_config, judge_source, judge_api_model, sidecar,
     if budget <= 0:
         budget = JUDGE_DEFAULT_MAX_TOKENS
 
-    def report_progress(content_delta="", thinking_delta=""):
+    def report_progress(content_delta: str = "", thinking_delta: str = "") -> None:
         if progress_callback is None:
             return
         # Progress is observational only; a broken TUI/state observer must
@@ -1125,7 +1129,7 @@ def judge_response(source_config, judge_source, judge_api_model, sidecar,
         on_chunk=report_progress,
         on_think_chunk=lambda delta: report_progress("", delta),
     )
-    judge_request = TransportRequest(
+    judge_common = GenerationFields(
         prompt=prompt,
         max_tokens=budget,
         source_config=source_config,
@@ -1145,15 +1149,13 @@ def judge_response(source_config, judge_source, judge_api_model, sidecar,
             f"prompt_version={prompt_version}, "
             f"judge_instructions_version={instructions_version})"
         ),
-        options=TransportOptions(
-            http=HTTPTransportOptions(
-                supports_streaming=True,
-                request_params=request_params,
-            ),
-        ),
+    )
+    judge_request = HTTPRequest(
+        judge_common,
+        HTTPTransportOptions(supports_streaming=True, request_params=request_params),
     )
 
-    def json_error_prompt_alterer(result: TransportResult):
+    def json_error_prompt_alterer(result: TransportResult) -> str | None:
         parsed = parse_judge_response(result.text)
         if parsed.error is None:
             return None
@@ -1210,57 +1212,19 @@ def judge_response(source_config, judge_source, judge_api_model, sidecar,
     )
 
 
-def _overall_score(result, active_plugins):
+def _overall_score(result: dict[str, Any], active_plugins: list[Any]) -> int | None:
     """Return the half-up mean of available normalized plugin percentages."""
-    scores = [
-        result.get(f"{plugin.id}_score")
-        for plugin in active_plugins
-        if isinstance(result.get(f"{plugin.id}_score"), (int, float))
-        and not isinstance(result.get(f"{plugin.id}_score"), bool)
-    ]
+    scores: list[float] = []
+    for plugin in active_plugins:
+        value = result.get(f"{plugin.id}_score")
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            scores.append(float(value))
     if not scores:
         return None
-    return normalize_score(sum(scores) / len(scores), 100)
+    return cast(int | None, normalize_score(sum(scores) / len(scores), 100))
 
 
-def count_tokens(text):
-    return max(0, len(text) / 4)
-
-
-def classify_empty_reason(text, think_text="", finish_reason=None, error=None):
-    """Classify why a completed response produced no content tokens.
-
-    Returns ``None`` when the response has content, otherwise a stable
-    machine-readable label surfaced in ``meta.json`` and ``results.csv``:
-
-    - ``"error"`` — the request errored/aborted mid-stream (``stream_error``
-      set, e.g. the litellm/Ollama ``EOF`` backend crash from mechanism B in
-      ``empty-content-investigation.md``). The empty output is a symptom of
-      the failure, not a model behaviour.
-    - ``"thinking-truncation"`` — empty content, but the model emitted
-      thinking/reasoning AND the stream was cut at ``finish_reason ==
-      "length"``: the entire ``max_tokens`` budget was consumed by
-      ``reasoning_content`` before a single content token landed (mechanism
-      A — deepseek/qwen/o1-class behaviour).
-    - ``"thinking-only"`` — empty content and the model only emitted
-      thinking before stopping naturally.
-    - ``"max-tokens"`` — empty content, no thinking, cut at ``length``.
-    - ``"empty"`` — genuinely empty completion with no diagnostics.
-    """
-    if text and text.strip():
-        return None
-    if error:
-        return "error"
-    if think_text and finish_reason == "length":
-        return "thinking-truncation"
-    if think_text:
-        return "thinking-only"
-    if finish_reason == "length":
-        return "max-tokens"
-    return "empty"
-
-
-def is_repeating(text, min_seq=80, repeats=3):
+def is_repeating(text: str, min_seq: int = 80, repeats: int = 3) -> bool:
     """Detect if text is stuck in a loop."""
     if len(text) < min_seq * repeats:
         return False
@@ -1268,26 +1232,7 @@ def is_repeating(text, min_seq=80, repeats=3):
     return text.count(tail) >= repeats
 
 
-def response_nature(*, text, error, finish_reason, repeating=False, cancelled=False):
-    """Classify the machine-observable end of one benchmark attempt."""
-    lowered = str(error or "").lower()
-    if cancelled or "cancelled" in lowered or "canceled" in lowered:
-        return "cancelled"
-    if any(marker in lowered for marker in ("timeout", "timed out", "readtimeout")):
-        return "timeout"
-    if repeating or "repetition" in lowered or "repeated" in lowered:
-        return "repetition_abort"
-    if finish_reason == "length" or "token limit" in lowered or "budget exceeded" in lowered:
-        return "token_limit"
-    if error:
-        return "transport_error"
-    if not text or not text.strip():
-        return "empty"
-    return "completed"
-
-
-
-def _response_reasoning_tokens(response):
+def _response_reasoning_tokens(response: Any) -> int | None:
     """Prefer provider reasoning usage, falling back to the char/4 estimate."""
     usage = getattr(response, "usage", {})
     if not isinstance(usage, dict):
@@ -1303,7 +1248,7 @@ def _response_reasoning_tokens(response):
     return int(count_tokens(thinking)) if thinking else None
 
 
-def _source_abbrev(name):
+def _source_abbrev(name: str) -> str:
     """Generate a short acronym from a source name using capital letters."""
     tokens = []
     for w in name.split():
@@ -1318,7 +1263,7 @@ def _source_abbrev(name):
     return ab if len(ab) >= 2 else (name * 2)[:2].upper()
 
 
-def _unique_source_abbrevs(sources):
+def _unique_source_abbrevs(sources: list[str]) -> dict[str, str]:
     """Return a mapping from source names to short, unique abbreviations."""
     abbrevs = {}
     used = set()
@@ -1337,7 +1282,7 @@ def _unique_source_abbrevs(sources):
 
 # ─── Config loading ──────────────────────────────────────────────────────────
 
-def _expand_env(val):
+def _expand_env(val: Any) -> Any:
     """Recursively expand ${VAR} or ${VAR:default} in strings."""
     if isinstance(val, str):
         parts = []
@@ -1369,7 +1314,7 @@ def _expand_env(val):
     return val
 
 
-def load_dotenv_file(path=None):
+def load_dotenv_file(path: str | None = None) -> bool:
     """Load environment variables from a ``.env`` file into ``os.environ``.
 
     The file defaults to ``.env`` in the current working directory. A missing
@@ -1382,7 +1327,7 @@ def load_dotenv_file(path=None):
     return bool(load_dotenv(dotenv_path=path if path is not None else ".env", override=False))
 
 
-def load_config(path):
+def load_config(path: str) -> Any:
     """Load benchmark config from a JSON or YAML file. Returns the full config dict."""
     with open(path) as f:
         if path.lower().endswith((".yaml", ".yml")):
@@ -1394,7 +1339,7 @@ def load_config(path):
     data = _expand_env(data)
     legacy_paths = []
 
-    def find_legacy(value, path="config"):
+    def find_legacy(value: Any, path: str = "config") -> None:
         if isinstance(value, dict):
             for key, child in value.items():
                 if key in {"token_levels", "model_token_levels"}:
@@ -1414,7 +1359,7 @@ def load_config(path):
     return data
 
 
-def parse_plugin_temperatures(cfg):
+def parse_plugin_temperatures(cfg: dict[str, Any]) -> dict[str, Any]:
     """Parse per-plugin temperature settings from a config dict.
 
     Keys ending in ``_temperature`` are mapped to plugin IDs by replacing
@@ -1429,7 +1374,7 @@ def parse_plugin_temperatures(cfg):
     return plugin_temperatures
 
 
-def resolve_model_sources(models):
+def resolve_model_sources(models: dict[str, Any]) -> dict[str, str]:
     """Resolve model entries to source strings.
 
     Model entries may be either a source string or a dict with a
@@ -1455,7 +1400,7 @@ _PI_CONFIG_KEYS = {
 }
 
 
-def _resolve_pi_config(target_name, value):
+def _resolve_pi_config(target_name: str, value: Any) -> dict[str, Any]:
     """Validate the small, deterministic Pi configuration surface."""
     if value is None:
         return {}
@@ -1517,7 +1462,7 @@ def _resolve_pi_config(target_name, value):
     return copy.deepcopy(value)
 
 
-def resolve_targets(cfg):
+def resolve_targets(cfg: dict[str, Any]) -> dict[str, dict[str, Any]]:
     """Resolve models and agents into a unified target map.
 
     Each target contains:
@@ -1542,27 +1487,27 @@ def resolve_targets(cfg):
     model_max_tokens = cfg.get("model_max_tokens") or {}
     targets = {}
 
-    def _normalize_max_tokens(value):
+    def _normalize_max_tokens(value: Any) -> int | None:
         """Coerce one configured positive max-token value to an int."""
         if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
             return None
         return value
 
-    def _resolve_target_max_tokens(name, source, api_model, val):
+    def _resolve_target_max_tokens(name: str, source: str, api_model: str, val: Any) -> int | None:
         """Return a per-target scalar max-token override, if configured."""
         if isinstance(val, dict):
-            value = _normalize_max_tokens(val.get("max_tokens"))
-            if value is not None:
-                return value
+            token_value = _normalize_max_tokens(val.get("max_tokens"))
+            if token_value is not None:
+                return token_value
             pi_value = val.get("pi")
             if isinstance(pi_value, dict):
-                value = _normalize_max_tokens(pi_value.get("max_tokens"))
-                if value is not None:
-                    return value
+                token_value = _normalize_max_tokens(pi_value.get("max_tokens"))
+                if token_value is not None:
+                    return token_value
         for key in (name, f"{source}/{api_model}"):
-            value = _normalize_max_tokens(model_max_tokens.get(key))
-            if value is not None:
-                return value
+            token_value = _normalize_max_tokens(model_max_tokens.get(key))
+            if token_value is not None:
+                return token_value
         return None
     for name, val in models.items():
         if isinstance(val, dict):
@@ -1623,18 +1568,20 @@ def resolve_targets(cfg):
     return targets
 
 
-def get_target_plugins_blacklist(targets, target_name):
+def get_target_plugins_blacklist(targets: dict[str, Any], target_name: str) -> list[str]:
     """Get the plugins blacklist for a specific model or agent."""
     val = targets.get(target_name)
     if isinstance(val, dict):
-        return val.get("plugins_blacklist", [])
+        result = val.get("plugins_blacklist", [])
+        if isinstance(result, list):
+            return [str(p) for p in result]
     return []
 
 # Backward-compatible alias.
 get_model_plugins_blacklist = get_target_plugins_blacklist
 
 
-def _apply_http_retry_default(cfg, retry_on_429):
+def _apply_http_retry_default(cfg: dict[str, Any], retry_on_429: bool) -> None:
     """Mutate ``cfg`` so HTTP 429 retries align with a global toggle.
 
     When ``retry_on_429`` is True (the default), this function is a no-op —
@@ -1659,7 +1606,7 @@ def _apply_http_retry_default(cfg, retry_on_429):
             src_cfg["max_429_retries"] = 0
 
 
-def dump_default_config():
+def dump_default_config() -> None:
     """Print the default config JSON to stdout."""
     cfg = {
         "output_dir": "benchmark-output-dir",
@@ -1787,7 +1734,7 @@ def dump_default_config():
     print(json.dumps(cfg, indent=2))
 
 
-def generate_config_from_api(base_url, api_key=None):
+def generate_config_from_api(base_url: str, api_key: str | None = None) -> dict[str, Any]:
     """Build a benchmark config dict by discovering models via the /v1/models endpoint."""
     model_ids = fetch_models_v1(base_url, api_key)
     if not model_ids:
@@ -1816,642 +1763,17 @@ def generate_config_from_api(base_url, api_key=None):
 
 # ─── Model execution ─────────────────────────────────────────────────────────
 
-def _run_plugin_task_legacy(  # pragma: no cover - retained compatibility implementation; unused
-                     target_name, api_model, source, plugin, source_config, timeout,
-                     max_tokens, session_seed, log_file, global_cfg, state,
-                     stop_event=None, save_responses=False, output_dir=None,
-                     judge_input_dir=None, judge_enqueue=None,
-                     system_prompt=None, is_agent=False, runner="http",
-                     opencode_config_path=None, opencode_model=None,
-                     opencode_agent=None, opencode_binary=None,
-                     artifact_target_name=None,
-                     config_target_name=None) -> PluginTaskResult:
-    """Run a single plugin task and return named result/error fields."""
-    pid = plugin.id
-    cfg = source_config.get(source)
-    if runner == "http" and cfg is None:
-        return PluginTaskResult(None, f"Unknown source '{source}' — not in SOURCE_CONFIG")
-    if runner not in ("http", "opencode", "pi"):
-        return PluginTaskResult(None, f"Unknown runner {runner!r}")
 
-    # Per-source stream watchdog budgets: abort an HTTP request the moment
-    # reasoning or content exceeds its split token budget, or when content/
-    # thinking starts repeating itself (a 30-60 min runaway on local
-    # hardware otherwise). The OpenCode subprocess runner is not covered:
-    # it cannot abort a live stream, and has its own timeouts.
-    guard_values = resolve_stream_guards(source_config, source)
-    max_content_tokens = guard_values[0]
-    max_thinking_tokens = guard_values[1]
-    repetition_guard = guard_values[2]
-
-    if stop_event and stop_event.is_set():
-        return PluginTaskResult(None, "Cancelled")
-
-    prompt = plugin.get_prompt()
-    temperature = plugin.get_temperature(global_cfg or {})
-
-    config_target_name = config_target_name or target_name
-    raw_model_cfg = ((global_cfg or {}).get("models", {}).get(config_target_name)
-                     or (global_cfg or {}).get("agents", {}).get(config_target_name))
-    drop_params = []
-    if isinstance(raw_model_cfg, dict):
-        drop_params = raw_model_cfg.get("drop_params", [])
-    get_request_params = getattr(plugin, "get_request_params", None)
-    request_params = get_request_params(global_cfg or {}) if callable(get_request_params) else {}
-    if not isinstance(request_params, dict):
-        request_params = {}
-    request_params_kwargs: dict[str, Any] = (
-        {"request_params": request_params} if request_params else {}
-    )
-    schema_fallback_used = False
-    schema_fallback_error = None
-    schema_request_applied = runner == "http" and (
-        not isinstance(cfg, dict)
-        or cfg.get("api_protocol") not in {"1min", "chatplayground"}
-    )
-    schema_metadata = _schema_request_metadata(
-        plugin, request_params, request_applied=schema_request_applied,
-    )
-
-    def failed_task(error):
-        """Retain schema compatibility metadata when the request fails."""
-        failed_metadata = _schema_request_metadata(
-            plugin, request_params, error=error,
-            request_applied=schema_request_applied,
-            schema_fallback_used=schema_fallback_used,
-            schema_fallback_error=schema_fallback_error,
-        )
-        return PluginTaskResult({
-            f"{pid}_{key}": value for key, value in failed_metadata.items()
-        }, error)
-
-    def nonstream_request_with_schema_fallback(max_tokens, log_label):
-        """Retry once in JSON-object mode after a grammar compiler failure."""
-        nonlocal schema_fallback_used, schema_fallback_error
-        result = nonstream_request(
-            source_config, timeout, api_model, source, prompt, max_tokens,
-            log_path=log_file,
-            log_label=log_label,
-            session_seed=session_seed, temperature=temperature,
-            drop_params=drop_params, stop_event=stop_event,
-            system_prompt=system_prompt, **request_params_kwargs,
-            pid=pid, on_retry=on_retry,
-            max_content_tokens=max_content_tokens,
-            max_thinking_tokens=max_thinking_tokens,
-            repetition_guard=repetition_guard,
-        )
-        fallback_params = (
-            _json_object_fallback_params(request_params)
-            if result.error and _is_schema_grammar_error(result.error)
-            else None
-        )
-        if fallback_params is None:
-            return result
-        schema_fallback_used = True
-        schema_fallback_error = result.error
-        request_params_kwargs["request_params"] = fallback_params
-        return nonstream_request(
-            source_config, timeout, api_model, source, prompt, max_tokens,
-            log_path=log_file,
-            log_label=f"{log_label} (JSON-object schema fallback)",
-            session_seed=session_seed, temperature=temperature,
-            drop_params=drop_params, stop_event=stop_event,
-            system_prompt=system_prompt, request_params=fallback_params,
-            pid=pid, on_retry=on_retry,
-            max_content_tokens=max_content_tokens,
-            max_thinking_tokens=max_thinking_tokens,
-            repetition_guard=repetition_guard,
-        )
-
-    text = ""
-    response_time = 0.0
-    output_tokens = 0
-    tps = None
-    truncated = False
-    repeating = False
-    stream_ok = True
-    first_tok = None
-    gen_time = 0.0
-    think_text = ""
-    serr = None
-    sfr = None
-    # Final finish_reason observed across the token-level loop; feeds
-    # ``classify_empty_reason`` so empty content + ``length`` + thinking is
-    # distinguishable from other empty legs (mechanism A classification).
-    finish_reason = None
-
-    if runner == "opencode":
-        if not opencode_config_path or not opencode_model:
-            return failed_task("OpenCode runner is missing generated config or model mapping")
-        process_result = run_process(
-            prompt,
-            config_path=opencode_config_path,
-            model=opencode_model,
-            timeout=timeout,
-            binary=opencode_binary or OPENCODE_BINARY,
-            agent=opencode_agent,
-            output_dir=output_dir,
-            target_key=artifact_target_name or config_target_name,
-            plugin_id=pid,
-            stop_event=stop_event,
-            no_output_grace=resolve_opencode_timeout(source_config, source),
-        )
-        text = process_result.text
-        think_text = process_result.think_text
-        serr = process_result.error
-        response_time = round(process_result.elapsed, 1)
-        gen_time = process_result.elapsed
-        stream_ok = False
-        if serr:
-            # Preserve a prompt/response/meta sidecar even when OpenCode
-            # fails, so a failed subprocess is diagnosable without having
-            # to reconstruct the invocation from stderr alone.
-            if save_responses and output_dir:
-                responses_dir = os.path.join(
-                    output_dir, "responses",
-                    sanitize_filename(artifact_target_name or config_target_name),
-                )
-                os.makedirs(responses_dir, exist_ok=True)
-                try:
-                    with open(os.path.join(responses_dir, f"{pid}.prompt.txt"), "w", encoding="utf-8") as handle:
-                        handle.write(prompt)
-                    with open(os.path.join(responses_dir, f"{pid}.content.txt"), "w", encoding="utf-8") as handle:
-                        handle.write(text)
-                    # Preserve any reasoning captured before the failure (a
-                    # timeout/cancellation often happens mid-thinking); the
-                    # raw stdout log also retains it, but the sidecar keeps
-                    # the failure diagnosable in place.
-                    if think_text:
-                        with open(os.path.join(responses_dir, f"{pid}.think.txt"), "w", encoding="utf-8") as handle:
-                            handle.write(think_text)
-                    with open(os.path.join(responses_dir, f"{pid}.meta.json"), "w", encoding="utf-8") as handle:
-                        json.dump({
-                            "plugin": pid,
-                            "plugin_version": plugin.version,
-                            "target": artifact_target_name or config_target_name,
-                            "model": api_model,
-                            "runner": runner,
-                            "opencode_model": opencode_model,
-                            "is_agent": is_agent,
-                            "system_prompt": system_prompt,
-                            "score": "fail",
-                            "score_schema": SCORE_SCHEMA,
-                            "rubric": [],
-                            **{key: value for key, value in schema_metadata.items()},
-                            "response_time": response_time,
-                            "output_tokens": int(count_tokens(text)),
-                            "thinking_tokens": int(count_tokens(think_text)),
-                            "total_tokens": int(count_tokens(text)) + int(count_tokens(think_text)),
-                            "tps": None,
-                            "seed": session_seed,
-                            "timestamp": datetime.now(timezone.utc).isoformat(),
-                            "error": serr,
-                            "think_text": think_text,
-                        }, handle, indent=2, default=str)
-                except OSError:
-                    pass
-            return failed_task(serr)
-        output_tokens = int(count_tokens(text))
-        if gen_time > 0:
-            tps = round(output_tokens / gen_time, 2)
-        max_tokens = []
-
-    for attempt, max_tok in enumerate(max_tokens):
-        if stop_event and stop_event.is_set():
-            return PluginTaskResult(None, "Cancelled")
-        attempt_start = time.time()
-
-        # MUST be defined above both branches -- Python scope analysis
-        # binds ``on_retry`` as a local for the entire function because of
-        # this ``def``, so the ``else`` branch below would otherwise raise
-        # ``UnboundLocalError`` evaluating its ``on_retry=on_retry`` kwarg
-        # for every supports_streaming=False plugin. Reset per-plugin
-        # timing on every 429 retry to keep the elapsed display honest.
-        def on_retry():
-            state.start_plugin_run(target_name, pid)
-
-        if plugin.supports_streaming:
-            # Per-SSE-delta observer so the live TUI can show a
-            # streaming tok ticker ([streaming - N tok] cell +
-            # "[name: N tok]" live-footer entry). The callback runs
-            # under ``stream_request``'s loop on the worker thread; a
-            # buggy observer is swallowed inside ``stream_request`` so
-            # it cannot abort the stream read. We measure CHARACTERS
-            # (not UTF-8 bytes) so the live ticker matches the post-
-            # completion ``count_tokens(text) = max(0, len(text) / 4)`` estimator
-            # exactly -- a CJK chunk would otherwise show 3x as many
-            # "tokens" during streaming as it does after completion.
-            #
-            # The closure fires ``mark_first_chunk_seen`` AND
-            # ``add_bytes_received`` on every non-empty delta --
-            # ``mark_first_chunk_seen`` is idempotent (it only writes
-            # ``first_tok_ts`` on the False -> True transition, so
-            # subsequent calls preserve the original timestamp); the
-            # closure doesn't need a local "fired" flag because the
-            # state method owns the gate. This satisfies both
-            # downstream consumers: the cell renderer's
-            # ``[streaming - N tok]`` real-counter form needs
-            # ``first_chunk_seen=True`` (set on first delta),
-            # and the live footer's ``[<pid>: N tok]`` per-plugin
-            # indicator needs ``first_tok_ts > 0`` (also set on first
-            # delta). ``stream_request`` itself only invokes the
-            # callback when ``len(text) > prev_text_len`` i.e. on a
-            # non-empty content delta -- role-only / heartbeat /
-            # ``[DONE]`` / malformed-JSON lines are filtered out
-            # inside ``_parse_sse_line`` and never reach us here.
-            def on_chunk(delta):
-                state.mark_first_chunk_seen(target_name, pid, ts=time.time())
-                state.add_bytes_received(target_name, pid, len(delta))
-            # Parallel reasoning/thinking callback for thinking-capable
-            # models. Fires once per parsed SSE ``reasoning_content``
-            # delta so the live TUI can show a tokenised ticker before
-            # primary ``content`` starts flowing -- the thinking phase
-            # of a deepseek-r1 / Qwen3 / o1-style stream is otherwise
-            # indistinguishable from "no first token yet" because
-            # ``content`` is still empty. The closure shares the same
-            # ``mark_first_chunk_seen`` gate as ``on_chunk`` so the
-            # ``first chunk seen`` flag fires on the first reasoning
-            # delta (operators do not need to distinguish "first
-            # thinking chunk" from "first content chunk" as separate
-            # gates -- they only need to know the response has begun).
-            # ``add_thinking_bytes_received`` runs the parallel
-            # wiring self-check the same way ``add_bytes_received``
-            # does, so a wiring bug fails fast at first delta.
-
-            def on_think_chunk(think_delta):
-                state.mark_first_chunk_seen(target_name, pid, ts=time.time())
-                state.add_thinking_bytes_received(target_name, pid, len(think_delta))
-
-            stream_result = stream_request(
-                source_config, timeout, api_model, source, prompt, max_tok,
-                log_path=log_file,
-                log_label=f"{plugin.name} (Streaming, attempt {attempt + 1})",
-                session_seed=session_seed, temperature=temperature,
-                drop_params=drop_params, stop_event=stop_event,
-                system_prompt=system_prompt, **request_params_kwargs,
-                on_chunk=on_chunk, on_think_chunk=on_think_chunk, pid=pid, on_retry=on_retry,
-                max_content_tokens=max_content_tokens,
-                max_thinking_tokens=max_thinking_tokens,
-                repetition_guard=repetition_guard)
-            text = stream_result.text
-            think_text = stream_result.think_text
-            first_tok = stream_result.first_tok
-            stream_end = stream_result.stream_end
-            serr = stream_result.error
-            sfr = stream_result.finish_reason
-
-            if serr or first_tok is None:
-                # Streaming attempt failed. If the stream actually opened
-                # (``first_tok`` set) OR accumulated ANY characters, KEEP
-                # the streamed text instead of clobbering it with a
-                # non-streaming retry. A non-stream retry from a
-                # "thinking" model that already streamed 40 K chars will
-                # likely return empty, and ``count_tokens("")`` now correctly returns
-                # 0 rather than a one-token placeholder.
-                # into a 1-token placeholder record (operator reported
-                # kimi-dev streaming 10 K tokens over 2 000 s then
-                # "giving up" with ``_output_tokens = 1``). Only fall
-                # through to non-streaming when streaming produced
-                # nothing useful; that branch keeps the original
-                # behaviour of trying once more to get a response when
-                # streaming never opened at all.
-                if first_tok is not None or len(text) > 0:
-                    # Trust the streamed ``stream_end`` and ``first_tok``
-                    # for timing. ``stream_ok`` flips to False because
-                    # the request didn't complete normally; ``truncated``
-                    # reports ``sfr == "length"``.
-                    response_time = round(stream_end - attempt_start, 1)
-                    gen_time = stream_end - first_tok if first_tok else 0
-                    truncated = (sfr == "length")
-                    finish_reason = sfr
-                    stream_ok = False
-                else:
-                    nonstream_result = nonstream_request_with_schema_fallback(
-                        max_tok,
-                        f"{plugin.name} (Non-Streaming, attempt {attempt + 1})",
-                    )
-                    text = nonstream_result.text
-                    think_text = nonstream_result.think_text
-                    ns_time = nonstream_result.gen_time
-                    nserr = nonstream_result.error
-                    nsfr = nonstream_result.finish_reason
-                    if nserr:
-                        return failed_task(f"Stream: {serr or 'no tokens'}. Nostream: {nserr}")
-                    stream_ok = False
-                    response_time = round(ns_time, 1)
-                    gen_time = ns_time
-                    truncated = (nsfr == "length")
-                    finish_reason = nsfr
-            else:
-                stream_ok = True
-                response_time = round(stream_end - attempt_start, 1)
-                gen_time = stream_end - first_tok if first_tok else 0
-                truncated = (sfr == "length")
-                finish_reason = sfr
-        else:
-            nonstream_result = nonstream_request_with_schema_fallback(
-                max_tok,
-                f"{plugin.name} (attempt {attempt + 1})",
-            )
-            text = nonstream_result.text
-            think_text = nonstream_result.think_text
-            gen_time = nonstream_result.gen_time
-            gen_err = nonstream_result.error
-            gen_fr = nonstream_result.finish_reason
-
-            if gen_err:
-                return failed_task(gen_err)
-            stream_ok = False
-            response_time = round(gen_time, 1)
-            truncated = (gen_fr == "length")
-            finish_reason = gen_fr
-
-            est_tok = count_tokens(text)
-            output_tokens = int(est_tok)
-            if gen_time > 0:
-                tps = round(est_tok / gen_time, 2)
-
-            if not truncated:
-                break
-
-            if is_repeating(text):
-                repeating = True
-                break
-
-            if len(text.strip()) < 50:
-                pass
-
-            if attempt < len(max_tokens) - 1:
-                pass
-
-    # Classify why a completed HTTP response produced no content tokens so the
-    # empty-score-0 legs are diagnosable instead of silent. Only non-error
-    # completed legs reach this point with ``text == ""`` (transport errors
-    # early-return above); ``finish_reason`` is the last one observed across
-    # the token-level retry loop. Surfaced in ``meta.json`` and the CSV's
-    # ``{pid}_Empty_Reason`` column.
-    empty_reason = classify_empty_reason(text, think_text, finish_reason, serr)
-
-    # ── Auto-escalation for thinking-truncation ──────────────────────────
-    # When the model consumed its entire ``max_tokens`` budget on
-    # ``reasoning_content`` and produced zero content tokens, retry once
-    # with a doubled budget instead of recording a silent 0-score.
-    # This catches deepseek/qwen/o1-class models whose thinking phase
-    # exceeds the default budget, without requiring per-model config.
-    if (empty_reason == "thinking-truncation"
-            and runner == "http"
-            and plugin.supports_streaming):
-        # Use the last ``max_tok`` from the exhausted attempt (or the
-        # max configured level) as the base. Never exceed a hard cap of
-        # 2× the initial budget to avoid unbounded resource burn.
-        base = max(max_tokens) if max_tokens else 16384
-        escalated = min(base * 2, 131072)
-        if escalated > base or (not max_tokens):
-            # Retry with the doubled budget. The retry uses the same
-            # prompt/temperature/seed/stop_event as the original, and
-            # replaces the empty text/think_text left by the truncated
-            # attempt. We reuse the streaming path even for
-            # non-streaming-capable plugins (the loop above already
-            # handled them), but the guard narrows to streaming only.
-            attempt_start = time.time()
-
-            def on_retry():
-                state.start_plugin_run(target_name, pid)
-
-            def on_chunk(delta):
-                state.mark_first_chunk_seen(target_name, pid, ts=time.time())
-                state.add_bytes_received(target_name, pid, len(delta))
-
-            def on_think_chunk(think_delta):
-                state.mark_first_chunk_seen(target_name, pid, ts=time.time())
-                state.add_thinking_bytes_received(target_name, pid, len(think_delta))
-
-            retry_prompt = prompt + _thinking_budget_retry_instruction(
-                escalated, fallback=BENCHMARK_DEFAULT_MAX_TOKENS,
-            )
-            stream_result = stream_request(
-                source_config, timeout, api_model, source, retry_prompt, escalated,
-                log_path=log_file,
-                log_label=f"{plugin.name} (Streaming, thinking-truncation retry, budget={escalated})",
-                session_seed=session_seed, temperature=temperature,
-                drop_params=drop_params, stop_event=stop_event,
-                system_prompt=system_prompt, **request_params_kwargs,
-                on_chunk=on_chunk, on_think_chunk=on_think_chunk, pid=pid, on_retry=on_retry,
-                max_content_tokens=max_content_tokens,
-                max_thinking_tokens=max_thinking_tokens,
-                repetition_guard=repetition_guard)
-            text = stream_result.text
-            think_text = stream_result.think_text
-            first_tok = stream_result.first_tok
-            stream_end = stream_result.stream_end
-            serr = stream_result.error
-            sfr = stream_result.finish_reason
-
-            if serr:
-                # Retry failed — keep the original empty classification
-                # rather than overwriting with a transport error; the
-                # original thinking-truncation is the relevant diagnosis.
-                pass
-            else:
-                # Retry succeeded (or produced a different empty).
-                # Re-classify the new result.
-                stream_ok = True
-                if first_tok:
-                    response_time = round(stream_end - attempt_start, 1)
-                    gen_time = stream_end - first_tok
-                finish_reason = sfr
-                truncated = (sfr == "length")
-                empty_reason = classify_empty_reason(text, think_text, finish_reason, None)
-
-    # Compute buffered/partial response metrics uniformly for both transports.
-    # Streaming failures and OpenCode both arrive here without the HTTP
-    # usage-based bookkeeping used by some non-streaming responses.
-    output_tokens = int(count_tokens(text))
-    # Thinking/reasoning tokens are counted from ``think_text`` and stored
-    # alongside the content count so reports can break the total down. The
-    # content-only count stays in ``{pid}_output_tokens`` (backward
-    # compatible); the split lives in ``{pid}_thinking_tokens`` and
-    # ``{pid}_total_tokens``.
-    thinking_tokens = int(count_tokens(think_text))
-    total_tokens = output_tokens + thinking_tokens
-    if gen_time > 0:
-        tps = round(output_tokens / gen_time, 2)
-
-    # OpenCode and HTTP share the same save-responses layout below: a joined
-    # ``{pid}.txt`` with any thinking wrapped in markers, a ``{pid}.think.txt``
-    # thinking-only file, and a ``{pid}.content.txt`` pure-final file.
-    # ``think_text`` for the OpenCode runner was extracted from the NDJSON
-    # ``reasoning`` events (only emitted when the CLI is invoked with
-    # ``--thinking``), mirroring the ``reasoning_content`` the HTTP path
-    # accumulates.
-    if judge_input_dir:
-        sidecar = judge_sidecar_path(
-            judge_input_dir, artifact_target_name or config_target_name, runner, plugin.id
-        )
-        try:
-            prepare_judge_sidecar(
-                sidecar, plugin, prompt, text,
-                target=artifact_target_name or config_target_name,
-                state_key=target_name,
-                runner=runner,
-            )
-        except OSError:
-            # A judge retention failure is surfaced when the judge queue scans
-            # for the sidecar; it must never turn a successful benchmark leg
-            # into a benchmark failure.
-            pass
-
-    if save_responses and output_dir:
-        responses_dir = os.path.join(output_dir, "responses", sanitize_filename(artifact_target_name or config_target_name))
-        os.makedirs(responses_dir, exist_ok=True)
-        # 1. Prompt file (unchanged).
-        prompt_path = os.path.join(responses_dir, f"{plugin.id}.prompt.txt")
-        try:
-            with open(prompt_path, "w", encoding="utf-8") as f:
-                f.write(prompt)
-        except OSError:
-            pass
-        # 2. Joined response — final content, with any thinking content wrapped
-        #    in ``<thinking>...</thinking>`` markers so operators can distinguish
-        #    the model's chain-of-thought from its final answer without needing
-        #    a separate viewer. When there is no thinking content the file is
-        #    identical to the previous version (pure final content).
-        if think_text:
-            joined = f"<thinking>\n{think_text}\n</thinking>\n\n{text}"
-        else:
-            joined = text
-        response_path = os.path.join(responses_dir, f"{plugin.id}.txt")
-        try:
-            with open(response_path, "w", encoding="utf-8") as f:
-                f.write(joined)
-        except OSError:
-            pass
-        # 3. Thinking-only file (only created when thinking content exists).
-        if think_text:
-            think_path = os.path.join(responses_dir, f"{plugin.id}.think.txt")
-            try:
-                with open(think_path, "w", encoding="utf-8") as f:
-                    f.write(think_text)
-            except OSError:
-                pass
-        # 4. Content-only file — pure final content without thinking markers.
-        #    Identical to the original ``{plugin.id}.txt`` format from before
-        #    thinking-content separation was added.
-        content_path = os.path.join(responses_dir, f"{plugin.id}.content.txt")
-        try:
-            with open(content_path, "w", encoding="utf-8") as f:
-                f.write(text)
-        except OSError:
-            pass
-
-    # B5: a plugin that crashes mid-evaluation used to silently lose its
-    # ``meta.json`` sidecar — only ``prompt.txt`` and ``<plugin>.txt``
-    # survived, which forced debuggers to rebuild the failure by hand. We
-    # now catch every exception, persist the ``error`` + ``traceback``
-    # fields alongside the metrics that WERE successfully gathered, and    #    surface the same named ``PluginTaskResult`` failure contract as the
-    #    streaming failure path.
-    score: int | str = "fail"
-    rubric = []
-    diagnostics: dict[str, Any] = {}
-    score_error = None
-    score_traceback_text = None
-    try:
-        evaluation = plugin.evaluate(text)
-        score = normalize_score(evaluation.score, plugin.max_score)
-        rubric = serialize_rubric(evaluation.rubric)
-        diagnostics = evaluation.diagnostics or {}
-    except Exception as exc:  # noqa: BLE001 - a crashing evaluator is recorded, not fatal
-        score_error = f"plugin.evaluate raised {type(exc).__name__}: {exc}"
-        score_traceback_text = traceback.format_exc()
-
-    schema_metadata = _schema_request_metadata(
-        plugin,
-        request_params,
-        response_schema_valid=diagnostics.get("response_schema_valid")
-        if isinstance(diagnostics, dict) else None,
-        request_applied=schema_request_applied,
-        schema_fallback_used=schema_fallback_used,
-        schema_fallback_error=schema_fallback_error,
-    )
-
-    if save_responses and output_dir:
-        meta_path = os.path.join(responses_dir, f"{plugin.id}.meta.json")
-        meta = {
-            "plugin": plugin.id,
-            "plugin_version": plugin.version,
-            "target": artifact_target_name or config_target_name,
-            "model": api_model,
-            "runner": runner,
-            "opencode_model": opencode_model,
-            "is_agent": is_agent,
-            "system_prompt": system_prompt,
-            "score": score,
-            "score_schema": SCORE_SCHEMA,
-            "rubric": rubric,
-
-            "diagnostics": diagnostics,
-            **{key: value for key, value in schema_metadata.items()},
-            "response_time": response_time,
-            "output_tokens": output_tokens,
-            "thinking_tokens": thinking_tokens,
-            "total_tokens": total_tokens,
-            "tps": tps,
-            "seed": session_seed,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-        }
-        if score_error is not None:
-            meta["error"] = score_error
-            meta["traceback"] = score_traceback_text
-        # ``stream_error`` is the streaming-layer failure reason when
-        # the partial-stream branch (kept-streamed-text on ``serr``)
-        # fired. Operators inspecting a meta.json whose ``stream_ok``
-        # is False / ``output_tokens`` looks low / ``truncated`` is
-        # False get an explicit ``timeout``/``Read timed out``/etc.
-        # reason here, rather than having to grep the per-request log.
-        # Recorded for streaming-capable plugins only (non-streaming
-        # plugins cannot produce ``serr``).
-        if plugin.supports_streaming and serr is not None:
-            meta["stream_error"] = serr
-        if empty_reason is not None:
-            meta["empty_reason"] = empty_reason
-        try:
-            with open(meta_path, "w", encoding="utf-8") as f:
-                json.dump(meta, f, indent=2, default=str)
-        except OSError:
-            pass
-
-    if score_error is not None:
-        return failed_task(score_error)
-
-    result = {
-        **{f"{pid}_{key}": value for key, value in schema_metadata.items()},
-        f"{pid}_score": score,
-        f"{pid}_rubric": rubric,
-        f"{pid}_diagnostics": diagnostics,
-        f"{pid}_response_time": response_time,
-        f"{pid}_output_tokens": output_tokens,
-        f"{pid}_thinking_tokens": thinking_tokens,
-        f"{pid}_total_tokens": total_tokens,
-        f"{pid}_tps": tps,
-        f"{pid}_truncated": truncated,
-        f"{pid}_repeating": repeating,
-        f"{pid}_stream_ok": stream_ok,
-        f"{pid}_empty_reason": empty_reason,
-    }
-    return PluginTaskResult(result, None)
-
-
-
-def _run_plugin_task(target_name, api_model, source, plugin, source_config, timeout,
-                     max_tokens, session_seed, log_file, global_cfg, state,
-                     stop_event=None, save_responses=False, output_dir=None,
-                     judge_input_dir=None, judge_enqueue=None,
-                     system_prompt=None, is_agent=False, runner="http",
-                     opencode_config_path=None, opencode_model=None,
-                     opencode_agent=None, opencode_binary=None,
-                     pi_node=None, pi_worker=None, pi_config=None,
-                     artifact_target_name=None,
-                     config_target_name=None, debug_logs=False) -> PluginTaskResult:
+def _run_plugin_task(target_name: str, api_model: str, source: str, plugin: Any, source_config: dict[str, Any], timeout: float,
+                     max_tokens: int, session_seed: int, log_file: str | None, global_cfg: dict[str, Any], state: Any,
+                     stop_event: threading.Event | None = None, save_responses: bool = False, output_dir: str | None = None,
+                     judge_input_dir: str | None = None, judge_enqueue: Callable[[str, str, str, str], Any] | None = None,
+                     system_prompt: str | None = None, is_agent: bool = False, runner: str = "http",
+                     opencode_config_path: str | None = None, opencode_model: str | None = None,
+                     opencode_agent: str | None = None, opencode_binary: str | None = None,
+                     pi_node: str | None = None, pi_worker: str | None = None, pi_config: dict[str, Any] | None = None,
+                     artifact_target_name: str | None = None,
+                     config_target_name: str | None = None, debug_logs: bool = False) -> PluginTaskResult:
     """Run one benchmark cell with one scalar budget and at most one policy retry.
 
     Transport retries preserve the prompt. Token-limit and repetition retries
@@ -2492,14 +1814,14 @@ def _run_plugin_task(target_name, api_model, source, plugin, source_config, time
         not isinstance(cfg, dict) or cfg.get("api_protocol") not in {"1min", "chatplayground"}
     )
 
-    def on_retry():
+    def on_retry() -> None:
         state.start_plugin_run(target_name, pid)
 
-    def on_chunk(delta):
+    def on_chunk(delta: str) -> None:
         state.mark_first_chunk_seen(target_name, pid, ts=time.time())
         state.add_bytes_received(target_name, pid, len(delta))
 
-    def on_think_chunk(delta):
+    def on_think_chunk(delta: str) -> None:
         state.mark_first_chunk_seen(target_name, pid, ts=time.time())
         state.add_thinking_bytes_received(target_name, pid, len(delta))
 
@@ -2511,7 +1833,7 @@ def _run_plugin_task(target_name, api_model, source, plugin, source_config, time
         on_retry=on_retry,
     )
 
-    request = TransportRequest(
+    common = GenerationFields(
         prompt=base_prompt,
         max_tokens=budget,
         source_config=source_config,
@@ -2528,17 +1850,19 @@ def _run_plugin_task(target_name, api_model, source, plugin, source_config, time
         pid=pid,
         stop_event=stop_event,
         observer=task_observer,
-        transport=runner,
         debug_logs=debug_logs,
-        options=TransportOptions(
-            http=HTTPTransportOptions(
-                supports_streaming=plugin.supports_streaming,
-                max_content_tokens=max_content_tokens,
-                max_thinking_tokens=max_thinking_tokens,
-                repetition_guard=repetition_guard,
-                request_params=request_params,
-            ),
-            opencode=OpenCodeTransportOptions(
+    )
+    http_options = HTTPTransportOptions(
+        supports_streaming=plugin.supports_streaming,
+        max_content_tokens=max_content_tokens,
+        max_thinking_tokens=max_thinking_tokens,
+        repetition_guard=repetition_guard,
+        request_params=request_params,
+    )
+    if runner == "opencode":
+        request = OpenCodeRequest(
+            common,
+            OpenCodeTransportOptions(
                 config_path=opencode_config_path,
                 model=opencode_model,
                 agent=opencode_agent,
@@ -2548,20 +1872,27 @@ def _run_plugin_task(target_name, api_model, source, plugin, source_config, time
                 target_key=artifact_target,
                 plugin_id=pid,
             ),
-            pi=PiTransportOptions(
+        )
+    elif runner == "pi":
+        request = PiRequest(  # type: ignore[assignment]
+
+            common,
+            PiTransportOptions(
                 node=pi_node,
                 worker=pi_worker,
                 config=pi_config,
                 target_key=artifact_target,
                 plugin_id=pid,
             ),
-        ),
-    )
+        )
+    else:
+        request = HTTPRequest(  # type: ignore[assignment]
+common, http_options)
 
-    def on_attempt(attempt_number):
+    def on_attempt(attempt_number: int) -> None:
         state.set_plugin_attempt(target_name, pid, attempt_number)
 
-    def evaluate(text):
+    def evaluate(text: str) -> tuple[int | str, list[dict[str, Any]], Any, str | None, str | None]:
         try:
             value = plugin.evaluate(text)
             return normalize_score(value.score, plugin.max_score), serialize_rubric(value.rubric), value.diagnostics or {}, None, None
@@ -2593,18 +1924,26 @@ def _run_plugin_task(target_name, api_model, source, plugin, source_config, time
         nature = raw.response_nature
         thinking_tokens = raw.thinking_tokens
         if raw.error and not text.strip():
-            score, rubric, diagnostics = "fail", [], {}
-            score_error, score_traceback = None, None
+            score_result: int | str = "fail"
+            rubric: list[dict[str, Any]] = []
+            diagnostics: Any = {}
+            score_error_result: str | None = None
+            score_traceback: str | None = None
         else:
-            score, rubric, diagnostics, score_error, score_traceback = evaluate(text)
-        if score_error is not None:
+            eval_result = evaluate(text)
+            score_result = eval_result[0]
+            rubric = eval_result[1]
+            diagnostics = eval_result[2]
+            score_error_result = eval_result[3]
+            score_traceback = eval_result[4]
+        if score_error_result is not None:
             nature = "plugin_error"
         usable = (
             bool(text.strip())
             and nature not in {"timeout", "cancelled", "transport_error"}
-            and score_error is None
+            and score_error_result is None
         )
-        attempt_failure_cause = raw.error or score_error
+        attempt_failure_cause = raw.error or score_error_result
         if attempt_failure_cause is None and nature == "token_limit":
             attempt_failure_cause = (
                 f"finish_reason:{raw.finish_reason}"
@@ -2631,10 +1970,10 @@ def _run_plugin_task(target_name, api_model, source, plugin, source_config, time
             "truncated_due_to_time": nature == "timeout",
             "repeating": raw.repeating,
             "empty_reason": raw.empty_reason,
-            "score": score,
+            "score": score_result,
             "rubric": rubric,
             "diagnostics": diagnostics,
-            "score_error": score_error,
+            "score_error": score_error_result,
             "score_traceback": score_traceback,
             "usable": usable,
             "selected": False,
@@ -2802,16 +2141,16 @@ def _run_plugin_task(target_name, api_model, source, plugin, source_config, time
     return PluginTaskResult(result, task_error)
 
 
-def run_model(model_name, source, state, active_plugins, source_config, timeout,
-              max_tokens, output_dir, session_seed=0, global_cfg=None,
-              stop_event=None, save_responses=False, api_model=None,
-              judge_input_dir=None, judge_enqueue=None,
-              judge_model=None, judge_models=None, judge_prompt_version=None,
-              system_prompt=None, is_agent=False, runner="http",
-              opencode_config_path=None, opencode_model=None,
-              opencode_agent=None, opencode_binary=None,
-              pi_node=None, pi_worker=None, pi_config=None, display_name=None,
-              config_target_name=None, debug_logs=False):
+def run_model(model_name: str, source: str, state: Any, active_plugins: list[Any], source_config: dict[str, Any], timeout: float,
+              max_tokens: int, output_dir: str, session_seed: int = 0, global_cfg: dict[str, Any] | None = None,
+              stop_event: threading.Event | None = None, save_responses: bool = False, api_model: str | None = None,
+              judge_input_dir: str | None = None, judge_enqueue: Callable[[str, str, str, str], Any] | None = None,
+              judge_model: str | None = None, judge_models: list[str] | None = None, judge_prompt_version: str | None = None,
+              system_prompt: str | None = None, is_agent: bool = False, runner: str = "http",
+              opencode_config_path: str | None = None, opencode_model: str | None = None,
+              opencode_agent: str | None = None, opencode_binary: str | None = None,
+              pi_node: str | None = None, pi_worker: str | None = None, pi_config: dict[str, Any] | None = None, display_name: str | None = None,
+              config_target_name: str | None = None, debug_logs: bool = False) -> dict[str, Any]:
     """Run active plugins for one model or agent through a selected runner."""
     start = time.time()
     target_name = model_name
@@ -2861,13 +2200,13 @@ def run_model(model_name, source, state, active_plugins, source_config, timeout,
     if runner == "http" and cfg is None:
         r["status"] = "error"
         r["error"] = f"Unknown source '{source}' — not in SOURCE_CONFIG"
-        r["total_time"] = round(time.time() - start, 1)
+        r["total_time"] = round(time.time() - start, 1)  # type: ignore[assignment]
         state.publish_result(
             r, status="failed", error=r["error"], elapsed=r["total_time"],
             last_error=r["error"],
         )
         state.log(target_name, r['error'])
-        return
+        return r
 
     latest = {(res.get("state_key", res["model"]), res.get("runner", "http")): res
               for res in state.latest_results()}
@@ -2957,14 +2296,14 @@ def run_model(model_name, source, state, active_plugins, source_config, timeout,
             and not isinstance(r.get(f"{p.id}_score"), bool)
             for p in active_plugins
         )
-        r["total_time"] = round(time.time() - start, 1)
+        r["total_time"] = round(time.time() - start, 1)  # type: ignore[assignment]
         state.publish_result(
             r, status="completed", elapsed=r["total_time"],
         )
         publish_judge_sidecars(
             judge_input_dir, display_name, runner, active_plugins, judge_enqueue,
         )
-        return
+        return r
 
     plugin_thread_limit = source_config.get(source, {}).get("plugin_thread_limit", 1)
     try:
@@ -2997,17 +2336,18 @@ def run_model(model_name, source, state, active_plugins, source_config, timeout,
                  display_name=display_name,
                  config_target_name=config_target_name,
                  debug_logs=debug_logs)
+    return r
 
 
-def _run_plugins(target_name, api_model, source, state, active_plugins, plugins_to_run,
-                 source_config, timeout, max_tokens, output_dir,
-                 session_seed, global_cfg, r, start, max_workers,
-                 stop_event=None, save_responses=False, judge_input_dir=None,
-                 judge_enqueue=None,
-                 system_prompt=None, is_agent=False, runner="http", opencode_config_path=None,
-                 opencode_model=None, opencode_agent=None, opencode_binary=None,
-                 pi_node=None, pi_worker=None, pi_config=None,
-                 display_name=None, config_target_name=None, debug_logs=False):
+def _run_plugins(target_name: str, api_model: str, source: str, state: Any, active_plugins: list[Any], plugins_to_run: list[Any],
+                 source_config: dict[str, Any], timeout: float, max_tokens: int, output_dir: str,
+                 session_seed: int, global_cfg: dict[str, Any] | None, r: dict[str, Any], start: float, max_workers: int,
+                 stop_event: threading.Event | None = None, save_responses: bool = False, judge_input_dir: str | None = None,
+                 judge_enqueue: Callable[[str, str, str, str], Any] | None = None,
+                 system_prompt: str | None = None, is_agent: bool = False, runner: str = "http", opencode_config_path: str | None = None,
+                 opencode_model: str | None = None, opencode_agent: str | None = None, opencode_binary: str | None = None,
+                 pi_node: str | None = None, pi_worker: str | None = None, pi_config: dict[str, Any] | None = None,
+                 display_name: str | None = None, config_target_name: str | None = None, debug_logs: bool = False) -> None:
     """Run plugins for one model using a thread pool of bounded size.
 
     A single-worker pool (``max_workers=1``) is equivalent to sequential
@@ -3027,7 +2367,7 @@ def _run_plugins(target_name, api_model, source, state, active_plugins, plugins_
         if debug_logs else None
     )
 
-    def run_one(plugin):
+    def run_one(plugin: Any) -> None:
         nonlocal consecutive_429, breaker_triggered
         pid = plugin.id
         # The model-level circuit breaker is distinct from the process-wide
@@ -3077,7 +2417,7 @@ def _run_plugins(target_name, api_model, source, state, active_plugins, plugins_
             # (``run_model``) once all plugins resolve.
             state.finish_plugin_run(target_name, pid)
         with lock:
-            results[pid] = result
+            results[pid] = result  # type: ignore[assignment]
             if err:
                 errors[pid] = err
             # A successful or non-429 test breaks the streak. Cancellation
@@ -3174,8 +2514,8 @@ def _run_plugins(target_name, api_model, source, state, active_plugins, plugins_
     for plugin in plugins_to_run:
         pid = plugin.id
         if pid in errors or results.get(pid) is None:
-            failed_result = results.get(pid) or {}
-            r.update(failed_result)
+            failed_result: dict[str, Any] = results.get(pid) or {}
+            r.update(failed_result if isinstance(failed_result, dict) else {})
             fail_values = {
                 f"{pid}_score": "fail",
                 f"{pid}_response_time": "fail",
@@ -3186,10 +2526,11 @@ def _run_plugins(target_name, api_model, source, state, active_plugins, plugins_
                 f"{pid}_stream_ok": False,
             }
             r.update(fail_values)
-            state.update(target_name, **{**failed_result, **fail_values})
+            state.update(target_name, **{**(failed_result if isinstance(failed_result, dict) else {}), **fail_values})
         else:
             result = results[pid]
-            r.update(result)
+            if isinstance(result, dict):
+                r.update(result)
 
     first_tok_time = None
     any_stream_ok = False
@@ -3247,5 +2588,5 @@ def _run_plugins(target_name, api_model, source, state, active_plugins, plugins_
         r, status="completed", elapsed=r["total_time"],
     )
     publish_judge_sidecars(
-        judge_input_dir, display_name, runner, active_plugins, judge_enqueue,
+        judge_input_dir, display_name or target_name, runner, active_plugins, judge_enqueue,
     )
