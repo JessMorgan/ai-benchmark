@@ -225,32 +225,34 @@ def save_outputs(results: list[dict[str, Any]], output_dir: str, active_plugins:
 
     output_plugins_list = discover_output_plugins()
     if output_formats is None:
-        generated = []
+        generated: list[str] = []
         for plugin in output_plugins_list:
             with contextlib.suppress(Exception):
                 path = plugin.generate(
                     results, active_plugins, output_dir=output_dir,
                     session_seed=session_seed,
                 )
-                if path:
+                if isinstance(path, str):
                     generated.append(path)
         return generated
 
     selected = normalize_output_formats(output_formats)
-    output_plugins = {plugin.id: plugin for plugin in output_plugins_list}
-    generated = []
+    output_plugins = {p.id: p for p in output_plugins_list}
+    selected_generated: list[str] = []
     for output_format in selected:
-        plugin = output_plugins.get(_OUTPUT_FORMAT_PLUGIN_IDS[output_format])
-        if plugin is None:
+        selected_plugin: BenchmarkOutputPlugin | None = output_plugins.get(
+            _OUTPUT_FORMAT_PLUGIN_IDS[output_format]
+        )
+        if selected_plugin is None:
             continue
         with contextlib.suppress(Exception):
-            path = plugin.generate(
+            path = selected_plugin.generate(
                 results, active_plugins, output_dir=output_dir,
                 session_seed=session_seed,
             )
-            if path:
-                generated.append(path)
-    return generated
+            if isinstance(path, str):
+                selected_generated.append(path)
+    return selected_generated
 
 
 def _save_outputs(state: Any, output_dir: str, active_plugins: list[BenchmarkTaskPlugin], output_formats: list[str] | None = None) -> list[str]:
