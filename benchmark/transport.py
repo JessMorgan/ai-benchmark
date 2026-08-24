@@ -10,6 +10,7 @@ import hashlib
 import queue
 import threading
 import time
+import warnings
 from collections.abc import Callable, Iterator
 from concurrent.futures import Future
 from dataclasses import dataclass, field, replace
@@ -20,6 +21,14 @@ from .observer import TaskObserver
 from .opencode import OPENCODE_BINARY, run_process
 from .pi import PI_DEFAULT_NODE, PiProcessResult
 from .pi import run_process as run_pi_process
+from .request_models import (
+    GenerationFields,
+    HTTPRequest,
+    OpenCodeRequest,
+    PiRequest,
+    RequestIdentityFields,
+    TransportRequestVariant,
+)
 from .transport_options import (
     HTTPTransportOptions,
     OpenCodeTransportOptions,
@@ -118,6 +127,112 @@ class TransportRequest:
     pi_plugin_id: str | None = None
     identity: RequestIdentity | None = None
     options: TransportOptions | None = None
+
+    @classmethod
+    def from_variant(cls, variant: TransportRequestVariant) -> TransportRequest:
+        """Adapt a typed request variant to the legacy executor boundary."""
+        common = variant.common
+        options = TransportOptions(
+            http=variant.options if isinstance(variant, HTTPRequest) else HTTPTransportOptions(),
+            opencode=variant.options if isinstance(variant, OpenCodeRequest) else OpenCodeTransportOptions(),
+            pi=variant.options if isinstance(variant, PiRequest) else PiTransportOptions(),
+        )
+        return cls(
+            prompt=common.prompt,
+            max_tokens=common.max_tokens,
+            source_config=common.source_config,
+            api_model=common.api_model,
+            source=common.source,
+            timeout=common.timeout,
+            temperature=common.temperature,
+            reasoning=common.reasoning,
+            system_prompt=common.system_prompt,
+            drop_params=common.drop_params,
+            session_seed=common.session_seed,
+            log_path=common.log_path,
+            log_label=common.log_label,
+            pid=common.pid,
+            stop_event=common.stop_event,
+            observer=common.observer,
+            debug_logs=common.debug_logs,
+            transport=variant.kind,
+            identity=RequestIdentity(
+                run_id=common.identity.run_id if common.identity else "unknown-run",
+                revision_id=common.identity.revision_id if common.identity else "unknown-revision",
+                target=common.identity.target if common.identity else common.api_model,
+                plugin=common.identity.plugin if common.identity else common.pid or "unknown-plugin",
+                attempt=common.identity.attempt if common.identity else 1,
+            ),
+            options=options,
+        )
+
+    def to_variant(self) -> TransportRequestVariant:
+        """Return the typed discriminated request represented by this object."""
+        common = GenerationFields(
+            prompt=self.prompt,
+            max_tokens=self.max_tokens,
+            source_config=self.source_config,
+            api_model=self.api_model,
+            source=self.source,
+            timeout=self.timeout,
+            temperature=self.temperature,
+            reasoning=self.reasoning,
+            system_prompt=self.system_prompt,
+            drop_params=self.drop_params,
+            session_seed=self.session_seed,
+            log_path=self.log_path,
+            log_label=self.log_label,
+            pid=self.pid,
+            stop_event=self.stop_event,
+            observer=self.observer,
+            debug_logs=self.debug_logs,
+            identity=RequestIdentityFields(
+                run_id=self.identity.run_id if self.identity else "unknown-run",
+                revision_id=self.identity.revision_id if self.identity else "unknown-revision",
+                target=self.identity.target if self.identity else self.api_model,
+                plugin=self.identity.plugin if self.identity else self.pid or "unknown-plugin",
+                attempt=self.identity.attempt if self.identity else self.attempt,
+            ),
+        )
+        options = self.options
+        if options is None:
+            warnings.warn(
+                "flat transport-specific TransportRequest fields are deprecated; "
+                "construct an HTTPRequest, OpenCodeRequest, or PiRequest instead",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            options = TransportOptions(
+                http=HTTPTransportOptions(
+                    supports_streaming=self.supports_streaming,
+                    max_content_tokens=self.max_content_tokens,
+                    max_thinking_tokens=self.max_thinking_tokens,
+                    repetition_guard=self.repetition_guard,
+                    request_params=self.request_params,
+                ),
+                opencode=OpenCodeTransportOptions(
+                    config_path=self.opencode_config_path,
+                    model=self.opencode_model,
+                    agent=self.opencode_agent,
+                    binary=self.opencode_binary,
+                    output_dir=self.opencode_output_dir,
+                    no_output_grace=self.opencode_no_output_grace,
+                    target_key=self.opencode_target_key,
+                    plugin_id=self.opencode_plugin_id,
+                ),
+                pi=PiTransportOptions(
+                    node=self.pi_node,
+                    worker=self.pi_worker,
+                    config=self.pi_config,
+                    target_key=self.pi_target_key,
+                    plugin_id=self.pi_plugin_id,
+                ),
+            )
+        if self.transport == "opencode":
+            return OpenCodeRequest(common, options.opencode)
+        if self.transport == "pi":
+            return PiRequest(common, options.pi)
+        return HTTPRequest(common, options.http)
 
     def http_options(self) -> HTTPTransportOptions:
         """Return grouped HTTP options, adapting legacy fields when needed."""
@@ -796,7 +911,7 @@ def _execute_pi(request: TransportRequest) -> TransportResult:
 
 def execute_task(
 
-    request: TransportRequest,
+    request: TransportRequest | TransportRequestVariant,
     *,
     retry_policy: RetryPolicy,
     base_prompt: str,
@@ -814,6 +929,8 @@ def execute_task(
     only decides whether a completed transport leg warrants the caller's one
     policy retry. Scoring and JSON parsing stay with the caller.
     """
+    if not isinstance(request, TransportRequest):
+        request = TransportRequest.from_variant(request)
     max_attempts = max(1, int(retry_policy.max_attempts))
     attempts: list[TaskAttempt] = []
     retry_reasons: list[str] = []
@@ -884,7 +1001,7 @@ def execute_task(
 
 
 def execute_task_streaming(
-    request: TransportRequest,
+    request: TransportRequest | TransportRequestVariant,
     *,
     retry_policy: RetryPolicy,
     base_prompt: str,
@@ -905,6 +1022,8 @@ def execute_task_streaming(
     schedules another logical attempt, ``next_attempt`` points to its live
     execution after the first future resolves.
     """
+    if not isinstance(request, TransportRequest):
+        request = TransportRequest.from_variant(request)
     stop_event = request.stop_event or threading.Event()
     request = replace(request, stop_event=stop_event)
     items: queue.Queue[str | object] = queue.Queue()
@@ -1010,7 +1129,7 @@ def execute_task_streaming(
     return execution
 
 
-def execute_transport(request: TransportRequest, *, stream_request_fn=None,
+def execute_transport(request: TransportRequest | TransportRequestVariant, *, stream_request_fn=None,
                       nonstream_request_fn=None,
                       run_process_fn=None) -> TransportResult:
     """Execute exactly one logical attempt through HTTP or OpenCode.
@@ -1019,6 +1138,8 @@ def execute_transport(request: TransportRequest, *, stream_request_fn=None,
     the module defaults, while orchestration callers and tests can preserve a
     local transport seam without mutating this module globally.
     """
+    if not isinstance(request, TransportRequest):
+        request = TransportRequest.from_variant(request)
     if request.transport == "http":
         return _execute_http(
             request,

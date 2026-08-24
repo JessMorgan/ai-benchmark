@@ -45,6 +45,7 @@ from .plugin import (
     normalize_score,
     serialize_rubric,
 )
+from .request_models import GenerationFields, HTTPRequest, OpenCodeRequest, PiRequest
 from .results import save_task_result
 from .runtime_records import BenchmarkAttemptRecord
 from .state import BenchmarkState  # noqa: F401
@@ -52,7 +53,6 @@ from .transport import (
     BENCHMARK_DEFAULT_MAX_TOKENS,
     BENCHMARK_RETRY_POLICY,
     JUDGE_RETRY_POLICY,
-    TransportRequest,
     TransportResult,
     _retry_prompt_alteration,
     _split_token_budget,
@@ -63,7 +63,6 @@ from .transport_options import (
     HTTPTransportOptions,
     OpenCodeTransportOptions,
     PiTransportOptions,
-    TransportOptions,
 )
 
 PRELOAD_PROMPT = "Reply with the single word OK."
@@ -1125,7 +1124,7 @@ def judge_response(source_config, judge_source, judge_api_model, sidecar,
         on_chunk=report_progress,
         on_think_chunk=lambda delta: report_progress("", delta),
     )
-    judge_request = TransportRequest(
+    judge_common = GenerationFields(
         prompt=prompt,
         max_tokens=budget,
         source_config=source_config,
@@ -1145,12 +1144,10 @@ def judge_response(source_config, judge_source, judge_api_model, sidecar,
             f"prompt_version={prompt_version}, "
             f"judge_instructions_version={instructions_version})"
         ),
-        options=TransportOptions(
-            http=HTTPTransportOptions(
-                supports_streaming=True,
-                request_params=request_params,
-            ),
-        ),
+    )
+    judge_request = HTTPRequest(
+        judge_common,
+        HTTPTransportOptions(supports_streaming=True, request_params=request_params),
     )
 
     def json_error_prompt_alterer(result: TransportResult):
@@ -2511,7 +2508,7 @@ def _run_plugin_task(target_name, api_model, source, plugin, source_config, time
         on_retry=on_retry,
     )
 
-    request = TransportRequest(
+    common = GenerationFields(
         prompt=base_prompt,
         max_tokens=budget,
         source_config=source_config,
@@ -2528,17 +2525,19 @@ def _run_plugin_task(target_name, api_model, source, plugin, source_config, time
         pid=pid,
         stop_event=stop_event,
         observer=task_observer,
-        transport=runner,
         debug_logs=debug_logs,
-        options=TransportOptions(
-            http=HTTPTransportOptions(
-                supports_streaming=plugin.supports_streaming,
-                max_content_tokens=max_content_tokens,
-                max_thinking_tokens=max_thinking_tokens,
-                repetition_guard=repetition_guard,
-                request_params=request_params,
-            ),
-            opencode=OpenCodeTransportOptions(
+    )
+    http_options = HTTPTransportOptions(
+        supports_streaming=plugin.supports_streaming,
+        max_content_tokens=max_content_tokens,
+        max_thinking_tokens=max_thinking_tokens,
+        repetition_guard=repetition_guard,
+        request_params=request_params,
+    )
+    if runner == "opencode":
+        request = OpenCodeRequest(
+            common,
+            OpenCodeTransportOptions(
                 config_path=opencode_config_path,
                 model=opencode_model,
                 agent=opencode_agent,
@@ -2548,15 +2547,20 @@ def _run_plugin_task(target_name, api_model, source, plugin, source_config, time
                 target_key=artifact_target,
                 plugin_id=pid,
             ),
-            pi=PiTransportOptions(
+        )
+    elif runner == "pi":
+        request = PiRequest(
+            common,
+            PiTransportOptions(
                 node=pi_node,
                 worker=pi_worker,
                 config=pi_config,
                 target_key=artifact_target,
                 plugin_id=pid,
             ),
-        ),
-    )
+        )
+    else:
+        request = HTTPRequest(common, http_options)
 
     def on_attempt(attempt_number):
         state.set_plugin_attempt(target_name, pid, attempt_number)
