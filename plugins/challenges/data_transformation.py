@@ -104,23 +104,23 @@ class DataTransformationPlugin(BenchmarkTaskPlugin):
     """Evaluate deterministic multi-record data processing."""
 
     @property
-    def id(self):
+    def id(self) -> str:
         return "data-transformation"
 
     @property
-    def version(self):
+    def version(self) -> str:
         return "1.0.2"
 
     @property
-    def name(self):
+    def name(self) -> str:
         return "Data Transformation"
 
     @property
-    def max_score(self):
-        return 22.0
+    def max_score(self) -> int:
+        return int(22.0)
 
     @property
-    def supports_streaming(self):
+    def supports_streaming(self) -> bool:
         return False
 
     def get_prompt(self):
@@ -135,7 +135,7 @@ class DataTransformationPlugin(BenchmarkTaskPlugin):
     def get_temperature(self, global_config):
         return global_config.get("data_transformation_temperature")
 
-    def get_response_schema(self):
+    def get_response_schema(self) -> dict[str, Any] | None:
         """Expose the schema for compatibility diagnostics and sentinel tooling."""
         return copy.deepcopy(DATA_TRANSFORMATION_RESPONSE_SCHEMA)
 

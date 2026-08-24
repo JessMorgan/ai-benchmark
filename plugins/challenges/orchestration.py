@@ -10,23 +10,23 @@ from plugins.challenges._validators import parse_workflow_graph
 
 class OrchestrationPlugin(BenchmarkTaskPlugin):
     @property
-    def id(self):
+    def id(self) -> str:
         return "orchestration"
 
     @property
-    def version(self):
+    def version(self) -> str:
         return "1.0.0"
 
     @property
-    def name(self):
+    def name(self) -> str:
         return "Orchestration & Workflow"
 
     @property
-    def max_score(self):
-        return 16.0
+    def max_score(self) -> int:
+        return int(16.0)
 
     @property
-    def supports_streaming(self):
+    def supports_streaming(self) -> bool:
         return True
 
     def get_prompt(self):

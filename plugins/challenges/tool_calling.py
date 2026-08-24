@@ -11,23 +11,23 @@ from plugins.challenges._validators import parse_tool_calls
 
 class ToolCallingPlugin(BenchmarkTaskPlugin):
     @property
-    def id(self):
+    def id(self) -> str:
         return "tool-calling"
 
     @property
-    def version(self):
+    def version(self) -> str:
         return "1.1.0"
 
     @property
-    def name(self):
+    def name(self) -> str:
         return "Tool Calling Agent"
 
     @property
-    def max_score(self):
-        return 25.0
+    def max_score(self) -> int:
+        return int(25.0)
 
     @property
-    def supports_streaming(self):
+    def supports_streaming(self) -> bool:
         return True
 
     def get_prompt(self):

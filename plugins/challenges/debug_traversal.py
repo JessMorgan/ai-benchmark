@@ -11,23 +11,23 @@ from plugins.challenges._rubric import Rubric
 
 class DebugTraversalPlugin(BenchmarkTaskPlugin):
     @property
-    def id(self):
+    def id(self) -> str:
         return "debug-traversal"
 
     @property
-    def version(self):
+    def version(self) -> str:
         return "1.0.0"
 
     @property
-    def name(self):
+    def name(self) -> str:
         return "Debug Traversal"
 
     @property
-    def max_score(self):
-        return 20.0
+    def max_score(self) -> int:
+        return int(20.0)
 
     @property
-    def supports_streaming(self):
+    def supports_streaming(self) -> bool:
         return True
 
     def get_prompt(self):

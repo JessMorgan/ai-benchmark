@@ -10,23 +10,23 @@ from plugins.challenges._rubric import Rubric
 
 class MoEDensePlugin(BenchmarkTaskPlugin):
     @property
-    def id(self):
+    def id(self) -> str:
         return "moe-dense"
 
     @property
-    def version(self):
+    def version(self) -> str:
         return "1.0.1"
 
     @property
-    def name(self):
+    def name(self) -> str:
         return "MoE vs Dense"
 
     @property
-    def max_score(self):
-        return 17.0
+    def max_score(self) -> int:
+        return int(17.0)
 
     @property
-    def supports_streaming(self):
+    def supports_streaming(self) -> bool:
         return True
 
     def get_prompt(self):

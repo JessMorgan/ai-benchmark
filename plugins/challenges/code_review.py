@@ -11,23 +11,23 @@ from plugins.challenges._validators import parse_structured
 
 class CodeReviewPlugin(BenchmarkTaskPlugin):
     @property
-    def id(self):
+    def id(self) -> str:
         return "code-review"
 
     @property
-    def version(self):
+    def version(self) -> str:
         return "1.0.0"
 
     @property
-    def name(self):
+    def name(self) -> str:
         return "Code Review"
 
     @property
-    def max_score(self):
-        return 15.0
+    def max_score(self) -> int:
+        return int(15.0)
 
     @property
-    def supports_streaming(self):
+    def supports_streaming(self) -> bool:
         return False
 
     def get_prompt(self):

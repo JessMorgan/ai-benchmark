@@ -12,23 +12,23 @@ from plugins.challenges._validators import parse_python, stub_definitions
 
 class RateLimiterPlugin(BenchmarkTaskPlugin):
     @property
-    def id(self):
+    def id(self) -> str:
         return "rate-limiter"
 
     @property
-    def version(self):
+    def version(self) -> str:
         return "1.1.0"
 
     @property
-    def name(self):
+    def name(self) -> str:
         return "Rate Limiter"
 
     @property
-    def max_score(self):
-        return 20.0
+    def max_score(self) -> int:
+        return int(20.0)
 
     @property
-    def supports_streaming(self):
+    def supports_streaming(self) -> bool:
         return True
 
     def get_prompt(self):

@@ -14,23 +14,23 @@ from plugins.challenges._rubric import Rubric
 
 class PRDCreationPlugin(BenchmarkTaskPlugin):
     @property
-    def id(self):
+    def id(self) -> str:
         return "prd-creation"
 
     @property
-    def version(self):
+    def version(self) -> str:
         return "1.0.0"
 
     @property
-    def name(self):
+    def name(self) -> str:
         return "PRD Creation"
 
     @property
-    def max_score(self):
-        return 22.0
+    def max_score(self) -> int:
+        return int(22.0)
 
     @property
-    def supports_streaming(self):
+    def supports_streaming(self) -> bool:
         return True
 
     def get_prompt(self):
