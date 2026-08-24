@@ -1,6 +1,7 @@
 """Tests for the backend-neutral storage façade."""
 import os
 import random
+import sqlite3
 import tempfile
 import unittest
 
@@ -137,6 +138,44 @@ class TestRunStoreContract(unittest.TestCase):
             report = compare_read_models(json_store.latest_results(), sqlite_rows)
             self.assertTrue(report.equivalent, report.as_dict())
             self.assertTrue(sqlite_store.close(timeout=2))
+
+    def test_register_contract_activates_canonical_contract_id(self):
+        from benchmark.contracts import JudgeContract
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "run.sqlite3")
+            store = SQLiteRunStore(path, flush_interval=0.01)
+            store.start_run(RunIdentity("run", 1))
+            target = TargetRecord(
+                logical_name="m", runner="http", source="Local",
+                api_model="m", target_signature="Local/m",
+            )
+            plugin = PluginRecord(
+                plugin_id="p", plugin_version="1.0.0", name="Plugin",
+                max_score=20.0, supports_streaming=True,
+            )
+            store.prepare_run([target], [plugin])
+            contract = JudgeContract.from_definition(
+                plugin_id="p", plugin_version="1.0.0", prompt_version="judge-v8",
+                instructions_version="1.0.0", response_schema={"type": "object"},
+                instructions="Evaluate explicit requirements.",
+            )
+            store.register_contract(
+                "legacy-id", plugin_id="p", plugin_version="1.0.0",
+                prompt_version="judge-v8", instructions_version="1.0.0",
+                contract=contract,
+            )
+            store.flush(timeout=5)
+            connection = sqlite3.connect(path)
+            try:
+                active = connection.execute(
+                    "SELECT contract_id FROM revision_judge_contracts WHERE revision_id = ?",
+                    (store.revision_id,),
+                ).fetchone()
+            finally:
+                connection.close()
+            self.assertEqual(active[0], contract.contract_id)
+            self.assertTrue(store.close(timeout=2))
 
     def test_seeded_mixed_event_sequence_preserves_backend_parity(self):
         """Exercise a reproducible mix of completed, failed, and retried cells."""

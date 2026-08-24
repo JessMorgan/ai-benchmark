@@ -439,7 +439,6 @@ class SQLiteRunStore:
 
         def operation(connection: Any) -> tuple[dict[tuple[str, str, str], int], dict[tuple[str, str, str], int]]:
             benchmark = SQLiteBenchmarkStore(connection)
-            plugin_ids: list[str] = []
             for plugin in plugin_list:
                 benchmark.register_plugin(
                     plugin.plugin_id, plugin.plugin_version, name=plugin.name,
@@ -450,7 +449,6 @@ class SQLiteRunStore:
                 benchmark.activate_plugin(
                     revision_id, plugin.plugin_id, plugin.plugin_version,
                 )
-                plugin_ids.append(plugin.plugin_id)
             target_ids: dict[tuple[str, str, str], int] = {}
             for target in target_list:
                 target_id = benchmark.register_target(
@@ -635,7 +633,7 @@ class SQLiteRunStore:
                 contract=spec.contract,
                 contract_hash=spec.contract_hash,
             )
-            judges.activate_contract(revision_id, plugin_id, contract_id)
+            judges.activate_contract(revision_id, spec.plugin_id, spec.contract_id)
         self._connection_operation(operation)
         self._contract_records[plugin_id] = spec
 
