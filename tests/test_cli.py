@@ -2069,7 +2069,7 @@ class TestTokenCounting(unittest.TestCase):
 
 class TestPerPluginTemperature(unittest.TestCase):
     def test_plugin_temperature_from_config(self):
-        from benchmark.core import parse_plugin_temperatures
+        from benchmark.configuration import parse_plugin_temperatures
         cfg = {
             "rate-limiter_temperature": 0.1,
             "moe-dense_temperature": 0.9,
@@ -2079,7 +2079,7 @@ class TestPerPluginTemperature(unittest.TestCase):
         self.assertEqual(plugin_temperatures["moe-dense"], 0.9)
 
     def test_legacy_temperature_keys_are_ignored(self):
-        from benchmark.core import parse_plugin_temperatures
+        from benchmark.configuration import parse_plugin_temperatures
         cfg = {"code_temperature": 0.2, "general_temperature": 0.7}
         plugin_temperatures = parse_plugin_temperatures(cfg)
         self.assertNotIn("rate-limiter", plugin_temperatures)
@@ -2087,7 +2087,7 @@ class TestPerPluginTemperature(unittest.TestCase):
 
     def test_default_temperature_overrides_config_for_all_plugins(self):
         """--temperature applies to every active plugin, overriding config."""
-        from benchmark.core import parse_plugin_temperatures
+        from benchmark.configuration import parse_plugin_temperatures
         cfg = {
             "rate-limiter_temperature": 0.1,
             "moe-dense_temperature": 0.9,
@@ -2105,7 +2105,7 @@ class TestPerPluginTemperature(unittest.TestCase):
 
     def test_per_plugin_temperature_overrides_default_temperature(self):
         """--plugin-temperature takes priority over --temperature."""
-        from benchmark.core import parse_plugin_temperatures
+        from benchmark.configuration import parse_plugin_temperatures
         cfg = {"rate-limiter_temperature": 0.1}
         plugin_temperatures = parse_plugin_temperatures(cfg)
         active_plugins = [type("P", (), {"id": "rate-limiter"})]
@@ -2166,14 +2166,14 @@ class TestCLIRetryOn429(unittest.TestCase):
 
     def test_apply_http_retry_default_no_op_when_retry_on(self):
         """retry_on_429=True leaves per-source config untouched."""
-        from benchmark.core import _apply_http_retry_default
+        from benchmark.configuration import _apply_http_retry_default
         cfg = {"sources": {"Local": {"api_url": "http://x", "headers": {}}}}
         _apply_http_retry_default(cfg, retry_on_429=True)
         self.assertNotIn("max_429_retries", cfg["sources"]["Local"])
 
     def test_apply_http_retry_default_zeros_implicit_sources(self):
         """retry_on_429=False zeroes max_429_retries on sources that didn't set it."""
-        from benchmark.core import _apply_http_retry_default
+        from benchmark.configuration import _apply_http_retry_default
         cfg = {
             "sources": {
                 "Local": {"api_url": "http://x", "headers": {}},
@@ -2190,7 +2190,7 @@ class TestCLIRetryOn429(unittest.TestCase):
 
     def test_apply_http_retry_default_handles_missing_sources(self):
         """A config without a 'sources' key should not crash."""
-        from benchmark.core import _apply_http_retry_default
+        from benchmark.configuration import _apply_http_retry_default
         cfg = {}
         _apply_http_retry_default(cfg, retry_on_429=False)
         self.assertEqual(cfg, {})
@@ -2198,7 +2198,7 @@ class TestCLIRetryOn429(unittest.TestCase):
     def test_apply_http_retry_default_preserves_explicit_per_source_only(self):
         """End-to-end story: default-ON keeps implicit sources untouched;
         default-OFF flips the implicit ones while preserving explicit opts-in."""
-        from benchmark.core import _apply_http_retry_default
+        from benchmark.configuration import _apply_http_retry_default
         cfg = {
             "sources": {
                 "Local": {"api_url": "http://x", "headers": {}},

@@ -14,24 +14,26 @@ import tempfile
 import unittest
 from unittest import mock
 
-from benchmark.core import (
-    BenchmarkState,
-    PreloadResult,
+from benchmark.configuration import (
     _expand_env,
-    _retry_prompt_alteration,
-    _run_plugin_task,
-    _source_abbrev,
-    _unique_source_abbrevs,
     dump_default_config,
     generate_config_from_api,
     get_target_plugins_blacklist,
     load_config,
     load_dotenv_file,
-    preload_model,
     resolve_model_sources,
+    resolve_targets,
+)
+from benchmark.core import (
+    BenchmarkState,
+    PreloadResult,
+    _retry_prompt_alteration,
+    _run_plugin_task,
+    _source_abbrev,
+    _unique_source_abbrevs,
+    preload_model,
     resolve_preload_timeout,
     resolve_stream_guards,
-    resolve_targets,
     run_model,
 )
 from benchmark.http import NonStreamResult, StreamResult
@@ -291,13 +293,13 @@ class TestDumpDefaultConfig(unittest.TestCase):
 class TestGenerateConfigFromApi(unittest.TestCase):
     def test_no_models_raises(self):
         with (
-            mock.patch("benchmark.core.fetch_models_v1", return_value=[]),
+            mock.patch("benchmark.configuration.fetch_models_v1", return_value=[]),
             self.assertRaises(RuntimeError),
         ):
             generate_config_from_api("http://x")
 
     def test_with_models_builds_config(self):
-        with mock.patch("benchmark.core.fetch_models_v1",
+        with mock.patch("benchmark.configuration.fetch_models_v1",
                         return_value=["model-a", "model-b"]):
             cfg = generate_config_from_api("http://x", api_key="sk-1")
         self.assertIn("model-a", cfg["models"])
