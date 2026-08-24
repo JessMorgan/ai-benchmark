@@ -50,8 +50,8 @@ from benchmark.core import (
     generate_config_from_api,
     get_target_plugins_blacklist,
     is_successful_judge_vote,
+    judge_contract,
     judge_contract_id,
-    judge_instructions_version,
     judge_response,
     judge_votes_for_contract,
     load_config,
@@ -3519,12 +3519,16 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
                         judge_name, targets[judge_name]["source"],
                     )
                 for plugin in active_plugins:
+                    contract = judge_contract(plugin)
                     sqlite_store.register_contract(
-                        judge_contract_id(plugin),
-                        plugin_id=plugin.id,
-                        plugin_version=plugin.version,
-                        prompt_version=JUDGE_PROMPT_VERSION,
-                        instructions_version=judge_instructions_version(plugin),
+                        contract.contract_id,
+                        plugin_id=contract.plugin_id,
+                        plugin_version=contract.plugin_version,
+                        prompt_version=contract.prompt_version,
+                        instructions_version=contract.instructions_version,
+                        response_schema_hash=contract.response_schema_hash,
+                        contract=contract,
+                        contract_hash=contract.contract_hash,
                     )
             # A run already present in SQLite is a continuation: create a
             # fresh revision that reuses compatible prior attempts, then seed

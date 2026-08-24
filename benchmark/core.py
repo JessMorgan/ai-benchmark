@@ -17,6 +17,7 @@ from typing import Any, Literal
 import yaml
 from jsonschema import Draft202012Validator
 
+from .contracts import JudgeContract
 from .http import (  # noqa: F401
     close_active_requests,
     fetch_models_v1,
@@ -178,25 +179,25 @@ def judge_instructions_version(plugin) -> str:
     return str(value) if value is not None else "1.0.0"
 
 
-def judge_contract_id(plugin) -> str:
-    """Return the deterministic identity of one plugin judge contract."""
+def judge_contract(plugin) -> JudgeContract:
+    """Build the complete canonical contract for one plugin."""
     getter = getattr(plugin, "get_judge_instructions", None)
     instructions = getter() if callable(getter) else ""
     if not isinstance(instructions, str):
         instructions = ""
-    contract = {
-        "schema": "judge-contract-v1",
-        "prompt_version": JUDGE_PROMPT_VERSION,
-        "response_schema": JUDGE_RESPONSE_SCHEMA,
-        "plugin_id": plugin.id,
-        "plugin_version": plugin.version,
-        "judge_instructions_version": judge_instructions_version(plugin),
-        "judge_instructions": instructions,
-    }
-    digest = hashlib.sha256(
-        json.dumps(contract, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-    ).hexdigest()
-    return f"judge-contract-v1:{digest}"
+    return JudgeContract.from_definition(
+        plugin_id=plugin.id,
+        plugin_version=plugin.version,
+        prompt_version=JUDGE_PROMPT_VERSION,
+        instructions_version=judge_instructions_version(plugin),
+        response_schema=JUDGE_RESPONSE_SCHEMA,
+        instructions=instructions,
+    )
+
+
+def judge_contract_id(plugin) -> str:
+    """Return the deterministic identity of one plugin judge contract."""
+    return judge_contract(plugin).contract_id
 
 SCHEMA_SENTINEL_SCHEMA = {
     "type": "object",

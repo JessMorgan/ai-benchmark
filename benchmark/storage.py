@@ -8,8 +8,9 @@ import sqlite3
 from collections.abc import Iterable
 from concurrent.futures import Future
 from dataclasses import dataclass
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, NoReturn, Protocol, runtime_checkable
 
+from .contracts import JudgeContract
 from .runtime_records import (
     BenchmarkAttemptRecord,
     JudgeAttemptRecord,
@@ -103,7 +104,10 @@ class RunStore(Protocol):
 
     def register_contract(self, contract_id: str, *, plugin_id: str,
                           plugin_version: str, prompt_version: str,
-                          instructions_version: str) -> None:
+                          instructions_version: str,
+                          response_schema_hash: str | None = None,
+                          contract: JudgeContract | dict[str, Any] | str | None = None,
+                          contract_hash: str | None = None) -> None:
         ...
 
 
@@ -186,39 +190,53 @@ class JsonRunStore:
                     plugins: Iterable[PluginRecord]) -> None:
         del targets, plugins
 
+    @staticmethod
+    def _unsupported(operation: str) -> NoReturn:
+        raise NotImplementedError(
+            f"JSON storage does not support normalized operation {operation!r}; "
+            "use SQLite storage or the JSON state API"
+        )
+
     def register_target(self, target: TargetRecord) -> int | None:
         del target
-        return None
+        self._unsupported("register_target")
 
     def register_plugin(self, plugin: PluginRecord) -> None:
         del plugin
+        self._unsupported("register_plugin")
 
     def ensure_cell(self, target: TargetRecord, plugin: PluginRecord) -> int | None:
         del target, plugin
-        return None
+        self._unsupported("ensure_cell")
 
     def record_benchmark_attempt(self, cell_id: int, attempt: BenchmarkAttemptRecord,
                                  *, selected: bool = False) -> Any:
         del cell_id, attempt, selected
-        return None
+        self._unsupported("record_benchmark_attempt")
 
     def record_judge_attempt(self, cell_id: int, attempt: JudgeAttemptRecord,
                              vote: JudgeVoteRecord | None = None) -> Any:
         del cell_id, attempt, vote
-        return None
+        self._unsupported("record_judge_attempt")
 
     def get_cell_id(self, target_name: str, runner: str, plugin_id: str) -> int | None:
         del target_name, runner, plugin_id
-        return None
+        self._unsupported("get_cell_id")
 
     def register_judge(self, judge_model: str, source: str,
                        config: dict[str, Any] | None = None) -> None:
         del judge_model, source, config
+        self._unsupported("register_judge")
 
     def register_contract(self, contract_id: str, *, plugin_id: str,
                           plugin_version: str, prompt_version: str,
-                          instructions_version: str) -> None:
-        del contract_id, plugin_id, plugin_version, prompt_version, instructions_version
+                          instructions_version: str,
+                          response_schema_hash: str | None = None,
+                          contract: JudgeContract | dict[str, Any] | str | None = None,
+                          contract_hash: str | None = None) -> None:
+        del contract_id, plugin_id, plugin_version, prompt_version
+        del instructions_version, response_schema_hash, contract, contract_hash
+        self._unsupported("register_contract")
 
 
 class SQLiteRunStore:
@@ -259,7 +277,7 @@ class SQLiteRunStore:
         self._target_records: dict[tuple[str, str], TargetRecord] = {}
         self._plugin_records: dict[str, PluginRecord] = {}
         self._judge_records: dict[str, tuple[str, dict[str, Any] | str | None]] = {}
-        self._contract_records: dict[str, tuple[str, str, str, str]] = {}
+        self._contract_records: dict[str, ContractSpec] = {}
         self._cell_ids: dict[tuple[str, str, str], int] = {}
 
     @property
@@ -366,18 +384,7 @@ class SQLiteRunStore:
             JudgeSpec(judge_model, source, config)
             for judge_model, (source, config) in self._judge_records.items()
         ]
-        contracts = {
-            plugin_id: ContractSpec(
-                contract_id, plugin_id, plugin_version, prompt_version,
-                instructions_version, response_schema_hash,
-                {"contract_id": contract_id}, response_schema_hash,
-            )
-            for plugin_id, (
-                contract_id, plugin_version, prompt_version,
-                instructions_version,
-            ) in self._contract_records.items()
-            for response_schema_hash in [hashlib.sha256(contract_id.encode("utf-8")).hexdigest()]
-        }
+        contracts = dict(self._contract_records)
 
         # ``create_continuation`` manages its own BEGIN/COMMIT transaction,
         # which conflicts with the writer's batch transaction. It runs on a
@@ -523,26 +530,44 @@ class SQLiteRunStore:
 
     def register_contract(self, contract_id: str, *, plugin_id: str,
                           plugin_version: str, prompt_version: str,
-                          instructions_version: str) -> None:
-        """Register and activate one judge contract for a plugin version."""
+                          instructions_version: str,
+                          response_schema_hash: str | None = None,
+                          contract: JudgeContract | dict[str, Any] | str | None = None,
+                          contract_hash: str | None = None) -> None:
+        """Register and activate one complete immutable judge contract."""
         if self._revision_id is None:
             raise RuntimeError("SQLite run must be started before registering contracts")
-        contract_hash = hashlib.sha256(contract_id.encode("utf-8")).hexdigest()
+        if isinstance(contract, JudgeContract):
+            spec = ContractSpec(**contract.as_spec())
+        else:
+            if contract is None:
+                contract = {"legacy_contract_id": contract_id}
+            contract_json = (
+                contract if isinstance(contract, str)
+                else json.dumps(contract, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+            )
+            if contract_hash is None:
+                contract_hash = hashlib.sha256(contract_json.encode("utf-8")).hexdigest()
+            spec = ContractSpec(
+                contract_id, plugin_id, plugin_version, prompt_version,
+                instructions_version, response_schema_hash or "unknown",
+                contract_json, contract_hash,
+            )
         def operation(connection):
             judges = SQLiteJudgeStore(connection)
             judges.register_contract(
-                contract_id, plugin_id=plugin_id, plugin_version=plugin_version,
-                prompt_version=prompt_version,
-                instructions_version=instructions_version,
-                response_schema_hash=contract_hash,
-                contract={"contract_id": contract_id},
-                contract_hash=contract_hash,
+                spec.contract_id,
+                plugin_id=spec.plugin_id,
+                plugin_version=spec.plugin_version,
+                prompt_version=spec.prompt_version,
+                instructions_version=spec.instructions_version,
+                response_schema_hash=spec.response_schema_hash,
+                contract=spec.contract,
+                contract_hash=spec.contract_hash,
             )
             judges.activate_contract(self._revision_id, plugin_id, contract_id)
         self._connection_operation(operation)
-        self._contract_records[plugin_id] = (
-            contract_id, plugin_version, prompt_version, instructions_version,
-        )
+        self._contract_records[plugin_id] = spec
 
     def _submit_async(self, operation: Any) -> Future[Any]:
         """Queue an operation without blocking the caller.

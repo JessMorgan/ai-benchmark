@@ -541,8 +541,9 @@ class SQLiteContinuationStore:
             # Legacy JSON imports use a deliberately minimal placeholder
             # because the original contract body is not present in the state
             # file. Allow the first real runtime contract to replace only that
-            # exact placeholder; all other contract mutations remain rejected.
-            if row[0] == spec.contract_hash and row[1] == '{"legacy":true}':
+            # exact placeholder; its old ID-derived hash is intentionally not
+            # compared with the new canonical content hash.
+            if row[1] in {'{"legacy":true}', '{"legacy": true}'}:
                 self.connection.execute(
                     """
                     UPDATE judge_contracts SET

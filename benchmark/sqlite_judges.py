@@ -52,19 +52,46 @@ class SQLiteJudgeStore:
         contract_json = contract if isinstance(contract, str) else json.dumps(
             contract, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
         )
-        self.connection.execute(
+        row = self.connection.execute(
             """
-            INSERT INTO judge_contracts(
-                contract_id, plugin_id, plugin_version, prompt_version,
-                instructions_version, response_schema_hash, contract_json, contract_hash
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(contract_id) DO NOTHING
+            SELECT plugin_id, plugin_version, prompt_version, instructions_version,
+                   response_schema_hash, contract_json, contract_hash
+            FROM judge_contracts WHERE contract_id = ?
             """,
-            (
-                contract_id, plugin_id, plugin_version, prompt_version,
-                instructions_version, response_schema_hash, contract_json, contract_hash,
-            ),
-        )
+            (contract_id,),
+        ).fetchone()
+        if row is None:
+            self.connection.execute(
+                """
+                INSERT INTO judge_contracts(
+                    contract_id, plugin_id, plugin_version, prompt_version,
+                    instructions_version, response_schema_hash, contract_json, contract_hash
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    contract_id, plugin_id, plugin_version, prompt_version,
+                    instructions_version, response_schema_hash, contract_json, contract_hash,
+                ),
+            )
+        elif row[5] == '{"legacy":true}' or row[5] == '{"legacy": true}':
+            self.connection.execute(
+                """
+                UPDATE judge_contracts SET
+                    plugin_id = ?, plugin_version = ?, prompt_version = ?,
+                    instructions_version = ?, response_schema_hash = ?,
+                    contract_json = ?, contract_hash = ?
+                WHERE contract_id = ?
+                """,
+                (
+                    plugin_id, plugin_version, prompt_version, instructions_version,
+                    response_schema_hash, contract_json, contract_hash, contract_id,
+                ),
+            )
+        elif tuple(row) != (
+            plugin_id, plugin_version, prompt_version, instructions_version,
+            response_schema_hash, contract_json, contract_hash,
+        ):
+            raise ValueError(f"judge contract is immutable: {contract_id}")
         self.connection.commit()
 
     def activate_contract(self, revision_id: int, plugin_id: str, contract_id: str,
