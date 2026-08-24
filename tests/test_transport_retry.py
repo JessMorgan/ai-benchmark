@@ -3,11 +3,11 @@ from unittest import mock
 
 from benchmark.http import StreamResult
 from benchmark.observer import TaskObserver
+from benchmark.request_models import GenerationFields, HTTPRequest
 from benchmark.transport import (
     BENCHMARK_RETRY_POLICY,
     JUDGE_RETRY_POLICY,
     RetryPolicy,
-    TransportRequest,
     execute_task,
     execute_task_streaming,
 )
@@ -15,7 +15,7 @@ from benchmark.transport import (
 
 class TestTransportRetry(unittest.TestCase):
     def _request(self):
-        return TransportRequest(
+        return HTTPRequest(GenerationFields(
             prompt="base prompt",
             max_tokens=100,
             source_config={"S": {}},
@@ -23,22 +23,13 @@ class TestTransportRetry(unittest.TestCase):
             source="S",
             timeout=5,
             observer=TaskObserver.noop(),
-        )
+        ))
 
     def test_benchmark_policy_retries_token_limit_with_altered_prompt(self):
-        responses = [
-            StreamResult("partial", "r" * 400, 1.0, 2.0, None, "length", {}),
-            StreamResult("answer", "", 1.0, 2.0, None, "stop", {}),
-        ]
+        responses = [StreamResult("partial", "r" * 400, 1.0, 2.0, None, "length", {}), StreamResult("answer", "", 1.0, 2.0, None, "stop", {})]
         attempts = []
         with mock.patch("benchmark.transport.stream_request", side_effect=responses) as request:
-            execution = execute_task(
-                self._request(),
-                retry_policy=BENCHMARK_RETRY_POLICY,
-                base_prompt="base prompt",
-                attempt_callback=attempts.append,
-            )
-
+            execution = execute_task(self._request(), retry_policy=BENCHMARK_RETRY_POLICY, base_prompt="base prompt", attempt_callback=attempts.append)
         self.assertEqual(attempts, [1, 2])
         self.assertEqual(execution.attempt_count, 2)
         self.assertEqual(execution.retry_reasons, ["token_limit"])
@@ -47,48 +38,25 @@ class TestTransportRetry(unittest.TestCase):
         self.assertEqual(request.call_count, 2)
 
     def test_transport_error_retry_keeps_prompt_unchanged(self):
-        responses = [
-            StreamResult("", "", None, 1.0, "connection refused", None, {}),
-            StreamResult("answer", "", 1.0, 2.0, None, "stop", {}),
-        ]
+        responses = [StreamResult("", "", None, 1.0, "connection refused", None, {}), StreamResult("answer", "", 1.0, 2.0, None, "stop", {})]
         with mock.patch("benchmark.transport.stream_request", side_effect=responses):
-            execution = execute_task(
-                self._request(),
-                retry_policy=BENCHMARK_RETRY_POLICY,
-                base_prompt="base prompt",
-            )
-
+            execution = execute_task(self._request(), retry_policy=BENCHMARK_RETRY_POLICY, base_prompt="base prompt")
         self.assertEqual(execution.retry_reasons, ["transport_error"])
         self.assertEqual(execution.attempts[0].request_prompt, "base prompt")
         self.assertEqual(execution.attempts[1].request_prompt, "base prompt")
         self.assertEqual(execution.attempts[1].prompt_altered, "none")
 
     def test_judge_policy_retries_only_json_errors(self):
-        responses = [
-            StreamResult("not json", "", 1.0, 2.0, None, "stop", {}),
-            StreamResult('{"ok": true}', "", 1.0, 2.0, None, "stop", {}),
-        ]
+        responses = [StreamResult("not json", "", 1.0, 2.0, None, "stop", {}), StreamResult('{"ok": true}', "", 1.0, 2.0, None, "stop", {})]
         with mock.patch("benchmark.transport.stream_request", side_effect=responses):
-            execution = execute_task(
-                self._request(),
-                retry_policy=JUDGE_RETRY_POLICY,
-                base_prompt="base prompt",
-                json_error_prompt_alterer=lambda result: "\nretry as JSON",
-            )
-
+            execution = execute_task(self._request(), retry_policy=JUDGE_RETRY_POLICY, base_prompt="base prompt", json_error_prompt_alterer=lambda result: "\nretry as JSON")
         self.assertEqual(execution.retry_reasons, ["json_error"])
         self.assertIn("retry as JSON", execution.attempts[1].request_prompt)
 
     def test_judge_policy_does_not_retry_transport_errors(self):
         response = StreamResult("", "", None, 1.0, "connection refused", None, {})
         with mock.patch("benchmark.transport.stream_request", return_value=response) as request:
-            execution = execute_task(
-                self._request(),
-                retry_policy=JUDGE_RETRY_POLICY,
-                base_prompt="base prompt",
-                json_error_prompt_alterer=lambda result: "\nretry as JSON",
-            )
-
+            execution = execute_task(self._request(), retry_policy=JUDGE_RETRY_POLICY, base_prompt="base prompt", json_error_prompt_alterer=lambda result: "\nretry as JSON")
         self.assertEqual(execution.attempt_count, 1)
         request.assert_called_once()
 
@@ -97,38 +65,23 @@ class TestTransportRetry(unittest.TestCase):
             observer.chunk("hello ")
             observer.chunk("world")
             return StreamResult("hello world", "", 1.0, 2.0, None, "stop", {})
-
         with mock.patch("benchmark.transport.stream_request", side_effect=fake_stream):
-            execution = execute_task_streaming(
-                self._request(),
-                retry_policy=RetryPolicy(max_attempts=1),
-                base_prompt="base prompt",
-            )
+            execution = execute_task_streaming(self._request(), retry_policy=RetryPolicy(max_attempts=1), base_prompt="base prompt")
             self.assertEqual(list(execution.stream), ["hello ", "world"])
             attempt = execution.metadata_future.result(timeout=2)
-
         self.assertEqual(attempt.attempt_number, 1)
         self.assertEqual(attempt.result.text, "hello world")
         self.assertIsNone(execution.next_attempt)
 
     def test_streaming_execution_links_policy_retry(self):
-        responses = [
-            StreamResult("partial", "r" * 400, 1.0, 2.0, None, "length", {}),
-            StreamResult("answer", "", 1.0, 2.0, None, "stop", {}),
-        ]
-
+        responses = [StreamResult("partial", "r" * 400, 1.0, 2.0, None, "length", {}), StreamResult("answer", "", 1.0, 2.0, None, "stop", {})]
         def fake_stream(*args, observer=None, **kwargs):
             response = responses.pop(0)
             if response.text:
                 observer.chunk(response.text)
             return response
-
         with mock.patch("benchmark.transport.stream_request", side_effect=fake_stream):
-            execution = execute_task_streaming(
-                self._request(),
-                retry_policy=BENCHMARK_RETRY_POLICY,
-                base_prompt="base prompt",
-            )
+            execution = execute_task_streaming(self._request(), retry_policy=BENCHMARK_RETRY_POLICY, base_prompt="base prompt")
             self.assertEqual(list(execution.stream), ["partial"])
             first = execution.metadata_future.result(timeout=2)
             retry = execution.next_attempt
@@ -136,35 +89,19 @@ class TestTransportRetry(unittest.TestCase):
             self.assertEqual(first.attempt_number, 1)
             self.assertEqual(list(retry.stream), ["answer"])
             second = retry.metadata_future.result(timeout=2)
-
         self.assertEqual(second.attempt_number, 2)
         self.assertEqual(second.retry_reason, "token_limit")
         self.assertIn("RETRY GUIDANCE", second.request_prompt)
 
     def test_streaming_execution_cancel_sets_stop_event(self):
-        execution = execute_task_streaming(
-            self._request(),
-            retry_policy=RetryPolicy(max_attempts=1),
-            base_prompt="base prompt",
-            stream_request_fn=lambda *args, **kwargs: StreamResult(
-                "", "", None, 0, "cancelled", None, {},
-            ),
-        )
+        execution = execute_task_streaming(self._request(), retry_policy=RetryPolicy(max_attempts=1), base_prompt="base prompt", stream_request_fn=lambda *args, **kwargs: StreamResult("", "", None, 0, "cancelled", None, {}))
         execution.cancel()
         self.assertTrue(execution._stop_event.is_set())
 
     def test_selection_can_be_replaced_after_scoring(self):
-        responses = [
-            StreamResult("first", "", 1.0, 2.0, None, "stop", {}),
-            StreamResult("second", "", 1.0, 2.0, None, "stop", {}),
-        ]
+        responses = [StreamResult("first", "", 1.0, 2.0, None, "stop", {}), StreamResult("second", "", 1.0, 2.0, None, "stop", {})]
         with mock.patch("benchmark.transport.stream_request", side_effect=responses):
-            execution = execute_task(
-                self._request(),
-                retry_policy=RetryPolicy(max_attempts=2),
-                base_prompt="base prompt",
-            )
-
+            execution = execute_task(self._request(), retry_policy=RetryPolicy(max_attempts=2), base_prompt="base prompt")
         execution.select(execution.attempts[0])
         self.assertIs(execution.selected, execution.attempts[0])
 

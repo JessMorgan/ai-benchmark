@@ -10,7 +10,6 @@ import hashlib
 import queue
 import threading
 import time
-import warnings
 from collections.abc import Callable, Iterator
 from concurrent.futures import Future
 from dataclasses import dataclass, field, replace
@@ -26,14 +25,12 @@ from .request_models import (
     HTTPRequest,
     OpenCodeRequest,
     PiRequest,
-    RequestIdentityFields,
-    TransportRequestVariant,
+    TransportRequest,
 )
 from .transport_options import (
     HTTPTransportOptions,
     OpenCodeTransportOptions,
     PiTransportOptions,
-    TransportOptions,
 )
 
 # Default generation budget for benchmark tasks when no explicit max_tokens
@@ -80,197 +77,6 @@ class RequestIdentity:
                 self.run_id, self.revision_id, self.target,
                 self.plugin, self.runner, self.attempt,
             )
-        )
-
-
-@dataclass(frozen=True)
-class TransportRequest:
-    """All inputs needed to execute one transport attempt."""
-
-    prompt: str
-    max_tokens: int
-    source_config: dict[str, Any]
-    api_model: str
-    source: str
-    timeout: float
-    temperature: float | None = 0.0
-    reasoning: bool = False
-    prompt_altered: str = "none"
-    system_prompt: str | None = None
-    drop_params: list[str] | None = None
-    request_params: dict[str, Any] | None = None
-    session_seed: int = 0
-    log_path: str | None = None
-    log_label: str = ""
-    attempt: int = 1
-    pid: str = ""
-    stop_event: Any = None
-    observer: TaskObserver | None = None
-    max_content_tokens: int | None = None
-    max_thinking_tokens: int | None = None
-    repetition_guard: int | bool | None = None
-    transport: Literal["http", "opencode", "pi"] = "http"
-    supports_streaming: bool = True
-    opencode_config_path: str | None = None
-    opencode_model: str | None = None
-    opencode_agent: str | None = None
-    opencode_binary: str | None = None
-    opencode_output_dir: str | None = None
-    opencode_no_output_grace: float | None = None
-    opencode_target_key: str | None = None
-    opencode_plugin_id: str | None = None
-    debug_logs: bool = False
-    pi_node: str | None = None
-    pi_worker: str | None = None
-    pi_config: dict[str, Any] | None = None
-    pi_target_key: str | None = None
-    pi_plugin_id: str | None = None
-    identity: RequestIdentity | None = None
-    options: TransportOptions | None = None
-
-    @classmethod
-    def from_variant(cls, variant: TransportRequestVariant) -> TransportRequest:
-        """Adapt a typed request variant to the legacy executor boundary."""
-        common = variant.common
-        options = TransportOptions(
-            http=variant.options if isinstance(variant, HTTPRequest) else HTTPTransportOptions(),
-            opencode=variant.options if isinstance(variant, OpenCodeRequest) else OpenCodeTransportOptions(),
-            pi=variant.options if isinstance(variant, PiRequest) else PiTransportOptions(),
-        )
-        return cls(
-            prompt=common.prompt,
-            max_tokens=common.max_tokens,
-            source_config=common.source_config,
-            api_model=common.api_model,
-            source=common.source,
-            timeout=common.timeout,
-            temperature=common.temperature,
-            reasoning=common.reasoning,
-            system_prompt=common.system_prompt,
-            drop_params=common.drop_params,
-            session_seed=common.session_seed,
-            log_path=common.log_path,
-            log_label=common.log_label,
-            pid=common.pid,
-            stop_event=common.stop_event,
-            observer=common.observer,
-            debug_logs=common.debug_logs,
-            transport=variant.kind,
-            identity=RequestIdentity(
-                run_id=common.identity.run_id if common.identity else "unknown-run",
-                revision_id=common.identity.revision_id if common.identity else "unknown-revision",
-                target=common.identity.target if common.identity else common.api_model,
-                plugin=common.identity.plugin if common.identity else common.pid or "unknown-plugin",
-                attempt=common.identity.attempt if common.identity else 1,
-            ),
-            options=options,
-        )
-
-    def to_variant(self) -> TransportRequestVariant:
-        """Return the typed discriminated request represented by this object."""
-        common = GenerationFields(
-            prompt=self.prompt,
-            max_tokens=self.max_tokens,
-            source_config=self.source_config,
-            api_model=self.api_model,
-            source=self.source,
-            timeout=self.timeout,
-            temperature=self.temperature,
-            reasoning=self.reasoning,
-            system_prompt=self.system_prompt,
-            drop_params=self.drop_params,
-            session_seed=self.session_seed,
-            log_path=self.log_path,
-            log_label=self.log_label,
-            pid=self.pid,
-            stop_event=self.stop_event,
-            observer=self.observer,
-            debug_logs=self.debug_logs,
-            identity=RequestIdentityFields(
-                run_id=self.identity.run_id if self.identity else "unknown-run",
-                revision_id=self.identity.revision_id if self.identity else "unknown-revision",
-                target=self.identity.target if self.identity else self.api_model,
-                plugin=self.identity.plugin if self.identity else self.pid or "unknown-plugin",
-                attempt=self.identity.attempt if self.identity else self.attempt,
-            ),
-        )
-        options = self.options
-        if options is None:
-            warnings.warn(
-                "flat transport-specific TransportRequest fields are deprecated; "
-                "construct an HTTPRequest, OpenCodeRequest, or PiRequest instead",
-                DeprecationWarning,
-                stacklevel=2,
-            )
-            options = TransportOptions(
-                http=HTTPTransportOptions(
-                    supports_streaming=self.supports_streaming,
-                    max_content_tokens=self.max_content_tokens,
-                    max_thinking_tokens=self.max_thinking_tokens,
-                    repetition_guard=self.repetition_guard,
-                    request_params=self.request_params,
-                ),
-                opencode=OpenCodeTransportOptions(
-                    config_path=self.opencode_config_path,
-                    model=self.opencode_model,
-                    agent=self.opencode_agent,
-                    binary=self.opencode_binary,
-                    output_dir=self.opencode_output_dir,
-                    no_output_grace=self.opencode_no_output_grace,
-                    target_key=self.opencode_target_key,
-                    plugin_id=self.opencode_plugin_id,
-                ),
-                pi=PiTransportOptions(
-                    node=self.pi_node,
-                    worker=self.pi_worker,
-                    config=self.pi_config,
-                    target_key=self.pi_target_key,
-                    plugin_id=self.pi_plugin_id,
-                ),
-            )
-        if self.transport == "opencode":
-            return OpenCodeRequest(common, options.opencode)
-        if self.transport == "pi":
-            return PiRequest(common, options.pi)
-        return HTTPRequest(common, options.http)
-
-    def http_options(self) -> HTTPTransportOptions:
-        """Return grouped HTTP options, adapting legacy fields when needed."""
-        if self.options is not None:
-            return self.options.http
-        return HTTPTransportOptions(
-            supports_streaming=self.supports_streaming,
-            max_content_tokens=self.max_content_tokens,
-            max_thinking_tokens=self.max_thinking_tokens,
-            repetition_guard=self.repetition_guard,
-            request_params=self.request_params,
-        )
-
-    def opencode_options(self) -> OpenCodeTransportOptions:
-        """Return grouped OpenCode options, adapting legacy fields when needed."""
-        if self.options is not None:
-            return self.options.opencode
-        return OpenCodeTransportOptions(
-            config_path=self.opencode_config_path,
-            model=self.opencode_model,
-            agent=self.opencode_agent,
-            binary=self.opencode_binary,
-            output_dir=self.opencode_output_dir,
-            no_output_grace=self.opencode_no_output_grace,
-            target_key=self.opencode_target_key,
-            plugin_id=self.opencode_plugin_id,
-        )
-
-    def pi_options(self) -> PiTransportOptions:
-        """Return grouped Pi options, adapting legacy fields when needed."""
-        if self.options is not None:
-            return self.options.pi
-        return PiTransportOptions(
-            node=self.pi_node,
-            worker=self.pi_worker,
-            config=self.pi_config,
-            target_key=self.pi_target_key,
-            plugin_id=self.pi_plugin_id,
         )
 
 
@@ -546,12 +352,32 @@ def _is_streaming_rejection(error: str | None) -> bool:
 
 
 def _observer(request: TransportRequest) -> TaskObserver:
-    return request.observer or TaskObserver(pid=request.pid)
+    return request.common.observer or TaskObserver(pid=request.common.pid)
+
+
+def _http_options(request: HTTPRequest) -> HTTPTransportOptions:
+    return request.options
+
+
+def _opencode_options(request: OpenCodeRequest) -> OpenCodeTransportOptions:
+    return request.options
+
+
+def _pi_options(request: PiRequest) -> PiTransportOptions:
+    return request.options
 
 
 def _hash_text(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
+
+
+def _with_common(request: TransportRequest, common: GenerationFields) -> TransportRequest:
+    if isinstance(request, HTTPRequest):
+        return HTTPRequest(common, request.options)
+    if isinstance(request, OpenCodeRequest):
+        return OpenCodeRequest(common, request.options)
+    return PiRequest(common, request.options)
 
 def _normalize(request: TransportRequest, *, text: str, think_text: str,
                error: str | None, finish_reason: str | None,
@@ -565,7 +391,7 @@ def _normalize(request: TransportRequest, *, text: str, think_text: str,
     text = text or ""
     think_text = think_text or ""
     usage = usage if isinstance(usage, dict) else {}
-    cancelled = bool(request.stop_event and request.stop_event.is_set())
+    cancelled = bool(request.common.stop_event and request.common.stop_event.is_set())
     nature = response_nature(
         text=text,
         error=error,
@@ -588,20 +414,22 @@ def _normalize(request: TransportRequest, *, text: str, think_text: str,
         thinking_tokens=_response_reasoning_tokens(
             type("Response", (), {"usage": usage, "think_text": think_text})()
         ),
-        prompt_sha256=_hash_text(request.prompt),
+        prompt_sha256=_hash_text(request.common.prompt),
         response_sha256=_hash_text(text),
         schema_fallback_used=schema_fallback_used,
         schema_fallback_error=schema_fallback_error,
         stream_fallback_used=stream_fallback_used,
         stream_fallback_error=stream_fallback_error,
         runner_metadata=runner_metadata or {},
-        request_id=(request.identity or RequestIdentity(
-            target=request.api_model,
-            plugin=request.pid or "unknown-plugin",
-            runner=request.transport,
-            attempt=request.attempt,
+        request_id=(RequestIdentity(
+            run_id=request.common.identity.run_id if request.common.identity else "unknown-run",
+            revision_id=request.common.identity.revision_id if request.common.identity else "unknown-revision",
+            target=request.common.identity.target if request.common.identity else request.common.api_model,
+            plugin=request.common.identity.plugin if request.common.identity else request.common.pid or "unknown-plugin",
+            runner=request.kind,
+            attempt=request.common.identity.attempt if request.common.identity else 1,
         )).request_id,
-        timeout_seconds=request.timeout,
+        timeout_seconds=request.common.timeout,
     )
 
 
@@ -675,21 +503,21 @@ def _execute_http_nonstream(request: TransportRequest, started: float, *,
                             stream_fallback_error: str | None = None) -> TransportResult:
     observer = _observer(request)
     nonstream_request_fn = nonstream_request_fn or nonstream_request
-    http_options = request.http_options()
+    http_options = _http_options(request)
     params = http_options.request_params
     response = nonstream_request_fn(
-        request.source_config, request.timeout, request.api_model, request.source,
-        request.prompt, request.max_tokens,
-        log_path=request.log_path,
-        log_label=request.log_label,
-        session_seed=request.session_seed,
-        temperature=request.temperature,
-        drop_params=request.drop_params,
-        stop_event=request.stop_event,
-        system_prompt=request.system_prompt,
+        request.common.source_config, request.common.timeout, request.common.api_model, request.common.source,
+        request.common.prompt, request.common.max_tokens,
+        log_path=request.common.log_path,
+        log_label=request.common.log_label,
+        session_seed=request.common.session_seed,
+        temperature=request.common.temperature,
+        drop_params=request.common.drop_params,
+        stop_event=request.common.stop_event,
+        system_prompt=request.common.system_prompt,
         request_params=params,
         observer=observer,
-        pid=request.pid,
+        pid=request.common.pid,
         max_content_tokens=http_options.max_content_tokens,
         max_thinking_tokens=http_options.max_thinking_tokens,
         repetition_guard=http_options.repetition_guard,
@@ -700,25 +528,22 @@ def _execute_http_nonstream(request: TransportRequest, started: float, *,
     if fallback_params is not None:
         schema_fallback_used = True
         schema_fallback_error = response.error
-        if isinstance(params, dict):
-            params.clear()
-            params.update(fallback_params)
         response = nonstream_request_fn(
-            request.source_config, request.timeout, request.api_model, request.source,
-            request.prompt, request.max_tokens,
-            log_path=request.log_path,
-            log_label=f"{request.log_label} (JSON-object schema fallback)",
-            session_seed=request.session_seed,
-            temperature=request.temperature,
-            drop_params=request.drop_params,
-            stop_event=request.stop_event,
-            system_prompt=request.system_prompt,
-            request_params=http_options.request_params,
+            request.common.source_config, request.common.timeout, request.common.api_model, request.common.source,
+            request.common.prompt, request.common.max_tokens,
+            log_path=request.common.log_path,
+            log_label=f"{request.common.log_label} (JSON-object schema fallback)",
+            session_seed=request.common.session_seed,
+            temperature=request.common.temperature,
+            drop_params=request.common.drop_params,
+            stop_event=request.common.stop_event,
+            system_prompt=request.common.system_prompt,
+            request_params=fallback_params,
             observer=observer,
-            pid=request.pid,
-            max_content_tokens=request.max_content_tokens,
-            max_thinking_tokens=request.max_thinking_tokens,
-            repetition_guard=request.repetition_guard,
+            pid=request.common.pid,
+            max_content_tokens=http_options.max_content_tokens,
+            max_thinking_tokens=http_options.max_thinking_tokens,
+            repetition_guard=http_options.repetition_guard,
         )
     return _normalize_nonstream(
         request, response, started,
@@ -735,24 +560,24 @@ def _execute_http(request: TransportRequest, *, stream_request_fn: Any = None,
     stream_request_fn = stream_request_fn or stream_request
     nonstream_request_fn = nonstream_request_fn or nonstream_request
     observer = _observer(request)
-    http_options = request.http_options()
+    http_options = _http_options(request)
     if not http_options.supports_streaming:
         return _execute_http_nonstream(
             request, started, nonstream_request_fn=nonstream_request_fn,
         )
     response = stream_request_fn(
-        request.source_config, request.timeout, request.api_model, request.source,
-        request.prompt, request.max_tokens,
-        log_path=request.log_path,
-        log_label=request.log_label,
-        session_seed=request.session_seed,
-        temperature=request.temperature,
-        drop_params=request.drop_params,
-        stop_event=request.stop_event,
-        system_prompt=request.system_prompt,
+        request.common.source_config, request.common.timeout, request.common.api_model, request.common.source,
+        request.common.prompt, request.common.max_tokens,
+        log_path=request.common.log_path,
+        log_label=request.common.log_label,
+        session_seed=request.common.session_seed,
+        temperature=request.common.temperature,
+        drop_params=request.common.drop_params,
+        stop_event=request.common.stop_event,
+        system_prompt=request.common.system_prompt,
         request_params=http_options.request_params,
         observer=observer,
-        pid=request.pid,
+        pid=request.common.pid,
         max_content_tokens=http_options.max_content_tokens,
         max_thinking_tokens=http_options.max_thinking_tokens,
         repetition_guard=http_options.repetition_guard,
@@ -776,7 +601,7 @@ def _execute_http(request: TransportRequest, *, stream_request_fn: Any = None,
 
 def _execute_opencode(request: TransportRequest, *, run_process_fn: Any = None) -> TransportResult:
     run_process_fn = run_process_fn or run_process
-    opencode_options = request.opencode_options()
+    opencode_options = _opencode_options(request)
     if not opencode_options.config_path or not opencode_options.model:
         return _normalize(
             request,
@@ -790,18 +615,18 @@ def _execute_opencode(request: TransportRequest, *, run_process_fn: Any = None) 
             repeating=False,
         )
     response = run_process_fn(
-        request.prompt,
+        request.common.prompt,
         config_path=opencode_options.config_path,
         model=opencode_options.model,
-        timeout=request.timeout,
+        timeout=request.common.timeout,
         binary=opencode_options.binary or OPENCODE_BINARY,
         agent=opencode_options.agent,
         output_dir=opencode_options.output_dir,
-        target_key=opencode_options.target_key or request.source,
-        plugin_id=opencode_options.plugin_id or request.pid or "plugin",
-        stop_event=request.stop_event,
+        target_key=opencode_options.target_key or request.common.source,
+        plugin_id=opencode_options.plugin_id or request.common.pid or "plugin",
+        stop_event=request.common.stop_event,
         no_output_grace=opencode_options.no_output_grace or 0,
-        debug_logs=request.debug_logs,
+        debug_logs=request.common.debug_logs,
     )
     return _normalize(
         request,
@@ -859,29 +684,29 @@ def _retry_plan(
 
 def _execute_pi(request: TransportRequest) -> TransportResult:
     """Execute one isolated Pi SDK worker attempt."""
-    pi_options = request.pi_options()
-    opencode_options = request.opencode_options()
+    pi_options = _pi_options(request)
     response: PiProcessResult = run_pi_process(
-        request.prompt,
-        source_config=request.source_config,
-        source=request.source,
-        api_model=request.api_model,
-        max_tokens=request.max_tokens,
-        timeout=request.timeout,
-        system_prompt=request.system_prompt,
-        temperature=request.temperature,
-        reasoning=request.reasoning,
-        prompt_altered=request.prompt_altered,
-        attempt=request.attempt,
+        request.common.prompt,
+        source_config=request.common.source_config,
+        source=request.common.source,
+        api_model=request.common.api_model,
+        max_tokens=request.common.max_tokens,
+        timeout=request.common.timeout,
+        system_prompt=request.common.system_prompt,
+        temperature=request.common.temperature,
+        reasoning=request.common.reasoning,        prompt_altered=request.common.prompt_altered,
+        attempt=request.common.identity.attempt if request.common.identity else 1,
+
+
         pi_config=pi_options.config,
         node=pi_options.node or PI_DEFAULT_NODE,
         worker=pi_options.worker,
-        output_dir=opencode_options.output_dir,
-        target_key=pi_options.target_key or request.source,
-        plugin_id=pi_options.plugin_id or request.pid or "plugin",
-        stop_event=request.stop_event,
-        observer=request.observer,
-        debug_logs=request.debug_logs,
+        output_dir=None,
+        target_key=pi_options.target_key or request.common.source,
+        plugin_id=pi_options.plugin_id or request.common.pid or "plugin",
+        stop_event=request.common.stop_event,
+        observer=request.common.observer,
+        debug_logs=request.common.debug_logs,
     )
     return _normalize(
         request,
@@ -911,7 +736,7 @@ def _execute_pi(request: TransportRequest) -> TransportResult:
 
 def execute_task(
 
-    request: TransportRequest | TransportRequestVariant,
+    request: TransportRequest,
     *,
     retry_policy: RetryPolicy,
     base_prompt: str,
@@ -929,8 +754,6 @@ def execute_task(
     only decides whether a completed transport leg warrants the caller's one
     policy retry. Scoring and JSON parsing stay with the caller.
     """
-    if not isinstance(request, TransportRequest):
-        request = TransportRequest.from_variant(request)
     max_attempts = max(1, int(retry_policy.max_attempts))
     attempts: list[TaskAttempt] = []
     retry_reasons: list[str] = []
@@ -939,28 +762,23 @@ def execute_task(
     retry_reason: str | None = None
 
     for attempt_number in range(1, max_attempts + 1):
-        if request.stop_event is not None and request.stop_event.is_set():
+        if request.common.stop_event is not None and request.common.stop_event.is_set():
             break
         if attempt_callback is not None:
             # Live observers are advisory and must not affect execution.
             with contextlib.suppress(Exception):
                 attempt_callback(attempt_number)
-        log_label = request.log_label
+        log_label = request.common.log_label
         if "{attempt}" in log_label:
             log_label = log_label.replace("{attempt}", str(attempt_number))
         else:
             log_label = f"{log_label} (attempt {attempt_number})"
-        identity = request.identity
+        identity = request.common.identity
         if identity is not None:
             identity = replace(identity, attempt=attempt_number)
-        attempt_request = replace(
-            request,
-            prompt=request_prompt,
-            log_label=log_label,
-            attempt=attempt_number,
-            prompt_altered=prompt_altered,
-            identity=identity,
-        )
+        common = replace(request.common, prompt=request_prompt, log_label=log_label,
+                         identity=identity, prompt_altered=prompt_altered)
+        attempt_request = _with_common(request, common)
         result = execute_transport(
             attempt_request,
             stream_request_fn=stream_request_fn,
@@ -981,7 +799,7 @@ def execute_task(
         next_alteration, instruction, retry_reason = _retry_plan(
             result,
             retry_policy=retry_policy,
-            max_tokens=request.max_tokens,
+            max_tokens=request.common.max_tokens,
             prompt_alterer=prompt_alterer,
             json_error_prompt_alterer=json_error_prompt_alterer,
         )
@@ -1001,7 +819,7 @@ def execute_task(
 
 
 def execute_task_streaming(
-    request: TransportRequest | TransportRequestVariant,
+    request: TransportRequest,
     *,
     retry_policy: RetryPolicy,
     base_prompt: str,
@@ -1022,10 +840,8 @@ def execute_task_streaming(
     schedules another logical attempt, ``next_attempt`` points to its live
     execution after the first future resolves.
     """
-    if not isinstance(request, TransportRequest):
-        request = TransportRequest.from_variant(request)
-    stop_event = request.stop_event or threading.Event()
-    request = replace(request, stop_event=stop_event)
+    stop_event = request.common.stop_event or threading.Event()
+    request = _with_common(request, replace(request.common, stop_event=stop_event))
     items: queue.Queue[str | object] = queue.Queue()
     sentinel = object()
     metadata: Future[TaskAttempt] = Future()
@@ -1052,12 +868,12 @@ def execute_task_streaming(
             if attempt_callback is not None:
                 with contextlib.suppress(Exception):
                     attempt_callback(_attempt_number)
-            log_label = request.log_label
+            log_label = request.common.log_label
             if "{attempt}" in log_label:
                 log_label = log_label.replace("{attempt}", str(_attempt_number))
             else:
                 log_label = f"{log_label} (attempt {_attempt_number})"
-            base_observer = request.observer or TaskObserver.noop()
+            base_observer = request.common.observer or TaskObserver.noop()
 
             def on_content(delta: str) -> None:
                 base_observer.chunk(delta)
@@ -1071,16 +887,11 @@ def execute_task_streaming(
                 on_retry=base_observer.retry,
             )
             result = execute_transport(
-                replace(
+                _with_common(
                     request,
-                    log_label=log_label,
-                    observer=observer,
-                    attempt=_attempt_number,
-                    prompt_altered=_prompt_altered,
-                    identity=(
-                        replace(request.identity, attempt=_attempt_number)
-                        if request.identity is not None else None
-                    ),
+                    replace(request.common, log_label=log_label, observer=observer,
+                            identity=(replace(request.common.identity, attempt=_attempt_number)
+                                      if request.common.identity is not None else None)),
                 ),
                 stream_request_fn=stream_request_fn,
                 nonstream_request_fn=nonstream_request_fn,
@@ -1091,12 +902,12 @@ def execute_task_streaming(
                 attempt_number=_attempt_number,
                 prompt_altered=_prompt_altered,
                 retry_reason=_retry_reason,
-                request_prompt=request.prompt,
+                request_prompt=request.common.prompt,
             )
             next_alteration, instruction, reason = _retry_plan(
                 result,
                 retry_policy=retry_policy,
-                max_tokens=request.max_tokens,
+                max_tokens=request.common.max_tokens,
                 prompt_alterer=prompt_alterer,
                 json_error_prompt_alterer=json_error_prompt_alterer,
             )
@@ -1106,7 +917,7 @@ def execute_task_streaming(
                 and not stop_event.is_set()
             ):
                 execution.next_attempt = execute_task_streaming(
-                    replace(request, prompt=base_prompt + instruction),
+                    _with_common(request, replace(request.common, prompt=base_prompt + instruction)),
                     retry_policy=retry_policy,
                     base_prompt=base_prompt,
                     prompt_alterer=prompt_alterer,
@@ -1129,7 +940,7 @@ def execute_task_streaming(
     return execution
 
 
-def execute_transport(request: TransportRequest | TransportRequestVariant, *, stream_request_fn: Any = None,
+def execute_transport(request: TransportRequest, *, stream_request_fn: Any = None,
                       nonstream_request_fn: Any = None,
                       run_process_fn: Any = None) -> TransportResult:
     """Execute exactly one logical attempt through HTTP or OpenCode.
@@ -1138,26 +949,9 @@ def execute_transport(request: TransportRequest | TransportRequestVariant, *, st
     the module defaults, while orchestration callers and tests can preserve a
     local transport seam without mutating this module globally.
     """
-    if not isinstance(request, TransportRequest):
-        request = TransportRequest.from_variant(request)
-    if request.transport == "http":
-        return _execute_http(
-            request,
-            stream_request_fn=stream_request_fn,
-            nonstream_request_fn=nonstream_request_fn,
-        )
-    if request.transport == "opencode":
+    if isinstance(request, HTTPRequest):
+        return _execute_http(request, stream_request_fn=stream_request_fn,
+                             nonstream_request_fn=nonstream_request_fn)
+    if isinstance(request, OpenCodeRequest):
         return _execute_opencode(request, run_process_fn=run_process_fn)
-    if request.transport == "pi":
-        return _execute_pi(request)
-    return _normalize(
-        request,
-        text="",
-        think_text="",
-        error=f"Unknown transport {request.transport!r}",
-        finish_reason=None,
-        response_time=0.0,
-        gen_time=0.0,
-        stream_ok=False,
-        repeating=False,
-    )
+    return _execute_pi(request)

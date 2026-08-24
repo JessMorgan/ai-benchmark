@@ -46,6 +46,7 @@ class GenerationFields:
     stop_event: Any = None
     observer: TaskObserver | None = None
     debug_logs: bool = False
+    prompt_altered: str = "none"
     identity: RequestIdentityFields | None = None
 
 
@@ -77,7 +78,6 @@ class PiRequest:
 
 
 TransportRequest = HTTPRequest | OpenCodeRequest | PiRequest
-TransportRequestVariant = TransportRequest
 
 
 def request_identity(fields: GenerationFields, attempt: int | None = None) -> RequestIdentityFields:

@@ -9,7 +9,9 @@ from benchmark.completions import build_parser
 from benchmark.core import resolve_targets
 from benchmark.logs import iter_log_members
 from benchmark.pi import PiProcessResult, _node_version, run_process
-from benchmark.transport import TransportRequest, execute_transport
+from benchmark.request_models import GenerationFields, PiRequest
+from benchmark.transport import execute_transport
+from benchmark.transport_options import PiTransportOptions
 
 
 class _FakeStdin:
@@ -132,15 +134,16 @@ class TestPiTransport(unittest.TestCase):
             permissions={"read": "allow"},
             provider="local",
         )
-        request = TransportRequest(
-            prompt="prompt",
-            max_tokens=32,
-            source_config={"Local": {"api_url": "http://localhost/v1"}},
-            api_model="model",
-            source="Local",
-            timeout=5,
-            transport="pi",
-            pi_config={"tools": ["read"]},
+        request = PiRequest(
+            GenerationFields(
+                prompt="prompt",
+                max_tokens=32,
+                source_config={"Local": {"api_url": "http://localhost/v1"}},
+                api_model="model",
+                source="Local",
+                timeout=5,
+            ),
+            PiTransportOptions(config={"tools": ["read"]}),
         )
         with mock.patch("benchmark.transport.run_pi_process", return_value=process_result):
             result = execute_transport(request)

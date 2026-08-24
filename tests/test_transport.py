@@ -4,24 +4,21 @@ from unittest import mock
 from benchmark.http import NonStreamResult, StreamResult
 from benchmark.observer import TaskObserver
 from benchmark.opencode import OpenCodeProcessResult
+from benchmark.request_models import GenerationFields, HTTPRequest, OpenCodeRequest, RequestIdentityFields
 from benchmark.transport import (
+    JUDGE_RETRY_POLICY,
     RequestIdentity,
     RetryPolicy,
     TransportRequest,
     execute_task,
     execute_transport,
 )
-from benchmark.transport_options import (
-    HTTPTransportOptions,
-    OpenCodeTransportOptions,
-    PiTransportOptions,
-    TransportOptions,
-)
+from benchmark.transport_options import HTTPTransportOptions, OpenCodeTransportOptions
 
 
 class TestTransport(unittest.TestCase):
     def _request(self, **overrides):
-        values = {
+        common_values = {
             "prompt": "Answer the task.",
             "max_tokens": 128,
             "source_config": {"Local": {"api_url": "http://localhost/v1/chat/completions"}},
@@ -30,8 +27,38 @@ class TestTransport(unittest.TestCase):
             "timeout": 5,
             "observer": TaskObserver.noop(),
         }
-        values.update(overrides)
-        return TransportRequest(**values)
+        options_values = {}
+        transport = overrides.pop("transport", "http")
+        for key in list(overrides):
+            if key in {"supports_streaming", "request_params", "max_content_tokens", "max_thinking_tokens", "repetition_guard"}:
+                options_values[key] = overrides.pop(key)
+            elif key == "identity":
+                identity = overrides.pop(key)
+                common_values["identity"] = RequestIdentityFields(
+                    run_id=identity.run_id, revision_id=identity.revision_id,
+                    target=identity.target, plugin=identity.plugin,
+                    attempt=identity.attempt,
+                )
+            elif key == "attempt":
+                common_values.setdefault("identity", RequestIdentityFields())
+                common_values["identity"] = RequestIdentityFields(
+                    run_id=common_values["identity"].run_id,
+                    revision_id=common_values["identity"].revision_id,
+                    target=common_values["identity"].target,
+                    plugin=common_values["identity"].plugin,
+                    attempt=overrides.pop(key),
+                )
+            else:
+                common_values[key] = overrides.pop(key)
+        common = GenerationFields(**common_values)
+        if transport == "opencode":
+            return OpenCodeRequest(common, OpenCodeTransportOptions(
+                config_path=overrides.pop("opencode_config_path", "config.json"),
+                model=overrides.pop("opencode_model", "provider/model"),
+                target_key=overrides.pop("opencode_target_key", "target"),
+                plugin_id=overrides.pop("opencode_plugin_id", "plugin"),
+            ))
+        return HTTPRequest(common, HTTPTransportOptions(**options_values))
 
     def test_request_identity_is_stable_and_surfaces_on_result(self):
         identity = RequestIdentity(
@@ -61,41 +88,11 @@ class TestTransport(unittest.TestCase):
         self.assertEqual(result.attempts[0].result.request_id, "run-1:3:model-a:rate-limiter:http:1")
         self.assertEqual(result.attempts[1].result.request_id, "run-1:3:model-a:rate-limiter:http:2")
 
-    def test_grouped_transport_options_select_runner_specific_fields(self):
-        request = self._request(
-            options=TransportOptions(
-                http=HTTPTransportOptions(supports_streaming=False, request_params={"x": 1}),
-                opencode=OpenCodeTransportOptions(config_path="oc.json", model="provider/model"),
-                pi=PiTransportOptions(worker="worker.mjs", target_key="target"),
-            ),
-            supports_streaming=True,
-            request_params=None,
-            opencode_config_path=None,
-            opencode_model=None,
-            pi_worker=None,
-        )
-        self.assertFalse(request.http_options().supports_streaming)
-        self.assertEqual(request.http_options().request_params, {"x": 1})
-        self.assertEqual(request.opencode_options().config_path, "oc.json")
-        self.assertEqual(request.pi_options().worker, "worker.mjs")
-
-    def test_typed_request_variants_round_trip(self):
-        from benchmark.request_models import GenerationFields, HTTPRequest
-
-        common = GenerationFields(
-            prompt="Answer the task.", max_tokens=128,
-            source_config={"Local": {}}, api_model="model", source="Local", timeout=5,
-        )
-        typed = HTTPRequest(common, HTTPTransportOptions(supports_streaming=False))
-        adapted = TransportRequest.from_variant(typed)
-        self.assertEqual(adapted.transport, "http")
-        self.assertFalse(adapted.http_options().supports_streaming)
-        self.assertEqual(adapted.to_variant().kind, "http")
-
-    def test_flat_transport_fields_emit_deprecation_warning(self):
-        request = self._request()
-        with self.assertWarns(DeprecationWarning):
-            request.to_variant()
+    def test_typed_request_options_are_transport_specific(self):
+        request = self._request(supports_streaming=False, request_params={"x": 1})
+        self.assertIsInstance(request, HTTPRequest)
+        self.assertFalse(request.options.supports_streaming)
+        self.assertEqual(request.options.request_params, {"x": 1})
 
     def test_streaming_http_is_normalized(self):
         response = StreamResult(
@@ -132,9 +129,10 @@ class TestTransport(unittest.TestCase):
 
         self.assertTrue(result.schema_fallback_used)
         self.assertIn("failed to initialize", result.schema_fallback_error)
-        self.assertEqual(params["response_format"], {"type": "json_object"})
+        self.assertEqual(params["response_format"]["type"], "json_schema")
         self.assertEqual(result.text, '{"ok": true}')
         self.assertEqual(request.call_count, 2)
+        self.assertEqual(request.call_args_list[1].kwargs["request_params"]["response_format"]["type"], "json_object")
 
     def test_streaming_provider_rejection_falls_back_without_partial_output(self):
         streamed = StreamResult(
@@ -169,15 +167,13 @@ class TestTransport(unittest.TestCase):
             "answer", "diagnostic", 2.0, None, 0, think_text="thinking",
         )
         with mock.patch("benchmark.transport.run_process", return_value=response):
-            result = execute_transport(self._request(
-                transport="opencode",
-                opencode_config_path="config.json",
-                opencode_model="provider/model",
-                opencode_target_key="target",
-                opencode_plugin_id="plugin",
-            ))
+            result = execute_transport(self._request(transport="opencode"))
 
         self.assertEqual(result.text, "answer")
         self.assertEqual(result.think_text, "thinking")
         self.assertFalse(result.stream_ok)
         self.assertEqual(result.response_nature, "completed")
+
+
+if __name__ == "__main__":
+    unittest.main()
