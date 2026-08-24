@@ -6,6 +6,7 @@ The parser itself is built here (not in ``benchmark.cli``) so completion
 generation and the CLI share one definition without a circular import.
 """
 import argparse
+from typing import Any
 
 import shtab
 
@@ -18,7 +19,10 @@ COMMAND_NAMES = ("ai-benchmark", "ai-benchmark.py")
 _SUPPORTED_SHELLS = ("bash", "zsh", "fish")
 
 
-def build_parser(prog=None, plugin_ids=None):
+def build_parser(
+    prog: str | None = None,
+    plugin_ids: list[str] | None = None,
+) -> argparse.ArgumentParser:
     """Build the CLI argument parser (shared with ``benchmark.cli.main``).
 
     ``prog`` defaults to argparse's inference (so ``ai-benchmark.py --help``
@@ -27,7 +31,7 @@ def build_parser(prog=None, plugin_ids=None):
     attached as ``choices`` to the whitelist/blacklist options so generated
     completions can offer them.
     """
-    kwargs = {
+    kwargs: dict[str, Any] = {
         "description": "AI Model Benchmark — Run plugin-based benchmarks across multiple API sources.",
         "epilog": "Challenge plugins are loaded from plugins/challenges/ and report plugins from plugins/outputs/.\n\n"
                   "Examples:\n"
@@ -181,7 +185,7 @@ def build_parser(prog=None, plugin_ids=None):
     return parser
 
 
-def _register_second_command(script, shell):
+def _register_second_command(script: str, shell: str) -> str:
     """Register the ``ai-benchmark.py`` launcher alongside ``ai-benchmark``.
 
     shtab's generated script registers only the primary program name; the
@@ -207,7 +211,7 @@ def _register_second_command(script, shell):
     return script
 
 
-def generate_shell_completion(shell, plugins):
+def generate_shell_completion(shell: str, plugins: list[Any]) -> str:
     """Return a shell completion script for the specified shell (via shtab).
 
     Unsupported shells return an empty string. ``ai-benchmark.py`` is

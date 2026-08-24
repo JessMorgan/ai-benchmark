@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from plugins import discover_plugins
 
@@ -26,7 +26,7 @@ def evaluate_saved_response(plugin_id: str, response_path: str | Path) -> dict[s
     path = Path(response_path)
     response_text = path.read_text(encoding="utf-8")
     evaluation = plugin.evaluate(response_text)
-    result = evaluation.diagnostic_data()
+    result = cast(dict[str, Any], evaluation.diagnostic_data())
     result.update({
         "diagnostic_schema": "native-evaluator-v1",
         "plugin": plugin.id,
