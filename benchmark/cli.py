@@ -26,14 +26,10 @@ from datetime import datetime, timezone
 from wcwidth import wcswidth, wcwidth
 
 from benchmark import tui as _tui
-from benchmark.cli_parser import build_parser, generate_shell_completion
-from benchmark.commands import check_sqlite as _check_sqlite_command
-from benchmark.commands import generate_reports as _generate_reports_command
-from benchmark.commands import list_plugins as _list_plugins_command
+from benchmark.cli_parser import build_parser
+from benchmark.command_dispatch import dispatch_early_command
 from benchmark.configuration import (
     _apply_http_retry_default,
-    dump_default_config,
-    generate_config_from_api,
     get_target_plugins_blacklist,
     load_config,
     load_dotenv_file,
@@ -64,7 +60,6 @@ from benchmark.http import (
     get_active_request_count,
     reset_429_stats,
 )
-from benchmark.judge_analysis import write_disagreement_queue
 from benchmark.judging import (
     confidence_weighted_consensus,
     confidence_weighted_consensus_by_contract,
@@ -87,9 +82,8 @@ from benchmark.opencode import (
     opencode_version,
     resolve_opencode_binary,
 )
-from benchmark.outputs import save_outputs
 from benchmark.persistence.sqlite_import import LegacySQLiteImporter
-from benchmark.persistence.sqlite_reports import SQLiteReportSource, sqlite_path_from_report_path
+from benchmark.persistence.sqlite_reports import SQLiteReportSource
 from benchmark.persistence.storage import (
     JsonReportSource,
     RunIdentity,
@@ -223,55 +217,6 @@ def _run_identity(output_dir, restart):
     return run_id, revision_id
 
 
-def _run_report_only(path, output_formats, revision=None):
-    """Generate reports from SQLite or a legacy JSON run without model work."""
-    return _generate_reports_command(path, output_formats, revision)
-
-    sqlite_path = sqlite_path_from_report_path(path)
-    source = None
-    try:
-        if sqlite_path is not None:
-            source = SQLiteReportSource.open(sqlite_path)
-            report_run_id = None
-            if revision is None:
-                manifest_path = os.path.join(
-                    path if os.path.isdir(path) else os.path.dirname(path) or ".",
-                    "run-info.json",
-                )
-                try:
-                    with open(manifest_path, encoding="utf-8") as handle:
-                        manifest = json.load(handle)
-                    if isinstance(manifest, dict) and isinstance(manifest.get("run_id"), str):
-                        report_run_id = manifest["run_id"]
-                except (OSError, json.JSONDecodeError, TypeError):
-                    pass
-            results, active_ids, session_seed, _revision_id = source.load_results(
-                revision=revision, run_id=report_run_id, include_reused=True,
-            )
-        else:
-            output_dir = path if os.path.isdir(path) else os.path.dirname(path) or "."
-            results, active_ids, session_seed = JsonReportSource().load_results(path)
-            results = latest_result_rows(results)
-
-        output_dir = path if os.path.isdir(path) else os.path.dirname(path) or "."
-        discovered = discover_plugins()
-        active_plugins = [plugin for plugin in discovered if plugin.id in active_ids]
-        missing = [plugin_id for plugin_id in active_ids
-                   if plugin_id not in {plugin.id for plugin in active_plugins}]
-        if missing:
-            raise ValueError(
-                f"plugins are unavailable for report generation: {', '.join(missing)}"
-            )
-        generated = save_outputs(
-            results, output_dir, active_plugins,
-            output_formats=output_formats, session_seed=session_seed,
-        )
-        for report in generated:
-            print(report)
-        return generated
-    finally:
-        if source is not None:
-            source.close()
 
 
 def _scan_judge_sidecars(judge_input_dir):
@@ -1866,14 +1811,10 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
                 source.close()
         sys.exit(0 if report.equivalent else 1)
 
+    dispatch_early_command(args)
+
     if args.check_sqlite:
-        try:
-            report = _check_sqlite_command(args.check_sqlite)
-        except (OSError, sqlite3.Error, RuntimeError, ValueError) as exc:
-            print(f"❌ Could not check SQLite integrity: {exc}", file=sys.stderr)
-            sys.exit(1)
-        print(json.dumps(report, indent=2, default=str))
-        sys.exit(0 if report.get("ok") else 1)
+        raise AssertionError("dispatch_early_command returned after check_sqlite")
 
     if args.import_to_sqlite:
         source_path = os.path.abspath(args.import_to_sqlite)
@@ -1933,54 +1874,6 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
         }, indent=2, default=str))
         sys.exit(0)
 
-    if args.generate_reports:
-        if not args.output_format:
-            print("❌ --generate-reports requires --output-format with one or more formats.",
-                  file=sys.stderr)
-            sys.exit(2)
-        try:
-            _run_report_only(
-                args.generate_reports, args.output_format, args.revision,
-            )
-        except (OSError, json.JSONDecodeError, TypeError, ValueError, RuntimeError) as exc:
-            print(f"❌ Could not generate reports: {exc}", file=sys.stderr)
-            sys.exit(1)
-        sys.exit(0)
-
-    if args.build_judge_queue:
-        try:
-            path = write_disagreement_queue(
-                args.build_judge_queue,
-                args.judge_queue_output,
-                spread_threshold=(
-                    None if args.no_judge_spread else args.judge_spread_threshold
-                ),
-                deviation_threshold=(
-                    None if args.no_judge_deviation else args.judge_deviation_threshold
-                ),
-            )
-        except (OSError, json.JSONDecodeError, ValueError) as exc:
-            print(f"❌ Could not build judge disagreement queue: {exc}", file=sys.stderr)
-            sys.exit(1)
-        print(path)
-        sys.exit(0)
-
-    if args.list_plugins:
-        print(_list_plugins_command())
-        sys.exit(0)
-
-    if args.generate_shell_completion:
-        print(generate_shell_completion(args.generate_shell_completion, discover_plugins()))
-        sys.exit(0)
-
-    if args.dump_default_config:
-        if args.base_url:
-            cfg = generate_config_from_api(args.base_url, args.api_key)
-            print(json.dumps(cfg, indent=2))
-        else:
-            dump_default_config()
-        sys.exit(0)
-
     if args.chatplayground_config:
         from benchmark.chatplayground import generate_config as generate_chatplayground_config
         try:
@@ -1989,22 +1882,6 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
             print(f"❌ Could not enumerate ChatPlayground models: {exc}", file=sys.stderr)
             sys.exit(1)
         print(json.dumps(cfg, indent=2))
-        sys.exit(0)
-
-    if args.convert_config:
-        if not os.path.exists(args.convert_config):
-            print(f"❌ Config file not found: {args.convert_config}", file=sys.stderr)
-            sys.exit(1)
-        ext = os.path.splitext(args.convert_config)[1].lower()
-        if ext not in (".json", ".yaml", ".yml"):
-            print(f"❌ Unsupported config format: {ext}. Use .json, .yaml, or .yml.", file=sys.stderr)
-            sys.exit(1)
-        cfg = load_config(args.convert_config)
-        if ext in (".yaml", ".yml"):
-            print(json.dumps(cfg, indent=2))
-        else:
-            import yaml
-            print(yaml.safe_dump(cfg, sort_keys=False, default_flow_style=False))
         sys.exit(0)
 
     config_path = _resolve_config_path(args.config)

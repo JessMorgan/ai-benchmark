@@ -55,6 +55,8 @@ from .response_classification import (  # noqa: F401 - compatibility exports
     response_nature,
 )
 from .state import BenchmarkState  # noqa: F401
+from .task_execution import TaskExecutionDependencies
+from .task_execution import _run_plugin_task as _execute_plugin_task
 from .transport import (
     JUDGE_RETRY_POLICY,
     TransportResult,
@@ -65,8 +67,6 @@ from .transport import (
 from .transport_options import (
     HTTPTransportOptions,
 )
-from .task_execution import TaskExecutionDependencies
-from .task_execution import _run_plugin_task as _execute_plugin_task
 
 PRELOAD_PROMPT = "Reply with the single word OK."
 PRELOAD_DEFAULT_TIMEOUT = 300

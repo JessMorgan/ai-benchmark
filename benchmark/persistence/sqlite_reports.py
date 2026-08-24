@@ -349,7 +349,7 @@ class SQLiteReportSource:
         only the vote rows, so recompute the consensus per contract and pick
         the strongest contract as the projected one.
         """
-        from ..core import confidence_weighted_consensus_by_contract
+        from ..judging import confidence_weighted_consensus_by_contract
 
         consensus_by_contract = confidence_weighted_consensus_by_contract(votes)
         if consensus_by_contract:

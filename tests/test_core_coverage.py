@@ -27,7 +27,6 @@ from benchmark.configuration import (
 from benchmark.core import (
     BenchmarkState,
     PreloadResult,
-    _retry_prompt_alteration,
     _run_plugin_task,
     _source_abbrev,
     _unique_source_abbrevs,
@@ -37,6 +36,7 @@ from benchmark.core import (
     run_model,
 )
 from benchmark.http import NonStreamResult, StreamResult
+from benchmark.transport import _retry_prompt_alteration
 
 
 class _FakePlugin:

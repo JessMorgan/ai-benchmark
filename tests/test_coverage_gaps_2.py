@@ -254,7 +254,7 @@ class TestCoreHelpers:
         assert c1_votes[0]["score"] == 15
 
     def test_parse_plugin_temperatures(self) -> None:
-from benchmark.configuration import parse_plugin_temperatures
+        from benchmark.configuration import parse_plugin_temperatures
 
         cfg = {
             "rate-limiter_temperature": 0.5,
@@ -267,7 +267,7 @@ from benchmark.configuration import parse_plugin_temperatures
         assert "other_key" not in result
 
     def test_resolve_model_sources(self) -> None:
-from benchmark.configuration import resolve_model_sources
+        from benchmark.configuration import resolve_model_sources
 
         models = {
             "model-a": "http",
@@ -280,7 +280,7 @@ from benchmark.configuration import resolve_model_sources
         assert result["model-c"] == "Default"
 
     def test_get_target_plugins_blacklist(self) -> None:
-from benchmark.configuration import get_target_plugins_blacklist
+        from benchmark.configuration import get_target_plugins_blacklist
 
         targets = {"m1": {"plugins_blacklist": ["p1", "p2"]}}
         assert get_target_plugins_blacklist(targets, "m1") == ["p1", "p2"]
@@ -361,42 +361,42 @@ from benchmark.configuration import get_target_plugins_blacklist
         assert _response_reasoning_tokens(response) is None
 
     def test_resolve_pi_config_none(self) -> None:
-from benchmark.configuration import _resolve_pi_config
+        from benchmark.configuration import _resolve_pi_config
 
         assert _resolve_pi_config("m1", None) == {}
 
     def test_resolve_pi_config_invalid_type(self) -> None:
-from benchmark.configuration import _resolve_pi_config
+        from benchmark.configuration import _resolve_pi_config
 
         with pytest.raises(ValueError, match="must be an object"):
             _resolve_pi_config("m1", "bad")
 
     def test_resolve_pi_config_unknown_key(self) -> None:
-from benchmark.configuration import _resolve_pi_config
+        from benchmark.configuration import _resolve_pi_config
 
         with pytest.raises(ValueError, match="unsupported"):
             _resolve_pi_config("m1", {"unknown_key": True})
 
     def test_resolve_pi_config_invalid_tools(self) -> None:
-from benchmark.configuration import _resolve_pi_config
+        from benchmark.configuration import _resolve_pi_config
 
         with pytest.raises(ValueError, match="list of strings"):
             _resolve_pi_config("m1", {"tools": "not a list"})
 
     def test_resolve_pi_config_unsupported_tool(self) -> None:
-from benchmark.configuration import _resolve_pi_config
+        from benchmark.configuration import _resolve_pi_config
 
         with pytest.raises(ValueError, match="unsupported tool"):
             _resolve_pi_config("m1", {"tools": ["read", "dangerous_tool"]})
 
     def test_resolve_pi_config_invalid_permissions(self) -> None:
-from benchmark.configuration import _resolve_pi_config
+        from benchmark.configuration import _resolve_pi_config
 
         with pytest.raises(ValueError, match="must map"):
             _resolve_pi_config("m1", {"permissions": "bad"})
 
     def test_resolve_pi_config_valid(self) -> None:
-from benchmark.configuration import _resolve_pi_config
+        from benchmark.configuration import _resolve_pi_config
 
         result = _resolve_pi_config("m1", {"tools": ["read", "bash"], "permissions": {"read": "allow"}})
         assert result["tools"] == ["read", "bash"]

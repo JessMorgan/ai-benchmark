@@ -9,16 +9,22 @@ from dataclasses import dataclass
 from typing import Any
 
 from .http import nonstream_request, stream_request
+from .judging import judge_sidecar_path, prepare_judge_sidecar
 from .observer import TaskObserver
 from .opencode import resolve_opencode_timeout, run_process
 from .plugin import PluginTaskResult, normalize_score, serialize_rubric
-from .request_models import GenerationFields, HTTPRequest, OpenCodeRequest, PiRequest, TransportRequest
+from .request_models import (
+    GenerationFields,
+    HTTPRequest,
+    OpenCodeRequest,
+    PiRequest,
+    TransportRequest,
+)
+from .response_classification import count_tokens
 from .results import save_task_result
 from .runtime_records import BenchmarkAttemptRecord
 from .transport import BENCHMARK_RETRY_POLICY, _retry_prompt_alteration, execute_task
 from .transport_options import HTTPTransportOptions, OpenCodeTransportOptions, PiTransportOptions
-from .judging import judge_sidecar_path, prepare_judge_sidecar
-from .response_classification import count_tokens
 
 DEFAULT_MAX_THINKING_TOKENS = 32768
 DEFAULT_MAX_CONTENT_TOKENS = 16384

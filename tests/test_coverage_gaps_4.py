@@ -162,34 +162,34 @@ class TestStateSetJudgeModelsResults:
 
 class TestCoreRetryDefault:
     def test_apply_http_retry_default_enabled(self) -> None:
-from benchmark.configuration import _apply_http_retry_default
+        from benchmark.configuration import _apply_http_retry_default
 
         cfg = {"sources": {"local": {"api_url": "http://localhost"}}}
         _apply_http_retry_default(cfg, retry_on_429=True)
         assert "max_429_retries" not in cfg["sources"]["local"]
 
     def test_apply_http_retry_default_disabled(self) -> None:
-from benchmark.configuration import _apply_http_retry_default
+        from benchmark.configuration import _apply_http_retry_default
 
         cfg = {"sources": {"local": {"api_url": "http://localhost"}}}
         _apply_http_retry_default(cfg, retry_on_429=False)
         assert cfg["sources"]["local"]["max_429_retries"] == 0
 
     def test_apply_http_retry_default_preserves_explicit(self) -> None:
-from benchmark.configuration import _apply_http_retry_default
+        from benchmark.configuration import _apply_http_retry_default
 
         cfg = {"sources": {"local": {"max_429_retries": 5}}}
         _apply_http_retry_default(cfg, retry_on_429=False)
         assert cfg["sources"]["local"]["max_429_retries"] == 5
 
     def test_apply_http_retry_default_no_sources(self) -> None:
-from benchmark.configuration import _apply_http_retry_default
+        from benchmark.configuration import _apply_http_retry_default
 
         cfg: dict[str, Any] = {}
         _apply_http_retry_default(cfg, retry_on_429=False)  # should not raise
 
     def test_apply_http_retry_default_bad_source(self) -> None:
-from benchmark.configuration import _apply_http_retry_default
+        from benchmark.configuration import _apply_http_retry_default
 
         cfg = {"sources": {"local": "not a dict"}}
         _apply_http_retry_default(cfg, retry_on_429=False)  # should not raise

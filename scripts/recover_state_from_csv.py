@@ -15,7 +15,7 @@ import re
 import shutil
 import tempfile
 
-from benchmark.core import load_config, resolve_targets
+from benchmark.configuration import load_config, resolve_targets
 from benchmark.state import BenchmarkState
 from plugins import discover_plugins
 
