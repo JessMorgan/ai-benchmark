@@ -20,6 +20,12 @@ from .observer import TaskObserver
 from .opencode import OPENCODE_BINARY, run_process
 from .pi import PI_DEFAULT_NODE, PiProcessResult
 from .pi import run_process as run_pi_process
+from .transport_options import (
+    HTTPTransportOptions,
+    OpenCodeTransportOptions,
+    PiTransportOptions,
+    TransportOptions,
+)
 
 # Default generation budget for benchmark tasks when no explicit max_tokens
 # can be parsed. Deliberately separate from the judge default so benchmark
@@ -111,6 +117,46 @@ class TransportRequest:
     pi_target_key: str | None = None
     pi_plugin_id: str | None = None
     identity: RequestIdentity | None = None
+    options: TransportOptions | None = None
+
+    def http_options(self) -> HTTPTransportOptions:
+        """Return grouped HTTP options, adapting legacy fields when needed."""
+        if self.options is not None:
+            return self.options.http
+        return HTTPTransportOptions(
+            supports_streaming=self.supports_streaming,
+            max_content_tokens=self.max_content_tokens,
+            max_thinking_tokens=self.max_thinking_tokens,
+            repetition_guard=self.repetition_guard,
+            request_params=self.request_params,
+        )
+
+    def opencode_options(self) -> OpenCodeTransportOptions:
+        """Return grouped OpenCode options, adapting legacy fields when needed."""
+        if self.options is not None:
+            return self.options.opencode
+        return OpenCodeTransportOptions(
+            config_path=self.opencode_config_path,
+            model=self.opencode_model,
+            agent=self.opencode_agent,
+            binary=self.opencode_binary,
+            output_dir=self.opencode_output_dir,
+            no_output_grace=self.opencode_no_output_grace,
+            target_key=self.opencode_target_key,
+            plugin_id=self.opencode_plugin_id,
+        )
+
+    def pi_options(self) -> PiTransportOptions:
+        """Return grouped Pi options, adapting legacy fields when needed."""
+        if self.options is not None:
+            return self.options.pi
+        return PiTransportOptions(
+            node=self.pi_node,
+            worker=self.pi_worker,
+            config=self.pi_config,
+            target_key=self.pi_target_key,
+            plugin_id=self.pi_plugin_id,
+        )
 
 
 @dataclass(frozen=True)
@@ -514,7 +560,8 @@ def _execute_http_nonstream(request: TransportRequest, started: float, *,
                             stream_fallback_error: str | None = None) -> TransportResult:
     observer = _observer(request)
     nonstream_request_fn = nonstream_request_fn or nonstream_request
-    params = request.request_params
+    http_options = request.http_options()
+    params = http_options.request_params
     response = nonstream_request_fn(
         request.source_config, request.timeout, request.api_model, request.source,
         request.prompt, request.max_tokens,
@@ -528,9 +575,9 @@ def _execute_http_nonstream(request: TransportRequest, started: float, *,
         request_params=params,
         observer=observer,
         pid=request.pid,
-        max_content_tokens=request.max_content_tokens,
-        max_thinking_tokens=request.max_thinking_tokens,
-        repetition_guard=request.repetition_guard,
+        max_content_tokens=http_options.max_content_tokens,
+        max_thinking_tokens=http_options.max_thinking_tokens,
+        repetition_guard=http_options.repetition_guard,
     )
     schema_fallback_used = False
     schema_fallback_error = None
@@ -551,7 +598,7 @@ def _execute_http_nonstream(request: TransportRequest, started: float, *,
             drop_params=request.drop_params,
             stop_event=request.stop_event,
             system_prompt=request.system_prompt,
-            request_params=request.request_params,
+            request_params=http_options.request_params,
             observer=observer,
             pid=request.pid,
             max_content_tokens=request.max_content_tokens,
@@ -573,7 +620,8 @@ def _execute_http(request: TransportRequest, *, stream_request_fn=None,
     stream_request_fn = stream_request_fn or stream_request
     nonstream_request_fn = nonstream_request_fn or nonstream_request
     observer = _observer(request)
-    if not request.supports_streaming:
+    http_options = request.http_options()
+    if not http_options.supports_streaming:
         return _execute_http_nonstream(
             request, started, nonstream_request_fn=nonstream_request_fn,
         )
@@ -587,12 +635,12 @@ def _execute_http(request: TransportRequest, *, stream_request_fn=None,
         drop_params=request.drop_params,
         stop_event=request.stop_event,
         system_prompt=request.system_prompt,
-        request_params=request.request_params,
+        request_params=http_options.request_params,
         observer=observer,
         pid=request.pid,
-        max_content_tokens=request.max_content_tokens,
-        max_thinking_tokens=request.max_thinking_tokens,
-        repetition_guard=request.repetition_guard,
+        max_content_tokens=http_options.max_content_tokens,
+        max_thinking_tokens=http_options.max_thinking_tokens,
+        repetition_guard=http_options.repetition_guard,
     )
     result = _normalize_stream(request, response, started)
     if (
@@ -613,7 +661,8 @@ def _execute_http(request: TransportRequest, *, stream_request_fn=None,
 
 def _execute_opencode(request: TransportRequest, *, run_process_fn=None) -> TransportResult:
     run_process_fn = run_process_fn or run_process
-    if not request.opencode_config_path or not request.opencode_model:
+    opencode_options = request.opencode_options()
+    if not opencode_options.config_path or not opencode_options.model:
         return _normalize(
             request,
             text="",
@@ -627,16 +676,16 @@ def _execute_opencode(request: TransportRequest, *, run_process_fn=None) -> Tran
         )
     response = run_process_fn(
         request.prompt,
-        config_path=request.opencode_config_path,
-        model=request.opencode_model,
+        config_path=opencode_options.config_path,
+        model=opencode_options.model,
         timeout=request.timeout,
-        binary=request.opencode_binary or OPENCODE_BINARY,
-        agent=request.opencode_agent,
-        output_dir=request.opencode_output_dir,
-        target_key=request.opencode_target_key or request.source,
-        plugin_id=request.opencode_plugin_id or request.pid or "plugin",
+        binary=opencode_options.binary or OPENCODE_BINARY,
+        agent=opencode_options.agent,
+        output_dir=opencode_options.output_dir,
+        target_key=opencode_options.target_key or request.source,
+        plugin_id=opencode_options.plugin_id or request.pid or "plugin",
         stop_event=request.stop_event,
-        no_output_grace=request.opencode_no_output_grace or 0,
+        no_output_grace=opencode_options.no_output_grace or 0,
         debug_logs=request.debug_logs,
     )
     return _normalize(
@@ -695,6 +744,8 @@ def _retry_plan(
 
 def _execute_pi(request: TransportRequest) -> TransportResult:
     """Execute one isolated Pi SDK worker attempt."""
+    pi_options = request.pi_options()
+    opencode_options = request.opencode_options()
     response: PiProcessResult = run_pi_process(
         request.prompt,
         source_config=request.source_config,
@@ -707,12 +758,12 @@ def _execute_pi(request: TransportRequest) -> TransportResult:
         reasoning=request.reasoning,
         prompt_altered=request.prompt_altered,
         attempt=request.attempt,
-        pi_config=request.pi_config,
-        node=request.pi_node or PI_DEFAULT_NODE,
-        worker=request.pi_worker,
-        output_dir=request.opencode_output_dir,
-        target_key=request.pi_target_key or request.source,
-        plugin_id=request.pi_plugin_id or request.pid or "plugin",
+        pi_config=pi_options.config,
+        node=pi_options.node or PI_DEFAULT_NODE,
+        worker=pi_options.worker,
+        output_dir=opencode_options.output_dir,
+        target_key=pi_options.target_key or request.source,
+        plugin_id=pi_options.plugin_id or request.pid or "plugin",
         stop_event=request.stop_event,
         observer=request.observer,
         debug_logs=request.debug_logs,

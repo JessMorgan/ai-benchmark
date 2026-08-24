@@ -59,6 +59,12 @@ from .transport import (
     _thinking_consumed_budget,
     execute_task,
 )
+from .transport_options import (
+    HTTPTransportOptions,
+    OpenCodeTransportOptions,
+    PiTransportOptions,
+    TransportOptions,
+)
 
 PRELOAD_PROMPT = "Reply with the single word OK."
 PRELOAD_DEFAULT_TIMEOUT = 300
@@ -1129,7 +1135,6 @@ def judge_response(source_config, judge_source, judge_api_model, sidecar,
         temperature=temperature,
         system_prompt=_judge_system_prompt(budget),
         drop_params=drop_params or [],
-        request_params=request_params,
         stop_event=stop_event,
         observer=judge_observer,
         pid=f"judge:{item['plugin']}",
@@ -1140,7 +1145,12 @@ def judge_response(source_config, judge_source, judge_api_model, sidecar,
             f"prompt_version={prompt_version}, "
             f"judge_instructions_version={instructions_version})"
         ),
-        supports_streaming=True,
+        options=TransportOptions(
+            http=HTTPTransportOptions(
+                supports_streaming=True,
+                request_params=request_params,
+            ),
+        ),
     )
 
     def json_error_prompt_alterer(result: TransportResult):
@@ -2512,32 +2522,40 @@ def _run_plugin_task(target_name, api_model, source, plugin, source_config, time
         reasoning=bool((pi_config or {}).get("reasoning", False)),
         system_prompt=system_prompt,
         drop_params=drop_params,
-        request_params=request_params,
         session_seed=session_seed,
         log_path=log_file,
         log_label=f"{plugin.name} (attempt {{attempt}})",
         pid=pid,
         stop_event=stop_event,
         observer=task_observer,
-        max_content_tokens=max_content_tokens,
-        max_thinking_tokens=max_thinking_tokens,
-        repetition_guard=repetition_guard,
         transport=runner,
-        supports_streaming=plugin.supports_streaming,
-        opencode_config_path=opencode_config_path,
-        opencode_model=opencode_model,
-        opencode_agent=opencode_agent,
-        opencode_binary=opencode_binary,
-        opencode_output_dir=output_dir,
-        opencode_no_output_grace=resolve_opencode_timeout(source_config, source),
-        opencode_target_key=artifact_target,
-        opencode_plugin_id=pid,
         debug_logs=debug_logs,
-        pi_node=pi_node,
-        pi_worker=pi_worker,
-        pi_config=pi_config,
-        pi_target_key=artifact_target,
-        pi_plugin_id=pid,
+        options=TransportOptions(
+            http=HTTPTransportOptions(
+                supports_streaming=plugin.supports_streaming,
+                max_content_tokens=max_content_tokens,
+                max_thinking_tokens=max_thinking_tokens,
+                repetition_guard=repetition_guard,
+                request_params=request_params,
+            ),
+            opencode=OpenCodeTransportOptions(
+                config_path=opencode_config_path,
+                model=opencode_model,
+                agent=opencode_agent,
+                binary=opencode_binary,
+                output_dir=output_dir,
+                no_output_grace=resolve_opencode_timeout(source_config, source),
+                target_key=artifact_target,
+                plugin_id=pid,
+            ),
+            pi=PiTransportOptions(
+                node=pi_node,
+                worker=pi_worker,
+                config=pi_config,
+                target_key=artifact_target,
+                plugin_id=pid,
+            ),
+        ),
     )
 
     def on_attempt(attempt_number):

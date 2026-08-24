@@ -11,6 +11,12 @@ from benchmark.transport import (
     execute_task,
     execute_transport,
 )
+from benchmark.transport_options import (
+    HTTPTransportOptions,
+    OpenCodeTransportOptions,
+    PiTransportOptions,
+    TransportOptions,
+)
 
 
 class TestTransport(unittest.TestCase):
@@ -54,6 +60,24 @@ class TestTransport(unittest.TestCase):
             )
         self.assertEqual(result.attempts[0].result.request_id, "run-1:3:model-a:rate-limiter:http:1")
         self.assertEqual(result.attempts[1].result.request_id, "run-1:3:model-a:rate-limiter:http:2")
+
+    def test_grouped_transport_options_select_runner_specific_fields(self):
+        request = self._request(
+            options=TransportOptions(
+                http=HTTPTransportOptions(supports_streaming=False, request_params={"x": 1}),
+                opencode=OpenCodeTransportOptions(config_path="oc.json", model="provider/model"),
+                pi=PiTransportOptions(worker="worker.mjs", target_key="target"),
+            ),
+            supports_streaming=True,
+            request_params=None,
+            opencode_config_path=None,
+            opencode_model=None,
+            pi_worker=None,
+        )
+        self.assertFalse(request.http_options().supports_streaming)
+        self.assertEqual(request.http_options().request_params, {"x": 1})
+        self.assertEqual(request.opencode_options().config_path, "oc.json")
+        self.assertEqual(request.pi_options().worker, "worker.mjs")
 
     def test_streaming_http_is_normalized(self):
         response = StreamResult(
