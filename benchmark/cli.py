@@ -3799,9 +3799,54 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
 
 
 def main():
-    """Compatibility wrapper; the process entrypoint lives in ``benchmark.app``."""
-    from benchmark.app import main as app_main
-    app_main()
+    """Dispatch to the benchmark orchestrator, keeping the Textual TUI on the
+    main thread when it is enabled.
+
+    Textual's Linux driver installs SIGTSTP/SIGCONT handlers in its
+    constructor, and ``signal.signal`` is only legal from the main thread of
+    the main interpreter. Launching the TUI from a worker thread therefore
+    crashes with ``ValueError: signal only works in main thread``. When the
+    interactive TUI is enabled we invert the arrangement: the orchestrator runs
+    in a worker thread and the TUI owns the main thread.
+    """
+    if not _textual_tui_enabled():
+        _run_benchmark()
+        return
+
+    handoff = {"ready": threading.Event(), "interrupt": threading.Event()}
+    outcome = {}
+
+    def _run_orchestrator():
+        try:
+            _run_benchmark(handoff)
+        except SystemExit as exc:
+            outcome["exit_code"] = exc.code
+        except BaseException as exc:  # noqa: BLE001 - re-raise fatal crashes here
+            outcome["error"] = exc
+
+    orchestrator = threading.Thread(target=_run_orchestrator, daemon=True)
+    orchestrator.start()
+
+    # Wait for setup to complete and hand over the TUI launch, or for the
+    # process to exit early (e.g. --list-plugins / --dump-default-config).
+    while not handoff["ready"].is_set() and orchestrator.is_alive():
+        handoff["ready"].wait(0.05)
+
+    if "args" in handoff:
+        try:
+            tui_main(*handoff["args"])
+        except KeyboardInterrupt:
+            # Ctrl+C landed on the main thread while the TUI was active; ask
+            # the orchestrator to wind down gracefully.
+            handoff["interrupt"].set()
+            handoff["stop_event"].set()
+
+    orchestrator.join()
+
+    if "error" in outcome:
+        raise outcome["error"]
+    if "exit_code" in outcome:
+        sys.exit(outcome["exit_code"])
 
 
 if __name__ == "__main__":

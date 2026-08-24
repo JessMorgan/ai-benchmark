@@ -8,7 +8,7 @@ importable as a package module and installable as a console script
 Kept at the repository root so ``python ai-benchmark.py`` keeps working
 for docs, pre-commit hooks, and shell completion examples.
 """
-from benchmark.app import main
+from benchmark.cli import main
 
 if __name__ == "__main__":
     main()
