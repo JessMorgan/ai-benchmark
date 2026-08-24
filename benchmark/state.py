@@ -351,12 +351,6 @@ _RESUME_PERSISTENT_SUFFIXES = (
 )
 
 
-def _project_latest_result_rows(results, plugin_ids):
-    """Apply the shared latest-row/per-plugin recovery projection.
-
-    """
-    return project_result_rows(results, plugin_ids)
-
 
 class BenchmarkState:
     """Thread-safe shared state for parallel benchmark execution."""
@@ -1473,7 +1467,7 @@ class BenchmarkState:
     def latest_results(self):
         """Return the latest row with per-plugin cancellation recovery applied."""
         with self._lock:
-            return _project_latest_result_rows(self.results, self.plugin_ids)
+            return project_result_rows(self.results, self.plugin_ids)
 
     @classmethod
     def load_state(cls, path, models, plugin_ids, *, rerun_failed=True):
@@ -1573,7 +1567,7 @@ class BenchmarkState:
                         ):
                             state._model_info[name]["status"] = "pending"
         state.results = data.get("results", [])
-        projected_results = _project_latest_result_rows(state.results, plugin_ids)
+        projected_results = project_result_rows(state.results, plugin_ids)
         projected_by_identity = {
             (
                 row.get("state_key", row.get("model")),
