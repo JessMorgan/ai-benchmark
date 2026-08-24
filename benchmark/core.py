@@ -44,7 +44,7 @@ from .plugin import (
     normalize_score,
     serialize_rubric,
 )
-from .request_models import GenerationFields, HTTPRequest, OpenCodeRequest, PiRequest
+from .request_models import GenerationFields, HTTPRequest, OpenCodeRequest, PiRequest, TransportRequest
 from .response_classification import (  # noqa: F401 - compatibility exports
     classify_empty_reason,
     count_tokens,
@@ -1860,7 +1860,7 @@ def _run_plugin_task(target_name: str, api_model: str, source: str, plugin: Any,
         request_params=request_params,
     )
     if runner == "opencode":
-        request = OpenCodeRequest(
+        request: TransportRequest = OpenCodeRequest(
             common,
             OpenCodeTransportOptions(
                 config_path=opencode_config_path,
@@ -1874,8 +1874,7 @@ def _run_plugin_task(target_name: str, api_model: str, source: str, plugin: Any,
             ),
         )
     elif runner == "pi":
-        request = PiRequest(  # type: ignore[assignment]
-
+        request = PiRequest(
             common,
             PiTransportOptions(
                 node=pi_node,
@@ -1886,8 +1885,7 @@ def _run_plugin_task(target_name: str, api_model: str, source: str, plugin: Any,
             ),
         )
     else:
-        request = HTTPRequest(  # type: ignore[assignment]
-common, http_options)
+        request = HTTPRequest(common, http_options)
 
     def on_attempt(attempt_number: int) -> None:
         state.set_plugin_attempt(target_name, pid, attempt_number)

@@ -79,11 +79,23 @@ class TestTransport(unittest.TestCase):
         self.assertEqual(request.opencode_options().config_path, "oc.json")
         self.assertEqual(request.pi_options().worker, "worker.mjs")
 
-    def test_typed_request_variants_are_transport_specific(self):
-        request = self._request(options=HTTPTransportOptions(supports_streaming=False))
-        self.assertEqual(request.kind, "http")
-        self.assertFalse(request.options.supports_streaming)
+    def test_typed_request_variants_round_trip(self):
+        from benchmark.request_models import GenerationFields, HTTPRequest
 
+        common = GenerationFields(
+            prompt="Answer the task.", max_tokens=128,
+            source_config={"Local": {}}, api_model="model", source="Local", timeout=5,
+        )
+        typed = HTTPRequest(common, HTTPTransportOptions(supports_streaming=False))
+        adapted = TransportRequest.from_variant(typed)
+        self.assertEqual(adapted.transport, "http")
+        self.assertFalse(adapted.http_options().supports_streaming)
+        self.assertEqual(adapted.to_variant().kind, "http")
+
+    def test_flat_transport_fields_emit_deprecation_warning(self):
+        request = self._request()
+        with self.assertWarns(DeprecationWarning):
+            request.to_variant()
 
     def test_streaming_http_is_normalized(self):
         response = StreamResult(

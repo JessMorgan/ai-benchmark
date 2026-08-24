@@ -76,7 +76,8 @@ class PiRequest:
     kind: Literal["pi"] = "pi"
 
 
-TransportRequestVariant = HTTPRequest | OpenCodeRequest | PiRequest
+TransportRequest = HTTPRequest | OpenCodeRequest | PiRequest
+TransportRequestVariant = TransportRequest
 
 
 def request_identity(fields: GenerationFields, attempt: int | None = None) -> RequestIdentityFields:
