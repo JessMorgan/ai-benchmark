@@ -102,6 +102,13 @@ from benchmark.persistence.sqlite_integrity import check_integrity
 from benchmark.persistence.sqlite_reports import SQLiteReportSource, sqlite_path_from_report_path
 from benchmark.state import apply_state_recovery, prepare_state_recovery
 from benchmark.persistence.storage import JsonReportSource, RunIdentity, SQLiteRunStore, latest_result_rows
+from benchmark.tui_format import (
+    FROZEN_VIEW_WIDTH,
+    MODEL_NUMBER_COLUMN_WIDTH,
+    PLUGIN_BLOCK_WIDTH,
+    SCORE_COLUMN_WIDTH,
+    row_style,
+)
 from plugins import discover_plugins, format_plugin_list
 
 _CORRUPTED_STATE_ABORT = "abort"
@@ -568,8 +575,6 @@ def _fallback_tui_loop(state, stop_event, session_seed=None, model_thread_limits
 # formatter and the row layout calculations.
 # The model-number column reserves the judge marker's display width so a
 # scales/checkmark marker cannot shift source, model, or status columns.
-MODEL_NUMBER_COLUMN_WIDTH = 5
-FROZEN_VIEW_WIDTH = 35
 
 # Width of the per-plugin cell block rendered by ``_plugin_cell_block``.
 # The standard 4-cell results layout uses a 9-column score field plus
@@ -586,8 +591,6 @@ FROZEN_VIEW_WIDTH = 35
 # leading space from the score and put the count directly after the emoji
 # (for example ``63 ⚖️2``), so the marker cannot visually merge with either
 # the score or the token column.
-SCORE_COLUMN_WIDTH = 9
-PLUGIN_BLOCK_WIDTH = 30
 
 # Wall-clock threshold (seconds) past which an in-flight plugin shows a
 # secondary indicator so the operator can spot slow / hung requests vs
@@ -1177,22 +1180,7 @@ _FRAME_STYLE_MAP = {
 }
 
 
-def _row_style(state_row):
-    """Return the canonical style for a table row.
-
-    Activity wins over terminal status because a retry or sibling plugin may
-    still be running after a previous attempt recorded ``failed``. Pending
-    work remains uncolored, completed rows are green, and terminal failures
-    are red.
-    """
-    if state_row.get("running_pids") or state_row.get("preloading"):
-        return "yellow"
-    status = state_row.get("status")
-    if status == "completed":
-        return "green"
-    if status == "failed":
-        return "red"
-    return None
+_row_style = row_style
 
 
 def _build_frame_lines(state, active_plugins, source_abbrevs, frozen_hdr,
