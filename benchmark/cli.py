@@ -27,6 +27,9 @@ from wcwidth import wcswidth, wcwidth
 
 from benchmark import tui as _tui
 from benchmark.cli_parser import build_parser, generate_shell_completion
+from benchmark.commands import check_sqlite as _check_sqlite_command
+from benchmark.commands import generate_reports as _generate_reports_command
+from benchmark.commands import list_plugins as _list_plugins_command
 from benchmark.core import (
     FLUSH_INTERVAL_SECONDS,
     FLUSH_MAX_VOTES,
@@ -82,7 +85,6 @@ from benchmark.opencode import (
 )
 from benchmark.outputs import save_outputs
 from benchmark.persistence.sqlite_import import LegacySQLiteImporter
-from benchmark.persistence.sqlite_integrity import check_integrity
 from benchmark.persistence.sqlite_reports import SQLiteReportSource, sqlite_path_from_report_path
 from benchmark.persistence.storage import (
     JsonReportSource,
@@ -122,7 +124,7 @@ from benchmark.tui_format import (
     SCORE_COLUMN_WIDTH,
     row_style,
 )
-from plugins import discover_plugins, format_plugin_list
+from plugins import discover_plugins
 
 _CORRUPTED_STATE_ABORT = "abort"
 
@@ -219,6 +221,8 @@ def _run_identity(output_dir, restart):
 
 def _run_report_only(path, output_formats, revision=None):
     """Generate reports from SQLite or a legacy JSON run without model work."""
+    return _generate_reports_command(path, output_formats, revision)
+
     sqlite_path = sqlite_path_from_report_path(path)
     source = None
     try:
@@ -1859,26 +1863,13 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
         sys.exit(0 if report.equivalent else 1)
 
     if args.check_sqlite:
-        sqlite_path = sqlite_path_from_report_path(args.check_sqlite)
-        if sqlite_path is None:
-            print(
-                f"❌ SQLite database not found in path: {args.check_sqlite}",
-                file=sys.stderr,
-            )
-            sys.exit(1)
-        connection = None
         try:
-            connection = sqlite3.connect(f"file:{os.path.abspath(sqlite_path)}?mode=ro", uri=True)
-            connection.row_factory = sqlite3.Row
-            report = check_integrity(connection)
+            report = _check_sqlite_command(args.check_sqlite)
         except (OSError, sqlite3.Error, RuntimeError, ValueError) as exc:
             print(f"❌ Could not check SQLite integrity: {exc}", file=sys.stderr)
             sys.exit(1)
-        finally:
-            if connection is not None:
-                connection.close()
-        print(json.dumps(report.as_dict(), indent=2, default=str))
-        sys.exit(0 if report.ok else 1)
+        print(json.dumps(report, indent=2, default=str))
+        sys.exit(0 if report.get("ok") else 1)
 
     if args.import_to_sqlite:
         source_path = os.path.abspath(args.import_to_sqlite)
@@ -1971,7 +1962,7 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
         sys.exit(0)
 
     if args.list_plugins:
-        print(format_plugin_list(discover_plugins()))
+        print(_list_plugins_command())
         sys.exit(0)
 
     if args.generate_shell_completion:
