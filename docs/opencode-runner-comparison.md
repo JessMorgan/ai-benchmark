@@ -1,5 +1,7 @@
 # OpenCode runner architecture comparison
 
+**Status:** Complete (design/analysis record) — subprocess approach implemented and in production use
+
 ## Current implementation: one `opencode run` process per task
 
 The benchmark currently launches an isolated subprocess for each model/plugin cell:

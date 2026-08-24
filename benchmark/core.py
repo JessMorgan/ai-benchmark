@@ -1874,7 +1874,8 @@ def _run_plugin_task(target_name: str, api_model: str, source: str, plugin: Any,
             ),
         )
     elif runner == "pi":
-        request = PiRequest(
+        request = PiRequest(  # type: ignore[assignment]
+
             common,
             PiTransportOptions(
                 node=pi_node,
@@ -1885,7 +1886,8 @@ def _run_plugin_task(target_name: str, api_model: str, source: str, plugin: Any,
             ),
         )
     else:
-        request = HTTPRequest(common, http_options)
+        request = HTTPRequest(  # type: ignore[assignment]
+common, http_options)
 
     def on_attempt(attempt_number: int) -> None:
         state.set_plugin_attempt(target_name, pid, attempt_number)
@@ -2198,7 +2200,7 @@ def run_model(model_name: str, source: str, state: Any, active_plugins: list[Any
     if runner == "http" and cfg is None:
         r["status"] = "error"
         r["error"] = f"Unknown source '{source}' — not in SOURCE_CONFIG"
-        r["total_time"] = round(time.time() - start, 1)
+        r["total_time"] = round(time.time() - start, 1)  # type: ignore[assignment]
         state.publish_result(
             r, status="failed", error=r["error"], elapsed=r["total_time"],
             last_error=r["error"],
@@ -2294,7 +2296,7 @@ def run_model(model_name: str, source: str, state: Any, active_plugins: list[Any
             and not isinstance(r.get(f"{p.id}_score"), bool)
             for p in active_plugins
         )
-        r["total_time"] = round(time.time() - start, 1)
+        r["total_time"] = round(time.time() - start, 1)  # type: ignore[assignment]
         state.publish_result(
             r, status="completed", elapsed=r["total_time"],
         )
@@ -2415,7 +2417,7 @@ def _run_plugins(target_name: str, api_model: str, source: str, state: Any, acti
             # (``run_model``) once all plugins resolve.
             state.finish_plugin_run(target_name, pid)
         with lock:
-            results[pid] = result
+            results[pid] = result  # type: ignore[assignment]
             if err:
                 errors[pid] = err
             # A successful or non-429 test breaks the streak. Cancellation

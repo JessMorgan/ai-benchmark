@@ -29,16 +29,10 @@ jobs:
         run: |
           uv run pre-commit run --all-files --show-diff-on-failure
 
-      - name: Run Ruff and strict infrastructure typing
+      - name: Run Ruff and strict production typing
         run: |
           uv run ruff check benchmark plugins tests
-          uv run mypy --strict \
-            benchmark/lifecycle.py \
-            benchmark/process_supervisor.py \
-            benchmark/scheduler_policy.py \
-            benchmark/sqlite_integrity.py \
-            benchmark/sqlite_writer.py \
-            benchmark/storage_validation.py
+          uv run mypy --strict benchmark plugins --exclude 'test_' --exclude 'benchmark/cli.py'
 
       - name: Compile Python sources
         run: uv run python -m compileall -q benchmark plugins ai-benchmark.py

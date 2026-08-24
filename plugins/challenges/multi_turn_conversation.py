@@ -141,8 +141,8 @@ class MultiTurnConversationPlugin(BenchmarkTaskPlugin):
             and all(section is not None and len(fenced_blocks(section.body, "json")) == 1 for section in turns)
             and summary is not None
             and all(
-                section.body.strip().lower().startswith("```json")
-                and section.body.strip().endswith("```")
+                (section.body.strip().lower().startswith("```json")  # type: ignore[union-attr]
+                and section.body.strip().endswith("```"))  # type: ignore[union-attr]
                 for section in turns
             )
         )

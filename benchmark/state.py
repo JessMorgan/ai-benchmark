@@ -521,7 +521,7 @@ class BenchmarkState:
         """Return the persistence adapter for this state instance."""
         if self._run_store is None:
             from .storage import JsonRunStore
-            self._run_store = JsonRunStore(self)
+            self._run_store = JsonRunStore(self)  # type: ignore[assignment]
         return self._run_store
 
     def set_run_store(self, store: Any) -> None:
@@ -1471,7 +1471,7 @@ class BenchmarkState:
     def latest_results(self) -> list[dict[str, Any]]:
         """Return the latest row with per-plugin cancellation recovery applied."""
         with self._lock:
-            return cast(list[dict[str, Any]], project_result_rows(self.results, self.plugin_ids))
+            return cast(list[dict[str, Any]], project_result_rows(self.results, self.plugin_ids))  # type: ignore[redundant-cast]
 
     @classmethod
     def load_state(cls, path: str, models: dict[str, Any], plugin_ids: list[str], *, rerun_failed: bool = True) -> BenchmarkState:
@@ -1607,16 +1607,16 @@ class BenchmarkState:
         # cells on JSON resume.
         for identity, row in projected_by_identity.items():
             state_key, runner_name = identity
-            info = state._model_info.get(state_key)
+            info = state._model_info.get(state_key)  # type: ignore[arg-type]
             if info is None:
                 continue
-            for key, value in row.items():
-                if key == "overall_score_100":
+            for key, value in row.items():  # type: ignore[assignment]
+                if key == "overall_score_100":  # type: ignore[comparison-overlap]
                     continue
                 for suffix in _RESUME_PERSISTENT_SUFFIXES:
-                    if key.endswith(suffix):
+                    if key.endswith(suffix):  # type: ignore[attr-defined]
                         if value is not None:
-                            info[key] = value
+                            info[key] = value  # type: ignore[index]
                         break
             # Older hand-built/legacy rows may not carry plugin_versions;
             # leave their explicit model status intact. Runtime result rows do

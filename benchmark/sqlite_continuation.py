@@ -5,7 +5,7 @@ import hashlib
 import json
 import sqlite3
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -756,7 +756,7 @@ class SQLiteContinuationStore:
         return count
 
     @staticmethod
-    def _unique(items: Sequence[Any], key) -> list[Any]:
+    def _unique(items: Sequence[Any], key: Callable[[Any], Any]) -> list[Any]:
         result: list[Any] = []
         seen: set[Any] = set()
         for item in items:
