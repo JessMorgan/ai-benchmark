@@ -153,7 +153,6 @@ class TestJsonRunStoreFacade:
             lambda: store.ensure_cell(target, plugin),
             lambda: store.record_benchmark_attempt(1, BenchmarkAttemptRecord(attempt_number=1)),
             lambda: store.record_judge_attempt(1, JudgeAttemptRecord(judge_model="j", contract_id="c", attempt_number=1)),
-            lambda: store.get_cell_id("m", "http", "p"),
             lambda: store.register_judge("judge", "http"),
             lambda: store.register_contract("c", plugin_id="p", plugin_version="1",
                                             prompt_version="1", instructions_version="1"),
@@ -161,6 +160,7 @@ class TestJsonRunStoreFacade:
         for operation in unsupported:
             with pytest.raises(NotImplementedError, match="normalized operation"):
                 operation()
+        assert store.get_cell_id("m", "http", "p") is None
         assert store.close() is True
 
     def test_save_snapshot_none_path_raises(self) -> None:
