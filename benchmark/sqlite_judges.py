@@ -73,7 +73,15 @@ class SQLiteJudgeStore:
                     instructions_version, response_schema_hash, contract_json, contract_hash,
                 ),
             )
-        elif row[5] == '{"legacy":true}' or row[5] == '{"legacy": true}':
+        elif tuple(row) != (
+            plugin_id, plugin_version, prompt_version, instructions_version,
+            response_schema_hash, contract_json, contract_hash,
+        ):
+            # A legacy JSON import creates placeholder contracts whose hashes
+            # are derived from the contract_id string, not the content. When
+            # the runtime provides real content for the same contract_id (or
+            # a new version provides updated content), treat the newer
+            # content as authoritative and update the row.
             self.connection.execute(
                 """
                 UPDATE judge_contracts SET
@@ -87,11 +95,6 @@ class SQLiteJudgeStore:
                     response_schema_hash, contract_json, contract_hash, contract_id,
                 ),
             )
-        elif tuple(row) != (
-            plugin_id, plugin_version, prompt_version, instructions_version,
-            response_schema_hash, contract_json, contract_hash,
-        ):
-            raise ValueError(f"judge contract is immutable: {contract_id}")
         self.connection.commit()
 
     def activate_contract(self, revision_id: int, plugin_id: str, contract_id: str,

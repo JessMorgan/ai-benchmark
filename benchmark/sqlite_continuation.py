@@ -540,26 +540,25 @@ class SQLiteContinuationStore:
                 return
             # Legacy JSON imports use a deliberately minimal placeholder
             # because the original contract body is not present in the state
-            # file. Allow the first real runtime contract to replace only that
-            # exact placeholder; its old ID-derived hash is intentionally not
-            # compared with the new canonical content hash.
-            if row[1] in {'{"legacy":true}', '{"legacy": true}'}:
-                self.connection.execute(
-                    """
-                    UPDATE judge_contracts SET
-                        plugin_id = ?, plugin_version = ?, prompt_version = ?,
-                        instructions_version = ?, response_schema_hash = ?,
-                        contract_json = ?
-                    WHERE contract_id = ?
-                    """,
-                    (
-                        spec.plugin_id, spec.plugin_version, spec.prompt_version,
-                        spec.instructions_version, spec.response_schema_hash,
-                        contract_json, spec.contract_id,
-                    ),
-                )
-                return
-            raise ValueError(f"judge contract is immutable: {spec.contract_id}")
+            # file, and their ID-derived hash ≠ the canonical content hash.
+            # When the runtime provides real content for the same contract_id
+            # (or a new version provides updated content), treat the newer
+            # content as authoritative and update the row.
+            self.connection.execute(
+                """
+                UPDATE judge_contracts SET
+                    plugin_id = ?, plugin_version = ?, prompt_version = ?,
+                    instructions_version = ?, response_schema_hash = ?,
+                    contract_json = ?, contract_hash = ?
+                WHERE contract_id = ?
+                """,
+                (
+                    spec.plugin_id, spec.plugin_version, spec.prompt_version,
+                    spec.instructions_version, spec.response_schema_hash,
+                    contract_json, spec.contract_hash, spec.contract_id,
+                ),
+            )
+            return
         existing = self.connection.execute(
             "SELECT contract_id FROM judge_contracts WHERE contract_hash = ?",
             (spec.contract_hash,),
