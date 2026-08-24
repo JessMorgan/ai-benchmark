@@ -4,7 +4,7 @@ import os
 import tempfile
 import unittest
 
-from benchmark.core import load_config
+from benchmark.configuration import load_config
 
 
 class TestLoadConfigYAML(unittest.TestCase):

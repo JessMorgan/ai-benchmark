@@ -13,7 +13,7 @@ from collections.abc import Iterator
 import pytest
 from jsonschema import Draft202012Validator
 
-from benchmark.core import JUDGE_RESPONSE_SCHEMA
+from benchmark.judging import JUDGE_RESPONSE_SCHEMA
 from plugins.challenges.data_transformation import DATA_TRANSFORMATION_RESPONSE_SCHEMA
 
 SCHEMAS = {

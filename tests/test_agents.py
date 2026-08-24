@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-from benchmark.core import resolve_targets
+from benchmark.configuration import resolve_targets
 from benchmark.http import NonStreamResult, StreamResult
 from benchmark.plugin import PluginTaskResult
 from plugins import discover_plugins

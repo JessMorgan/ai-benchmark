@@ -6,7 +6,7 @@ import unittest
 from unittest import mock
 
 from benchmark.completions import build_parser
-from benchmark.core import resolve_targets
+from benchmark.configuration import resolve_targets
 from benchmark.logs import iter_log_members
 from benchmark.pi import PiProcessResult, _node_version, run_process
 from benchmark.request_models import GenerationFields, PiRequest

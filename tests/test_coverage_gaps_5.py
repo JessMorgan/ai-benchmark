@@ -15,79 +15,79 @@ import pytest
 
 class TestResolvePiConfigExhaustive:
     def test_system_prompt_bad_type(self) -> None:
-        from benchmark.core import _resolve_pi_config
+from benchmark.configuration import _resolve_pi_config
 
         with pytest.raises(ValueError, match="system_prompt must be a string"):
             _resolve_pi_config("m1", {"system_prompt": 123})
 
     def test_reasoning_bad_type(self) -> None:
-        from benchmark.core import _resolve_pi_config
+from benchmark.configuration import _resolve_pi_config
 
         with pytest.raises(ValueError, match="reasoning must be boolean"):
             _resolve_pi_config("m1", {"reasoning": "yes"})
 
     def test_max_tool_calls_bad_type(self) -> None:
-        from benchmark.core import _resolve_pi_config
+from benchmark.configuration import _resolve_pi_config
 
         with pytest.raises(ValueError, match="max_tool_calls must be a non-negative"):
             _resolve_pi_config("m1", {"max_tool_calls": "bad"})
 
     def test_max_tool_calls_negative(self) -> None:
-        from benchmark.core import _resolve_pi_config
+from benchmark.configuration import _resolve_pi_config
 
         with pytest.raises(ValueError, match="max_tool_calls must be a non-negative"):
             _resolve_pi_config("m1", {"max_tool_calls": -1})
 
     def test_max_tool_calls_bool(self) -> None:
-        from benchmark.core import _resolve_pi_config
+from benchmark.configuration import _resolve_pi_config
 
         with pytest.raises(ValueError, match="max_tool_calls must be a non-negative"):
             _resolve_pi_config("m1", {"max_tool_calls": True})
 
     def test_max_tokens_bad(self) -> None:
-        from benchmark.core import _resolve_pi_config
+from benchmark.configuration import _resolve_pi_config
 
         with pytest.raises(ValueError, match="max_tokens must be a positive"):
             _resolve_pi_config("m1", {"max_tokens": 0})
 
     def test_max_tokens_negative(self) -> None:
-        from benchmark.core import _resolve_pi_config
+from benchmark.configuration import _resolve_pi_config
 
         with pytest.raises(ValueError, match="max_tokens must be a positive"):
             _resolve_pi_config("m1", {"max_tokens": -5})
 
     def test_max_tokens_bool(self) -> None:
-        from benchmark.core import _resolve_pi_config
+from benchmark.configuration import _resolve_pi_config
 
         with pytest.raises(ValueError, match="max_tokens must be a positive"):
             _resolve_pi_config("m1", {"max_tokens": True})
 
     def test_max_tokens_none_ok(self) -> None:
-        from benchmark.core import _resolve_pi_config
+from benchmark.configuration import _resolve_pi_config
 
         result = _resolve_pi_config("m1", {"max_tokens": None})
         assert result["max_tokens"] is None
 
     def test_compat_bad_type(self) -> None:
-        from benchmark.core import _resolve_pi_config
+from benchmark.configuration import _resolve_pi_config
 
         with pytest.raises(ValueError, match="compat must be an object"):
             _resolve_pi_config("m1", {"compat": "bad"})
 
     def test_thinking_budgets_bad_type(self) -> None:
-        from benchmark.core import _resolve_pi_config
+from benchmark.configuration import _resolve_pi_config
 
         with pytest.raises(ValueError, match="thinking_budgets must be an object or null"):
             _resolve_pi_config("m1", {"thinking_budgets": "bad"})
 
     def test_thinking_budgets_none_ok(self) -> None:
-        from benchmark.core import _resolve_pi_config
+from benchmark.configuration import _resolve_pi_config
 
         result = _resolve_pi_config("m1", {"thinking_budgets": None})
         assert result["thinking_budgets"] is None
 
     def test_valid_full_config(self) -> None:
-        from benchmark.core import _resolve_pi_config
+from benchmark.configuration import _resolve_pi_config
 
         result = _resolve_pi_config("m1", {
             "tools": ["read", "bash"],
@@ -111,7 +111,7 @@ class TestResolvePiConfigExhaustive:
 
 class TestResolveTargets:
     def test_resolve_targets_basic(self) -> None:
-        from benchmark.core import resolve_targets
+from benchmark.configuration import resolve_targets
 
         cfg = {
             "sources": {"http": {"api_url": "http://localhost"}},
@@ -122,7 +122,7 @@ class TestResolveTargets:
         assert targets["model-a"]["source"] == "http"
 
     def test_resolve_targets_token_levels_removed(self) -> None:
-        from benchmark.core import resolve_targets
+from benchmark.configuration import resolve_targets
 
         cfg = {
             "sources": {"http": {"api_url": "http://localhost"}},
@@ -133,7 +133,7 @@ class TestResolveTargets:
             resolve_targets(cfg)
 
     def test_resolve_targets_model_token_levels_removed(self) -> None:
-        from benchmark.core import resolve_targets
+from benchmark.configuration import resolve_targets
 
         cfg = {
             "sources": {"http": {"api_url": "http://localhost"}},
@@ -144,7 +144,7 @@ class TestResolveTargets:
             resolve_targets(cfg)
 
     def test_resolve_targets_with_agents(self) -> None:
-        from benchmark.core import resolve_targets
+from benchmark.configuration import resolve_targets
 
         cfg = {
             "sources": {"http": {"api_url": "http://localhost"}},
@@ -157,7 +157,7 @@ class TestResolveTargets:
         assert targets["agent-a"]["api_model"] == "gpt-4"
 
     def test_resolve_targets_dict_model(self) -> None:
-        from benchmark.core import resolve_targets
+from benchmark.configuration import resolve_targets
 
         cfg = {
             "sources": {"http": {"api_url": "http://localhost"}},
@@ -167,7 +167,7 @@ class TestResolveTargets:
         assert targets["model-a"]["source"] == "http"
 
     def test_resolve_targets_unknown_model_source(self) -> None:
-        from benchmark.core import resolve_targets
+from benchmark.configuration import resolve_targets
 
         cfg = {
             "sources": {"http": {"api_url": "http://localhost"}},
@@ -210,7 +210,7 @@ class TestSourceAbbrev:
 
 class TestSummarizeJudgeCriteriaBadData:
     def test_non_dict_report(self) -> None:
-        from benchmark.core import summarize_judge_criteria
+        from benchmark.judging import summarize_judge_criteria
 
         plugin = MagicMock()
         plugin.id = "p1"
@@ -219,7 +219,7 @@ class TestSummarizeJudgeCriteriaBadData:
         assert summary["criteria"] == 0
 
     def test_non_list_criteria_items(self) -> None:
-        from benchmark.core import summarize_judge_criteria
+        from benchmark.judging import summarize_judge_criteria
 
         plugin = MagicMock()
         plugin.id = "p1"
@@ -228,7 +228,7 @@ class TestSummarizeJudgeCriteriaBadData:
         assert summary["criteria"] == 0
 
     def test_criteria_non_dict_item(self) -> None:
-        from benchmark.core import summarize_judge_criteria
+        from benchmark.judging import summarize_judge_criteria
 
         plugin = MagicMock()
         plugin.id = "p1"
@@ -237,7 +237,7 @@ class TestSummarizeJudgeCriteriaBadData:
         assert summary["criteria"] == 0
 
     def test_criteria_no_evidence(self) -> None:
-        from benchmark.core import summarize_judge_criteria
+        from benchmark.judging import summarize_judge_criteria
 
         plugin = MagicMock()
         plugin.id = "p1"
@@ -296,14 +296,14 @@ class TestCompactJournalMore:
 
 class TestApplyRetryDefaultMore:
     def test_apply_retry_default_no_sources_key(self) -> None:
-        from benchmark.core import _apply_http_retry_default
+from benchmark.configuration import _apply_http_retry_default
 
         cfg: dict[str, Any] = {}
         _apply_http_retry_default(cfg, retry_on_429=False)
         assert "sources" not in cfg
 
     def test_apply_retry_default_source_not_dict(self) -> None:
-        from benchmark.core import _apply_http_retry_default
+from benchmark.configuration import _apply_http_retry_default
 
         cfg = {"sources": {"local": "string_value"}}
         _apply_http_retry_default(cfg, retry_on_429=False)

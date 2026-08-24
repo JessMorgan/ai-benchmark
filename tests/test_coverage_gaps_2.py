@@ -89,7 +89,7 @@ class TestCoreHelpers:
         assert classify_empty_reason("", finish_reason="length") == "max-tokens"
 
     def test_parse_judge_response_valid(self) -> None:
-        from benchmark.core import parse_judge_response
+        from benchmark.judging import parse_judge_response
 
         text = json.dumps({
             "score": 85, "confidence": "high", "rationale": "Good response",
@@ -101,7 +101,7 @@ class TestCoreHelpers:
         assert result.error is None
 
     def test_parse_judge_response_fenced(self) -> None:
-        from benchmark.core import parse_judge_response
+        from benchmark.judging import parse_judge_response
 
         text = "```json\n" + json.dumps({
             "score": 70, "confidence": "medium", "rationale": "OK",
@@ -112,25 +112,25 @@ class TestCoreHelpers:
         assert result.error is None
 
     def test_parse_judge_response_malformed_fence(self) -> None:
-        from benchmark.core import parse_judge_response
+        from benchmark.judging import parse_judge_response
 
         result = parse_judge_response("```json\nno closing")
         assert result.error is not None
 
     def test_parse_judge_response_invalid_json(self) -> None:
-        from benchmark.core import parse_judge_response
+        from benchmark.judging import parse_judge_response
 
         result = parse_judge_response("not json at all")
         assert "invalid judge JSON" in result.error
 
     def test_parse_judge_response_non_dict(self) -> None:
-        from benchmark.core import parse_judge_response
+        from benchmark.judging import parse_judge_response
 
         result = parse_judge_response("[1, 2, 3]")
         assert "JSON object" in result.error
 
     def test_parse_judge_response_bad_score(self) -> None:
-        from benchmark.core import parse_judge_response
+        from benchmark.judging import parse_judge_response
 
         result = parse_judge_response(json.dumps({
             "score": "high", "confidence": "high", "rationale": "x",
@@ -139,7 +139,7 @@ class TestCoreHelpers:
         assert "score must be numeric" in result.error
 
     def test_parse_judge_response_score_out_of_range(self) -> None:
-        from benchmark.core import parse_judge_response
+        from benchmark.judging import parse_judge_response
 
         result = parse_judge_response(json.dumps({
             "score": 150, "confidence": "high", "rationale": "x",
@@ -148,7 +148,7 @@ class TestCoreHelpers:
         assert "score must be numeric" in result.error
 
     def test_parse_judge_response_score_bool(self) -> None:
-        from benchmark.core import parse_judge_response
+        from benchmark.judging import parse_judge_response
 
         result = parse_judge_response(json.dumps({
             "score": True, "confidence": "high", "rationale": "x",
@@ -157,7 +157,7 @@ class TestCoreHelpers:
         assert "score must be numeric" in result.error
 
     def test_parse_judge_response_bad_confidence(self) -> None:
-        from benchmark.core import parse_judge_response
+        from benchmark.judging import parse_judge_response
 
         result = parse_judge_response(json.dumps({
             "score": 50, "confidence": "very_high", "rationale": "x",
@@ -166,7 +166,7 @@ class TestCoreHelpers:
         assert "confidence must be" in result.error
 
     def test_parse_judge_response_empty_rationale(self) -> None:
-        from benchmark.core import parse_judge_response
+        from benchmark.judging import parse_judge_response
 
         result = parse_judge_response(json.dumps({
             "score": 50, "confidence": "high", "rationale": "",
@@ -175,7 +175,7 @@ class TestCoreHelpers:
         assert "rationale" in result.error
 
     def test_parse_judge_response_no_criteria(self) -> None:
-        from benchmark.core import parse_judge_response
+        from benchmark.judging import parse_judge_response
 
         result = parse_judge_response(json.dumps({
             "score": 50, "confidence": "high", "rationale": "x",
@@ -184,7 +184,7 @@ class TestCoreHelpers:
         assert "criteria" in result.error
 
     def test_parse_judge_response_bad_criterion(self) -> None:
-        from benchmark.core import parse_judge_response
+        from benchmark.judging import parse_judge_response
 
         result = parse_judge_response(json.dumps({
             "score": 50, "confidence": "high", "rationale": "x",
@@ -193,7 +193,7 @@ class TestCoreHelpers:
         assert "criterion 1 must be an object" in result.error
 
     def test_parse_judge_response_criterion_no_id(self) -> None:
-        from benchmark.core import parse_judge_response
+        from benchmark.judging import parse_judge_response
 
         result = parse_judge_response(json.dumps({
             "score": 50, "confidence": "high", "rationale": "x",
@@ -202,7 +202,7 @@ class TestCoreHelpers:
         assert "criterion 1 must have a non-empty id" in result.error
 
     def test_parse_judge_response_criterion_bad_status(self) -> None:
-        from benchmark.core import parse_judge_response
+        from benchmark.judging import parse_judge_response
 
         result = parse_judge_response(json.dumps({
             "score": 50, "confidence": "high", "rationale": "x",
@@ -211,7 +211,7 @@ class TestCoreHelpers:
         assert "invalid status" in result.error
 
     def test_parse_judge_response_criterion_no_evidence(self) -> None:
-        from benchmark.core import parse_judge_response
+        from benchmark.judging import parse_judge_response
 
         result = parse_judge_response(json.dumps({
             "score": 50, "confidence": "high", "rationale": "x",
@@ -220,7 +220,7 @@ class TestCoreHelpers:
         assert "evidence" in result.error
 
     def test_judge_vote_identity(self) -> None:
-        from benchmark.core import judge_vote_identity
+        from benchmark.judging import judge_vote_identity
 
         vote = {"model": "judge-1", "judge_contract_id": "contract-1"}
         assert judge_vote_identity(vote) == ("judge-1", "contract-1")
@@ -228,7 +228,7 @@ class TestCoreHelpers:
         assert judge_vote_identity("not a dict") == (None, None)
 
     def test_judge_votes_for_contract(self) -> None:
-        from benchmark.core import judge_votes_for_contract
+        from benchmark.judging import judge_votes_for_contract
 
         votes = [
             {"model": "j1", "judge_contract_id": "c1"},
@@ -240,7 +240,7 @@ class TestCoreHelpers:
         assert all(v["judge_contract_id"] == "c1" for v in result)
 
     def test_merge_judge_vote(self) -> None:
-        from benchmark.core import merge_judge_vote
+        from benchmark.judging import merge_judge_vote
 
         votes = [
             {"model": "j1", "judge_contract_id": "c1", "score": 10},
@@ -254,7 +254,7 @@ class TestCoreHelpers:
         assert c1_votes[0]["score"] == 15
 
     def test_parse_plugin_temperatures(self) -> None:
-        from benchmark.core import parse_plugin_temperatures
+from benchmark.configuration import parse_plugin_temperatures
 
         cfg = {
             "rate-limiter_temperature": 0.5,
@@ -267,7 +267,7 @@ class TestCoreHelpers:
         assert "other_key" not in result
 
     def test_resolve_model_sources(self) -> None:
-        from benchmark.core import resolve_model_sources
+from benchmark.configuration import resolve_model_sources
 
         models = {
             "model-a": "http",
@@ -280,7 +280,7 @@ class TestCoreHelpers:
         assert result["model-c"] == "Default"
 
     def test_get_target_plugins_blacklist(self) -> None:
-        from benchmark.core import get_target_plugins_blacklist
+from benchmark.configuration import get_target_plugins_blacklist
 
         targets = {"m1": {"plugins_blacklist": ["p1", "p2"]}}
         assert get_target_plugins_blacklist(targets, "m1") == ["p1", "p2"]
@@ -361,42 +361,42 @@ class TestCoreHelpers:
         assert _response_reasoning_tokens(response) is None
 
     def test_resolve_pi_config_none(self) -> None:
-        from benchmark.core import _resolve_pi_config
+from benchmark.configuration import _resolve_pi_config
 
         assert _resolve_pi_config("m1", None) == {}
 
     def test_resolve_pi_config_invalid_type(self) -> None:
-        from benchmark.core import _resolve_pi_config
+from benchmark.configuration import _resolve_pi_config
 
         with pytest.raises(ValueError, match="must be an object"):
             _resolve_pi_config("m1", "bad")
 
     def test_resolve_pi_config_unknown_key(self) -> None:
-        from benchmark.core import _resolve_pi_config
+from benchmark.configuration import _resolve_pi_config
 
         with pytest.raises(ValueError, match="unsupported"):
             _resolve_pi_config("m1", {"unknown_key": True})
 
     def test_resolve_pi_config_invalid_tools(self) -> None:
-        from benchmark.core import _resolve_pi_config
+from benchmark.configuration import _resolve_pi_config
 
         with pytest.raises(ValueError, match="list of strings"):
             _resolve_pi_config("m1", {"tools": "not a list"})
 
     def test_resolve_pi_config_unsupported_tool(self) -> None:
-        from benchmark.core import _resolve_pi_config
+from benchmark.configuration import _resolve_pi_config
 
         with pytest.raises(ValueError, match="unsupported tool"):
             _resolve_pi_config("m1", {"tools": ["read", "dangerous_tool"]})
 
     def test_resolve_pi_config_invalid_permissions(self) -> None:
-        from benchmark.core import _resolve_pi_config
+from benchmark.configuration import _resolve_pi_config
 
         with pytest.raises(ValueError, match="must map"):
             _resolve_pi_config("m1", {"permissions": "bad"})
 
     def test_resolve_pi_config_valid(self) -> None:
-        from benchmark.core import _resolve_pi_config
+from benchmark.configuration import _resolve_pi_config
 
         result = _resolve_pi_config("m1", {"tools": ["read", "bash"], "permissions": {"read": "allow"}})
         assert result["tools"] == ["read", "bash"]

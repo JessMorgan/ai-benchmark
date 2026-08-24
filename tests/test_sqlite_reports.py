@@ -164,7 +164,7 @@ class TestSQLiteReports(unittest.TestCase):
         run sees zero existing votes and the footer shows every judge at
         0\u2705 despite hundreds of persisted votes.
         """
-        from benchmark.core import is_successful_judge_vote
+        from benchmark.judging import is_successful_judge_vote
         from benchmark.sqlite_judges import SQLiteJudgeStore
 
         judge = SQLiteJudgeStore(self.connection)

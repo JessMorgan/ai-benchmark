@@ -185,7 +185,7 @@ class TestStateReplayTail:
 
 class TestCoreSummarizers:
     def test_summarize_judge_criteria(self) -> None:
-        from benchmark.core import summarize_judge_criteria
+        from benchmark.judging import summarize_judge_criteria
 
         plugin = MagicMock()
         plugin.id = "p1"
@@ -202,7 +202,7 @@ class TestCoreSummarizers:
         assert summary["by_plugin"]["p1"]["evidence"] == 2
 
     def test_summarize_judge_criteria_empty(self) -> None:
-        from benchmark.core import summarize_judge_criteria
+        from benchmark.judging import summarize_judge_criteria
 
         plugin = MagicMock()
         plugin.id = "p1"
@@ -211,7 +211,7 @@ class TestCoreSummarizers:
         assert summary["criteria"] == 0
 
     def test_summarize_judge_criteria_bad_data(self) -> None:
-        from benchmark.core import summarize_judge_criteria
+        from benchmark.judging import summarize_judge_criteria
 
         plugin = MagicMock()
         plugin.id = "p1"
@@ -220,7 +220,7 @@ class TestCoreSummarizers:
         assert summary["criteria"] == 0
 
     def test_summarize_schema_compatibility(self) -> None:
-        from benchmark.core import summarize_schema_compatibility
+        from benchmark.judging import summarize_schema_compatibility
 
         plugin = MagicMock()
         plugin.id = "p1"
@@ -238,7 +238,7 @@ class TestCoreSummarizers:
         assert summary["by_plugin"]["p1"]["requested_cells"] == 2
 
     def test_summarize_schema_compatibility_empty(self) -> None:
-        from benchmark.core import summarize_schema_compatibility
+        from benchmark.judging import summarize_schema_compatibility
 
         plugin = MagicMock()
         plugin.id = "p1"
@@ -246,27 +246,27 @@ class TestCoreSummarizers:
         assert summary["requested_cells"] == 0
 
     def test_judge_instructions_version(self) -> None:
-        from benchmark.core import judge_instructions_version
+        from benchmark.judging import judge_instructions_version
 
         plugin = MagicMock()
         plugin.judge_instructions_version = "2.0.0"
         assert judge_instructions_version(plugin) == "2.0.0"
 
     def test_judge_instructions_version_none(self) -> None:
-        from benchmark.core import judge_instructions_version
+        from benchmark.judging import judge_instructions_version
 
         plugin = MagicMock()
         plugin.judge_instructions_version = None
         assert judge_instructions_version(plugin) == "1.0.0"
 
     def test_judge_instructions_version_default(self) -> None:
-        from benchmark.core import judge_instructions_version
+        from benchmark.judging import judge_instructions_version
 
         plugin = MagicMock(spec=[])  # no judge_instructions_version attr
         assert judge_instructions_version(plugin) == "1.0.0"
 
     def test_judge_contract_id(self) -> None:
-        from benchmark.core import judge_contract_id
+        from benchmark.judging import judge_contract_id
 
         plugin = MagicMock()
         plugin.id = "p1"
@@ -278,7 +278,7 @@ class TestCoreSummarizers:
         assert len(contract_id) > 20
 
     def test_judge_contract_id_no_instructions(self) -> None:
-        from benchmark.core import judge_contract_id
+        from benchmark.judging import judge_contract_id
 
         plugin = MagicMock()
         plugin.id = "p1"
