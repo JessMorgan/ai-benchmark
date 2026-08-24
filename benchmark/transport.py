@@ -42,7 +42,7 @@ from .transport_options import (
 BENCHMARK_DEFAULT_MAX_TOKENS = 16384
 
 
-def _split_token_budget(total_budget, fallback: int) -> tuple[int, int, int]:
+def _split_token_budget(total_budget: Any | int, fallback: int) -> tuple[int, int, int]:
     """Return the reported, thinking, and answer budgets for a generation.
 
     Report 75% of the real budget so the model self-regulates and leaves
@@ -89,7 +89,7 @@ class TransportRequest:
 
     prompt: str
     max_tokens: int
-    source_config: dict
+    source_config: dict[str, Any]
     api_model: str
     source: str
     timeout: float
@@ -97,8 +97,8 @@ class TransportRequest:
     reasoning: bool = False
     prompt_altered: str = "none"
     system_prompt: str | None = None
-    drop_params: list | None = None
-    request_params: dict | None = None
+    drop_params: list[str] | None = None
+    request_params: dict[str, Any] | None = None
     session_seed: int = 0
     log_path: str | None = None
     log_label: str = ""
@@ -122,7 +122,7 @@ class TransportRequest:
     debug_logs: bool = False
     pi_node: str | None = None
     pi_worker: str | None = None
-    pi_config: dict | None = None
+    pi_config: dict[str, Any] | None = None
     pi_target_key: str | None = None
     pi_plugin_id: str | None = None
     identity: RequestIdentity | None = None
@@ -459,7 +459,7 @@ def _is_schema_grammar_error(error: str | None) -> bool:
     ))
 
 
-def _json_object_fallback_params(request_params: dict | None) -> dict | None:
+def _json_object_fallback_params(request_params: dict[str, Any] | None) -> dict[str, Any] | None:
     if not isinstance(request_params, dict):
         return None
     response_format = request_params.get("response_format")
@@ -670,7 +670,7 @@ def _normalize_nonstream(request: TransportRequest, response: NonStreamResult,
 
 
 def _execute_http_nonstream(request: TransportRequest, started: float, *,
-                            nonstream_request_fn=None,
+                            nonstream_request_fn: Any = None,
                             stream_fallback_used: bool = False,
                             stream_fallback_error: str | None = None) -> TransportResult:
     observer = _observer(request)
@@ -729,8 +729,8 @@ def _execute_http_nonstream(request: TransportRequest, started: float, *,
     )
 
 
-def _execute_http(request: TransportRequest, *, stream_request_fn=None,
-                  nonstream_request_fn=None) -> TransportResult:
+def _execute_http(request: TransportRequest, *, stream_request_fn: Any = None,
+                  nonstream_request_fn: Any = None) -> TransportResult:
     started = time.time()
     stream_request_fn = stream_request_fn or stream_request
     nonstream_request_fn = nonstream_request_fn or nonstream_request
@@ -774,7 +774,7 @@ def _execute_http(request: TransportRequest, *, stream_request_fn=None,
     return result
 
 
-def _execute_opencode(request: TransportRequest, *, run_process_fn=None) -> TransportResult:
+def _execute_opencode(request: TransportRequest, *, run_process_fn: Any = None) -> TransportResult:
     run_process_fn = run_process_fn or run_process
     opencode_options = request.opencode_options()
     if not opencode_options.config_path or not opencode_options.model:
@@ -918,9 +918,9 @@ def execute_task(
     prompt_alterer: Callable[[str, int | None, int], tuple[str, str]] | None = None,
     json_error_prompt_alterer: Callable[[TransportResult], str | None] | None = None,
     attempt_callback: Callable[[int], None] | None = None,
-    stream_request_fn=None,
-    nonstream_request_fn=None,
-    run_process_fn=None,
+    stream_request_fn: Any = None,
+    nonstream_request_fn: Any = None,
+    run_process_fn: Any = None,
 ) -> TaskExecution:
     """Execute a bounded sequence of logical attempts.
 
@@ -1008,9 +1008,9 @@ def execute_task_streaming(
     prompt_alterer: Callable[[str, int | None, int], tuple[str, str]] | None = None,
     json_error_prompt_alterer: Callable[[TransportResult], str | None] | None = None,
     attempt_callback: Callable[[int], None] | None = None,
-    stream_request_fn=None,
-    nonstream_request_fn=None,
-    run_process_fn=None,
+    stream_request_fn: Any = None,
+    nonstream_request_fn: Any = None,
+    run_process_fn: Any = None,
     _attempt_number: int = 1,
     _prompt_altered: str = "none",
     _retry_reason: str | None = None,
@@ -1129,9 +1129,9 @@ def execute_task_streaming(
     return execution
 
 
-def execute_transport(request: TransportRequest | TransportRequestVariant, *, stream_request_fn=None,
-                      nonstream_request_fn=None,
-                      run_process_fn=None) -> TransportResult:
+def execute_transport(request: TransportRequest | TransportRequestVariant, *, stream_request_fn: Any = None,
+                      nonstream_request_fn: Any = None,
+                      run_process_fn: Any = None) -> TransportResult:
     """Execute exactly one logical attempt through HTTP or OpenCode.
 
     The injectable callables are intentionally keyword-only: production uses
