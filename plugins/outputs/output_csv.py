@@ -2,6 +2,7 @@ import csv
 import io
 import json
 import os
+from typing import Any
 
 from benchmark.outputs import (
     _judge_consensus_by_contract,
@@ -14,25 +15,31 @@ from benchmark.outputs import (
 from benchmark.plugin import BenchmarkOutputPlugin
 
 
-def _atomic_write(path, content):
+def _atomic_write(path: str, content: str) -> None:
     from benchmark.outputs import _atomic_replace_report
     _atomic_replace_report(path, content)
 
 
 class CSVOutputPlugin(BenchmarkOutputPlugin):
     @property
-    def id(self):
+    def id(self) -> str:
         return "output-csv"
 
     @property
-    def name(self):
+    def name(self) -> str:
         return "CSV Data"
 
     @property
-    def extension(self):
+    def extension(self) -> str:
         return "csv"
 
-    def generate(self, results, active_plugins, output_dir=None, session_seed=None):
+    def generate(
+        self,
+        results: list[dict[str, Any]],
+        active_plugins: list[Any],
+        output_dir: str | None = None,
+        session_seed: int | None = None,
+    ) -> str | None:
         out = io.StringIO()
         w = csv.writer(out)
         judge_enabled = _judge_enabled(results)

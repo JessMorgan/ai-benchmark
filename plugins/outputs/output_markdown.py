@@ -1,5 +1,6 @@
 import os
 from datetime import datetime, timezone
+from typing import Any
 
 from benchmark.outputs import (
     _judge_consensus_by_contract,
@@ -13,25 +14,36 @@ from benchmark.outputs import (
 from benchmark.plugin import BenchmarkOutputPlugin
 
 
-def _atomic_write(path, content):
+def _ttft_sort_key(result: dict[str, Any]) -> float:
+    value = result.get("ttft")
+    return float(value) if isinstance(value, (int, float)) else 999.0
+
+
+def _atomic_write(path: str, content: str) -> None:
     from benchmark.outputs import _atomic_replace_report
     _atomic_replace_report(path, content)
 
 
 class MarkdownOutputPlugin(BenchmarkOutputPlugin):
     @property
-    def id(self):
+    def id(self) -> str:
         return "output-markdown"
 
     @property
-    def name(self):
+    def name(self) -> str:
         return "Markdown Report"
 
     @property
-    def extension(self):
+    def extension(self) -> str:
         return "md"
 
-    def generate(self, results, active_plugins, output_dir=None, session_seed=None):
+    def generate(
+        self,
+        results: list[dict[str, Any]],
+        active_plugins: list[Any],
+        output_dir: str | None = None,
+        session_seed: int | None = None,
+    ) -> str | None:
         ok = [r for r in results if r["status"] == "ok"]
         judge_enabled = any(
             r.get("judge_models")
@@ -130,7 +142,7 @@ class MarkdownOutputPlugin(BenchmarkOutputPlugin):
             lines.append("### ⚡ Fastest Cold Load (TTFT)")
             lines.append("| # | Model | Load (s) |")
             lines.append("|---|---|---|")
-            for i, r in enumerate(sorted(ok, key=lambda x: (x.get('ttft') if isinstance(x.get('ttft'), (int, float)) else 999))[:10], 1):
+            for i, r in enumerate(sorted(ok, key=_ttft_sort_key)[:10], 1):
                 ttft = r.get('ttft')
                 lines.append(f"| {i} | {r['model']} | {ttft if ttft is not None else '-'} |")
 
@@ -138,13 +150,13 @@ class MarkdownOutputPlugin(BenchmarkOutputPlugin):
                 lines.extend(["", f"### 🧠 Best {p.name} Score (/100)"])
                 lines.append("| # | Model | Score |")
                 lines.append("|---|---|---|")
-                for i, r in enumerate(sorted(ok, key=lambda x: _numeric_score(x, p.id), reverse=True)[:10], 1):
+                for i, r in enumerate(sorted(ok, key=lambda x: float(_numeric_score(x, p.id)), reverse=True)[:10], 1):
                     lines.append(f"| {i} | {r['model']} | {r.get(f'{p.id}_score', '-')} |")
 
             lines.extend(["", "### ⭐ Best Overall"])
             lines.append("| # | Model | Overall Score (0–100) |")
             lines.append("|---|---|---|")
-            for i, r in enumerate(sorted(ok, key=lambda x: _plugin_total_score(x, active_plugins), reverse=True)[:10], 1):
+            for i, r in enumerate(sorted(ok, key=lambda x: float(_plugin_total_score(x, active_plugins) or 0), reverse=True)[:10], 1):
                 tot = _plugin_total_score(r, active_plugins)
                 overall = r.get("overall_score_100", tot)
                 lines.append(f"| {i} | {r['model']} | {overall if overall is not None else '-'} |")
@@ -201,7 +213,7 @@ class MarkdownOutputPlugin(BenchmarkOutputPlugin):
             for r in results for p in active_plugins
         )
         if judge_criteria_present:
-            def _cell(value):
+            def _cell(value: Any) -> str:
                 return str(value or "-").replace("|", "\\|").replace("\n", " ")
 
             lines.extend(["", "---", "## 🧭 Judge Criteria and Evidence", ""])
