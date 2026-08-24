@@ -3,6 +3,8 @@
 This module holds the ``BenchmarkState`` class used to track model progress and
 persist results across runs.
 """
+from __future__ import annotations
+
 import copy
 import json
 import os
@@ -10,6 +12,7 @@ import shutil
 import tempfile
 import threading
 import time
+from typing import Any, cast
 
 from .lifecycle import validate_snapshot
 from .plugin import SCORE_SCHEMA
@@ -33,7 +36,7 @@ _CORRUPTED_STATE_REPAIRS = {
 }
 
 
-def _valid_state_data(data):
+def _valid_state_data(data: Any) -> bool:
     """Return whether ``data`` has the containers required for a state file."""
     return (
         isinstance(data, dict)
@@ -43,7 +46,7 @@ def _valid_state_data(data):
     )
 
 
-def _known_repaired_bytes(raw):
+def _known_repaired_bytes(raw: bytes) -> bytes | None:
     """Return bytes for the one audited repair, or ``None`` if inapplicable."""
     model_info_start = raw.find(b'"model_info"')
     results_start = raw.find(b'\n  "results"', model_info_start + 1)
@@ -66,7 +69,7 @@ def _known_repaired_bytes(raw):
     return repaired if _valid_state_data(data) else None
 
 
-def _top_level_value(raw, key, default=None):
+def _top_level_value(raw: bytes, key: str, default: Any = None) -> Any:
     """Decode one top-level JSON value from possibly-corrupt raw bytes."""
     marker = b'"' + key.encode("utf-8") + b'"'
     marker_start = raw.find(marker)
@@ -83,7 +86,7 @@ def _top_level_value(raw, key, default=None):
     return value
 
 
-def _scan_result_objects(raw, array_start):
+def _scan_result_objects(raw: bytes, array_start: int) -> tuple[list[dict[str, Any]], int, bool, bool]:
     """Extract valid result objects and count every top-level array item.
 
     This is not a JSON sanitizer. The scanner only uses commas and brackets at
@@ -94,7 +97,7 @@ def _scan_result_objects(raw, array_start):
     """
     if array_start < 0 or array_start >= len(raw) or raw[array_start] != ord("["):
         return [], 0, False, True
-    objects = []
+    objects: list[dict[str, Any] | None] = []
     item_start = None
     object_depth = 0
     nested_array_depth = 0
@@ -102,7 +105,7 @@ def _scan_result_objects(raw, array_start):
     escaped = False
     structurally_uncertain = False
 
-    def finish_item(end):
+    def finish_item(end: int) -> None:
         nonlocal item_start
         if item_start is None:
             return
@@ -168,7 +171,7 @@ def _scan_result_objects(raw, array_start):
     return [obj for obj in objects if isinstance(obj, dict)], total, True, structurally_uncertain
 
 
-def _scan_model_info(raw, object_start):
+def _scan_model_info(raw: bytes, object_start: int) -> dict[str, dict[str, Any]]:
     """Extract valid model-info value objects from the outer mapping."""
     if object_start < 0 or object_start >= len(raw) or raw[object_start] != ord("{"):
         return {}
@@ -219,7 +222,7 @@ def _scan_model_info(raw, object_start):
     return result
 
 
-def prepare_state_recovery(path):
+def prepare_state_recovery(path: str) -> dict[str, Any]:
     """Inspect a corrupt state without changing it.
 
     The returned summary includes ``total_results``, ``recoverable_results`` and
@@ -274,7 +277,7 @@ def prepare_state_recovery(path):
     }
 
 
-def apply_state_recovery(path, recovery):
+def apply_state_recovery(path: str, recovery: dict[str, Any] | None) -> str | None:
     """Atomically install an approved recovery and return a byte backup path."""
     data = recovery.get("data") if isinstance(recovery, dict) else None
     candidate = recovery.get("candidate_bytes") if isinstance(recovery, dict) else None
@@ -287,7 +290,7 @@ def apply_state_recovery(path, recovery):
     basename = os.path.basename(path)
     backup_prefix = (
         f"{basename}.pre-repair-"
-        if recovery.get("kind") == "known"
+        if isinstance(recovery, dict) and recovery.get("kind") == "known"
         else f"{basename}.pre-recovery-"
     )
     backup_fd, backup = tempfile.mkstemp(
@@ -322,7 +325,7 @@ def apply_state_recovery(path, recovery):
     return backup
 
 
-def repair_state_file(path):
+def repair_state_file(path: str) -> str | None:
     """Apply only the audited zero-loss repair, returning its backup path."""
     recovery = prepare_state_recovery(path)
     if recovery["kind"] != "known" or recovery["lost_results"] != 0:
@@ -355,11 +358,11 @@ _RESUME_PERSISTENT_SUFFIXES = (
 class BenchmarkState:
     """Thread-safe shared state for parallel benchmark execution."""
 
-    def __init__(self, models, plugin_ids, session_seed=None, runner="http"):
+    def __init__(self, models: dict[str, Any], plugin_ids: list[str], session_seed: int | None = None, runner: str = "http") -> None:
         self._lock = threading.Lock()
-        self.results = []
+        self.results: list[dict[str, Any]] = []
         self._model_info = {}
-        self._log = []
+        self._log: list[tuple[float, str, str]] = []
         # Monotonic counter bumped by every state mutation. The live TUI
         # polls ``revision`` to skip rebuilding its frame when nothing it
         # displays has changed since the last tick; a constant frame costs
@@ -369,13 +372,13 @@ class BenchmarkState:
         self.session_seed = session_seed
         self.runner = runner
         self.score_schema = SCORE_SCHEMA
-        self._judge_progress = {}
-        self._judge_activity = {}
+        self._judge_progress: dict[str, dict[str, int]] = {}
+        self._judge_activity: dict[int, dict[str, Any]] = {}
         # Judge runners can remain selected between individual cell requests;
         # this is distinct from ``_judge_activity``, which only represents
         # requests currently executing. The TUI uses this transient set to
         # keep selected judges green across queue/transport gaps.
-        self._judge_selected = set()
+        self._judge_selected: set[str] = set()
         self._next_judge_activity_id = 0
         # Storage is a lazy adapter so state-only unit tests and the JSON
         # compatibility backend retain the same construction API. SQLite can
@@ -385,9 +388,9 @@ class BenchmarkState:
         # ``set_journal_path``). The sequence is persisted in the state
         # snapshot so a restart can replay only events written after that
         # snapshot and compaction can safely discard older entries.
-        self._journal_path = None
+        self._journal_path: str | None = None
         self._journal_sequence = 0
-        self._journal_failures = []
+        self._journal_failures: list[str] = []
         for name, info in models.items():
             if isinstance(info, dict):
                 source = info.get("source", "Default")
@@ -509,32 +512,33 @@ class BenchmarkState:
                 # carry-over from a previous dispatch.
                 self._model_info[name][f"{pid}_thinking_bytes_received"] = 0
 
-    def _mark_changed(self):
+    def _mark_changed(self) -> None:
         """Bump the revision counter; must be called under ``self._lock``."""
         self._revision += 1
 
     @property
-    def run_store(self):
+    def run_store(self) -> Any:
         """Return the persistence adapter for this state instance."""
         if self._run_store is None:
             from .storage import JsonRunStore
             self._run_store = JsonRunStore(self)
         return self._run_store
 
-    def set_run_store(self, store):
+    def set_run_store(self, store: Any) -> None:
         """Replace the persistence adapter used by execution callers."""
         self._run_store = store
 
-    def start_run_store(self, identity, **metadata):
+    def start_run_store(self, identity: Any, **metadata: Any) -> None:
         """Attach and initialize the configured persistence façade."""
         self.run_store.start_run(identity, **metadata)
 
-    def close_run_store(self, timeout=None):
+    def close_run_store(self, timeout: float | None = None) -> bool:
         """Flush and close the configured persistence façade."""
-        return self.run_store.close(timeout=timeout)
+        result = self.run_store.close(timeout=timeout)
+        return bool(result)
 
     @property
-    def revision(self):
+    def revision(self) -> int:
         """Monotonic counter bumped on every state mutation.
 
         Read without the lock: a plain integer attribute is GIL-atomic, and
@@ -543,7 +547,7 @@ class BenchmarkState:
         """
         return self._revision
 
-    def has_live_work(self):
+    def has_live_work(self) -> bool:
         """True when any model is mid-task or preloading.
 
         The live TUI uses this to keep time-based elements (streaming
@@ -555,14 +559,14 @@ class BenchmarkState:
                 for info in self._model_info.values()
             )
 
-    def update(self, model_name, **kwargs):
+    def update(self, model_name: str, **kwargs: Any) -> None:
         with self._lock:
             self._mark_changed()
             self._model_info[model_name].update(kwargs)
         if self._run_store is not None:
             self._run_store.update_model(model_name, **kwargs)
 
-    def start_plugin_run(self, model_name, pid):
+    def start_plugin_run(self, model_name: str, pid: str) -> None:
         """Atomically mark a plugin task as in-flight on this model.
 
         Sets ``running_pids`` to include ``pid`` and the model's
@@ -613,7 +617,7 @@ class BenchmarkState:
             # sequential plugins get a fresh zero point.
             info[f"{pid}_start_ts"] = time.monotonic()
 
-    def set_plugin_attempt(self, model_name, pid, attempt):
+    def set_plugin_attempt(self, model_name: str, pid: str, attempt: int) -> None:
         """Set the logical attempt and reset its live token counters."""
         with self._lock:
             self._mark_changed()
@@ -628,7 +632,7 @@ class BenchmarkState:
             info[f"{pid}_thinking_bytes_received"] = 0
             info[f"{pid}_start_ts"] = time.monotonic()
 
-    def add_bytes_received(self, model_name, pid, n_bytes):
+    def add_bytes_received(self, model_name: str, pid: str, n_bytes: int) -> None:
         """Atomically accumulate streaming bytes for a plugin task.
 
         Called once per parsed SSE delta by ``stream_request`` via an
@@ -678,7 +682,7 @@ class BenchmarkState:
             key = f"{pid}_bytes_received"
             info[key] = (info.get(key) or 0) + n_bytes
 
-    def add_thinking_bytes_received(self, model_name, pid, n_bytes):
+    def add_thinking_bytes_received(self, model_name: str, pid: str, n_bytes: int) -> None:
         """Atomically accumulate streaming reasoning/thinking bytes for
         a plugin task.
 
@@ -722,7 +726,7 @@ class BenchmarkState:
             key = f"{pid}_thinking_bytes_received"
             info[key] = (info.get(key) or 0) + n_bytes
 
-    def mark_first_chunk_seen(self, model_name, pid, ts=None):
+    def mark_first_chunk_seen(self, model_name: str, pid: str, ts: float | None = None) -> None:
         """Atomically mark that a first streaming chunk has arrived for
         a plugin task.
 
@@ -765,7 +769,7 @@ class BenchmarkState:
             if was_false and ts is not None:
                 info[f"{pid}_first_tok_ts"] = ts
 
-    def finish_plugin_run(self, model_name, pid):
+    def finish_plugin_run(self, model_name: str, pid: str) -> None:
         """Atomically clear a plugin task's in-flight marker on this model.
 
         Removes ``pid`` from ``running_pids`` but leaves ``status``
@@ -783,14 +787,14 @@ class BenchmarkState:
             info["running_pids"] = cur
             # Status intentionally untouched; see docstring.
 
-    def _add_result_locked(self, result):
+    def _add_result_locked(self, result: dict[str, Any]) -> None:
         """Append one result while the state lock is held."""
         self._mark_changed()
         # Judge workers may finish a plugin after its score is published
         # but before the enclosing model result row is appended. Carry the
         # per-plugin judge fields from live model_info into this new row so
         # a concurrent judge update is not lost on resume.
-        state_key = result.get("state_key", result.get("model"))
+        state_key = str(result.get("state_key", result.get("model")))
         info = self._model_info.get(state_key, {})
         for key, value in info.items():
             if "_judge_" not in key and key != "judge_status":
@@ -805,16 +809,16 @@ class BenchmarkState:
         self.results.append(result)
         self._journal_append("result", result)
 
-    def add_result(self, result):
+    def add_result(self, result: dict[str, Any]) -> None:
         with self._lock:
             self._add_result_locked(result)
         if self._run_store is not None and self._run_store.backend_name != "json":
             self._run_store.record_result(result)
 
-    def publish_result(self, result, *, status, error=None, elapsed=None,
-                       last_error=None):
+    def publish_result(self, result: dict[str, Any], *, status: str, error: str | None = None, elapsed: float | None = None,
+                       last_error: str | None = None) -> None:
         """Publish a result and its live model status in one state mutation."""
-        state_key = result.get("state_key", result.get("model"))
+        state_key = str(result.get("state_key", result.get("model")))
         with self._lock:
             self._add_result_locked(result)
             info = self._model_info.get(state_key)
@@ -837,7 +841,7 @@ class BenchmarkState:
                 **({"elapsed": elapsed} if elapsed is not None else {}),
             )
 
-    def hydrate_results(self, rows):
+    def hydrate_results(self, rows: list[dict[str, Any]]) -> None:
         """Seed the in-memory read model from a durable backend.
 
         Used by non-JSON backends (SQLite) on resume so ``latest_results``
@@ -848,7 +852,7 @@ class BenchmarkState:
             self._mark_changed()
             self.results = [dict(row) for row in rows]
             for row in self.results:
-                state_key = row.get("state_key", row.get("model"))
+                state_key = str(row.get("state_key", row.get("model")))
                 info = self._model_info.get(state_key)
                 if info is None:
                     continue
@@ -887,7 +891,7 @@ class BenchmarkState:
                 else:
                     info["status"] = "pending"
 
-    def set_journal_path(self, path, truncate=False):
+    def set_journal_path(self, path: str | None, truncate: bool = False) -> None:
         """Enable append-only result/judge event journaling to ``path``.
 
         Each event is one compact JSON line. ``truncate`` starts a fresh
@@ -906,7 +910,7 @@ class BenchmarkState:
                         f"journal reset failed: {type(exc).__name__}: {exc}"
                     )
 
-    def _journal_append(self, event_type, data):
+    def _journal_append(self, event_type: str, data: dict[str, Any]) -> None:
         """Best-effort append of one compact event while the state lock is held."""
         if not self._journal_path:
             return
@@ -935,7 +939,7 @@ class BenchmarkState:
                 f"journal append failed: {type(exc).__name__}: {exc}"
             )
 
-    def consume_journal_failures(self):
+    def consume_journal_failures(self) -> list[str]:
         """Return and clear journal write failures observed since the last call."""
         with self._lock:
             failures = list(self._journal_failures)
@@ -943,7 +947,7 @@ class BenchmarkState:
             return failures
 
     @staticmethod
-    def replay_journal_events(path):
+    def replay_journal_events(path: str | None) -> list[dict[str, Any]]:
         """Replay structured events, tolerating legacy result-only journal lines."""
         if not path or not os.path.exists(path):
             return []
@@ -975,7 +979,7 @@ class BenchmarkState:
         return events
 
     @staticmethod
-    def replay_journal(path):
+    def replay_journal(path: str | None) -> list[dict[str, Any]]:
         """Replay result events into a list, preserving the legacy API."""
         return [
             event["data"] for event in BenchmarkState.replay_journal_events(path)
@@ -983,7 +987,7 @@ class BenchmarkState:
         ]
 
     @staticmethod
-    def apply_journal_events_to_data(data, events):
+    def apply_journal_events_to_data(data: dict[str, Any] | None, events: list[dict[str, Any]] | None) -> dict[str, Any] | None:
         """Apply all journal events to a recovery data dictionary."""
         if not isinstance(data, dict):
             return data
@@ -1019,7 +1023,7 @@ class BenchmarkState:
         data["journal_sequence"] = highest_sequence
         return data
 
-    def replay_journal_tail(self, path):
+    def replay_journal_tail(self, path: str | None) -> int:
         """Apply journal events newer than the loaded state snapshot."""
         events = self.replay_journal_events(path)
         applied = 0
@@ -1033,7 +1037,7 @@ class BenchmarkState:
                 applied += 1
         return applied
 
-    def _apply_journal_event_locked(self, event):
+    def _apply_journal_event_locked(self, event: dict[str, Any]) -> None:
         """Apply one journal event; caller holds ``self._lock``."""
         event_type = event.get("type")
         data = event.get("data")
@@ -1057,7 +1061,7 @@ class BenchmarkState:
                 result.update(copy.deepcopy(fields))
                 break
 
-    def compact_journal(self, state_path, plugin_versions=None, *, raise_on_error=False):
+    def compact_journal(self, state_path: str, plugin_versions: dict[str, str] | None = None, *, raise_on_error: bool = False) -> bool:
         """Snapshot state and remove journal events included in that snapshot."""
         with self._lock:
             compact_through = self._journal_sequence
@@ -1105,7 +1109,7 @@ class BenchmarkState:
                 raise
             return False
 
-    def set_judge_progress(self, progress):
+    def set_judge_progress(self, progress: dict[str, dict[str, int]] | None) -> None:
         """Replace live per-judge progress shown by the TUI footer."""
         with self._lock:
             self._mark_changed()
@@ -1113,7 +1117,7 @@ class BenchmarkState:
                 model: dict(values) for model, values in (progress or {}).items()
             }
 
-    def update_judge_progress(self, model, **values):
+    def update_judge_progress(self, model: str, **values: int) -> None:
         """Update one judge model's live progress counters."""
         with self._lock:
             self._mark_changed()
@@ -1121,7 +1125,7 @@ class BenchmarkState:
             current.update(values)
             self._judge_progress[model] = current
 
-    def increment_judge_progress(self, model, *, expected=0, completed=0, failed=0):
+    def increment_judge_progress(self, model: str, *, expected: int = 0, completed: int = 0, failed: int = 0) -> dict[str, int]:
         """Atomically increment a judge's expected, completed, and failed counts."""
         with self._lock:
             self._mark_changed()
@@ -1132,8 +1136,8 @@ class BenchmarkState:
             self._judge_progress[model] = current
             return dict(current)
 
-    def replace_judge_progress(self, model, *, previous_completed=0,
-                               previous_failed=0, completed=0, failed=0):
+    def replace_judge_progress(self, model: str, *, previous_completed: int = 0,
+                               previous_failed: int = 0, completed: int = 0, failed: int = 0) -> dict[str, int]:
         """Replace one judge's prior outcome in the live progress totals.
 
         Judge retries replace the vote for a model/plugin cell rather than
@@ -1156,12 +1160,12 @@ class BenchmarkState:
             self._judge_progress[model] = current
             return dict(current)
 
-    def judge_progress_snapshot(self):
+    def judge_progress_snapshot(self) -> dict[str, dict[str, int]]:
         """Return a copy of live per-judge progress for the TUI."""
         with self._lock:
             return {model: dict(values) for model, values in self._judge_progress.items()}
 
-    def set_judge_selected(self, judge_model, selected):
+    def set_judge_selected(self, judge_model: str, selected: bool) -> None:
         """Mark whether a judge runner is selected for work on its source."""
         with self._lock:
             self._mark_changed()
@@ -1170,12 +1174,12 @@ class BenchmarkState:
             else:
                 self._judge_selected.discard(judge_model)
 
-    def judge_selected_snapshot(self):
+    def judge_selected_snapshot(self) -> set[str]:
         """Return judge runners selected between individual cell requests."""
         with self._lock:
             return set(self._judge_selected)
 
-    def start_judge_activity(self, judge_model, target, plugin):
+    def start_judge_activity(self, judge_model: str, target: str, plugin: str) -> int:
         """Register one currently executing judge request for the live TUI."""
         with self._lock:
             self._mark_changed()
@@ -1193,7 +1197,7 @@ class BenchmarkState:
             }
             return activity_id
 
-    def set_judge_activity_attempt(self, activity_id, attempt):
+    def set_judge_activity_attempt(self, activity_id: int, attempt: int) -> None:
         """Switch an active judge to a logical attempt and reset its counters."""
         with self._lock:
             self._mark_changed()
@@ -1208,8 +1212,8 @@ class BenchmarkState:
             activity["thinking_tokens"] = 0
             activity["content_tokens"] = 0
 
-    def update_judge_activity(self, activity_id, *, tokens=None,
-                               thinking_tokens=None, content_tokens=None):
+    def update_judge_activity(self, activity_id: int, *, tokens: int | None = None,
+                               thinking_tokens: int | None = None, content_tokens: int | None = None) -> None:
         """Update live total, thinking, and content tokens for one judge."""
         with self._lock:
             self._mark_changed()
@@ -1227,20 +1231,20 @@ class BenchmarkState:
                     activity["thinking_tokens"] + activity["content_tokens"]
                 )
 
-    def clear_judge_queued(self, target, plugin):
+    def clear_judge_queued(self, target: str, plugin: str) -> None:
         """Clear the transient queued marker for a judgeable plugin."""
         with self._lock:
             self._mark_changed()
             if target in self._model_info:
                 self._model_info[target][f"{plugin}_judge_queued"] = False
 
-    def finish_judge_activity(self, activity_id):
+    def finish_judge_activity(self, activity_id: int) -> None:
         """Remove one completed judge request from the live TUI."""
         with self._lock:
             self._mark_changed()
             self._judge_activity.pop(activity_id, None)
 
-    def judge_activity_snapshot(self):
+    def judge_activity_snapshot(self) -> list[dict[str, Any]]:
         """Return active judge requests with current elapsed seconds."""
         now = time.monotonic()
         with self._lock:
@@ -1258,18 +1262,18 @@ class BenchmarkState:
                 for activity in self._judge_activity.values()
             ]
 
-    def update_judge_result(self, state_key, runner, plugin_id, *, score=None,
-                            confidence=None, rationale=None, criteria=None,
-                            consensus_by_contract=None, selected_contract=None,
-                            error=None,
-                            input_sha256=None, votes=None, status=None,
-                            complete=None):
+    def update_judge_result(self, state_key: str, runner: str, plugin_id: str, *, score: float | str | None = None,
+                            confidence: str | None = None, rationale: str | None = None, criteria: list[str] | None = None,
+                            consensus_by_contract: dict[str, Any] | None = None, selected_contract: str | None = None,
+                            error: str | None = None,
+                            input_sha256: str | None = None, votes: list[dict[str, Any]] | None = None, status: str | None = None,
+                            complete: bool | None = None) -> None:
         """Persist one judge outcome in live model info and latest result.
 
         Judge updates are independent of benchmark completion and therefore
         must not append a second benchmark result row or change its status.
         """
-        fields = {
+        fields: dict[str, Any] = {
             f"{plugin_id}_judge_score": score,
             f"{plugin_id}_judge_confidence": confidence,
             f"{plugin_id}_judge_rationale": rationale,
@@ -1313,7 +1317,7 @@ class BenchmarkState:
                 },
             )
 
-    def set_judge_models(self, judge_models):
+    def set_judge_models(self, judge_models: list[str] | None) -> None:
         """Refresh the active judge identities on live and persisted rows."""
         models = list(dict.fromkeys(judge_models or []))
         with self._lock:
@@ -1323,7 +1327,7 @@ class BenchmarkState:
             for result in self.results:
                 result["judge_models"] = list(models)
 
-    def set_active_judge_contracts(self, contracts):
+    def set_active_judge_contracts(self, contracts: dict[str, str] | None) -> None:
         """Project the current judge contracts onto live/current result rows.
 
         Resume can load a completed model without calling ``run_model`` again.
@@ -1335,7 +1339,7 @@ class BenchmarkState:
         """
         if not contracts:
             return
-        projection_fields = {
+        projection_fields: dict[str, Any] = {
             "judge_score": None,
             "judge_confidence": None,
             "judge_rationale": None,
@@ -1372,31 +1376,31 @@ class BenchmarkState:
                 if changed:
                     container["judge_status"] = "pending"
 
-    def snapshot(self):
+    def snapshot(self) -> dict[str, dict[str, Any]]:
         with self._lock:
             return {k: dict(v) for k, v in self._model_info.items()}
 
     @property
-    def completed(self):
+    def completed(self) -> int:
         with self._lock:
             return sum(1 for s in self._model_info.values() if s["status"] == "completed")
 
     @property
-    def total(self):
+    def total(self) -> int:
         return len(self._model_info)
 
-    def log(self, model_name, msg):
+    def log(self, model_name: str, msg: str) -> None:
         with self._lock:
             self._mark_changed()
             self._log.append((time.time(), model_name, msg))
             if len(self._log) > 100:
                 self._log = self._log[-100:]
 
-    def recent_log(self, n=5):
+    def recent_log(self, n: int = 5) -> list[tuple[float, str, str]]:
         with self._lock:
             return self._log[-n:]
 
-    def save_state(self, path, plugin_versions=None, *, raise_on_error=False):
+    def save_state(self, path: str, plugin_versions: dict[str, str] | None = None, *, raise_on_error: bool = False) -> bool:
         with self._lock:
             validate_snapshot(self._model_info)
             # Preload indicators are session-only. Copy model info while
@@ -1464,13 +1468,13 @@ class BenchmarkState:
             return False
         return True
 
-    def latest_results(self):
+    def latest_results(self) -> list[dict[str, Any]]:
         """Return the latest row with per-plugin cancellation recovery applied."""
         with self._lock:
-            return project_result_rows(self.results, self.plugin_ids)
+            return cast(list[dict[str, Any]], project_result_rows(self.results, self.plugin_ids))
 
     @classmethod
-    def load_state(cls, path, models, plugin_ids, *, rerun_failed=True):
+    def load_state(cls, path: str, models: dict[str, Any], plugin_ids: list[str], *, rerun_failed: bool = True) -> BenchmarkState:
         with open(path) as f:
             data = json.load(f)
         validate_state_data(data)
