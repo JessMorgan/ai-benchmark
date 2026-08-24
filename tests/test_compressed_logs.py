@@ -5,8 +5,10 @@ import tempfile
 import threading
 import unittest
 import zlib
+from unittest import mock
 
 from benchmark.http import log_request_entry
+from benchmark.log_codec import measure_codecs
 from benchmark.logs import (
     AppendOnlyGzipLog,
     iter_log_members,
@@ -69,6 +71,100 @@ class TestGzipAppendLog(unittest.TestCase):
         repaired = recover_log(path, repair=True)
         self.assertEqual(repaired.complete_members, 1)
         self.assertEqual(os.path.getsize(path), complete_end)
+
+    def test_every_final_member_truncation_preserves_previous_members(self):
+        _tmpdir, path = self._path()
+        writer = AppendOnlyGzipLog(path, redact=False)
+        writer.append_record([b"complete"])
+        writer.append_record([b"partial payload with a footer"])
+        writer.close()
+        ranges = _member_ranges(path)
+        with open(path, "rb") as handle:
+            original = handle.read()
+        for cut in range(ranges[1][0] + 1, ranges[1][1]):
+            candidate = f"{path}.{cut}.gz"
+            with open(candidate, "wb") as handle:
+                handle.write(original[:cut])
+            recovery = recover_log(candidate)
+            if cut == ranges[1][0]:
+                self.assertFalse(recovery.truncated_tail, cut)
+            else:
+                self.assertTrue(recovery.truncated_tail, cut)
+            self.assertFalse(recovery.invalid_tail, cut)
+            self.assertEqual(list(iter_log_members(candidate)), [b"complete"], cut)
+            os.unlink(candidate)
+
+    def test_python_gzip_reader_matches_tolerant_reader_for_complete_log(self):
+        _tmpdir, path = self._path()
+        writer = AppendOnlyGzipLog(path, redact=False)
+        writer.append_record([b"one"])
+        writer.append_record([b"two"])
+        writer.close()
+        with gzip.open(path, "rb") as handle:
+            standard = handle.read()
+        tolerant = b"".join(iter_log_members(path))
+        self.assertEqual(standard, tolerant)
+
+    def test_abrupt_child_termination_leaves_prior_member_readable(self):
+        _tmpdir, path = self._path()
+        writer = AppendOnlyGzipLog(path, redact=False)
+        writer.append_record([b"prior"])
+        writer.close()
+        with open(path, "ab") as handle:
+            handle.write(gzip.compress(b"unfinished")[:-3])
+        recovery = recover_log(path)
+        self.assertTrue(recovery.truncated_tail)
+        self.assertEqual(list(iter_log_members(path)), [b"prior"])
+
+    def test_concurrent_open_recovery_is_serialized(self):
+        _tmpdir, path = self._path()
+        writer = AppendOnlyGzipLog(path, redact=False)
+        writer.append_record([b"prior"])
+        writer.close()
+        with open(path, "ab") as handle:
+            handle.write(b"\x1f\x8b\x08")
+        errors = []
+        def open_and_append():
+            try:
+                current = AppendOnlyGzipLog(path, recover_tail=True, redact=False)
+                current.append_record([b"next"])
+                current.close()
+            except Exception as exc:  # pragma: no cover - assertion below captures unexpected races
+                errors.append(exc)
+        threads = [threading.Thread(target=open_and_append) for _ in range(4)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        self.assertEqual(errors, [])
+        records = list(iter_log_members(path))
+        self.assertEqual(records[0], b"prior")
+        self.assertEqual(records[1:], [b"next"] * 4)
+
+    def test_write_and_fsync_failures_are_visible(self):
+        _tmpdir, path = self._path()
+        writer = AppendOnlyGzipLog(path, redact=False)
+        writer.append(b"payload")
+        with mock.patch("benchmark.logs.os.fsync", side_effect=OSError("sync failed")):
+            with self.assertRaises(OSError):
+                writer.flush(sync=True)
+        writer.close(sync=False)
+
+    def test_legacy_plaintext_logs_are_readable(self):
+        _tmpdir, path = self._path()
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "wb") as handle:
+            handle.write(b"legacy request\nlegacy response\n")
+        self.assertEqual(list(iter_log_members(path)), [b"legacy request\nlegacy response\n"])
+
+    def test_codec_measurement_is_reproducible_and_recommends_gzip_for_append(self):
+        result = measure_codecs((b"judge transcript\\n" * 1000), repetitions=2)
+        self.assertEqual(result["recommended_append_codec"], "gzip")
+        self.assertEqual(set(result["codec_measurements"]), {"gzip", "bz2"})
+        self.assertLess(
+            result["codec_measurements"]["gzip"]["compressed_bytes"],
+            result["codec_measurements"]["gzip"]["input_bytes"],
+        )
 
     def test_header_only_and_footer_truncations_preserve_previous_members(self):
         _tmpdir, path = self._path()
