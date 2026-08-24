@@ -3,7 +3,8 @@ from __future__ import annotations
 
 import re
 
-from benchmark.plugin import BenchmarkTaskPlugin
+from benchmark.plugin import BenchmarkTaskPlugin, EvaluationResult
+from benchmark.types import ConfigMap
 from plugins.challenges._rubric import Rubric
 from plugins.challenges._validators import parse_workflow_graph
 
@@ -29,7 +30,7 @@ class OrchestrationPlugin(BenchmarkTaskPlugin):
     def supports_streaming(self) -> bool:
         return True
 
-    def get_prompt(self):
+    def get_prompt(self) -> str:
         return (
             "Plan this pipeline: process 1TB server logs, perform GeoIP lookup, run anomaly "
             "detection, and generate a PDF report. Use exactly four tasks with IDs 1-4. Mark "
@@ -37,10 +38,11 @@ class OrchestrationPlugin(BenchmarkTaskPlugin):
             "execution trace containing init, running, and complete for every task."
         )
 
-    def get_temperature(self, global_config):
-        return global_config.get("orchestration_temperature")
+    def get_temperature(self, global_config: ConfigMap) -> float | None:
+        val = global_config.get("orchestration_temperature")
+        return float(val) if isinstance(val, (int, float)) else None
 
-    def evaluate(self, response_text):
+    def evaluate(self, response_text: str) -> EvaluationResult:
         text = response_text.strip()
         rubric = Rubric(self.max_score)
         if not text:
@@ -85,5 +87,5 @@ class OrchestrationPlugin(BenchmarkTaskPlugin):
         rubric.add_criterion("State / execution trace", 4.0, 4.0 if trace_ok else 0.0, negative_findings=[] if trace_ok else [{"finding": "every task needs init, running, and complete states"}])
         return rubric.results()
 
-    def score(self, response_text):
+    def score(self, response_text: str) -> float:
         return self.evaluate(response_text).score

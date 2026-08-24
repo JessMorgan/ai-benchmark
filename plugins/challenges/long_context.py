@@ -3,7 +3,8 @@ from __future__ import annotations
 
 import re
 
-from benchmark.plugin import BenchmarkTaskPlugin
+from benchmark.plugin import BenchmarkTaskPlugin, EvaluationResult
+from benchmark.types import ConfigMap
 from plugins.challenges._rubric import Rubric
 
 
@@ -28,7 +29,7 @@ class LongContextPlugin(BenchmarkTaskPlugin):
     def supports_streaming(self) -> bool:
         return True
 
-    def get_prompt(self):
+    def get_prompt(self) -> str:
         facts = [
             "F01 | incident I-11 | service Beacon | region US | time 09:15 | owner Lena | priority P3",
             "F02 | incident I-17 | service Atlas | region EU | time 14:30 | owner Omar | priority P1",
@@ -71,10 +72,11 @@ class LongContextPlugin(BenchmarkTaskPlugin):
             "INCIDENT, OWNER, ESCALATION CHANNEL, EVIDENCE, REASONING. Cite at least three fact IDs."
         )
 
-    def get_temperature(self, global_config):
-        return global_config.get("long_context_temperature")
+    def get_temperature(self, global_config: ConfigMap) -> float | None:
+        val = global_config.get("long_context_temperature")
+        return float(val) if isinstance(val, (int, float)) else None
 
-    def evaluate(self, response_text):
+    def evaluate(self, response_text: str) -> EvaluationResult:
         text = response_text.strip()
         rubric = Rubric(self.max_score)
         if not text:
@@ -93,5 +95,5 @@ class LongContextPlugin(BenchmarkTaskPlugin):
         rubric.add_criterion("Response contract", 3.0, 3.0 if exact_headers else 0.0)
         return rubric.results()
 
-    def score(self, response_text):
+    def score(self, response_text: str) -> float:
         return self.evaluate(response_text).score

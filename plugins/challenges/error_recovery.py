@@ -5,6 +5,7 @@ import ast
 import re
 
 from benchmark.plugin import BenchmarkTaskPlugin, EvaluationResult
+from benchmark.types import ConfigMap
 from plugins.challenges._execution import extract_python_source, run_python_check
 from plugins.challenges._rubric import Rubric
 from plugins.challenges._validators import parse_python, stub_definitions
@@ -31,7 +32,7 @@ class ErrorRecoveryPlugin(BenchmarkTaskPlugin):
     def supports_streaming(self) -> bool:
         return True
 
-    def get_prompt(self):
+    def get_prompt(self) -> str:
         return (
             "Implement an async resilient weather fetcher with this exact API:\n\n"
             "class AllProvidersFailedError(Exception): ...\n"
@@ -47,14 +48,15 @@ class ErrorRecoveryPlugin(BenchmarkTaskPlugin):
             "scenarios. Use only the standard library and include type hints/docstrings."
         )
 
-    def get_temperature(self, global_config):
-        return global_config.get("error_recovery_temperature")
+    def get_temperature(self, global_config: ConfigMap) -> float | None:
+        val = global_config.get("error_recovery_temperature")
+        return float(val) if isinstance(val, (int, float)) else None
 
     @staticmethod
     def _classes(tree: ast.AST) -> set[str]:
         return {node.name for node in ast.walk(tree) if isinstance(node, ast.ClassDef)}
 
-    def evaluate(self, response_text):
+    def evaluate(self, response_text: str) -> EvaluationResult:
         if not response_text or not response_text.strip():
             return EvaluationResult(0.0, [])
         text = response_text.strip()
@@ -190,5 +192,5 @@ asyncio.run(run_checks())
 
         return rubric.results()
 
-    def score(self, response_text):
+    def score(self, response_text: str) -> float:
         return self.evaluate(response_text).score

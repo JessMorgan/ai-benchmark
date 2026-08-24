@@ -8,6 +8,7 @@ from typing import Any
 from jsonschema import Draft202012Validator
 
 from benchmark.plugin import BenchmarkTaskPlugin, EvaluationResult
+from benchmark.types import ConfigMap
 from plugins.challenges._rubric import Rubric
 from plugins.challenges._validators import parse_structured
 
@@ -123,7 +124,7 @@ class DataTransformationPlugin(BenchmarkTaskPlugin):
     def supports_streaming(self) -> bool:
         return False
 
-    def get_prompt(self):
+    def get_prompt(self) -> str:
         return (
             "Process the order feed according to every transformation rule.\n\n"
             "Return exactly one JSON object with records and summary; do not return "
@@ -132,14 +133,15 @@ class DataTransformationPlugin(BenchmarkTaskPlugin):
             + DATA_TRANSFORMATION_SOURCE_PACKET
         )
 
-    def get_temperature(self, global_config):
-        return global_config.get("data_transformation_temperature")
+    def get_temperature(self, global_config: ConfigMap) -> float | None:
+        val = global_config.get("data_transformation_temperature")
+        return float(val) if isinstance(val, (int, float)) else None
 
     def get_response_schema(self) -> dict[str, Any] | None:
         """Expose the schema for compatibility diagnostics and sentinel tooling."""
         return copy.deepcopy(DATA_TRANSFORMATION_RESPONSE_SCHEMA)
 
-    def get_request_params(self, global_config):
+    def get_request_params(self, global_config: ConfigMap) -> dict[str, Any]:
         """Request the strict machine-readable result contract."""
         return {
             "response_format": {
@@ -179,7 +181,8 @@ class DataTransformationPlugin(BenchmarkTaskPlugin):
         return True
 
     @staticmethod
-    def _evaluation_with_diagnostics(rubric, schema_valid, schema_errors):
+    @staticmethod
+    def _evaluation_with_diagnostics(rubric: Rubric, schema_valid: bool, schema_errors: list[str]) -> EvaluationResult:
         result = rubric.results()
         diagnostics = dict(result.diagnostics or {})
         diagnostics.update({
@@ -191,12 +194,14 @@ class DataTransformationPlugin(BenchmarkTaskPlugin):
         return EvaluationResult(result.score, result.rubric, diagnostics)
 
     @staticmethod
-    def _records(data):
+    @staticmethod
+    def _records(data: dict[str, Any] | None) -> list[dict[str, Any]]:
         records = data.get("records") if isinstance(data, dict) else None
         return records if isinstance(records, list) else []
 
     @staticmethod
-    def _record_map(data):
+    @staticmethod
+    def _record_map(data: dict[str, Any] | None) -> dict[str, dict[str, Any]]:
         return {
             record.get("order_id"): record
             for record in DataTransformationPlugin._records(data)
@@ -204,7 +209,8 @@ class DataTransformationPlugin(BenchmarkTaskPlugin):
         }
 
     @staticmethod
-    def _criterion(rubric, name, maximum, earned, evidence=None, findings=None):
+    @staticmethod
+    def _criterion(rubric: Rubric, name: str, maximum: float, earned: float, evidence: list[dict[str, Any]] | None = None, findings: list[dict[str, str]] | None = None) -> None:
         rubric.add_criterion(
             name,
             maximum,
@@ -214,7 +220,7 @@ class DataTransformationPlugin(BenchmarkTaskPlugin):
             negative_findings=findings or [],
         )
 
-    def evaluate(self, response_text):
+    def evaluate(self, response_text: str) -> EvaluationResult:
         text = response_text.strip()
         rubric = Rubric(self.max_score)
         validation = parse_structured(text)
@@ -353,5 +359,5 @@ class DataTransformationPlugin(BenchmarkTaskPlugin):
         )
         return self._evaluation_with_diagnostics(rubric, schema_valid, schema_errors)
 
-    def score(self, response_text):
+    def score(self, response_text: str) -> float:
         return self.evaluate(response_text).score

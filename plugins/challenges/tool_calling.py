@@ -3,8 +3,10 @@ from __future__ import annotations
 
 import re
 from datetime import date, datetime
+from typing import Any
 
-from benchmark.plugin import BenchmarkTaskPlugin
+from benchmark.plugin import BenchmarkTaskPlugin, EvaluationResult
+from benchmark.types import ConfigMap
 from plugins.challenges._rubric import Rubric
 from plugins.challenges._validators import parse_tool_calls
 
@@ -30,7 +32,7 @@ class ToolCallingPlugin(BenchmarkTaskPlugin):
     def supports_streaming(self) -> bool:
         return True
 
-    def get_prompt(self):
+    def get_prompt(self) -> str:
         return (
             "Plan and call exactly these six tools in this order: get_weather(Tokyo,celsius), "
             "search_flights(JFK,Tokyo,2024-08-15), book_hotel(Tokyo,2024-08-16,2024-08-20,2), "
@@ -40,10 +42,11 @@ class ToolCallingPlugin(BenchmarkTaskPlugin):
             "covering weather, flight, hotel, stock, email, and a numeric converted JPY amount."
         )
 
-    def get_temperature(self, global_config):
-        return global_config.get("tool_calling_temperature")
+    def get_temperature(self, global_config: ConfigMap) -> float | None:
+        val = global_config.get("tool_calling_temperature")
+        return float(val) if isinstance(val, (int, float)) else None
 
-    def sanitize_for_judge(self, text):
+    def sanitize_for_judge(self, text: str) -> str:
         """Mask the XML-ish tool-call tags shown to judge models.
 
         Candidate answers (and the task text) are full of
@@ -62,7 +65,7 @@ class ToolCallingPlugin(BenchmarkTaskPlugin):
         return text
 
     @staticmethod
-    def _date_matches(value, expected):
+    def _date_matches(value: Any, expected: str) -> bool:
         if not isinstance(value, str):
             return False
         candidate = value.strip().replace("Z", "+00:00")
@@ -75,7 +78,7 @@ class ToolCallingPlugin(BenchmarkTaskPlugin):
                 return False
         return parsed.isoformat() == expected
 
-    def evaluate(self, response_text):
+    def evaluate(self, response_text: str) -> EvaluationResult:
         text = response_text.strip()
         rubric = Rubric(self.max_score)
         if not text:
@@ -106,7 +109,7 @@ class ToolCallingPlugin(BenchmarkTaskPlugin):
             ("convert_currency", lambda a: a.get("amount") == 1000 and str(a.get("from_curr")).upper() == "USD" and str(a.get("to_curr")).upper() == "JPY", 1.0),
             ("send_email", lambda a: str(a.get("to", "")).lower() == "alice@example.com" and "tokyo trip itinerary" in str(a.get("subject", "")).lower() and bool(a.get("body")), 2.0),
         ]
-        arg_score = sum(weight for name, predicate, weight in checks for call_name, call_args in zip(names, args, strict=False) if call_name == name and isinstance(call_args, dict) and predicate(call_args))
+        arg_score = sum(float(weight) for name, predicate, weight in checks for call_name, call_args in zip(names, args, strict=False) if call_name == name and isinstance(call_args, dict) and predicate(call_args))
         rubric.add_criterion("Correct arguments", 8.0, arg_score)
         rubric.add_criterion("Correct ordering / dependencies", 3.0, 3.0 if names == expected else 0.0)
         final = text[text.rfind("</tool_call>") + len("</tool_call>"):] if "</tool_call>" in text else ""
@@ -114,5 +117,5 @@ class ToolCallingPlugin(BenchmarkTaskPlugin):
         rubric.add_criterion("Synthesis / final response", 4.0, 4.0 if synthesis_hits == 6 else synthesis_hits * 2.0 / 3.0, negative_findings=[] if synthesis_hits == 6 else [{"finding": "final response must include all results and a numeric JPY amount"}])
         return rubric.results()
 
-    def score(self, response_text):
+    def score(self, response_text: str) -> float:
         return self.evaluate(response_text).score

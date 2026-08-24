@@ -4,7 +4,8 @@ from __future__ import annotations
 import ast
 import re
 
-from benchmark.plugin import BenchmarkTaskPlugin
+from benchmark.plugin import BenchmarkTaskPlugin, EvaluationResult
+from benchmark.types import ConfigMap
 from plugins.challenges._execution import extract_python_source, run_python_check
 from plugins.challenges._rubric import Rubric
 from plugins.challenges._validators import parse_python, stub_definitions
@@ -31,7 +32,7 @@ class RateLimiterPlugin(BenchmarkTaskPlugin):
     def supports_streaming(self) -> bool:
         return True
 
-    def get_prompt(self):
+    def get_prompt(self) -> str:
         return (
             "Implement these exact Python classes using only the standard library:\n\n"
             "TokenBucket(limit: int, window_seconds: float), SlidingWindowLog(limit: int, "
@@ -46,8 +47,9 @@ class RateLimiterPlugin(BenchmarkTaskPlugin):
             "cleanup, and thread safety. Include docstrings and type hints. Return only the code."
         )
 
-    def get_temperature(self, global_config):
-        return global_config.get("rate_limiter_temperature")
+    def get_temperature(self, global_config: ConfigMap) -> float | None:
+        val = global_config.get("rate_limiter_temperature")
+        return float(val) if isinstance(val, (int, float)) else None
 
     @staticmethod
     def _classes(tree: ast.AST | None) -> set[str]:
@@ -61,7 +63,7 @@ class RateLimiterPlugin(BenchmarkTaskPlugin):
             for base in node.bases
         )
 
-    def evaluate(self, response_text):
+    def evaluate(self, response_text: str) -> EvaluationResult:
         rubric = Rubric(self.max_score)
         if not response_text or not response_text.strip():
             return rubric.results()
@@ -176,5 +178,5 @@ assert len(_results) == 16
 
         return rubric.results()
 
-    def score(self, response_text):
+    def score(self, response_text: str) -> float:
         return self.evaluate(response_text).score

@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import json
+from typing import Any
 
-from benchmark.plugin import BenchmarkTaskPlugin
+from benchmark.plugin import BenchmarkTaskPlugin, EvaluationResult
+from benchmark.types import ConfigMap
 from plugins.challenges._analysis import exact_section, fenced_blocks, markdown_sections
 from plugins.challenges._rubric import Rubric
 
@@ -29,7 +31,7 @@ class MultiTurnConversationPlugin(BenchmarkTaskPlugin):
     def supports_streaming(self) -> bool:
         return True
 
-    def get_prompt(self):
+    def get_prompt(self) -> str:
         return (
             "Simulate this three-turn assistant conversation as a stateful agent. Return exactly "
             "one fenced JSON object under each heading and no prose outside the objects.\n\n"
@@ -44,11 +46,12 @@ class MultiTurnConversationPlugin(BenchmarkTaskPlugin):
             "(array of strings), notification_minutes (integer or null), and changes (array of strings)."
         )
 
-    def get_temperature(self, global_config):
-        return global_config.get("multi_turn_conversation_temperature")
+    def get_temperature(self, global_config: ConfigMap) -> float | None:
+        val = global_config.get("multi_turn_conversation_temperature")
+        return float(val) if isinstance(val, (int, float)) else None
 
     @staticmethod
-    def _state(section):
+    def _state(section: Any | None) -> str | None:
         if section is None:
             return None
         blocks = fenced_blocks(section.body, "json")
@@ -60,7 +63,7 @@ class MultiTurnConversationPlugin(BenchmarkTaskPlugin):
             return None
         return value if isinstance(value, dict) else None
 
-    def evaluate(self, response_text):
+    def evaluate(self, response_text: str) -> EvaluationResult:
         text = response_text.strip()
         rubric = Rubric(self.max_score)
         if not text:
@@ -146,5 +149,5 @@ class MultiTurnConversationPlugin(BenchmarkTaskPlugin):
         rubric.add_criterion("Conversation response contract", 3.0, 3.0 if structure_ok else 0.0)
         return rubric.results()
 
-    def score(self, response_text):
+    def score(self, response_text: str) -> float:
         return self.evaluate(response_text).score

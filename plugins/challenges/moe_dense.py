@@ -3,7 +3,8 @@ from __future__ import annotations
 
 import re
 
-from benchmark.plugin import BenchmarkTaskPlugin
+from benchmark.plugin import BenchmarkTaskPlugin, EvaluationResult
+from benchmark.types import ConfigMap
 from plugins.challenges._analysis import first_section, markdown_sections
 from plugins.challenges._rubric import Rubric
 
@@ -29,7 +30,7 @@ class MoEDensePlugin(BenchmarkTaskPlugin):
     def supports_streaming(self) -> bool:
         return True
 
-    def get_prompt(self):
+    def get_prompt(self) -> str:
         return (
             "Write a technical comparison with headings Gating, Load Balancing, Training, "
             "Inference, Benchmarks, and References. Include a top-k routing equation, a load "
@@ -38,10 +39,11 @@ class MoEDensePlugin(BenchmarkTaskPlugin):
             "specific numeric trade-offs. Do not merely list keywords."
         )
 
-    def get_temperature(self, global_config):
-        return global_config.get("moe_dense_temperature")
+    def get_temperature(self, global_config: ConfigMap) -> float | None:
+        val = global_config.get("moe_dense_temperature")
+        return float(val) if isinstance(val, (int, float)) else None
 
-    def evaluate(self, response_text):
+    def evaluate(self, response_text: str) -> EvaluationResult:
         text = response_text.strip()
         rubric = Rubric(self.max_score)
         if not text:
@@ -98,5 +100,5 @@ class MoEDensePlugin(BenchmarkTaskPlugin):
         rubric.add_criterion("Quantitative trade-off", 3.0, 3.0 if len(numeric) >= 2 and side_by_side else min(3.0, float(len(numeric))))
         return rubric.results()
 
-    def score(self, response_text):
+    def score(self, response_text: str) -> float:
         return self.evaluate(response_text).score

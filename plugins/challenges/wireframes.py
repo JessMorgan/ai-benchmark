@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import re
+from typing import Any
 
-from benchmark.plugin import BenchmarkTaskPlugin
+from benchmark.plugin import BenchmarkTaskPlugin, EvaluationResult
+from benchmark.types import ConfigMap
 from plugins.challenges._analysis import markdown_sections, normalize_heading
 from plugins.challenges._rubric import Rubric
 
@@ -29,7 +31,7 @@ class WireframesPlugin(BenchmarkTaskPlugin):
     def supports_streaming(self) -> bool:
         return True
 
-    def get_prompt(self):
+    def get_prompt(self) -> str:
         return (
             "Create at least four distinct mobile wireframe sections for FlowState: Dashboard, "
             "Focus Session, Calendar Integration, AI Planning, and Settings. Each section must "
@@ -38,11 +40,12 @@ class WireframesPlugin(BenchmarkTaskPlugin):
             "for important interactions."
         )
 
-    def get_temperature(self, global_config):
-        return global_config.get("wireframes_temperature")
+    def get_temperature(self, global_config: ConfigMap) -> float | None:
+        val = global_config.get("wireframes_temperature")
+        return float(val) if isinstance(val, (int, float)) else None
 
     @staticmethod
-    def _screen_name(heading):
+    def _screen_name(heading: str) -> str:
         normalized = normalize_heading(heading)
         for name in ("dashboard", "focus session", "calendar integration", "ai planning", "settings"):
             if re.search(rf"\b{re.escape(name)}\b", normalized):
@@ -57,7 +60,7 @@ class WireframesPlugin(BenchmarkTaskPlugin):
                 return canonical
         return None
 
-    def evaluate(self, response_text):
+    def evaluate(self, response_text: str) -> EvaluationResult:
         text = response_text.strip()
         rubric = Rubric(self.max_score)
         if not text:
@@ -65,7 +68,7 @@ class WireframesPlugin(BenchmarkTaskPlugin):
         sections = markdown_sections(text)
         screens = [(self._screen_name(section.heading), section) for section in sections]
         screens = [(name, section) for name, section in screens if name]
-        unique = {}
+        unique: dict[str, Any] = {}
         for name, section in screens:
             unique.setdefault(name, section)
         screen_count = len(unique)
@@ -92,5 +95,5 @@ class WireframesPlugin(BenchmarkTaskPlugin):
         rubric.add_criterion("Coverage of PRD features", 1.0, 1.0 if feature_hits >= 5 else 0.5 if feature_hits >= 3 else 0.0)
         return rubric.results()
 
-    def score(self, response_text):
+    def score(self, response_text: str) -> float:
         return self.evaluate(response_text).score
