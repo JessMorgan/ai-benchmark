@@ -17,7 +17,7 @@ from typing import Any, cast
 from .lifecycle import validate_snapshot
 from .plugin import SCORE_SCHEMA
 from .state_schema import StateSchemaError, validate_journal_event, validate_state_data
-from .storage import project_result_rows
+from .persistence.storage import project_result_rows
 
 # State saves intentionally retain the historical ``<state>.tmp`` path for
 # operational compatibility. Serialize all writers so two threads cannot
@@ -520,7 +520,7 @@ class BenchmarkState:
     def run_store(self) -> Any:
         """Return the persistence adapter for this state instance."""
         if self._run_store is None:
-            from .storage import JsonRunStore
+            from .persistence.storage import JsonRunStore
             self._run_store = JsonRunStore(self)  # type: ignore[assignment]
         return self._run_store
 

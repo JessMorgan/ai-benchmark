@@ -15,8 +15,8 @@ from pathlib import Path
 from typing import Any
 
 from .runtime_records import BenchmarkAttemptRecord, PluginRecord, TargetRecord
-from .sqlite_schema import connect_database
-from .storage import RunIdentity, SQLiteRunStore
+from .persistence.sqlite_schema import connect_database
+from .persistence.storage import RunIdentity, SQLiteRunStore
 
 
 def measure_storage(*, targets: int = 8, plugins: int = 4, payload_chars: int = 1024,

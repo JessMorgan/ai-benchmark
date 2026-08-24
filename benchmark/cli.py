@@ -97,11 +97,11 @@ from benchmark.runtime_records import (
     TargetRecord,
 )
 from benchmark.scheduler_policy import SourceSchedulingPolicy
-from benchmark.sqlite_import import LegacySQLiteImporter
-from benchmark.sqlite_integrity import check_integrity
-from benchmark.sqlite_reports import SQLiteReportSource, sqlite_path_from_report_path
+from benchmark.persistence.sqlite_import import LegacySQLiteImporter
+from benchmark.persistence.sqlite_integrity import check_integrity
+from benchmark.persistence.sqlite_reports import SQLiteReportSource, sqlite_path_from_report_path
 from benchmark.state import apply_state_recovery, prepare_state_recovery
-from benchmark.storage import JsonReportSource, RunIdentity, SQLiteRunStore, latest_result_rows
+from benchmark.persistence.storage import JsonReportSource, RunIdentity, SQLiteRunStore, latest_result_rows
 from plugins import discover_plugins, format_plugin_list
 
 _CORRUPTED_STATE_ABORT = "abort"
