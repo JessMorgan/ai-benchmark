@@ -12,7 +12,7 @@ from collections.abc import Callable
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 import yaml
 from jsonschema import Draft202012Validator
@@ -95,7 +95,7 @@ FLUSH_MAX_VOTES = 50
 PERSISTENCE_SHUTDOWN_TIMEOUT = 10.0
 
 
-def _thinking_budget_retry_instruction(token_budget, fallback=JUDGE_DEFAULT_MAX_TOKENS):
+def _thinking_budget_retry_instruction(token_budget: Any | int, fallback: int = JUDGE_DEFAULT_MAX_TOKENS) -> str:
     """Return retry-only guidance reserving half the budget for the answer."""
     reported, thinking_budget, answer_budget = _split_token_budget(token_budget, fallback)
     return (
@@ -106,7 +106,7 @@ def _thinking_budget_retry_instruction(token_budget, fallback=JUDGE_DEFAULT_MAX_
     )
 
 
-def _judge_system_prompt(total_budget):
+def _judge_system_prompt(total_budget: Any | int) -> str:
     """Return a system prompt that sets token budgets before the judge prompt.
 
     Thinking models allocate most of their generation budget to
@@ -181,13 +181,13 @@ JUDGE_DEFAULT_REQUEST_PARAMS = {
 JUDGE_CONFIDENCE_WEIGHTS = {"high": 1.0, "medium": 0.6, "low": 0.3}
 
 
-def judge_instructions_version(plugin) -> str:
+def judge_instructions_version(plugin: Any) -> str:
     """Return a stable version for a plugin's optional judge guidance."""
     value = getattr(plugin, "judge_instructions_version", "1.0.0")
     return str(value) if value is not None else "1.0.0"
 
 
-def judge_contract(plugin) -> JudgeContract:
+def judge_contract(plugin: Any) -> JudgeContract:
     """Build the complete canonical contract for one plugin."""
     getter = getattr(plugin, "get_judge_instructions", None)
     instructions = getter() if callable(getter) else ""
@@ -203,9 +203,10 @@ def judge_contract(plugin) -> JudgeContract:
     )
 
 
-def judge_contract_id(plugin) -> str:
+def judge_contract_id(plugin: Any) -> str:
     """Return the deterministic identity of one plugin judge contract."""
-    return judge_contract(plugin).contract_id
+    contract = judge_contract(plugin)
+    return str(contract.contract_id)
 
 SCHEMA_SENTINEL_SCHEMA = {
     "type": "object",
@@ -236,7 +237,7 @@ class PreloadResult:
     text: str = ""
 
 
-def resolve_preload_timeout(source_config, source, default=PRELOAD_DEFAULT_TIMEOUT):
+def resolve_preload_timeout(source_config: dict[str, Any], source: str, default: int = PRELOAD_DEFAULT_TIMEOUT) -> int:
     """Return a positive per-source preload timeout, or the default."""
     cfg = source_config.get(source) or {}
     value = cfg.get("preload_timeout", default) if isinstance(cfg, dict) else default
@@ -247,7 +248,7 @@ def resolve_preload_timeout(source_config, source, default=PRELOAD_DEFAULT_TIMEO
     return value if value > 0 else default
 
 
-def resolve_model_thread_limit(source_config, source, top_level=1):
+def resolve_model_thread_limit(source_config: dict[str, Any], source: str, top_level: int = 1) -> int:
     """Return the validated positive model concurrency for ``source``.
 
     Unlike ``plugin_thread_limit``, zero is never an unlimited value here:
@@ -276,7 +277,7 @@ DEFAULT_MAX_THINKING_TOKENS = 32768
 DEFAULT_MAX_CONTENT_TOKENS = 16384
 
 
-def resolve_stream_guards(source_config, source):
+def resolve_stream_guards(source_config: dict[str, Any], source: str) -> tuple[int, int, bool]:
     """Return ``(max_content_tokens, max_thinking_tokens, repetition_guard)``.
 
     Reads the per-source ``max_content_tokens``, ``max_thinking_tokens`` and
@@ -289,7 +290,7 @@ def resolve_stream_guards(source_config, source):
     if not isinstance(cfg, dict):
         return (DEFAULT_MAX_CONTENT_TOKENS, DEFAULT_MAX_THINKING_TOKENS, True)
 
-    def _tokens(key, default):
+    def _tokens(key: str, default: int) -> int:
         value = cfg.get(key, default)
         try:
             value = int(value)
@@ -304,9 +305,9 @@ def resolve_stream_guards(source_config, source):
     )
 
 
-def preload_model(source_config, source, api_model, timeout,
-                  session_seed=0, stop_event=None, drop_params=None,
-                  log_path=None) -> PreloadResult:
+def preload_model(source_config: dict[str, Any], source: str, api_model: str, timeout: float,
+                  session_seed: int = 0, stop_event: threading.Event | None = None, drop_params: list[str] | None = None,
+                  log_path: str | None = None) -> PreloadResult:
     """Warm one model with a small, non-scoring HTTP request.
 
     The probe deliberately disables HTTP 429 retries: a source that cannot
@@ -375,12 +376,12 @@ class JudgeResult:
     criteria: list[dict[str, Any]] | None = None
 
 
-def _is_exhausted_429(error):
+def _is_exhausted_429(error: Any) -> bool:
     """Return whether an HTTP error is an exhausted rate-limit response."""
     return isinstance(error, str) and error.lstrip().startswith("HTTP 429:")
 
 
-def _schema_probe_error_status(error):
+def _schema_probe_error_status(error: Any) -> str:
     """Classify a sentinel request failure without conflating it with a model score."""
     lowered = str(error or "").lower()
     schema_words = ("schema", "grammar", "response_format", "structured output", "format")
@@ -391,7 +392,7 @@ def _schema_probe_error_status(error):
     return "schema_transport_error"
 
 
-def _is_schema_grammar_error(error):
+def _is_schema_grammar_error(error: Any) -> bool:
     """Return whether a provider failed while compiling a response grammar."""
     lowered = str(error or "").lower()
     compiler_markers = (
@@ -403,7 +404,7 @@ def _is_schema_grammar_error(error):
     return any(marker in lowered for marker in compiler_markers)
 
 
-def _json_object_fallback_params(request_params):
+def _json_object_fallback_params(request_params: dict[str, Any] | None) -> dict[str, Any] | None:
     """Replace a JSON-schema response format with provider JSON mode."""
     if not isinstance(request_params, dict):
         return None
@@ -415,8 +416,8 @@ def _json_object_fallback_params(request_params):
     return fallback
 
 
-def run_schema_sentinel(source_config, source, api_model, *, timeout=120,
-                        session_seed=0, drop_params=None):
+def run_schema_sentinel(source_config: dict[str, Any], source: str, api_model: str, *, timeout: float = 120,
+                        session_seed: int = 0, drop_params: list[str] | None = None) -> dict[str, Any]:
     """Probe whether a source accepts and appears to enforce JSON schemas.
 
     The prompt requests a deliberately schema-invalid value while the schema
@@ -488,7 +489,7 @@ def run_schema_sentinel(source_config, source, api_model, *, timeout=120,
     }
 
 
-def resolve_judge_request_params(cfg):
+def resolve_judge_request_params(cfg: dict[str, Any]) -> dict[str, Any]:
     """Return provider-specific request parameters for semantic judges.
 
     The defaults preserve each model's native behavior and request a JSON
@@ -509,9 +510,9 @@ def resolve_judge_request_params(cfg):
     return params
 
 
-def _schema_request_metadata(plugin, request_params=None, *, response_schema_valid=None,
-                             error=None, request_applied=True, schema_fallback_used=False,
-                             schema_fallback_error=None):
+def _schema_request_metadata(plugin: Any, request_params: dict[str, Any] | None = None, *, response_schema_valid: bool | None = None,
+                             error: str | None = None, request_applied: bool = True, schema_fallback_used: bool = False,
+                             schema_fallback_error: str | None = None) -> dict[str, Any]:
     """Return non-scoring metadata for a plugin's structured-output contract.
 
     A completed valid response does not prove that the provider enforced the
@@ -579,11 +580,11 @@ def _schema_request_metadata(plugin, request_params=None, *, response_schema_val
     }
 
 
-def summarize_judge_criteria(results, plugins):
+def summarize_judge_criteria(results: list[dict[str, Any]], plugins: list[Any]) -> dict[str, Any]:
     """Aggregate judge criterion statuses for machine-readable run reports."""
-    summary = {"criterion_reports": 0, "criteria": 0, "by_plugin": {}}
+    summary: dict[str, Any] = {"criterion_reports": 0, "criteria": 0, "by_plugin": {}}
     for plugin in plugins:
-        status_counts = {}
+        status_counts: dict[str, int] = {}
         reports = 0
         criteria_count = 0
         evidence_count = 0
@@ -618,12 +619,12 @@ def summarize_judge_criteria(results, plugins):
     return summary
 
 
-def summarize_schema_compatibility(results, plugins):
+def summarize_schema_compatibility(results: list[dict[str, Any]], plugins: list[Any]) -> dict[str, Any]:
     """Aggregate per-plugin schema metadata without changing task scores."""
-    summary = {"requested_cells": 0, "response_valid_cells": 0, "enforcement_verified_cells": 0, "by_plugin": {}}
+    summary: dict[str, Any] = {"requested_cells": 0, "response_valid_cells": 0, "enforcement_verified_cells": 0, "by_plugin": {}}
     for plugin in plugins:
         prefix = plugin.id
-        statuses = {}
+        statuses: dict[str, int] = {}
         requested = valid = verified = 0
         for result in results:
             if result.get(f"{prefix}_schema_requested") is not True:
@@ -655,7 +656,7 @@ def summarize_schema_compatibility(results, plugins):
     return summary
 
 
-def build_judge_prompt(plugin, original_prompt, response_text):
+def build_judge_prompt(plugin: Any, original_prompt: str, response_text: str) -> str:
     """Build a data-delimited, procedural, JSON-only judging prompt."""
     sanitize = getattr(plugin, "sanitize_for_judge", None)
     if callable(sanitize):
@@ -750,7 +751,7 @@ criterion descriptions and evidence concise enough to cover every requirement.
 """
 
 
-def parse_judge_response(text):
+def parse_judge_response(text: str) -> JudgeResult:
     """Parse and validate a judge JSON response, accepting one fenced object."""
     candidate = text.strip()
     if candidate.startswith("```"):
@@ -806,7 +807,7 @@ def parse_judge_response(text):
     )
 
 
-def prepare_judge_sidecar(path, plugin, prompt, response_text, *, target, runner, state_key=None):
+def prepare_judge_sidecar(path: str, plugin: Any, prompt: str, response_text: str, *, target: str, runner: str, state_key: str | None = None) -> None:
     """Atomically retain the exact prompt/response input for resumable judging."""
     payload = {
         "target": target,
@@ -831,17 +832,18 @@ def prepare_judge_sidecar(path, plugin, prompt, response_text, *, target, runner
         handle.flush()
         os.fsync(handle.fileno())
     os.replace(tmp, path)
+    return None
 
 
-def judge_sidecar_path(judge_input_dir, target, runner, plugin_id):
+def judge_sidecar_path(judge_input_dir: str, target: str, runner: str, plugin_id: str) -> str:
     """Return the stable path for one retained judge input."""
     return os.path.join(
         judge_input_dir, runner, sanitize_filename(target), f"{plugin_id}.json"
     )
 
 
-def judge_response_path(output_dir, target, runner, plugin_id, judge_model,
-                        contract_id=None):
+def judge_response_path(output_dir: str, target: str, runner: str, plugin_id: str, judge_model: str,
+                        contract_id: str | None = None) -> str:
     """Return the response artifact path for one judge contract's output."""
     suffix = sanitize_filename(judge_model)
     if contract_id:
@@ -855,8 +857,8 @@ def judge_response_path(output_dir, target, runner, plugin_id, judge_model,
     )
 
 
-def save_judge_response(output_dir, target, runner, plugin_id, judge_model, text,
-                        contract_id=None):
+def save_judge_response(output_dir: str, target: str, runner: str, plugin_id: str, judge_model: str, text: str,
+                        contract_id: str | None = None) -> str:
     """Persist a judge's raw response beside the benchmark response artifacts."""
     path = judge_response_path(output_dir, target, runner, plugin_id, judge_model, contract_id)
     os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -869,8 +871,8 @@ def save_judge_response(output_dir, target, runner, plugin_id, judge_model, text
     return path
 
 
-def judge_response_metadata_path(output_dir, target, runner, plugin_id, judge_model,
-                                 contract_id=None):
+def judge_response_metadata_path(output_dir: str, target: str, runner: str, plugin_id: str, judge_model: str,
+                                 contract_id: str | None = None) -> str:
     """Return the metadata path paired with one raw judge response."""
     response_path = judge_response_path(
         output_dir, target, runner, plugin_id, judge_model, contract_id,
@@ -878,8 +880,8 @@ def judge_response_metadata_path(output_dir, target, runner, plugin_id, judge_mo
     return response_path.removesuffix(".txt") + ".meta.json"
 
 
-def save_judge_response_metadata(output_dir, target, runner, plugin_id,
-                                 judge_model, metadata, contract_id=None):
+def save_judge_response_metadata(output_dir: str, target: str, runner: str, plugin_id: str,
+                                 judge_model: str, metadata: dict[str, Any], contract_id: str | None = None) -> str:
     """Persist status/error metadata for every judge attempt.
 
     The metadata sidecar exists even when the judge transport produced no raw
@@ -899,7 +901,7 @@ def save_judge_response_metadata(output_dir, target, runner, plugin_id,
     return path
 
 
-def publish_judge_sidecars(judge_input_dir, target, runner, plugins, callback):
+def publish_judge_sidecars(judge_input_dir: str | None, target: str, runner: str, plugins: list[Any], callback: Callable[[str, str, str, str], Any] | None) -> None:
     """Publish durable judge inputs after their benchmark result is visible."""
     if not judge_input_dir or callback is None:
         return
@@ -909,14 +911,14 @@ def publish_judge_sidecars(judge_input_dir, target, runner, plugins, callback):
             callback(sidecar, target, runner, plugin.id)
 
 
-def judge_vote_identity(vote):
+def judge_vote_identity(vote: dict[str, Any] | None) -> tuple[Any | None, Any | None]:
     """Return the stable storage identity for one versioned judge vote."""
     if not isinstance(vote, dict):
         return (None, None)
     return (vote.get("model"), vote.get("judge_contract_id"))
 
 
-def judge_votes_for_contract(votes, contract_id):
+def judge_votes_for_contract(votes: list[dict[str, Any]], contract_id: str) -> list[dict[str, Any]]:
     """Return votes belonging to one judge contract."""
     return [
         vote for vote in votes
@@ -925,7 +927,7 @@ def judge_votes_for_contract(votes, contract_id):
     ]
 
 
-def merge_judge_vote(votes, vote):
+def merge_judge_vote(votes: list[dict[str, Any]], vote: dict[str, Any]) -> list[dict[str, Any]]:
     """Replace only the same model/contract vote, preserving other versions."""
     identity = judge_vote_identity(vote)
     return [
@@ -934,7 +936,7 @@ def merge_judge_vote(votes, vote):
     ] + [vote]
 
 
-def is_successful_judge_vote(vote):
+def is_successful_judge_vote(vote: dict[str, Any] | None) -> bool:
     """Return whether a persisted judge vote contains usable judgment data.
 
     Failed/empty attempts may be retained for diagnostics and resume, but they
@@ -953,9 +955,9 @@ def is_successful_judge_vote(vote):
     )
 
 
-def confidence_weighted_consensus_by_contract(votes):
+def confidence_weighted_consensus_by_contract(votes: list[dict[str, Any]]) -> dict[str, Any]:
     """Return independent confidence-weighted consensus for each contract."""
-    grouped = {}
+    grouped: dict[str, list[dict[str, Any]]] = {}
     for vote in votes:
         if not isinstance(vote, dict):
             continue
@@ -976,7 +978,7 @@ def confidence_weighted_consensus_by_contract(votes):
     }
 
 
-def confidence_weighted_consensus(votes):
+def confidence_weighted_consensus(votes: list[dict[str, Any]]) -> dict[str, Any]:
     """Combine valid judge votes using confidence weights.
 
     High/medium/low confidence maps to 1.0/0.6/0.3. Invalid votes are
@@ -1016,7 +1018,7 @@ def confidence_weighted_consensus(votes):
     }
 
 
-def _judge_response_diagnostics(response, request_params, max_tokens):
+def _judge_response_diagnostics(response: Any, request_params: dict[str, Any] | None, max_tokens: int) -> dict[str, Any]:
     """Summarize request settings and response evidence for judge debugging.
 
     OpenAI-compatible providers do not consistently expose whether a
@@ -1086,11 +1088,11 @@ def _judge_response_diagnostics(response, request_params, max_tokens):
     }
 
 
-def judge_response(source_config, judge_source, judge_api_model, sidecar,
-                   *, timeout, max_tokens=None, temperature=0.0,
-                   drop_params=None, request_params=None, stop_event=None, log_path=None,
-                   plugin=None, progress_callback: Callable[[str, str], None] | None = None,
-                   attempt_callback: Callable[[int], None] | None = None):
+def judge_response(source_config: dict[str, Any], judge_source: str, judge_api_model: str, sidecar: str,
+                   *, timeout: float, max_tokens: int | None = None, temperature: float = 0.0,
+                   drop_params: list[str] | None = None, request_params: dict[str, Any] | None = None, stop_event: threading.Event | None = None, log_path: str | None = None,
+                   plugin: Any = None, progress_callback: Callable[[str, str], None] | None = None,
+                   attempt_callback: Callable[[int], None] | None = None) -> JudgeResult:
     """Run one streaming judge request, retrying once when its JSON is invalid."""
     with open(sidecar, encoding="utf-8") as handle:
         item = json.load(handle)
@@ -1109,7 +1111,7 @@ def judge_response(source_config, judge_source, judge_api_model, sidecar,
     if budget <= 0:
         budget = JUDGE_DEFAULT_MAX_TOKENS
 
-    def report_progress(content_delta="", thinking_delta=""):
+    def report_progress(content_delta: str = "", thinking_delta: str = "") -> None:
         if progress_callback is None:
             return
         # Progress is observational only; a broken TUI/state observer must
@@ -1153,7 +1155,7 @@ def judge_response(source_config, judge_source, judge_api_model, sidecar,
         HTTPTransportOptions(supports_streaming=True, request_params=request_params),
     )
 
-    def json_error_prompt_alterer(result: TransportResult):
+    def json_error_prompt_alterer(result: TransportResult) -> str | None:
         parsed = parse_judge_response(result.text)
         if parsed.error is None:
             return None
@@ -1210,20 +1212,19 @@ def judge_response(source_config, judge_source, judge_api_model, sidecar,
     )
 
 
-def _overall_score(result, active_plugins):
+def _overall_score(result: dict[str, Any], active_plugins: list[Any]) -> int | None:
     """Return the half-up mean of available normalized plugin percentages."""
-    scores = [
-        result.get(f"{plugin.id}_score")
-        for plugin in active_plugins
-        if isinstance(result.get(f"{plugin.id}_score"), (int, float))
-        and not isinstance(result.get(f"{plugin.id}_score"), bool)
-    ]
+    scores: list[float] = []
+    for plugin in active_plugins:
+        value = result.get(f"{plugin.id}_score")
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            scores.append(float(value))
     if not scores:
         return None
-    return normalize_score(sum(scores) / len(scores), 100)
+    return cast(int | None, normalize_score(sum(scores) / len(scores), 100))
 
 
-def is_repeating(text, min_seq=80, repeats=3):
+def is_repeating(text: str, min_seq: int = 80, repeats: int = 3) -> bool:
     """Detect if text is stuck in a loop."""
     if len(text) < min_seq * repeats:
         return False
@@ -1231,7 +1232,7 @@ def is_repeating(text, min_seq=80, repeats=3):
     return text.count(tail) >= repeats
 
 
-def _response_reasoning_tokens(response):
+def _response_reasoning_tokens(response: Any) -> int | None:
     """Prefer provider reasoning usage, falling back to the char/4 estimate."""
     usage = getattr(response, "usage", {})
     if not isinstance(usage, dict):
@@ -1247,7 +1248,7 @@ def _response_reasoning_tokens(response):
     return int(count_tokens(thinking)) if thinking else None
 
 
-def _source_abbrev(name):
+def _source_abbrev(name: str) -> str:
     """Generate a short acronym from a source name using capital letters."""
     tokens = []
     for w in name.split():
@@ -1262,7 +1263,7 @@ def _source_abbrev(name):
     return ab if len(ab) >= 2 else (name * 2)[:2].upper()
 
 
-def _unique_source_abbrevs(sources):
+def _unique_source_abbrevs(sources: list[str]) -> dict[str, str]:
     """Return a mapping from source names to short, unique abbreviations."""
     abbrevs = {}
     used = set()
@@ -1281,7 +1282,7 @@ def _unique_source_abbrevs(sources):
 
 # ─── Config loading ──────────────────────────────────────────────────────────
 
-def _expand_env(val):
+def _expand_env(val: Any) -> Any:
     """Recursively expand ${VAR} or ${VAR:default} in strings."""
     if isinstance(val, str):
         parts = []
@@ -1313,7 +1314,7 @@ def _expand_env(val):
     return val
 
 
-def load_dotenv_file(path=None):
+def load_dotenv_file(path: str | None = None) -> bool:
     """Load environment variables from a ``.env`` file into ``os.environ``.
 
     The file defaults to ``.env`` in the current working directory. A missing
@@ -1326,7 +1327,7 @@ def load_dotenv_file(path=None):
     return bool(load_dotenv(dotenv_path=path if path is not None else ".env", override=False))
 
 
-def load_config(path):
+def load_config(path: str) -> Any:
     """Load benchmark config from a JSON or YAML file. Returns the full config dict."""
     with open(path) as f:
         if path.lower().endswith((".yaml", ".yml")):
@@ -1338,7 +1339,7 @@ def load_config(path):
     data = _expand_env(data)
     legacy_paths = []
 
-    def find_legacy(value, path="config"):
+    def find_legacy(value: Any, path: str = "config") -> None:
         if isinstance(value, dict):
             for key, child in value.items():
                 if key in {"token_levels", "model_token_levels"}:
@@ -1358,7 +1359,7 @@ def load_config(path):
     return data
 
 
-def parse_plugin_temperatures(cfg):
+def parse_plugin_temperatures(cfg: dict[str, Any]) -> dict[str, Any]:
     """Parse per-plugin temperature settings from a config dict.
 
     Keys ending in ``_temperature`` are mapped to plugin IDs by replacing
@@ -1373,7 +1374,7 @@ def parse_plugin_temperatures(cfg):
     return plugin_temperatures
 
 
-def resolve_model_sources(models):
+def resolve_model_sources(models: dict[str, Any]) -> dict[str, str]:
     """Resolve model entries to source strings.
 
     Model entries may be either a source string or a dict with a
@@ -1399,7 +1400,7 @@ _PI_CONFIG_KEYS = {
 }
 
 
-def _resolve_pi_config(target_name, value):
+def _resolve_pi_config(target_name: str, value: Any) -> dict[str, Any]:
     """Validate the small, deterministic Pi configuration surface."""
     if value is None:
         return {}
@@ -1461,7 +1462,7 @@ def _resolve_pi_config(target_name, value):
     return copy.deepcopy(value)
 
 
-def resolve_targets(cfg):
+def resolve_targets(cfg: dict[str, Any]) -> dict[str, dict[str, Any]]:
     """Resolve models and agents into a unified target map.
 
     Each target contains:
@@ -1486,27 +1487,27 @@ def resolve_targets(cfg):
     model_max_tokens = cfg.get("model_max_tokens") or {}
     targets = {}
 
-    def _normalize_max_tokens(value):
+    def _normalize_max_tokens(value: Any) -> int | None:
         """Coerce one configured positive max-token value to an int."""
         if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
             return None
         return value
 
-    def _resolve_target_max_tokens(name, source, api_model, val):
+    def _resolve_target_max_tokens(name: str, source: str, api_model: str, val: Any) -> int | None:
         """Return a per-target scalar max-token override, if configured."""
         if isinstance(val, dict):
-            value = _normalize_max_tokens(val.get("max_tokens"))
-            if value is not None:
-                return value
+            token_value = _normalize_max_tokens(val.get("max_tokens"))
+            if token_value is not None:
+                return token_value
             pi_value = val.get("pi")
             if isinstance(pi_value, dict):
-                value = _normalize_max_tokens(pi_value.get("max_tokens"))
-                if value is not None:
-                    return value
+                token_value = _normalize_max_tokens(pi_value.get("max_tokens"))
+                if token_value is not None:
+                    return token_value
         for key in (name, f"{source}/{api_model}"):
-            value = _normalize_max_tokens(model_max_tokens.get(key))
-            if value is not None:
-                return value
+            token_value = _normalize_max_tokens(model_max_tokens.get(key))
+            if token_value is not None:
+                return token_value
         return None
     for name, val in models.items():
         if isinstance(val, dict):
@@ -1567,18 +1568,20 @@ def resolve_targets(cfg):
     return targets
 
 
-def get_target_plugins_blacklist(targets, target_name):
+def get_target_plugins_blacklist(targets: dict[str, Any], target_name: str) -> list[str]:
     """Get the plugins blacklist for a specific model or agent."""
     val = targets.get(target_name)
     if isinstance(val, dict):
-        return val.get("plugins_blacklist", [])
+        result = val.get("plugins_blacklist", [])
+        if isinstance(result, list):
+            return [str(p) for p in result]
     return []
 
 # Backward-compatible alias.
 get_model_plugins_blacklist = get_target_plugins_blacklist
 
 
-def _apply_http_retry_default(cfg, retry_on_429):
+def _apply_http_retry_default(cfg: dict[str, Any], retry_on_429: bool) -> None:
     """Mutate ``cfg`` so HTTP 429 retries align with a global toggle.
 
     When ``retry_on_429`` is True (the default), this function is a no-op —
@@ -1603,7 +1606,7 @@ def _apply_http_retry_default(cfg, retry_on_429):
             src_cfg["max_429_retries"] = 0
 
 
-def dump_default_config():
+def dump_default_config() -> None:
     """Print the default config JSON to stdout."""
     cfg = {
         "output_dir": "benchmark-output-dir",
@@ -1731,7 +1734,7 @@ def dump_default_config():
     print(json.dumps(cfg, indent=2))
 
 
-def generate_config_from_api(base_url, api_key=None):
+def generate_config_from_api(base_url: str, api_key: str | None = None) -> dict[str, Any]:
     """Build a benchmark config dict by discovering models via the /v1/models endpoint."""
     model_ids = fetch_models_v1(base_url, api_key)
     if not model_ids:
@@ -1761,16 +1764,16 @@ def generate_config_from_api(base_url, api_key=None):
 # ─── Model execution ─────────────────────────────────────────────────────────
 
 
-def _run_plugin_task(target_name, api_model, source, plugin, source_config, timeout,
-                     max_tokens, session_seed, log_file, global_cfg, state,
-                     stop_event=None, save_responses=False, output_dir=None,
-                     judge_input_dir=None, judge_enqueue=None,
-                     system_prompt=None, is_agent=False, runner="http",
-                     opencode_config_path=None, opencode_model=None,
-                     opencode_agent=None, opencode_binary=None,
-                     pi_node=None, pi_worker=None, pi_config=None,
-                     artifact_target_name=None,
-                     config_target_name=None, debug_logs=False) -> PluginTaskResult:
+def _run_plugin_task(target_name: str, api_model: str, source: str, plugin: Any, source_config: dict[str, Any], timeout: float,
+                     max_tokens: int, session_seed: int, log_file: str | None, global_cfg: dict[str, Any], state: Any,
+                     stop_event: threading.Event | None = None, save_responses: bool = False, output_dir: str | None = None,
+                     judge_input_dir: str | None = None, judge_enqueue: Callable[[str, str, str, str], Any] | None = None,
+                     system_prompt: str | None = None, is_agent: bool = False, runner: str = "http",
+                     opencode_config_path: str | None = None, opencode_model: str | None = None,
+                     opencode_agent: str | None = None, opencode_binary: str | None = None,
+                     pi_node: str | None = None, pi_worker: str | None = None, pi_config: dict[str, Any] | None = None,
+                     artifact_target_name: str | None = None,
+                     config_target_name: str | None = None, debug_logs: bool = False) -> PluginTaskResult:
     """Run one benchmark cell with one scalar budget and at most one policy retry.
 
     Transport retries preserve the prompt. Token-limit and repetition retries
@@ -1811,14 +1814,14 @@ def _run_plugin_task(target_name, api_model, source, plugin, source_config, time
         not isinstance(cfg, dict) or cfg.get("api_protocol") not in {"1min", "chatplayground"}
     )
 
-    def on_retry():
+    def on_retry() -> None:
         state.start_plugin_run(target_name, pid)
 
-    def on_chunk(delta):
+    def on_chunk(delta: str) -> None:
         state.mark_first_chunk_seen(target_name, pid, ts=time.time())
         state.add_bytes_received(target_name, pid, len(delta))
 
-    def on_think_chunk(delta):
+    def on_think_chunk(delta: str) -> None:
         state.mark_first_chunk_seen(target_name, pid, ts=time.time())
         state.add_thinking_bytes_received(target_name, pid, len(delta))
 
@@ -1884,10 +1887,10 @@ def _run_plugin_task(target_name, api_model, source, plugin, source_config, time
     else:
         request = HTTPRequest(common, http_options)
 
-    def on_attempt(attempt_number):
+    def on_attempt(attempt_number: int) -> None:
         state.set_plugin_attempt(target_name, pid, attempt_number)
 
-    def evaluate(text):
+    def evaluate(text: str) -> tuple[int | str, list[dict[str, Any]], Any, str | None, str | None]:
         try:
             value = plugin.evaluate(text)
             return normalize_score(value.score, plugin.max_score), serialize_rubric(value.rubric), value.diagnostics or {}, None, None
@@ -1919,18 +1922,26 @@ def _run_plugin_task(target_name, api_model, source, plugin, source_config, time
         nature = raw.response_nature
         thinking_tokens = raw.thinking_tokens
         if raw.error and not text.strip():
-            score, rubric, diagnostics = "fail", [], {}
-            score_error, score_traceback = None, None
+            score_result: int | str = "fail"
+            rubric: list[dict[str, Any]] = []
+            diagnostics: Any = {}
+            score_error_result: str | None = None
+            score_traceback: str | None = None
         else:
-            score, rubric, diagnostics, score_error, score_traceback = evaluate(text)
-        if score_error is not None:
+            eval_result = evaluate(text)
+            score_result = eval_result[0]
+            rubric = eval_result[1]
+            diagnostics = eval_result[2]
+            score_error_result = eval_result[3]
+            score_traceback = eval_result[4]
+        if score_error_result is not None:
             nature = "plugin_error"
         usable = (
             bool(text.strip())
             and nature not in {"timeout", "cancelled", "transport_error"}
-            and score_error is None
+            and score_error_result is None
         )
-        attempt_failure_cause = raw.error or score_error
+        attempt_failure_cause = raw.error or score_error_result
         if attempt_failure_cause is None and nature == "token_limit":
             attempt_failure_cause = (
                 f"finish_reason:{raw.finish_reason}"
@@ -1957,10 +1968,10 @@ def _run_plugin_task(target_name, api_model, source, plugin, source_config, time
             "truncated_due_to_time": nature == "timeout",
             "repeating": raw.repeating,
             "empty_reason": raw.empty_reason,
-            "score": score,
+            "score": score_result,
             "rubric": rubric,
             "diagnostics": diagnostics,
-            "score_error": score_error,
+            "score_error": score_error_result,
             "score_traceback": score_traceback,
             "usable": usable,
             "selected": False,
@@ -2128,16 +2139,16 @@ def _run_plugin_task(target_name, api_model, source, plugin, source_config, time
     return PluginTaskResult(result, task_error)
 
 
-def run_model(model_name, source, state, active_plugins, source_config, timeout,
-              max_tokens, output_dir, session_seed=0, global_cfg=None,
-              stop_event=None, save_responses=False, api_model=None,
-              judge_input_dir=None, judge_enqueue=None,
-              judge_model=None, judge_models=None, judge_prompt_version=None,
-              system_prompt=None, is_agent=False, runner="http",
-              opencode_config_path=None, opencode_model=None,
-              opencode_agent=None, opencode_binary=None,
-              pi_node=None, pi_worker=None, pi_config=None, display_name=None,
-              config_target_name=None, debug_logs=False):
+def run_model(model_name: str, source: str, state: Any, active_plugins: list[Any], source_config: dict[str, Any], timeout: float,
+              max_tokens: int, output_dir: str, session_seed: int = 0, global_cfg: dict[str, Any] | None = None,
+              stop_event: threading.Event | None = None, save_responses: bool = False, api_model: str | None = None,
+              judge_input_dir: str | None = None, judge_enqueue: Callable[[str, str, str, str], Any] | None = None,
+              judge_model: str | None = None, judge_models: list[str] | None = None, judge_prompt_version: str | None = None,
+              system_prompt: str | None = None, is_agent: bool = False, runner: str = "http",
+              opencode_config_path: str | None = None, opencode_model: str | None = None,
+              opencode_agent: str | None = None, opencode_binary: str | None = None,
+              pi_node: str | None = None, pi_worker: str | None = None, pi_config: dict[str, Any] | None = None, display_name: str | None = None,
+              config_target_name: str | None = None, debug_logs: bool = False) -> dict[str, Any]:
     """Run active plugins for one model or agent through a selected runner."""
     start = time.time()
     target_name = model_name
@@ -2193,7 +2204,7 @@ def run_model(model_name, source, state, active_plugins, source_config, timeout,
             last_error=r["error"],
         )
         state.log(target_name, r['error'])
-        return
+        return r
 
     latest = {(res.get("state_key", res["model"]), res.get("runner", "http")): res
               for res in state.latest_results()}
@@ -2290,7 +2301,7 @@ def run_model(model_name, source, state, active_plugins, source_config, timeout,
         publish_judge_sidecars(
             judge_input_dir, display_name, runner, active_plugins, judge_enqueue,
         )
-        return
+        return r
 
     plugin_thread_limit = source_config.get(source, {}).get("plugin_thread_limit", 1)
     try:
@@ -2323,17 +2334,18 @@ def run_model(model_name, source, state, active_plugins, source_config, timeout,
                  display_name=display_name,
                  config_target_name=config_target_name,
                  debug_logs=debug_logs)
+    return r
 
 
-def _run_plugins(target_name, api_model, source, state, active_plugins, plugins_to_run,
-                 source_config, timeout, max_tokens, output_dir,
-                 session_seed, global_cfg, r, start, max_workers,
-                 stop_event=None, save_responses=False, judge_input_dir=None,
-                 judge_enqueue=None,
-                 system_prompt=None, is_agent=False, runner="http", opencode_config_path=None,
-                 opencode_model=None, opencode_agent=None, opencode_binary=None,
-                 pi_node=None, pi_worker=None, pi_config=None,
-                 display_name=None, config_target_name=None, debug_logs=False):
+def _run_plugins(target_name: str, api_model: str, source: str, state: Any, active_plugins: list[Any], plugins_to_run: list[Any],
+                 source_config: dict[str, Any], timeout: float, max_tokens: int, output_dir: str,
+                 session_seed: int, global_cfg: dict[str, Any] | None, r: dict[str, Any], start: float, max_workers: int,
+                 stop_event: threading.Event | None = None, save_responses: bool = False, judge_input_dir: str | None = None,
+                 judge_enqueue: Callable[[str, str, str, str], Any] | None = None,
+                 system_prompt: str | None = None, is_agent: bool = False, runner: str = "http", opencode_config_path: str | None = None,
+                 opencode_model: str | None = None, opencode_agent: str | None = None, opencode_binary: str | None = None,
+                 pi_node: str | None = None, pi_worker: str | None = None, pi_config: dict[str, Any] | None = None,
+                 display_name: str | None = None, config_target_name: str | None = None, debug_logs: bool = False) -> None:
     """Run plugins for one model using a thread pool of bounded size.
 
     A single-worker pool (``max_workers=1``) is equivalent to sequential
@@ -2353,7 +2365,7 @@ def _run_plugins(target_name, api_model, source, state, active_plugins, plugins_
         if debug_logs else None
     )
 
-    def run_one(plugin):
+    def run_one(plugin: Any) -> None:
         nonlocal consecutive_429, breaker_triggered
         pid = plugin.id
         # The model-level circuit breaker is distinct from the process-wide
@@ -2500,8 +2512,8 @@ def _run_plugins(target_name, api_model, source, state, active_plugins, plugins_
     for plugin in plugins_to_run:
         pid = plugin.id
         if pid in errors or results.get(pid) is None:
-            failed_result = results.get(pid) or {}
-            r.update(failed_result)
+            failed_result: dict[str, Any] = results.get(pid) or {}
+            r.update(failed_result if isinstance(failed_result, dict) else {})
             fail_values = {
                 f"{pid}_score": "fail",
                 f"{pid}_response_time": "fail",
@@ -2512,10 +2524,11 @@ def _run_plugins(target_name, api_model, source, state, active_plugins, plugins_
                 f"{pid}_stream_ok": False,
             }
             r.update(fail_values)
-            state.update(target_name, **{**failed_result, **fail_values})
+            state.update(target_name, **{**(failed_result if isinstance(failed_result, dict) else {}), **fail_values})
         else:
             result = results[pid]
-            r.update(result)
+            if isinstance(result, dict):
+                r.update(result)
 
     first_tok_time = None
     any_stream_ok = False
@@ -2573,5 +2586,5 @@ def _run_plugins(target_name, api_model, source, state, active_plugins, plugins_
         r, status="completed", elapsed=r["total_time"],
     )
     publish_judge_sidecars(
-        judge_input_dir, display_name, runner, active_plugins, judge_enqueue,
+        judge_input_dir, display_name or target_name, runner, active_plugins, judge_enqueue,
     )
