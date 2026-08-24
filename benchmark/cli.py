@@ -1177,6 +1177,24 @@ _FRAME_STYLE_MAP = {
 }
 
 
+def _row_style(state_row):
+    """Return the canonical style for a table row.
+
+    Activity wins over terminal status because a retry or sibling plugin may
+    still be running after a previous attempt recorded ``failed``. Pending
+    work remains uncolored, completed rows are green, and terminal failures
+    are red.
+    """
+    if state_row.get("running_pids") or state_row.get("preloading"):
+        return "yellow"
+    status = state_row.get("status")
+    if status == "completed":
+        return "green"
+    if status == "failed":
+        return "red"
+    return None
+
+
 def _build_frame_lines(state, active_plugins, source_abbrevs, frozen_hdr,
                        plugin_hdr, num_sources, scroll_y, scroll_x, size,
                        model_thread_limits=None, session_seed=None):
@@ -1285,18 +1303,7 @@ def _build_frame_lines(state, active_plugins, source_abbrevs, frozen_hdr,
             plugin_str, scroll_x, max(0, max_x - frozen_width - 1)
         )
         row_line = frozen + " " + visible_plugin
-        sv = s["status"]
-        # Live work takes precedence over a stale terminal status. A model
-        # can retain ``failed`` while a retry or another plugin is active;
-        # active rows must remain yellow until all running work finishes.
-        if sv == "running" or s.get("running_pids"):
-            style = "yellow"
-        elif sv == "completed":
-            style = "green"
-        elif sv == "failed":
-            style = "red"
-        else:
-            style = None
+        style = _row_style(s)
         lines.append(line(row_line, style))
     lines.append(line("\u2500" * min(max_x, 60)))
 

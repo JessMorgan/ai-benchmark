@@ -164,6 +164,11 @@ class TestBuildFrameLines(unittest.TestCase):
         self.assertIn("green", styles.values())
         self.assertIn("yellow", styles.values())
 
+    def test_active_row_style_helper_overrides_stale_failure(self):
+        self.assertEqual(cli._row_style({"status": "failed", "running_pids": ["x"]}), "yellow")
+        self.assertEqual(cli._row_style({"status": "failed", "preloading": True}), "yellow")
+        self.assertEqual(cli._row_style({"status": "failed", "running_pids": []}), "red")
+
     def test_active_row_is_yellow_even_if_stale_status_is_failed(self):
         state = mock.Mock()
         state.snapshot.return_value = {
