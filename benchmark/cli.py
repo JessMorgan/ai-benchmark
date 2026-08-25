@@ -13,7 +13,6 @@ import os
 import random
 import shutil
 import signal
-import sqlite3
 import subprocess
 import sys
 import threading
@@ -27,7 +26,6 @@ from wcwidth import wcswidth, wcwidth
 
 from benchmark import tui as _tui
 from benchmark.cli_parser import build_parser
-from benchmark.command_dispatch import dispatch_early_command
 from benchmark.configuration import (
     _apply_http_retry_default,
     get_target_plugins_blacklist,
@@ -52,7 +50,6 @@ from benchmark.core import (
     resolve_model_thread_limit,
     resolve_preload_timeout,
     run_model,
-    run_schema_sentinel,
 )
 from benchmark.http import (
     close_active_requests,
@@ -83,14 +80,11 @@ from benchmark.opencode import (
     resolve_opencode_binary,
 )
 from benchmark.persistence.sqlite_import import LegacySQLiteImporter
-from benchmark.persistence.sqlite_reports import SQLiteReportSource
 from benchmark.persistence.storage import (
-    JsonReportSource,
     RunIdentity,
     SQLiteRunStore,
-    latest_result_rows,
 )
-from benchmark.pi import pi_version, resolve_pi_worker, run_pi_probe
+from benchmark.pi import pi_version, resolve_pi_worker
 from benchmark.plugin import SCORE_SCHEMA
 from benchmark.results import save_judge_result
 from benchmark.runtime_records import (
@@ -1780,109 +1774,8 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
     parser = build_parser()
     args = parser.parse_args()
 
-    if args.measure_storage:
-        from benchmark.storage_measure import measure_storage
-        try:
-            print(json.dumps(measure_storage(), indent=2))
-        except (OSError, RuntimeError, ValueError) as exc:
-            print(f"❌ Could not measure storage: {exc}", file=sys.stderr)
-            sys.exit(1)
-        sys.exit(0)
-
-    if args.compare_storage:
-        from benchmark.storage_validation import compare_read_models
-        json_path, sqlite_path = args.compare_storage
-        source = None
-        try:
-            json_results, _plugins, _seed = JsonReportSource().load_results(json_path)
-            source = SQLiteReportSource.open(sqlite_path)
-            sqlite_results, _active, _sqlite_seed, _revision = source.load_results(
-                include_reused=True,
-            )
-            report = compare_read_models(
-                latest_result_rows(json_results), sqlite_results,
-            )
-            print(json.dumps(report.as_dict(), indent=2, default=str))
-        except (OSError, sqlite3.Error, RuntimeError, TypeError, ValueError, json.JSONDecodeError) as exc:
-            print(f"❌ Could not compare storage backends: {exc}", file=sys.stderr)
-            sys.exit(1)
-        finally:
-            if source is not None:
-                source.close()
-        sys.exit(0 if report.equivalent else 1)
-
-    dispatch_early_command(args)
-
-    if args.check_sqlite:
-        raise AssertionError("dispatch_early_command returned after check_sqlite")
-
-    if args.import_to_sqlite:
-        source_path = os.path.abspath(args.import_to_sqlite)
-        if not os.path.isfile(source_path):
-            print(f"❌ JSON state file not found: {args.import_to_sqlite}", file=sys.stderr)
-            sys.exit(1)
-        output_path = args.sqlite_output or os.path.join(
-            os.path.dirname(source_path), "run.sqlite3",
-        )
-        output_path = os.path.abspath(output_path)
-        if os.path.exists(output_path) and not args.overwrite_sqlite:
-            print(
-                f"❌ SQLite output already exists: {output_path}\n"
-                "   Choose --sqlite-output for a new file or pass --overwrite-sqlite explicitly.",
-                file=sys.stderr,
-            )
-            sys.exit(2)
-        if os.path.exists(output_path) and args.overwrite_sqlite:
-            try:
-                os.remove(output_path)
-            except OSError as exc:
-                print(f"❌ Could not remove existing SQLite file: {exc}", file=sys.stderr)
-                sys.exit(1)
-            for sidecar in (output_path + "-wal", output_path + "-shm"):
-                try:
-                    os.remove(sidecar)
-                except OSError:
-                    pass
-        try:
-            summary = LegacySQLiteImporter.import_path(
-                source_path, output_path,
-                include_debug_logs=args.import_debug_logs,
-            )
-        except (OSError, ValueError, TypeError, RuntimeError, json.JSONDecodeError) as exc:
-            print(f"❌ Could not import JSON to SQLite: {exc}", file=sys.stderr)
-            sys.exit(1)
-        manifest_path = os.path.join(os.path.dirname(output_path), "run-info.json")
-        manifest = {}
-        try:
-            with open(manifest_path, encoding="utf-8") as handle:
-                loaded_manifest = json.load(handle)
-            if isinstance(loaded_manifest, dict):
-                manifest.update(loaded_manifest)
-        except (OSError, json.JSONDecodeError, TypeError, UnicodeDecodeError):
-            pass
-        manifest.update({
-            "run_id": summary.run_id,
-            "revision_id": summary.revision_id,
-            "storage": "sqlite",
-            "sqlite_path": output_path,
-        })
-        _write_run_info(os.path.dirname(output_path), manifest)
-        print(json.dumps({
-            "source": source_path,
-            "sqlite": output_path,
-            "summary": summary.__dict__,
-        }, indent=2, default=str))
-        sys.exit(0)
-
-    if args.chatplayground_config:
-        from benchmark.chatplayground import generate_config as generate_chatplayground_config
-        try:
-            cfg = generate_chatplayground_config()
-        except Exception as exc:  # noqa: BLE001 - browser/network tool; report and exit
-            print(f"❌ Could not enumerate ChatPlayground models: {exc}", file=sys.stderr)
-            sys.exit(1)
-        print(json.dumps(cfg, indent=2))
-        sys.exit(0)
+    from benchmark.orchestration import _handle_early_command_exits
+    _handle_early_command_exits(args, None)
 
     config_path = _resolve_config_path(args.config)
     if config_path is None:
@@ -1898,55 +1791,8 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
     source_config = cfg.get("sources", {})
     models = cfg.get("models", {})
 
-    if args.pi_probe:
-        targets_for_probe = resolve_targets(cfg)
-        timeout = args.timeout if args.timeout is not None else int(cfg.get("timeout", 600))
-        probe_results = []
-        try:
-            node, worker = resolve_pi_worker()
-            for target_name, target in targets_for_probe.items():
-                result = run_pi_probe(
-                    source_config,
-                    target["source"],
-                    target["api_model"],
-                    timeout=timeout,
-                    pi_config=target.get("pi", {}),
-                    node=node,
-                    worker=worker,
-                )
-                result["target"] = target_name
-                result["is_agent"] = target.get("is_agent", False)
-                probe_results.append(result)
-        except (RuntimeError, TypeError, ValueError) as exc:
-            probe_results.append({"passed": False, "error": f"{type(exc).__name__}: {exc}"})
-        print(json.dumps({
-            "probe": "pi-compatibility-v1",
-            "scores_affected": False,
-            "results": probe_results,
-        }, indent=2))
-        sys.exit(0)
+    _handle_early_command_exits(args, cfg)
 
-    if args.schema_sentinel:
-        targets_for_probe = resolve_targets(cfg)
-        timeout = args.timeout if args.timeout is not None else int(cfg.get("timeout", 600))
-        probe_results = []
-        for target_name, target in targets_for_probe.items():
-            result = run_schema_sentinel(
-                source_config,
-                target["source"],
-                target["api_model"],
-                timeout=timeout,
-                drop_params=target.get("drop_params", []),
-            )
-            result["target"] = target_name
-            result["is_agent"] = target.get("is_agent", False)
-            probe_results.append(result)
-        print(json.dumps({
-            "probe": "schema-sentinel-v1",
-            "scores_affected": False,
-            "results": probe_results,
-        }, indent=2))
-        sys.exit(0)
     agents = cfg.get("agents", {})
     collisions = set(models) & set(agents)
     if collisions:
