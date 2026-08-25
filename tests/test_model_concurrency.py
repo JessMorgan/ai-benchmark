@@ -7,12 +7,15 @@ from collections import defaultdict
 from unittest import mock
 
 from benchmark.cli import (
-    SourceJudgeWorkerPool,
     SourceModelScheduler,
     _build_runner_queues,
-    _configure_judge_source,
     _resolve_judge_plugin_limit,
     _start_runner_pipeline,
+)
+from benchmark.judge_coordinator import JudgeCoordinator
+from benchmark.scheduling import (
+    SourceJudgeWorkerPool,
+    _configure_judge_source,
 )
 from benchmark.core import resolve_model_thread_limit
 

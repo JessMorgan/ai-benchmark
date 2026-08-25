@@ -44,7 +44,6 @@ from benchmark.core import (
     PreloadResult,
     _save_outputs,
     _unique_source_abbrevs,
-    judge_response,
     preload_model,
     resolve_judge_request_params,
     resolve_model_thread_limit,
@@ -57,16 +56,11 @@ from benchmark.http import (
     get_active_request_count,
     reset_429_stats,
 )
+from benchmark.judge_coordinator import JudgeCoordinator
 from benchmark.judging import (
-    confidence_weighted_consensus,
-    confidence_weighted_consensus_by_contract,
     is_successful_judge_vote,
     judge_contract,
     judge_contract_id,
-    judge_votes_for_contract,
-    merge_judge_vote,
-    save_judge_response,
-    save_judge_response_metadata,
     summarize_judge_criteria,
     summarize_schema_compatibility,
 )
@@ -86,20 +80,14 @@ from benchmark.persistence.storage import (
 )
 from benchmark.pi import pi_version, resolve_pi_worker
 from benchmark.plugin import SCORE_SCHEMA
-from benchmark.results import save_judge_result
 from benchmark.runtime_records import (
-    JudgeAttemptRecord,
-    JudgeVoteRecord,
     PluginRecord,
     TargetRecord,
 )
 from benchmark.scheduling import (
-    SourceJudgeWorkerPool,
     SourceModelScheduler,
     _BackgroundFlusher,
     _build_runner_queues,
-    _CombinedStopEvent,
-    _configure_judge_source,
     _FlushGate,
     _resolve_judge_plugin_limit,
     _runner_state_key,
@@ -2568,67 +2556,7 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
             source: _resolve_judge_plugin_limit(source_config, source)
             for source in set(judge_sources.values())
         }
-        judge_pools = {}
-        judge_seen = set()
-        judge_seen_lock = threading.Lock()
-        judge_counts_lock = threading.Lock()
-        judge_votes = {}
-        judge_votes_lock = threading.Lock()
-        halted_judges = set()
-        halted_judges_lock = threading.Lock()
-        judge_stop_events = {model: threading.Event() for model in judge_models}
-        judge_request_stop_events = {
-            model: _CombinedStopEvent(stop_event, judge_stop_events[model])
-            for model in judge_models
-        }
         judge_contracts = active_judge_contracts
-        existing_judge_counts = {model: 0 for model in judge_models}
-        existing_judge_failures = {model: 0 for model in judge_models}
-        existing_judge_expected = {model: 0 for model in judge_models}
-        for result in state.latest_results():
-            for plugin in active_plugins:
-                expected_contract = judge_contracts.get(plugin.id)
-                votes_by_model = {
-                    vote.get("model"): vote
-                    for vote in (result.get(f"{plugin.id}_judge_votes", []) or [])
-                    if isinstance(vote, dict)
-                    and vote.get("model")
-                    and vote.get("judge_contract_id") == expected_contract
-                }
-                for model, vote in votes_by_model.items():
-                    if model not in existing_judge_counts:
-                        continue
-                    existing_judge_expected[model] += 1
-                    if is_successful_judge_vote(vote):
-                        existing_judge_counts[model] += 1
-                    else:
-                        existing_judge_failures[model] += 1
-        state.set_judge_progress({
-            model: {
-                "completed": existing_judge_counts[model],
-                "failed": existing_judge_failures[model],
-                "expected": existing_judge_expected[model],
-            }
-            for model in judge_models
-        })
-
-        def replace_judge_progress(judge_name, previous_vote, current_vote):
-            """Replace one cell's prior outcome in the live footer totals."""
-            previous_completed = int(
-                previous_vote is not None and is_successful_judge_vote(previous_vote)
-            )
-            previous_failed = int(
-                previous_vote is not None and not is_successful_judge_vote(previous_vote)
-            )
-            completed = int(is_successful_judge_vote(current_vote))
-            failed = int(not is_successful_judge_vote(current_vote))
-            return state.replace_judge_progress(
-                judge_name,
-                previous_completed=previous_completed,
-                previous_failed=previous_failed,
-                completed=completed,
-                failed=failed,
-            )
 
         judge_effective_timeout = (cfg.get("judge", {}).get("timeout", timeout)
                                    if isinstance(cfg.get("judge"), dict) else timeout)
@@ -2697,525 +2625,51 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
         )
         flusher.start()
 
+        # ── judge coordinator ─────────────────────────────────────────
+        judge_coordinator = JudgeCoordinator(
+            state=state,
+            source_config=source_config,
+            targets=targets,
+            active_plugins=active_plugins,
+            judge_models=judge_models,
+            judge_contracts=judge_contracts,
+            active_judge_contracts=active_judge_contracts,
+            judge_sources=judge_sources,
+            judge_model_limits=judge_model_limits,
+            judge_plugin_limits=judge_plugin_limits,
+            judge_effective_timeout=judge_effective_timeout,
+            judge_max_tokens=judge_max_tokens,
+            judge_temperature=judge_temperature,
+            judge_request_params=judge_request_params,
+            output_dir=output_dir,
+            args=args,
+            model_thread_limits=model_thread_limits,
+            stop_event=stop_event,
+            raw_targets=raw_targets,
+            run_info=run_info,
+            flush_gate=flush_gate,
+            flusher=flusher,
+        )
+        judge_coordinator.init_progress_from_state()
+        judge_coordinator.build_pools()
+        judge_coordinator.enqueue_existing_sidecars()
+
+        # Thin proxies so callers (run_target, worker dispatch, shutdown)
+        # can reference the same names without changing.
         def enqueue_judge(sidecar, target_name, runner, plugin_id):
-            latest = {
-                (result.get("state_key", result.get("model")), result.get("runner", "http")): result
-                for result in state.latest_results()
-            }
-            try:
-                with open(sidecar, encoding="utf-8") as handle:
-                    item = json.load(handle)
-            except (OSError, json.JSONDecodeError, TypeError, UnicodeDecodeError):
-                # The sidecar is durable best-effort input. A producer may
-                # have failed between creating the path and completing its
-                # atomic replace; skip it here and let startup/final scans
-                # retry rather than failing the benchmark worker.
-                return
-            state_key = item.get("state_key", target_name)
-            result = latest.get((state_key, runner), {})
-            info = state.snapshot().get(state_key, {})
-            score = result.get(f"{plugin_id}_score")
-            if not (isinstance(score, (int, float)) and not isinstance(score, bool)):
-                score = info.get(f"{plugin_id}_score")
-            if not (isinstance(score, (int, float)) and not isinstance(score, bool)):
-                return
-            result_votes = result.get(f"{plugin_id}_judge_votes", []) or []
-            info_votes = info.get(f"{plugin_id}_judge_votes", []) or []
-            contract_id = judge_contracts.get(plugin_id)
-            votes_by_model = {
-                vote.get("model"): vote
-                for vote in [*result_votes, *info_votes]
-                if isinstance(vote, dict)
-                and vote.get("model")
-                and vote.get("judge_contract_id") == contract_id
-            }
-            judged_models = {
-                judge_name for judge_name, vote in votes_by_model.items()
-                if is_successful_judge_vote(vote)
-            }
-            for judge_name in judge_models:
-                if judge_name in judged_models:
-                    continue
-                with halted_judges_lock:
-                    if judge_name in halted_judges:
-                        continue
-                source = judge_sources[judge_name]
-                expected_added = judge_name not in votes_by_model
-                key = (
-                    os.path.abspath(sidecar), target_name, runner, plugin_id,
-                    judge_name, contract_id,
-                )
-                with judge_seen_lock:
-                    if key in judge_seen:
-                        continue
-                    judge_seen.add(key)
-                judge_pools[source].enqueue(
-                    (sidecar, target_name, runner, plugin_id, judge_name, expected_added)
-                )
-                state.update(state_key, **{f"{plugin_id}_judge_queued": True})
-                if expected_added:
-                    state.increment_judge_progress(judge_name, expected=1)
-                with judge_counts_lock:
-                    run_info["judge_counts"]["queued"] += 1
-
-        def process_judge_job(job):
-            """Judge one sidecar with every configured judge and persist consensus."""
-            sidecar, target_name, runner, plugin_id, judge_name, expected_added = job
-            with halted_judges_lock:
-                if judge_name in halted_judges:
-                    if expected_added:
-                        state.increment_judge_progress(judge_name, expected=-1)
-                    return
-            item = {}
-            previous_vote = None
-            existing_votes = []
-            state_key = (
-                target_name if runner == "http"
-                else f"{target_name} [opencode]"
-            )
-            plugin_obj = next(
-                (p for p in active_plugins if p.id == plugin_id), None
-            )
-            contract_id = judge_contract_id(plugin_obj) if plugin_obj is not None else None
-            try:
-                with open(sidecar, encoding="utf-8") as handle:
-                    item = json.load(handle)
-                latest = {
-                    (result.get("state_key", result.get("model")), result.get("runner", "http")): result
-                    for result in state.latest_results()
-                }.get((item.get("state_key", target_name), runner), {})
-                state_key = item.get("state_key", state_key)
-                live_info = state.snapshot().get(state_key, {})
-                vote_key = f"{plugin_id}_judge_votes"
-                expected_contract = item.get("judge_contract_id") or contract_id
-                all_existing_by_identity = {
-                    (vote.get("model"), vote.get("judge_contract_id")): vote
-                    for vote in [
-                        *(latest.get(vote_key, []) or []),
-                        *(live_info.get(vote_key, []) or []),
-                    ]
-                    if isinstance(vote, dict) and vote.get("model")
-                }
-                all_existing_votes = list(all_existing_by_identity.values())
-                existing_votes = judge_votes_for_contract(all_existing_votes, expected_contract)
-                existing_by_model = {
-                    vote.get("model"): vote for vote in existing_votes
-                }
-                previous_vote = existing_by_model.get(judge_name)
-                if any(
-                    vote.get("model") == judge_name
-                    and is_successful_judge_vote(vote)
-                    for vote in existing_votes
-                    if isinstance(vote, dict)
-                ):
-                    # The persisted successful vote was already included in
-                    # the initialized current-state totals. Duplicate queue
-                    # delivery must not count it a second time.
-                    return
-                activity_id = state.start_judge_activity(
-                    judge_name, target_name, plugin_id,
-                )
-                progress_chars = [0, 0]
-                last_attempt = [1]
-
-                def judge_attempt(attempt_number):
-                    progress_chars[:] = [0, 0]
-                    last_attempt[0] = attempt_number
-                    state.set_judge_activity_attempt(activity_id, attempt_number)
-
-                def judge_progress(content_delta, thinking_delta):
-                    progress_chars[0] += len(content_delta or "")
-                    progress_chars[1] += len(thinking_delta or "")
-                    state.update_judge_activity(
-                        activity_id,
-                        thinking_tokens=progress_chars[1] // 4,
-                        content_tokens=progress_chars[0] // 4,
-                    )
-
-                outcome = None
-                try:
-                    # Pass the real plugin instance so its judge sanitizer
-                    # (e.g. tool-calling masks its <tool_call> tags) is
-                    # applied when the judge prompt is built.
-                    outcome = judge_response(
-                        source_config,
-                        judge_sources[judge_name],
-                        targets[judge_name]["api_model"],
-                        sidecar,
-                        timeout=judge_effective_timeout,
-                        max_tokens=judge_max_tokens,
-                        temperature=judge_temperature,
-                        request_params=judge_request_params,
-                        drop_params=(raw_targets.get(judge_name, {}).get("drop_params", [])
-                                     if isinstance(raw_targets.get(judge_name), dict) else []),
-                        stop_event=judge_request_stop_events[judge_name],
-                        log_path=(
-                            os.path.join(output_dir, f"judge-{judge_name}.log.gz")
-                            if args.debug_logs or args.storage_profile == "debug" else None
-                        ),
-                        plugin=plugin_obj,
-                        progress_callback=judge_progress,
-                        attempt_callback=judge_attempt,
-                    )
-                finally:
-                    if outcome is not None and outcome.response_text is not None:
-                        state.update_judge_activity(
-                            activity_id,
-                            content_tokens=len(outcome.response_text) // 4,
-                        )
-                    state.finish_judge_activity(activity_id)
-                if outcome.terminal_429:
-                    with halted_judges_lock:
-                        halted_judges.add(judge_name)
-                    state.update_judge_progress(judge_name, stopped=True)
-                    judge_stop_events[judge_name].set()
-                vote = save_judge_result(
-                    outcome,
-                    model_name=judge_name,
-                    judge_prompt_version=JUDGE_PROMPT_VERSION,
-                    judge_contract_id=contract_id,
-                )
-                # Persist one immutable judge transport attempt plus its
-                # parsed vote through the storage facade. JSON is a no-op;
-                # SQLite records judge_attempts / judge_vote_attempts /
-                # judge_criteria and the revision-local current-vote
-                # projection. Fire-and-forget so the judge worker is never
-                # blocked on the background writer.
-                judge_cell_id = state.run_store.get_cell_id(
-                    state_key, runner, plugin_id,
-                )
-                if judge_cell_id is not None:
-                    judge_vote_record = JudgeVoteRecord(
-                        score=vote.get("score"),
-                        confidence=vote.get("confidence"),
-                        rationale=vote.get("rationale"),
-                        criteria=vote.get("criteria") or [],
-                        error=vote.get("error"),
-                        usable=is_successful_judge_vote(vote),
-                    )
-                    state.run_store.record_judge_attempt(
-                        judge_cell_id,
-                        JudgeAttemptRecord(
-                            judge_model=judge_name,
-                            contract_id=contract_id,
-                            attempt_number=last_attempt[0],
-                            raw_response=outcome.response_text,
-                            max_tokens=judge_max_tokens,
-                            usage=outcome.diagnostics or {},
-                            diagnostics=outcome.diagnostics or {},
-                            finish_reason=(
-                                outcome.diagnostics.get("finish_reason")
-                                if isinstance(outcome.diagnostics, dict) else None
-                            ),
-                            error=outcome.error,
-                            status="completed" if not outcome.error else "failed",
-                        ),
-                        vote=judge_vote_record,
-                    )
-                response_text = outcome.response_text or ""
-                artifact_error = None
-                try:
-                    # Always publish one raw artifact per attempt. A transport
-                    # failure produces an empty .txt plus metadata rather than
-                    # making the scheduler failure indistinguishable from a
-                    # missing/abandoned job.
-                    save_judge_response(
-                        output_dir, target_name, runner, plugin_id,
-                        judge_name, response_text, contract_id,
-                    )
-                    save_judge_response_metadata(
-                        output_dir, target_name, runner, plugin_id, judge_name,
-                        {
-                            "target": target_name,
-                            "runner": runner,
-                            "plugin": plugin_id,
-                            "judge_model": judge_name,
-                            "judge_prompt_version": JUDGE_PROMPT_VERSION,
-                            "judge_contract_id": contract_id,
-                            "status": "error" if outcome.error else "ok",
-                            "response_present": outcome.response_text is not None,
-                            "response_empty": not bool(response_text.strip()),
-                            "score": outcome.score,
-                            "confidence": outcome.confidence,
-                            "error": outcome.error,
-                            "terminal_429": outcome.terminal_429,
-                            "rationale": outcome.rationale,
-                            "criteria": outcome.criteria or [],
-                            "diagnostics": outcome.diagnostics,
-                            "saved_at": datetime.now(timezone.utc).isoformat(),
-                        },
-                        contract_id,
-                    )
-                except OSError as exc:
-                    artifact_error = f"could not save judge response artifact: {exc}"
-                if artifact_error:
-                    vote["error"] = vote["error"] or artifact_error
-                vote_identity = (state_key, runner, plugin_id)
-                with judge_votes_lock:
-                    prior_all_votes = list(
-                        judge_votes.get(vote_identity, all_existing_votes)
-                    )
-                    prior_all_votes = merge_judge_vote(prior_all_votes, vote)
-                    judge_votes[vote_identity] = prior_all_votes
-                    votes = judge_votes_for_contract(prior_all_votes, contract_id)
-                consensus_by_contract = confidence_weighted_consensus_by_contract(
-                    prior_all_votes,
-                )
-                consensus = consensus_by_contract.get(
-                    contract_id, confidence_weighted_consensus(votes),
-                )
-                expected_judges = set(judge_models)
-                received_judges = {
-                    vote.get("model") for vote in votes
-                    if is_successful_judge_vote(vote)
-                }
-                failed_judges = {
-                    vote.get("model") for vote in votes
-                    if isinstance(vote, dict)
-                    and vote.get("model") in expected_judges
-                    and not is_successful_judge_vote(vote)
-                }
-                all_judges_finished = expected_judges.issubset(
-                    received_judges | failed_judges
-                )
-                judge_status = (
-                    "failed" if all_judges_finished and consensus["error"]
-                    and not any(vote.get("score") is not None for vote in votes)
-                    else "partial" if all_judges_finished and any(vote.get("error") for vote in votes)
-                    else "complete" if all_judges_finished else "running"
-                )
-                state.run_store.record_judge_result(
-                    state_key, runner, plugin_id,
-                    score=consensus["score"],
-                    confidence=consensus["confidence"],
-                    rationale=consensus["rationale"],
-                    criteria=consensus.get("criteria", []),
-                    consensus_by_contract=consensus_by_contract,
-                    selected_contract=contract_id,
-                    error=consensus["error"],
-                    input_sha256=item.get("response_sha256"),
-                    votes=prior_all_votes,
-                    status=judge_status,
-                    complete=(
-                        all_judges_finished
-                        and expected_judges.issubset(received_judges)
-                    ),
-                )
-                # Progress counts completed usable judgments only. A failed
-                # attempt remains visible in votes/artifacts, but its judge is
-                # still eligible for a future resume retry.
-                with judge_counts_lock:
-                    replace_judge_progress(judge_name, previous_vote, vote)
-                    if is_successful_judge_vote(vote):
-                        run_info["judge_counts"]["completed"] += 1
-                    else:
-                        run_info["judge_counts"]["failed"] += 1
-                    run_info["judge_counts"]["votes"] += 1
-                if flush_gate.changed():
-                    flusher.request_flush()
-                    flush_gate.reset()
-            except Exception as exc:  # noqa: BLE001 - isolate one judge job failure
-                # Preserve a per-attempt diagnostic even when the sidecar,
-                # transport, parser, or unexpected processing path fails
-                # before a JudgeResult exists. Artifact failures are surfaced
-                # rather than silently making an attempted job look absent.
-                artifact_error = None
-                try:
-                    save_judge_response(
-                        output_dir, target_name, runner, plugin_id, judge_name, "",
-                        contract_id,
-                    )
-                    save_judge_response_metadata(
-                        output_dir, target_name, runner, plugin_id, judge_name,
-                        {
-                            "target": target_name,
-                            "runner": runner,
-                            "plugin": plugin_id,
-                            "judge_model": judge_name,
-                            "judge_prompt_version": JUDGE_PROMPT_VERSION,
-                            "judge_contract_id": contract_id,
-                            "status": "exception",
-                            "response_present": False,
-                            "response_empty": True,
-                            "error": f"{type(exc).__name__}: {exc}",
-                            "saved_at": datetime.now(timezone.utc).isoformat(),
-                        },
-                        contract_id,
-                    )
-                except OSError as artifact_exc:
-                    artifact_error = f"could not save judge failure artifact: {artifact_exc}"
-                    print(f"⚠️  {artifact_error}", file=sys.stderr)
-                state_key = item.get("state_key", state_key)
-                if previous_vote is None:
-                    latest = {
-                        (result.get("state_key", result.get("model")),
-                         result.get("runner", "http")): result
-                        for result in state.latest_results()
-                    }.get((state_key, runner), {})
-                    live_info = state.snapshot().get(state_key, {})
-                    all_existing_by_identity = {
-                        (vote.get("model"), vote.get("judge_contract_id")): vote
-                        for vote in [
-                            *(latest.get(f"{plugin_id}_judge_votes", []) or []),
-                            *(live_info.get(f"{plugin_id}_judge_votes", []) or []),
-                        ]
-                        if isinstance(vote, dict) and vote.get("model")
-                    }
-                    all_existing_votes = list(all_existing_by_identity.values())
-                    existing_votes = judge_votes_for_contract(
-                        all_existing_votes, contract_id,
-                    )
-                    previous_vote = next(
-                        (vote for vote in existing_votes if vote.get("model") == judge_name),
-                        None,
-                    )
-                failure_vote = save_judge_result(
-                    None,
-                    model_name=judge_name,
-                    judge_prompt_version=JUDGE_PROMPT_VERSION,
-                    judge_contract_id=contract_id,
-                    parsed_judge={
-                        "error": (
-                            f"judge input failed: {type(exc).__name__}: {exc}"
-                            + (f"; {artifact_error}" if artifact_error else "")
-                        ),
-                    },
-                )
-                # Record the failed judge attempt through the storage facade
-                # so SQLite retains a traceable transport/parse failure.
-                judge_cell_id = state.run_store.get_cell_id(
-                    state_key, runner, plugin_id,
-                )
-                if judge_cell_id is not None:
-                    state.run_store.record_judge_attempt(
-                        judge_cell_id,
-                        JudgeAttemptRecord(
-                            judge_model=judge_name,
-                            contract_id=contract_id,
-                            attempt_number=last_attempt[0],
-                            raw_response=None,
-                            max_tokens=judge_max_tokens,
-                            error=f"{type(exc).__name__}: {exc}",
-                            status="failed",
-                        ),
-                        vote=JudgeVoteRecord(
-                            error=failure_vote["error"],
-                            usable=False,
-                        ),
-                    )
-                vote_identity = (state_key, runner, plugin_id)
-                with judge_votes_lock:
-                    prior_all_votes = list(
-                        judge_votes.get(vote_identity, all_existing_votes)
-                    )
-                    prior_all_votes = merge_judge_vote(prior_all_votes, failure_vote)
-                    judge_votes[vote_identity] = prior_all_votes
-                expected_judges = set(judge_models)
-                current_votes = judge_votes_for_contract(prior_all_votes, contract_id)
-                received_judges = {
-                    vote.get("model") for vote in current_votes
-                    if is_successful_judge_vote(vote)
-                }
-                failed_judges = {
-                    vote.get("model") for vote in current_votes
-                    if isinstance(vote, dict)
-                    and vote.get("model") in expected_judges
-                    and not is_successful_judge_vote(vote)
-                }
-                all_judges_finished = expected_judges.issubset(
-                    received_judges | failed_judges
-                )
-                state.run_store.record_judge_result(
-                    state_key, runner, plugin_id,
-                    error=failure_vote["error"],
-                    selected_contract=contract_id,
-                    votes=prior_all_votes,
-                    status="failed" if all_judges_finished else "running",
-                    complete=(
-                        all_judges_finished
-                        and expected_judges.issubset(received_judges)
-                    ),
-                )
-                with judge_counts_lock:
-                    replace_judge_progress(judge_name, previous_vote, failure_vote)
-                    run_info["judge_counts"]["failed"] += 1
-                # Failed attempts do not advance completed progress and remain
-                # eligible for retry on resume.
-                if flush_gate.changed():
-                    flusher.request_flush()
-                    flush_gate.reset()
-
-        judge_pools = {
-            source: SourceJudgeWorkerPool(
-                source, judge_model_limits[source], process_judge_job, stop_event,
-                plugin_limit=judge_plugin_limits[source],
-                on_selection_change=lambda judge, selected: state.set_judge_selected(
-                    judge, selected,
-                ),
-            )
-            for source in set(judge_sources.values())
-        }
-
-        # Queue retained results before benchmark workers start. On resume,
-        # completed targets are deliberately absent from the benchmark queues,
-        # but their durable sidecars still need judging immediately.
-        for sidecar, item in _eligible_judge_sidecars(
-            judge_input_dir, targets, state, {plugin.id for plugin in active_plugins},
-            judge_models, judge_contracts,
-        ):
-            enqueue_judge(sidecar, item["target"], item["runner"], item["plugin"])
+            judge_coordinator.enqueue_judge(sidecar, target_name, runner, plugin_id)
 
         def source_benchmark_complete(source):
-            """Release the source's reserved benchmark slots to judging."""
-            pool = judge_pools.get(source)
-            if pool is not None:
-                pool.expand_full()
+            judge_coordinator.source_benchmark_complete(source)
 
         def start_judge_if_async(benchmark_limits, benchmark_sources=None):
-            """Reserve one judge model slot, then expand after source completion.
-
-            While a source is benchmarking, one judge model is allowed only
-            when another slot remains available. Once that source drains, all
-            of its configured model slots become judge models; each judge
-            model scores up to ``plugin_thread_limit`` cells concurrently.
-
-            """
-            if not judge_models:
-                return
-            benchmark_sources = benchmark_sources or set()
-            for source, pool in judge_pools.items():
-                _configure_judge_source(
-                    benchmark_limits,
-                    source,
-                    judge_model_limits[source],
-                    source in benchmark_sources,
-                    pool,
-                )
+            judge_coordinator.start_judge_if_async(benchmark_limits, benchmark_sources)
 
         def stop_judge_workers(*, drain=False):
-            """Stop and join all source-local judge workers."""
-            for pool in judge_pools.values():
-                pool.stop(timeout=None if drain else 1.0, drain=drain)
+            judge_coordinator.stop_judge_workers(drain=drain)
 
         def finish_judge():
-            """Drain retained judge jobs and join source-local workers."""
-            if not judge_models:
-                return
-            jobs = _eligible_judge_sidecars(
-                judge_input_dir, targets, state, {plugin.id for plugin in active_plugins},
-                judge_models, judge_contracts,
-            )
-            for sidecar, item in jobs:
-                enqueue_judge(sidecar, item["target"], item["runner"], item["plugin"])
-            for source, pool in judge_pools.items():
-                # A source with no active benchmark scheduler should still
-                # receive its full judge model pool before the final drain.
-                pool.start(judge_model_limits[source])
-            # Normal completion must not exit until every queued judge job has
-            # called task_done and every worker has terminated.
-            stop_judge_workers(drain=True)
-            if judge_models:
-                run_info["judge_status"] = "complete"
+            judge_coordinator.finish_judge()
 
         def run_target(model_name, phase_runner):
             """Run one target through one runner and persist its progress."""
