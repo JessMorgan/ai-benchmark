@@ -41,13 +41,10 @@ from benchmark.core import (
     JUDGE_PROMPT_VERSION,
     PERSISTENCE_SHUTDOWN_TIMEOUT,
     BenchmarkState,
-    PreloadResult,
     _save_outputs,
     _unique_source_abbrevs,
-    preload_model,
     resolve_judge_request_params,
     resolve_model_thread_limit,
-    resolve_preload_timeout,
     run_model,
 )
 from benchmark.http import (
@@ -2387,164 +2384,26 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
                 file=sys.stderr,
             )
 
-        preload_lock = threading.Lock()
-        preloaded_ok = set()
-        preload_failed = set()
-        preload_inflight = {}
         raw_targets = {}
         raw_targets.update(cfg.get("models", {}))
         raw_targets.update(cfg.get("agents", {}))
 
-        def _preload_is_enabled(source):
-            src_cfg = source_config.get(source) or {}
-            return (not args.no_preload and isinstance(src_cfg, dict)
-                    and bool(src_cfg.get("preload", False)))
-
-        def _set_preloading(target_name, target_info, phase_runner, enabled):
-            """Mark both runner rows for a target as warming, when present."""
-            keys = [target_name]
-            if runner_mode == "both":
-                keys.append(_runner_state_key(target_name, "opencode"))
-            elif runner_mode == "multi" or phase_runner != "http":
-                keys.append(_runner_state_key(target_name, phase_runner))
-            now = time.monotonic() if enabled else 0
-            snapshot = state.snapshot()
-            for key in keys:
-                # A completed leg must remain completed on resume. The shared
-                # probe can still warm the model for pending legs, but it
-                # must not turn an already-finished runner back into queued
-                # work or overwrite its report state.
-                if key in snapshot and snapshot[key].get("status") != "completed":
-                    state.update(
-                        key,
-                        status="queued" if enabled else snapshot[key].get("status", "pending"),
-                        preloading=enabled,
-                        preload_start_ts=now,
-                    )
+        from benchmark.preload_coordinator import PreloadCoordinator
+        preload_coordinator = PreloadCoordinator(
+            state=state,
+            source_config=source_config,
+            raw_targets=raw_targets,
+            args=args,
+            output_dir=output_dir,
+            session_seed=session_seed,
+            stop_event=stop_event,
+            run_info=run_info,
+            runner_mode=runner_mode,
+        )
 
         def _ensure_preloaded(model_name, target_info, phase_runner):
-            """Warm a target once per source/model for this process."""
-            # Pi has its own provider/session initialization in the isolated
-            # worker; never send a hidden HTTP warm-up request for a Pi leg.
-            if phase_runner == "pi" or not _preload_is_enabled(target_info["source"]):
-                return True
-            key = (target_info["source"], target_info["api_model"])
-            with preload_lock:
-                if key in preloaded_ok:
-                    return True
-                if key in preload_failed:
-                    return False
-                inflight = preload_inflight.get(key)
-                if inflight is None:
-                    inflight = threading.Event()
-                    preload_inflight[key] = inflight
-                    preload_owner = True
-                    _set_preloading(model_name, target_info, phase_runner, True)
-                    run_info["preload"]["attempted"] += 1
-                    run_info["preload"]["per_model"][f"{key[0]}/{key[1]}"] = {
-                        "status": "running",
-                        "timeout": resolve_preload_timeout(source_config, target_info["source"]),
-                    }
-                else:
-                    preload_owner = False
-            if not preload_owner:
-                inflight.wait()
-                with preload_lock:
-                    return key in preloaded_ok
-            started = time.time()
-            timeout_limit = resolve_preload_timeout(source_config, target_info["source"])
-            raw_cfg = raw_targets.get(model_name)
-            drop_params = raw_cfg.get("drop_params", []) if isinstance(raw_cfg, dict) else []
-            log_path = None
-            result = None
-            try:
-                if args.debug_logs or args.storage_profile == "debug":
-                    preload_logs = os.path.join(output_dir, "logs")
-                    os.makedirs(preload_logs, exist_ok=True)
-                    log_path = os.path.join(preload_logs, "preload.log")
-                result = preload_model(
-                    source_config,
-                    target_info["source"],
-                    target_info["api_model"],
-                    timeout_limit,
-                    session_seed=session_seed,
-                    stop_event=stop_event,
-                    drop_params=drop_params,
-                    log_path=log_path,
-                )
-            except Exception as exc:  # noqa: BLE001 - any preload failure is recorded as such
-                result = PreloadResult(
-                    success=False,
-                    elapsed=round(time.time() - started, 1),
-                    error=f"{type(exc).__name__}: {exc}",
-                )
-            try:
-                elapsed = result.elapsed if result.elapsed is not None else round(time.time() - started, 1)
-                model_key = f"{key[0]}/{key[1]}"
-                with preload_lock:
-                    run_info["preload"]["total_preload_time"] += elapsed
-                    run_info["preload"]["per_model"][model_key] = {
-                        "status": "ok" if result.success else "failed",
-                        "timeout": timeout_limit,
-                        "time": elapsed,
-                    }
-                    if result.success:
-                        preloaded_ok.add(key)
-                        run_info["preload"]["succeeded"] += 1
-                        preload_state_keys = (
-                            (model_name, _runner_state_key(model_name, "opencode"))
-                            if runner_mode == "both"
-                            else (model_name,) if phase_runner == "http"
-                            else (_runner_state_key(model_name, phase_runner),)
-                        )
-                        for state_key in preload_state_keys:
-                            if state_key in state.snapshot():
-                                state.update(
-                                    state_key, preloading=False, preload_start_ts=0,
-                                    preload_status="ok", preload_time=elapsed,
-                                    preload_error=None,
-                                )
-                    else:
-                        preload_failed.add(key)
-                        run_info["preload"]["failed"] += 1
-                        _mark_preload_failed(state, model_name, result, phase_runner, runner_mode)
-                    return result.success
-            except Exception as exc:  # noqa: BLE001 - release waiters with a deterministic failed preload
-                # Probe execution already returned, but bookkeeping can still
-                # fail (for example, a state update or diagnostic write). Do
-                # not leave a successful cache entry or an unclassified
-                # in-flight key behind: all later targets must see a stable
-                # failed result for this source/model pair.
-                failure = PreloadResult(
-                    success=False,
-                    elapsed=round(time.time() - started, 1),
-                    error=f"preload bookkeeping failed: {type(exc).__name__}: {exc}",
-                )
-                with preload_lock:
-                    preloaded_ok.discard(key)
-                    preload_failed.add(key)
-                    try:
-                        run_info["preload"]["failed"] += 1
-                        run_info["preload"]["per_model"][f"{key[0]}/{key[1]}"] = {
-                            "status": "failed",
-                            "timeout": timeout_limit,
-                            "time": failure.elapsed,
-                            "error": failure.error,
-                        }
-                    except (KeyError, TypeError):
-                        pass
-                try:
-                    _mark_preload_failed(state, model_name, failure, phase_runner, runner_mode)
-                except Exception as record_exc:  # noqa: BLE001 - preserve the original preload failure
-                    print(
-                        f"⚠️  Could not record preload failure for {model_name}: {record_exc}",
-                        file=sys.stderr,
-                    )
-                return False
-            finally:
-                with preload_lock:
-                    preload_inflight.pop(key, None)
-                    inflight.set()
+            return preload_coordinator.ensure_preloaded(
+                model_name, target_info, phase_runner)
 
         judge_input_dir = os.path.join(output_dir, "judge-inputs") if judge_models else None
         judge_sources = {name: targets[name]["source"] for name in judge_models}
