@@ -437,7 +437,12 @@ class JudgeCoordinator:
                 and not any(v.get("score") is not None for v in votes)
                 else "partial" if all_judges_finished and any(v.get("error") for v in votes)
                 else "complete" if all_judges_finished else "running")
-            self._state.run_store.record_judge_result(
+            # ``update_judge_result`` is the canonical write path: it updates
+            # the live in-memory state the TUI renders AND forwards to the
+            # durable backend (SQLite) when one is attached. Calling the run
+            # store directly here would bypass the live ``_model_info`` rows,
+            # so SQLite runs would show no judge markers in the table.
+            self._state.update_judge_result(
                 state_key, runner, plugin_id,
                 score=consensus["score"], confidence=consensus["confidence"],
                 rationale=consensus["rationale"],
@@ -546,7 +551,9 @@ class JudgeCoordinator:
             if isinstance(v, dict) and v.get("model") in expected_judges
             and not is_successful_judge_vote(v)}
         all_judges_finished = expected_judges.issubset(received_judges | failed_judges)
-        self._state.run_store.record_judge_result(
+        # Canonical write path — updates live state and forwards to the
+        # durable backend (see success path above).
+        self._state.update_judge_result(
             state_key, runner, plugin_id,
             error=failure_vote["error"], selected_contract=contract_id,
             votes=prior_all_votes,
