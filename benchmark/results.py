@@ -72,6 +72,7 @@ def save_task_result(
     repeating: bool = False,
     stream_ok: bool = False,
     empty_reason: str | None = None,
+    disposition: str | None = None,
     schema_metadata: dict[str, Any] | None = None,
     selected_error: str | None = None,
     api_model: str | None = None,
@@ -162,6 +163,8 @@ def save_task_result(
         meta["stream_error"] = selected_error
     if empty_reason is not None:
         meta["empty_reason"] = empty_reason
+    if disposition is not None:
+        meta["disposition"] = disposition
 
     if save_responses and output_dir:
         responses_dir = os.path.join(output_dir, "responses", sanitize_filename(target))
@@ -194,6 +197,7 @@ def save_task_result(
         f"{pid}_repeating": repeating,
         f"{pid}_stream_ok": stream_ok,
         f"{pid}_empty_reason": empty_reason,
+        f"{pid}_disposition": disposition,
         f"{pid}_max_tokens": max_tokens,
         f"{pid}_attempt_count": len(attempts),
         f"{pid}_retry_count": max(0, len(attempts) - 1),

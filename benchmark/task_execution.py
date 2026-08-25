@@ -382,13 +382,27 @@ def _run_plugin_task(target_name: str, api_model: str, source: str, plugin: Any,
         error=selected_error or score_error,
     )
 
-    task_error = score_error
-    if selected_nature == "token_limit" and isinstance(score, (int, float)) \
-            and not isinstance(score, bool):
-        # A token-limited response is still a valid benchmark observation:
-        # grade the content that was returned and make it reusable on resume.
-        # The truncation remains recorded in per-attempt metadata.
-        task_error = score_error
+    # Build the terminal disposition: why the selected attempt ended.
+    # Token-limit and timeout are legitimate endpoint categories — the cell
+    # is complete, graded with whatever content was available, and never
+    # re-run.  Chunk deficit (no content at all) is noted for easy
+    # post-run purge but still treated as complete.
+    disposition = selected_nature
+    if selected_nature == "token_limit" and not selected_text.strip():
+        disposition = "token_exhausted_empty"
+    elif selected_nature == "timeout" and not selected_text.strip():
+        disposition = "timeout_empty"
+
+    task_error: str | None = score_error
+    if selected_nature in {"token_limit", "timeout"}:
+        # Grade whatever content arrived and treat the cell as complete.
+        # Convert unresolved "fail" scores to a numeric 0 so the resume
+        # gate sees a reusable result instead of re-running every time.
+        task_error = None
+        if score == "fail":
+            score = 0
+            rubric = []
+            diagnostics = {}
     elif selected_nature in {"transport_error", "cancelled"} and not selected_text.strip():
         task_error = selected_error or score_error or selected_nature
     result = save_task_result(
@@ -431,6 +445,7 @@ def _run_plugin_task(target_name: str, api_model: str, source: str, plugin: Any,
         repeating=repeating,
         stream_ok=stream_ok,
         empty_reason=empty_reason,
+        disposition=disposition,
         schema_metadata=schema_metadata,
         selected_error=selected_error,
         api_model=api_model,
