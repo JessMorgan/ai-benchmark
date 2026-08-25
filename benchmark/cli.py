@@ -2726,50 +2726,27 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
         # Drain persistence through named, bounded phases so run-info can
         # distinguish a flusher timeout from a final snapshot or backend-close
         # failure. The synchronous save remains the durability fallback.
+        from benchmark.shutdown_coordinator import ShutdownCoordinator
+        shutdown_coordinator = ShutdownCoordinator(
+            flusher=flusher,
+            shutdown_timeout=shutdown_timeout,
+            report_persistence_failure=report_persistence_failure,
+            state=state,
+            state_file=state_file,
+            plugin_versions=plugin_versions,
+            persistence_lock=persistence_lock,
+        )
+
         shutdown = ShutdownSupervisor(shutdown_timeout)
+        shutdown.run("background-flusher", shutdown_coordinator.stop_flusher)
 
-        def stop_flusher():
-            if flusher.stop(timeout=shutdown_timeout):
-                return True
-            report_persistence_failure(
-                "background flush shutdown timeout",
-                TimeoutError(f"state flusher did not stop within {shutdown_timeout:g}s"),
-            )
-            return False
-
-        shutdown.run("background-flusher", stop_flusher)
-
-        def save_final_state():
-            with persistence_lock:
-                state.run_store.save_snapshot(
-                    state_file,
-                    plugin_versions=plugin_versions,
-                    raise_on_error=True,
-                )
-                journal_failures = state.consume_journal_failures()
-                if journal_failures:
-                    raise RuntimeError("; ".join(journal_failures))
-            return True
-
-        if not shutdown.run("final-state-snapshot", save_final_state):
+        if not shutdown.run("final-state-snapshot", shutdown_coordinator.save_final_state):
             error = shutdown.results[-1].error or "unknown final snapshot failure"
             report_persistence_failure("synchronous final state save", RuntimeError(error))
 
-        def close_backend():
-            if state.close_run_store(timeout=shutdown_timeout):
-                return True
-            report_persistence_failure(
-                "storage backend close timeout",
-                TimeoutError(f"storage backend did not close within {shutdown_timeout:g}s"),
-            )
-            return False
-
-        shutdown.run("storage-backend-close", close_backend)
+        shutdown.run("storage-backend-close", shutdown_coordinator.close_backend)
         run_info["shutdown_phases"] = shutdown.as_dict()
-        backend = getattr(state, "_run_store", None)
-        if backend is not None and getattr(backend, "backend_name", "json") == "sqlite":
-            for failure in backend.writer.failures:
-                report_persistence_failure("sqlite writer", failure)
+        shutdown_coordinator.check_sqlite_writer_failures()
 
 
         # Reports are generated exactly once here, whether the run completed
