@@ -32,6 +32,7 @@ AI Benchmark lets you:
 | [Plugin: Multi-Turn Conversation](./plugins/multi-turn-conversation.md) | Section-local revision task |
 | [Plugin: Event Processor](./plugins/event-processor.md) | Concurrent idempotent code-generation task |
 | [Plugin: Long Context](./plugins/long-context.md) | Long-context retrieval and cross-reference task |
+| [Plugin: Design-Doc Decomposition](./plugins/decomposition.md) | Design-doc to task-plan decomposition task |
 | [Development](./development.md) | How to write plugins, run tests, and contribute |
 | [Architecture](./architecture.md) | High-level design of the benchmark system |
 

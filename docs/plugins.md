@@ -9,6 +9,7 @@ AI Benchmark uses a plugin architecture. Each plugin defines a benchmark task, a
 | `code-review` | Code Review | 1.0.0 | 15 | No |
 | `debug-consistency` | Debug Report Consistency | 0.1.0 | 20 | Yes |
 | `debug-traversal` | Debug Traversal | 1.0.0 | 20 | Yes |
+| `decomposition` | Design-Doc Decomposition | 0.1.0 | 20 | Yes |
 | `error-recovery` | Error Recovery | 1.1.0 | 20 | Yes |
 | `event-processor` | Concurrent Event Processor | 0.1.0 | 20 | Yes |
 | `instruction-following` | Instruction Following | 1.0.0 | 20 | Yes |
@@ -136,6 +137,7 @@ See [Development](./development.md#writing-a-plugin) for a step-by-step guide.
 - [Debug Report Consistency](./plugins/debug-consistency.md)
 - [Long-Context Retrieval](./plugins/long-context.md)
 - [Concurrent Event Processor](./plugins/event-processor.md)
+- [Design-Doc Decomposition](./plugins/decomposition.md)
 
 All challenge plugins have dedicated documentation or an explicit source-level
 contract. Use `python ai-benchmark.py --list-plugins` for the authoritative

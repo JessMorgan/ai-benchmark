@@ -77,6 +77,7 @@ class TestPluginDiscovery(unittest.TestCase):
                 "data-transformation",
                 "debug-consistency",
                 "debug-traversal",
+                "decomposition",
                 "error-recovery",
                 "event-processor",
                 "instruction-following",

@@ -9,6 +9,7 @@ EXPECTED_MAX_SCORES = {
     "code-review": 15.0,
     "debug-consistency": 20.0,
     "debug-traversal": 20.0,
+    "decomposition": 20.0,
     "error-recovery": 20.0,
     "event-processor": 20.0,
     "instruction-following": 20.0,

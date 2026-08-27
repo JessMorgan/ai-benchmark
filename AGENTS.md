@@ -21,7 +21,7 @@ to know what to grep first.
   - **`benchmark/opencode.py`** — the optional OpenCode subprocess runner.
   - **`benchmark/pi.py`** — the optional isolated Pi SDK/Node worker runner; `pi-worker/` contains its pinned manifest and NDJSON adapter.
   - **`benchmark/chatplayground.py`** — subprocess-proxy adapter for ChatPlayground.ai sources (`api_protocol: "chatplayground"`, username/password login, buffered answers, UI model enumeration). **`benchmark/chatplayground_worker.py`** — the Playwright browser worker it spawns; the runner never imports Playwright (its sync API is not thread-safe, and running it in a model worker thread segfaulted the run).
-- **`plugins/challenges/`** — 18 task plugins; auto-discovered and metadata-validated. **`plugins/outputs/`** — md/csv/html/pdf output plugins.
+- **`plugins/challenges/`** — 19 task plugins; auto-discovered and metadata-validated. **`plugins/outputs/`** — md/csv/html/pdf output plugins.
 - **`scripts/recover_state_from_csv.py`** — explicit, dry-run-by-default recovery of historical `benchmark_state.json` files from `results.csv`; accepts known historical plugin subsets and rejects unknown score columns.
 - **`tests/`** — pytest/unittest suite. **`pyproject.toml`** — project metadata, runtime deps, `dev` dependency group, pytest/coverage/mypy/ruff config. **`uv.lock`** — pinned dependency tree (managed by `uv`).
 
@@ -121,7 +121,7 @@ polls it and rebuilds its frame only when something displayed changed
 - `judge-inputs/` — retained prompt/response sidecars used for resumable
   semantic judging; raw judge responses are stored beside benchmark artifacts.
 
-## Built-in plugins (18)
+## Built-in plugins (19)
 
 The runtime inventory below matches `uv run ai-benchmark --list-plugins`:
 
@@ -130,6 +130,7 @@ The runtime inventory below matches `uv run ai-benchmark --list-plugins`:
 | `code-review` | 1.0.0 | 15 | No |
 | `debug-consistency` | 0.1.0 | 20 | Yes |
 | `debug-traversal` | 1.0.0 | 20 | Yes |
+| `decomposition` | 0.1.0 | 20 | Yes |
 | `error-recovery` | 1.1.0 | 20 | Yes |
 | `event-processor` | 0.1.0 | 20 | Yes |
 | `instruction-following` | 1.0.0 | 20 | Yes |
