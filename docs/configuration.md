@@ -235,6 +235,11 @@ loaded (keeping one local model resident instead of round-robin swapping).
 For judging, a non-positive `plugin_thread_limit` serializes to one cell per
 judge rather than meaning "unlimited", since fanning out an unbounded number
 of concurrent judge requests is a resource hazard.
+Judge workers are scheduled benchmark-first: benchmarks keep every model slot
+and plugin slot they need, judges use the model slots benchmarks cannot fill,
+and a benchmarking model that also judges on the same source shares its
+`plugin_thread_limit` capacity with its judge version (benchmarks keep first
+claim on freed slots) until its benchmark completes.
 The effective limits and observed `peak_active_models` are written to
 `run-info.json`. Response times from overlapping targets are not directly
 comparable with a serial run.

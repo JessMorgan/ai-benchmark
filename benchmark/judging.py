@@ -1,22 +1,21 @@
 """Pure judge prompt, parsing, and consensus helpers."""
 from __future__ import annotations
 
+import contextlib
+import copy
 import hashlib
 import json
 import os
+import threading
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Literal
 
-from .outputs import sanitize_filename
-from .plugin import normalize_score
-import copy
-import contextlib
-import threading
-
 from .http import stream_request
 from .observer import TaskObserver
+from .outputs import sanitize_filename
+from .plugin import normalize_score
 from .request_models import GenerationFields, HTTPRequest
 from .response_classification import count_tokens
 from .transport import (
@@ -27,7 +26,6 @@ from .transport import (
     execute_task,
 )
 from .transport_options import HTTPTransportOptions
-
 
 JUDGE_PROMPT_VERSION = "judge-v8"
 JUDGE_MAX_RATIONALE_CHARS = 2000

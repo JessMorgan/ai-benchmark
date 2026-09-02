@@ -1568,7 +1568,8 @@ def _mark_preload_failed(state, model_name, result, phase_runner, runner_mode):
 def _start_runner_pipeline(targets_by_source, opencode_pending, http_pending,
                            run_target, stop_event, on_error,
                            model_thread_limits=None, peak_callback=None,
-                           source_complete_callback=None):
+                           source_complete_callback=None,
+                           active_models_callback=None):
 
     """Start one OpenCode-to-HTTP worker per source.
 
@@ -1608,6 +1609,7 @@ def _start_runner_pipeline(targets_by_source, opencode_pending, http_pending,
             source, limit, target_names, run_pipeline, stop_event, on_error,
             runner_label="pipeline", peak_callback=peak_callback,
             on_complete=source_complete_callback,
+            active_models_callback=active_models_callback,
         )
         try:
             scheduler.run_until_drained()
@@ -2521,8 +2523,8 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
         def source_benchmark_complete(source):
             judge_coordinator.source_benchmark_complete(source)
 
-        def start_judge_if_async(benchmark_limits, benchmark_sources=None):
-            judge_coordinator.start_judge_if_async(benchmark_limits, benchmark_sources)
+        def start_judge_if_async(benchmark_limits, benchmark_queues=None):
+            judge_coordinator.start_judge_if_async(benchmark_limits, benchmark_queues)
 
         def stop_judge_workers(*, drain=False):
             judge_coordinator.stop_judge_workers(drain=drain)
@@ -2571,6 +2573,7 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
                       opencode_binary=opencode_binary,
                       pi_node=pi_node, pi_worker=pi_worker,
                       pi_config=target_info.get("pi", {}),
+                      plugin_slot_gates=judge_coordinator.plugin_slot_gates,
                       display_name=model_name, config_target_name=model_name,
                       debug_logs=bool(args.debug_logs or args.storage_profile == "debug"))
             # OpenCode and HTTP pipeline workers can finish different targets
@@ -2608,10 +2611,10 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
                 plugin_ids=plugin_ids,
             )
             benchmark_limits = dict(model_thread_limits)
-            benchmark_sources = {
-                source for source, names in source_queues.items() if names
+            benchmark_queues = {
+                source: names for source, names in source_queues.items() if names
             }
-            start_judge_if_async(benchmark_limits, benchmark_sources)
+            start_judge_if_async(benchmark_limits, benchmark_queues)
             phase_threads = []
             for source, model_names in source_queues.items():
                 if not model_names:
@@ -2627,6 +2630,7 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
                         source, benchmark_limits.get(source, 1), model_names, run_one,
                         stop_event, on_worker_error, peak_callback=record_peak,
                         on_complete=source_benchmark_complete,
+                        active_models_callback=judge_coordinator.set_benchmark_active,
                     )
                     scheduler.run_until_drained()
 
@@ -2659,10 +2663,10 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
                 plugin_ids=plugin_ids,
             )
             benchmark_limits = dict(model_thread_limits)
-            benchmark_sources = {
-                source for source, names in targets_by_source.items() if names
+            benchmark_queues = {
+                source: names for source, names in targets_by_source.items() if names
             }
-            start_judge_if_async(benchmark_limits, benchmark_sources)
+            start_judge_if_async(benchmark_limits, benchmark_queues)
 
             pipeline_threads = _start_runner_pipeline(
                 targets_by_source, opencode_pending, http_pending,
@@ -2670,6 +2674,7 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
                 model_thread_limits=benchmark_limits,
                 peak_callback=record_peak,
                 source_complete_callback=source_benchmark_complete,
+                active_models_callback=judge_coordinator.set_benchmark_active,
             )
             if pipeline_threads:
                 try:

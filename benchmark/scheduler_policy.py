@@ -6,7 +6,12 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class SourceSchedulingPolicy:
-    """Capacity policy for one source's benchmark and judge pipelines."""
+    """Capacity policy for one source's benchmark and judge pipelines.
+
+    Benchmarks always keep priority and claim the full source model limit.
+    Judge workers may use the model slots benchmarks cannot fill, and a
+    benchmarking model that is also a judge may share its plugin capacity.
+    """
 
     source: str
     model_limit: int
@@ -17,16 +22,33 @@ class SourceSchedulingPolicy:
         if self.model_limit <= 0:
             raise ValueError(f"{self.source}: model_limit must be a positive integer")
 
-    def capacity(self, *, benchmark_active: bool) -> tuple[int, int]:
-        """Return ``(benchmark_slots, judge_slots)`` for current source work."""
-        if benchmark_active:
-            return self.model_limit, 0
-        return self.model_limit, self.model_limit
+    def benchmark_slots(self, queued: int = 0) -> int:
+        """Benchmarks always claim the full source model limit (priority)."""
+        return self.model_limit
 
-    def benchmark_has_priority(self, *, benchmark_active: bool) -> bool:
-        """Whether benchmark work currently owns all source model slots."""
-        return bool(benchmark_active)
+    def judge_model_slots(self, queued: int = 0) -> int:
+        """Model slots benchmarks cannot use become judge slots.
 
-    def can_start_judges(self, *, benchmark_active: bool) -> bool:
-        """Whether judge workers may be activated for this source."""
-        return not benchmark_active
+        ``queued`` is the number of benchmark models pending or running for
+        the source; at most ``model_limit`` run at once, so the judge budget
+        is the leftover capacity. A benchmarking model that is also a judge
+        rides its model's benchmark slot instead (see the pool's dual-role
+        handling), so it does not consume a free slot here.
+        """
+        try:
+            queued = max(0, int(queued))
+        except (TypeError, ValueError):
+            queued = 0
+        return max(0, self.model_limit - min(self.model_limit, queued))
+
+    def can_start_judges(self, queued: int = 0) -> bool:
+        """Whether free model slots exist for regular (non-dual-role) judges.
+
+        Dual-role judges can also start while the source is benchmarking; that
+        exemption is enforced at the pool level, not by this policy.
+        """
+        return self.judge_model_slots(queued) > 0
+
+    def benchmark_has_priority(self) -> bool:
+        """Benchmark work always owns the source's model slots."""
+        return True

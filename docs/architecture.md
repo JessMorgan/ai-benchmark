@@ -257,6 +257,11 @@ Output generators handle mixed numeric and string scores defensively to avoid er
 - Judge concurrency mirrors the same two tiers per source: `model_thread_limit`
   bounds distinct judge models (each run to completion in discovery order), and
   `plugin_thread_limit` bounds cells scored per judge.
+- Judge scheduling is benchmark-first with capacity reuse: benchmarks keep the
+  full source model limit, judge pools use only the model slots benchmarks
+  cannot fill, and a benchmarking model that is also a judge on the same source
+  rides its own open plugin slots (bounded by `plugin_thread_limit`, with
+  benchmarks keeping priority) until its benchmark completes.
 
 ## Resume Behavior
 

@@ -82,13 +82,47 @@ class JudgeCoordinator:
             for model in judge_models
         }
         self._pools: dict[str, Any] = {}
+        self._plugin_slot_gates: Any = None
 
     @property
     def pools(self) -> dict[str, Any]:
         return self._pools
 
+    @property
+    def plugin_slot_gates(self) -> Any:
+        """Shared plugin-capacity gates for dual-role (benchmark+judge) models."""
+        return self._plugin_slot_gates
+
     def build_pools(self) -> None:
-        from benchmark.scheduling import SourceJudgeWorkerPool
+        from benchmark.scheduling import (
+            PluginSlotGateRegistry,
+            SourceJudgeWorkerPool,
+            _resolve_judge_plugin_limit,
+        )
+        gates = PluginSlotGateRegistry()
+        for judge_model in self._judge_models:
+            source = self._judge_sources.get(judge_model)
+            if source is None:
+                continue
+            target_info = self._targets.get(judge_model)
+            if not isinstance(target_info, dict) or target_info.get("source") != source:
+                # Not benchmarked on its own judge source: no plugin sharing.
+                continue
+            raw = self._source_config.get(source, {})
+            plugin_limit = raw.get("plugin_thread_limit", 1) if isinstance(raw, dict) else 1
+            try:
+                plugin_limit = int(plugin_limit)
+            except (TypeError, ValueError):
+                plugin_limit = 1
+            if plugin_limit <= 0:
+                # The benchmark side treats a non-positive plugin_thread_limit
+                # as unlimited; a gate would cap benchmarks, so skip sharing.
+                continue
+            gates.create(
+                source, judge_model,
+                _resolve_judge_plugin_limit(self._source_config, source),
+            )
+        self._plugin_slot_gates = gates
         self._pools = {
             source: SourceJudgeWorkerPool(
                 source,
@@ -99,6 +133,7 @@ class JudgeCoordinator:
                 on_selection_change=lambda judge, selected: (
                     self._state.set_judge_selected(judge, selected)
                 ),
+                plugin_gates=gates,
             )
             for source in set(self._judge_sources.values())
         }
@@ -157,17 +192,23 @@ class JudgeCoordinator:
 
     def start_judge_if_async(
         self, benchmark_limits: dict[str, int],
-        benchmark_sources: set[str] | None = None,
+        benchmark_queues: dict[str, list[str]] | None = None,
     ) -> None:
         from benchmark.scheduling import _configure_judge_source
         if not self._judge_models:
             return
         for source, pool in self._pools.items():
+            queue = list((benchmark_queues or {}).get(source, ()))
             _configure_judge_source(
                 benchmark_limits, source,
-                self._judge_model_limits[source],
-                source in (benchmark_sources or set()), pool,
+                self._judge_model_limits[source], queue, pool,
             )
+
+    def set_benchmark_active(self, source: str, models: Any) -> None:
+        """Update the pool's view of pending/running benchmark models."""
+        pool = self._pools.get(source)
+        if pool is not None:
+            pool.set_benchmark_models(models)
 
     def stop_judge_workers(self, *, drain: bool = False) -> None:
         for pool in self._pools.values():
@@ -186,8 +227,8 @@ class JudgeCoordinator:
             )
             for sidecar, item in jobs:
                 self.enqueue_judge(sidecar, item["target"], item["runner"], item["plugin"])
-        for source, pool in self._pools.items():
-            pool.start(self._judge_model_limits[source])
+        for pool in self._pools.values():
+            pool.expand_full()
         self.stop_judge_workers(drain=True)
         if self._judge_models:
             self._run_info["judge_status"] = "complete"

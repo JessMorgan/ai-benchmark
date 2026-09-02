@@ -7,6 +7,7 @@ import threading
 import time
 from collections import deque
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+from typing import Any
 
 from .scheduler_policy import SourceSchedulingPolicy
 
@@ -133,7 +134,8 @@ class SourceModelScheduler:
 
     def __init__(self, source, max_models, target_names, run_target,
                  stop_event, on_error, *, runner_label="model",
-                 peak_callback=None, on_complete=None):
+                 peak_callback=None, on_complete=None,
+                 active_models_callback=None):
         self.source = source
         self.max_models = max(1, int(max_models))
         self.target_names = list(target_names)
@@ -143,15 +145,27 @@ class SourceModelScheduler:
         self.runner_label = runner_label
         self.peak_callback = peak_callback
         self.on_complete = on_complete
+        self.active_models_callback = active_models_callback
 
-    def run_until_drained(self):
+    def run_until_drained(self) -> None:
         """Submit at most ``max_models`` targets and refill as they finish."""
         next_index = 0
         futures = {}
         active = 0
+        running: set[str] = set()
         executor = ThreadPoolExecutor(max_workers=self.max_models)
         try:
-            def submit_next():
+            def pending_benchmark_models() -> frozenset[str]:
+                # Models with benchmark work not yet finished: those running
+                # plus those still queued. Submission is FIFO, so the queued
+                # tail is exactly ``target_names[next_index:]``.
+                return frozenset(running) | frozenset(self.target_names[next_index:])
+
+            def report_active_models() -> None:
+                if self.active_models_callback:
+                    self.active_models_callback(self.source, pending_benchmark_models())
+
+            def submit_next() -> bool:
                 nonlocal next_index, active
                 if self.stop_event.is_set() or next_index >= len(self.target_names):
                     return False
@@ -161,9 +175,11 @@ class SourceModelScheduler:
                 # path are the claim guard: a target is inserted into exactly
                 # one future before any refill can advance the queue.
                 futures[executor.submit(self.run_target, target_name)] = target_name
+                running.add(target_name)
                 active += 1
                 if self.peak_callback:
                     self.peak_callback(self.source, active)
+                report_active_models()
                 return True
 
             for _ in range(self.max_models):
@@ -173,9 +189,11 @@ class SourceModelScheduler:
                 done, _ = wait(futures, return_when=FIRST_COMPLETED)
                 for future in done:
                     target_name = futures.pop(future)
+                    running.discard(target_name)
                     active -= 1
                     if self.peak_callback:
                         self.peak_callback(self.source, active)
+                    report_active_models()
                     try:
                         future.result()
                     except Exception as exc:  # noqa: BLE001 - isolate one target failure
@@ -356,7 +374,7 @@ class _BackgroundFlusher:
                 self._record_failure(exc)
 
 
-def _resolve_judge_plugin_limit(source_config, source):
+def _resolve_judge_plugin_limit(source_config: dict[str, Any], source: str) -> int:
     """Return the per-judge cell concurrency for ``source``.
 
     Mirrors ``plugin_thread_limit``: how many cells one judge model scores at
@@ -375,24 +393,23 @@ def _resolve_judge_plugin_limit(source_config, source):
 
 
 def _configure_judge_source(benchmark_limits, source, full_limit,
-                            benchmark_active, pool):
-    """Configure strict benchmark-first scheduling for one source.
+                            benchmark_queue, pool):
+    """Configure judge capacity for one source.
 
-    Benchmark work keeps every configured source slot while it is pending or
-    running. Judge jobs may be queued during that phase, but judge workers are
-    not allocated until the source benchmark scheduler calls
-    ``pool.expand_full()`` after draining its queue. Sources with no benchmark
-    work can start their full judge pool immediately.
+    Benchmarks keep priority and claim every configured model slot while work
+    is pending or running. Judge workers use the capacity benchmarks cannot:
+    the free model slots (``model_limit`` minus the pending benchmark load)
+    host regular judges, and a benchmarking model that is also a judge rides
+    its model's open plugin slots. ``benchmark_queue`` is the list of model
+    names with pending benchmark work for the source; the pool seeds its
+    reservation from it and the benchmark scheduler's live
+    ``set_benchmark_models`` callbacks keep it current as models start and
+    finish. Sources with no benchmark work start their full judge pool
+    immediately.
     """
     policy = SourceSchedulingPolicy(source, max(1, int(full_limit)))
-    benchmark_slots, judge_slots = policy.capacity(benchmark_active=benchmark_active)
-    benchmark_limits[source] = benchmark_slots
-    if not policy.can_start_judges(benchmark_active=benchmark_active):
-        # Jobs may already be queued, but no judge runner is activated until
-        # the benchmark completion callback releases the reserved capacity.
-        pool.start(0)
-    else:
-        pool.start(judge_slots)
+    benchmark_limits[source] = policy.benchmark_slots(len(benchmark_queue))
+    pool.set_benchmark_models(benchmark_queue)
 
 
 class _CombinedStopEvent:
@@ -505,6 +522,81 @@ class _JudgeQueue:
             self._condition.notify_all()
 
 
+class PluginSlotGate:
+    """Bound combined concurrent requests to one model.
+
+    A model that both benchmarks and judges on a source shares its
+    ``plugin_thread_limit`` capacity between the two: benchmark plugin tasks
+    acquire with ``benchmark=True`` and are served before waiting judge cells,
+    while judge cells acquire with ``benchmark=False`` and only take a slot
+    when no benchmark is waiting. This keeps benchmarks in priority while
+    letting the model's judge version fill idle plugin capacity.
+    """
+
+    def __init__(self, capacity: int) -> None:
+        self._capacity = max(1, int(capacity))
+        self._used = 0
+        self._benchmark_waiters = 0
+        self._condition = threading.Condition()
+
+    def acquire(self, *, benchmark: bool) -> None:
+        """Block until a plugin slot is available for the requesting side."""
+        with self._condition:
+            if benchmark:
+                self._benchmark_waiters += 1
+            try:
+                self._condition.wait_for(lambda: self._can_acquire_locked(benchmark))
+                self._used += 1
+            finally:
+                if benchmark:
+                    self._benchmark_waiters -= 1
+
+    def _can_acquire_locked(self, benchmark: bool) -> bool:
+        if self._used >= self._capacity:
+            return False
+        if benchmark:
+            return True
+        # A judge cell may take a free slot only while no benchmark plugin is
+        # waiting, so benchmarks always get first claim on freed capacity.
+        return self._benchmark_waiters == 0
+
+    def release(self) -> None:
+        """Release one plugin slot, waking any waiting acquirers."""
+        with self._condition:
+            self._used -= 1
+            self._condition.notify_all()
+
+    @property
+    def in_use(self) -> int:
+        with self._condition:
+            return self._used
+
+
+class PluginSlotGateRegistry:
+    """Per-(source, model) plugin gates for dual-role models.
+
+    A gate exists only when a judge model is also a benchmark target on the
+    same source, so the benchmark pipeline and the judge pool agree on how
+    many concurrent requests the model may serve in total.
+    """
+
+    def __init__(self) -> None:
+        self._gates: dict[tuple[str, str], PluginSlotGate] = {}
+        self._lock = threading.Lock()
+
+    def create(self, source: str, model: str, capacity: int) -> None:
+        with self._lock:
+            self._gates[(source, model)] = PluginSlotGate(capacity)
+
+    def get(self, source: str, model: str) -> PluginSlotGate | None:
+        with self._lock:
+            return self._gates.get((source, model))
+
+    def __len__(self) -> int:
+        with self._lock:
+            return len(self._gates)
+
+
 _JUDGE_QUEUE_STOP = object()
 _NO_JUDGE = object()
 
@@ -522,18 +614,20 @@ class SourceJudgeWorkerPool:
     """
 
     def __init__(self, source, model_limit, process_job, stop_event,
-                 plugin_limit=1, on_selection_change=None):
+                 plugin_limit=1, on_selection_change=None, plugin_gates=None):
         self.source = source
         self.model_limit = max(1, int(model_limit))
         self.plugin_limit = max(1, int(plugin_limit))
         self.process_job = process_job
         self.stop_event = stop_event
         self.on_selection_change = on_selection_change
+        self.plugin_gates = plugin_gates
         self._condition = threading.Condition()
         self._queues = {}          # judge -> _JudgeQueue
         self._order = []           # judge discovery order
         self._active = {}          # judge -> judge-runner thread
-        self._active_limit = 0     # currently allowed concurrent judge models
+        self._active_limit = 0     # free model slots for regular judges
+        self._benchmark_models = set()  # pending/running benchmark models
         self._stopped = False
 
     @property
@@ -569,15 +663,7 @@ class SourceJudgeWorkerPool:
             self._queue_for(judge).put(job)
             self._activate_locked()
 
-    def _next_pending_judge_locked(self):
-        for judge in self._order:
-            if judge in self._active:
-                continue
-            if self._queues[judge].unfinished_tasks > 0:
-                return judge
-        return _NO_JUDGE
-
-    def _notify_selection(self, judge, selected):
+    def _notify_selection(self, judge: Any, selected: bool) -> None:
         """Publish a judge-runner selection change without affecting workers."""
         if self.on_selection_change is None:
             return
@@ -590,21 +676,41 @@ class SourceJudgeWorkerPool:
                 file=sys.stderr,
             )
 
-    def _activate_locked(self):
-        """Start judge runners for pending judges while model slots are free."""
-        while (not self._stopped and not self.stop_event.is_set()
-               and len(self._active) < self._active_limit):
-            judge = self._next_pending_judge_locked()
-            if judge is _NO_JUDGE:
+    def _activate_locked(self) -> None:
+        """Start judge runners for pending judges while capacity is available.
+
+        A judge whose model is currently benchmarking or queued for it
+        (dual-role) rides that model's benchmark slot and its open plugin
+        slots, so it may start without a free model slot, capped by the source
+        model limit. A regular judge requires a free model slot
+        (``_active_limit``). Judges run to completion in discovery order among
+        the currently startable ones.
+        """
+        while not self._stopped and not self.stop_event.is_set():
+            if len(self._active) >= self.model_limit:
+                break
+            candidate = _NO_JUDGE
+            for judge in self._order:
+                if judge in self._active:
+                    continue
+                if self._queues[judge].unfinished_tasks <= 0:
+                    continue
+                if judge in self._benchmark_models:
+                    candidate = judge
+                    break
+                if len(self._active) < self._active_limit:
+                    candidate = judge
+                    break
+            if candidate is _NO_JUDGE:
                 break
             thread = threading.Thread(
                 target=self._judge_runner,
-                args=(judge,),
-                name=f"judge-runner-{self.source}-{judge}",
+                args=(candidate,),
+                name=f"judge-runner-{self.source}-{candidate}",
                 daemon=True,
             )
-            self._active[judge] = thread
-            self._notify_selection(judge, True)
+            self._active[candidate] = thread
+            self._notify_selection(candidate, True)
             thread.start()
 
     def _judge_runner(self, judge):
@@ -621,7 +727,7 @@ class SourceJudgeWorkerPool:
         for index in range(self.plugin_limit):
             thread = threading.Thread(
                 target=self._cell_worker,
-                args=(queue,),
+                args=(judge, queue),
                 name=f"judge-cell-{self.source}-{judge}-{index + 1}",
                 daemon=True,
             )
@@ -642,7 +748,10 @@ class SourceJudgeWorkerPool:
             self._activate_locked()
             self._condition.notify_all()
 
-    def _cell_worker(self, judge_queue):
+    def _cell_worker(self, judge, judge_queue):
+        gate = None
+        if self.plugin_gates is not None:
+            gate = self.plugin_gates.get(self.source, judge)
         while True:
             try:
                 job = judge_queue.get(timeout=0.2)
@@ -652,6 +761,10 @@ class SourceJudgeWorkerPool:
                 continue
             if job is _JUDGE_QUEUE_STOP:
                 return
+            if gate is not None:
+                # Dual-role model: share its plugin capacity with the running
+                # benchmark; benchmarks keep priority over judge cells.
+                gate.acquire(benchmark=False)
             try:
                 # On cancellation, discard queued work instead of starting
                 # another judge request. The active request receives the same
@@ -673,6 +786,8 @@ class SourceJudgeWorkerPool:
                         file=sys.stderr,
                     )
             finally:
+                if gate is not None:
+                    gate.release()
                 judge_queue.task_done()
 
     def start(self, count=1):
@@ -682,9 +797,29 @@ class SourceJudgeWorkerPool:
             self._activate_locked()
             self._condition.notify_all()
 
-    def expand_full(self):
+    def set_benchmark_models(self, models: Any) -> None:
+        """Update which models hold pending-or-running benchmark work.
+
+        The judge model-slot budget is the source model limit minus the models
+        benchmarks are using; a judge whose model is in ``models`` is dual-role
+        and rides that model's benchmark slot (its requests are bounded by the
+        shared plugin gate) instead of consuming a free model slot. The
+        benchmark scheduler calls this as models start and finish, and
+        ``_configure_judge_source`` seeds it from the pending queue.
+        """
+        with self._condition:
+            self._benchmark_models = set(models or ())
+            self._active_limit = max(0, self.model_limit - len(self._benchmark_models))
+            self._activate_locked()
+            self._condition.notify_all()
+
+    def expand_full(self) -> None:
         """Release the benchmark reservation and allow the full judge pool."""
-        self.start(self.model_limit)
+        with self._condition:
+            self._benchmark_models = set()
+            self._active_limit = self.model_limit
+            self._activate_locked()
+            self._condition.notify_all()
 
     def drain(self):
         """Wait until every queued job has finished, unless cancellation starts."""

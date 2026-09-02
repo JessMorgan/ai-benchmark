@@ -838,7 +838,8 @@ def run_model(model_name: str, source: str, state: Any, active_plugins: list[Any
               opencode_config_path: str | None = None, opencode_model: str | None = None,
               opencode_agent: str | None = None, opencode_binary: str | None = None,
               pi_node: str | None = None, pi_worker: str | None = None, pi_config: dict[str, Any] | None = None, display_name: str | None = None,
-              config_target_name: str | None = None, debug_logs: bool = False) -> dict[str, Any]:
+              config_target_name: str | None = None, debug_logs: bool = False,
+              plugin_slot_gates: Any = None) -> dict[str, Any]:
     """Run active plugins for one model or agent through a selected runner."""
     start = time.time()
     target_name = model_name
@@ -1023,6 +1024,7 @@ def run_model(model_name: str, source: str, state: Any, active_plugins: list[Any
                  pi_config=pi_config,
                  display_name=display_name,
                  config_target_name=config_target_name,
+                 plugin_slot_gates=plugin_slot_gates,
                  debug_logs=debug_logs)
     return r
 
@@ -1035,7 +1037,8 @@ def _run_plugins(target_name: str, api_model: str, source: str, state: Any, acti
                  system_prompt: str | None = None, is_agent: bool = False, runner: str = "http", opencode_config_path: str | None = None,
                  opencode_model: str | None = None, opencode_agent: str | None = None, opencode_binary: str | None = None,
                  pi_node: str | None = None, pi_worker: str | None = None, pi_config: dict[str, Any] | None = None,
-                 display_name: str | None = None, config_target_name: str | None = None, debug_logs: bool = False) -> None:
+                 display_name: str | None = None, config_target_name: str | None = None,
+                 debug_logs: bool = False, plugin_slot_gates: Any = None) -> None:
     """Run plugins for one model using a thread pool of bounded size.
 
     A single-worker pool (``max_workers=1``) is equivalent to sequential
@@ -1058,123 +1061,134 @@ def _run_plugins(target_name: str, api_model: str, source: str, state: Any, acti
     def run_one(plugin: Any) -> None:
         nonlocal consecutive_429, breaker_triggered
         pid = plugin.id
-        # The model-level circuit breaker is distinct from the process-wide
-        # stop event: one rate-limited model must not cancel other models.
-        # Queued plugins check it before dispatch, while in-flight HTTP
-        # requests receive the same event so their retry sleep can stop.
-        if (stop_event and stop_event.is_set()) or model_stop_event.is_set():
-            with lock:
-                errors[pid] = breaker_reason if breaker_triggered else "Cancelled"
-            return
-        # Track in-flight plugin tasks via the canonical ``running_pids``
-        # list (not a pid-suffix status string) so the live TUI can render
-        # each plugin's "[streaming]"/"[requested]" bracket cell and the
-        # table's yellow highlight for parallel plugin threads (max_workers > 1).
-        # The previous ``state.update(target_name, status=f"running_{pid}")``
-        # write left ``running_pids`` empty, which silently broke every
-        # downstream visualisation that read it.
-        state.start_plugin_run(target_name, pid)
+        gate = None
+        if plugin_slot_gates is not None:
+            # A dual-role model shares its plugin capacity with its judge
+            # version; benchmark plugin tasks keep priority over judge cells.
+            gate = plugin_slot_gates.get(source, display_name or target_name)
+        if gate is not None:
+            gate.acquire(benchmark=True)
         try:
-            task_result = _run_plugin_task(target_name, api_model, source, plugin, source_config,
-                                           timeout, max_tokens, session_seed, log_file,
-                                           global_cfg or {}, state=state,
-                                           stop_event=model_stop_event,
-                                           save_responses=save_responses,
-                                           output_dir=output_dir,
-                                           judge_input_dir=judge_input_dir,
-                                           judge_enqueue=judge_enqueue,
-                                           system_prompt=system_prompt,
-                                           is_agent=is_agent,
-                                           runner=runner,
-                                           opencode_config_path=opencode_config_path,
-                                           opencode_model=opencode_model,
-                                           opencode_agent=opencode_agent,
-                                           opencode_binary=opencode_binary,
-                                           pi_node=pi_node,
-                                           pi_worker=pi_worker,
-                                           pi_config=pi_config,
-                                           artifact_target_name=display_name or target_name,
-                                           config_target_name=config_target_name or display_name or target_name,
-                                           debug_logs=debug_logs)
-            result = task_result.result
-            err = task_result.error
-        finally:
-            # Clear the in-flight marker even on exception/cancellation so
-            # parallel plugins aren't stranded in the running list when one
-            # of them raises. ``status`` is committed by the outer caller
-            # (``run_model``) once all plugins resolve.
-            state.finish_plugin_run(target_name, pid)
-        with lock:
-            results[pid] = result  # type: ignore[assignment]
-            if err:
-                errors[pid] = err
-            # A successful or non-429 test breaks the streak. Cancellation
-            # caused by the breaker itself is not a test outcome and must not
-            # reset the counter while the remaining futures drain.
-            if err == breaker_reason or err == "Cancelled":
-                pass
-            elif _is_exhausted_429(err):
-                consecutive_429 += 1
-                if consecutive_429 >= 2:
-                    breaker_triggered = True
-                    model_stop_event.set()
-            else:
-                consecutive_429 = 0
-        if err or result is None:
-            return
-        state.update(target_name,                        **{f"{pid}_score": result[f"{pid}_score"],
-                     f"{pid}_rubric": result.get(f"{pid}_rubric", []),
-                     f"{pid}_diagnostics": result.get(f"{pid}_diagnostics", {}),
-                     f"{pid}_tps": result[f"{pid}_tps"],
+            # The model-level circuit breaker is distinct from the process-wide
+            # stop event: one rate-limited model must not cancel other models.
+            # Queued plugins check it before dispatch, while in-flight HTTP
+            # requests receive the same event so their retry sleep can stop.
+            if (stop_event and stop_event.is_set()) or model_stop_event.is_set():
+                with lock:
+                    errors[pid] = breaker_reason if breaker_triggered else "Cancelled"
+                return
+            # Track in-flight plugin tasks via the canonical ``running_pids``
+            # list (not a pid-suffix status string) so the live TUI can render
+            # each plugin's "[streaming]"/"[requested]" bracket cell and the
+            # table's yellow highlight for parallel plugin threads (max_workers > 1).
+            # The previous ``state.update(target_name, status=f"running_{pid}")``
+            # write left ``running_pids`` empty, which silently broke every
+            # downstream visualisation that read it.
+            state.start_plugin_run(target_name, pid)
+            try:
+                task_result = _run_plugin_task(target_name, api_model, source, plugin, source_config,
+                                               timeout, max_tokens, session_seed, log_file,
+                                               global_cfg or {}, state=state,
+                                               stop_event=model_stop_event,
+                                               save_responses=save_responses,
+                                               output_dir=output_dir,
+                                               judge_input_dir=judge_input_dir,
+                                               judge_enqueue=judge_enqueue,
+                                               system_prompt=system_prompt,
+                                               is_agent=is_agent,
+                                               runner=runner,
+                                               opencode_config_path=opencode_config_path,
+                                               opencode_model=opencode_model,
+                                               opencode_agent=opencode_agent,
+                                               opencode_binary=opencode_binary,
+                                               pi_node=pi_node,
+                                               pi_worker=pi_worker,
+                                               pi_config=pi_config,
+                                               artifact_target_name=display_name or target_name,
+                                               config_target_name=config_target_name or display_name or target_name,
+                                               debug_logs=debug_logs)
+                result = task_result.result
+                err = task_result.error
+            finally:
+                # Clear the in-flight marker even on exception/cancellation so
+                # parallel plugins aren't stranded in the running list when one
+                # of them raises. ``status`` is committed by the outer caller
+                # (``run_model``) once all plugins resolve.
+                state.finish_plugin_run(target_name, pid)
+            with lock:
+                results[pid] = result  # type: ignore[assignment]
+                if err:
+                    errors[pid] = err
+                # A successful or non-429 test breaks the streak. Cancellation
+                # caused by the breaker itself is not a test outcome and must
+                # not reset the counter while the remaining futures drain.
+                if err == breaker_reason or err == "Cancelled":
+                    pass
+                elif _is_exhausted_429(err):
+                    consecutive_429 += 1
+                    if consecutive_429 >= 2:
+                        breaker_triggered = True
+                        model_stop_event.set()
+                else:
+                    consecutive_429 = 0
+            if err or result is None:
+                return
+            state.update(target_name,                        **{f"{pid}_score": result[f"{pid}_score"],
+                         f"{pid}_rubric": result.get(f"{pid}_rubric", []),
+                         f"{pid}_diagnostics": result.get(f"{pid}_diagnostics", {}),
+                         f"{pid}_tps": result[f"{pid}_tps"],
 
-                        f"{pid}_response_time": result[f"{pid}_response_time"],
-                        f"{pid}_output_tokens": result[f"{pid}_output_tokens"],
-                        f"{pid}_thinking_tokens": result.get(f"{pid}_thinking_tokens"),
-                        f"{pid}_total_tokens": result.get(f"{pid}_total_tokens"),
-                     f"{pid}_empty_reason": result.get(f"{pid}_empty_reason"),
-                     f"{pid}_max_tokens": result.get(f"{pid}_max_tokens"),
-                     f"{pid}_attempt_count": result.get(f"{pid}_attempt_count"),
-                     f"{pid}_retry_count": result.get(f"{pid}_retry_count"),
-                     f"{pid}_retried": result.get(f"{pid}_retried"),
-                     f"{pid}_retry_reasons": result.get(f"{pid}_retry_reasons"),
-                     f"{pid}_selected_attempt": result.get(f"{pid}_selected_attempt"),
-                     f"{pid}_retry_reason": result.get(f"{pid}_retry_reason"),
-                     f"{pid}_prompt_altered": result.get(f"{pid}_prompt_altered"),
-                     f"{pid}_response_nature": result.get(f"{pid}_response_nature"),
-                     f"{pid}_finish_reason": result.get(f"{pid}_finish_reason"),
-                     f"{pid}_truncated": result.get(f"{pid}_truncated"),
-                     f"{pid}_truncated_due_to_time": result.get(f"{pid}_truncated_due_to_time"),
-                     f"{pid}_repeating": result.get(f"{pid}_repeating"),
-                     f"{pid}_failure_cause": result.get(f"{pid}_failure_cause"),
-                     f"{pid}_attempts": result.get(f"{pid}_attempts"),
-                     f"{pid}_runner_metadata": result.get(f"{pid}_runner_metadata", {}),
-                     f"{pid}_schema_requested": result.get(f"{pid}_schema_requested"),
-                     f"{pid}_schema_request_status": result.get(f"{pid}_schema_request_status"),
-                     f"{pid}_response_schema_valid": result.get(f"{pid}_response_schema_valid"),
-                     f"{pid}_schema_enforcement_verified": result.get(f"{pid}_schema_enforcement_verified"),
-                     f"{pid}_schema_fallback_used": result.get(f"{pid}_schema_fallback_used"),
-                     f"{pid}_schema_fallback_error": result.get(f"{pid}_schema_fallback_error")})
-        # After the task finishes, retain the selected logical attempt as the
-        # final attempt marker. During execution this field tracks the live
-        # attempt; after completion it agrees with the per-attempt token
-        # counts stored in the result.
-        selected_attempt = result.get(f"{pid}_selected_attempt")
-        if selected_attempt is not None:
-            state.update(target_name, **{f"{pid}_attempt": selected_attempt})
-        # A judge can finish between this plugin's state update and the
-        # eventual model-level result append. Queue this plugin immediately;
-        # ``BenchmarkState.add_result`` merges any judge fields written during
-        # that window into the result row.
-        if judge_input_dir and judge_enqueue:
-            score = result.get(f"{pid}_score")
-            if isinstance(score, (int, float)) and not isinstance(score, bool):
-                sidecar = judge_sidecar_path(
-                    judge_input_dir, display_name or target_name, runner, pid,
-                )
-                if os.path.isfile(sidecar):
-                    judge_enqueue(
-                        sidecar, display_name or target_name, runner, pid,
+                            f"{pid}_response_time": result[f"{pid}_response_time"],
+                            f"{pid}_output_tokens": result[f"{pid}_output_tokens"],
+                            f"{pid}_thinking_tokens": result.get(f"{pid}_thinking_tokens"),
+                            f"{pid}_total_tokens": result.get(f"{pid}_total_tokens"),
+                         f"{pid}_empty_reason": result.get(f"{pid}_empty_reason"),
+                         f"{pid}_max_tokens": result.get(f"{pid}_max_tokens"),
+                         f"{pid}_attempt_count": result.get(f"{pid}_attempt_count"),
+                         f"{pid}_retry_count": result.get(f"{pid}_retry_count"),
+                         f"{pid}_retried": result.get(f"{pid}_retried"),
+                         f"{pid}_retry_reasons": result.get(f"{pid}_retry_reasons"),
+                         f"{pid}_selected_attempt": result.get(f"{pid}_selected_attempt"),
+                         f"{pid}_retry_reason": result.get(f"{pid}_retry_reason"),
+                         f"{pid}_prompt_altered": result.get(f"{pid}_prompt_altered"),
+                         f"{pid}_response_nature": result.get(f"{pid}_response_nature"),
+                         f"{pid}_finish_reason": result.get(f"{pid}_finish_reason"),
+                         f"{pid}_truncated": result.get(f"{pid}_truncated"),
+                         f"{pid}_truncated_due_to_time": result.get(f"{pid}_truncated_due_to_time"),
+                         f"{pid}_repeating": result.get(f"{pid}_repeating"),
+                         f"{pid}_failure_cause": result.get(f"{pid}_failure_cause"),
+                         f"{pid}_attempts": result.get(f"{pid}_attempts"),
+                         f"{pid}_runner_metadata": result.get(f"{pid}_runner_metadata", {}),
+                         f"{pid}_schema_requested": result.get(f"{pid}_schema_requested"),
+                         f"{pid}_schema_request_status": result.get(f"{pid}_schema_request_status"),
+                         f"{pid}_response_schema_valid": result.get(f"{pid}_response_schema_valid"),
+                         f"{pid}_schema_enforcement_verified": result.get(f"{pid}_schema_enforcement_verified"),
+                         f"{pid}_schema_fallback_used": result.get(f"{pid}_schema_fallback_used"),
+                         f"{pid}_schema_fallback_error": result.get(f"{pid}_schema_fallback_error")})
+            # After the task finishes, retain the selected logical attempt as
+            # the final attempt marker. During execution this field tracks the
+            # live attempt; after completion it agrees with the per-attempt
+            # token counts stored in the result.
+            selected_attempt = result.get(f"{pid}_selected_attempt")
+            if selected_attempt is not None:
+                state.update(target_name, **{f"{pid}_attempt": selected_attempt})
+            # A judge can finish between this plugin's state update and the
+            # eventual model-level result append. Queue this plugin
+            # immediately; ``BenchmarkState.add_result`` merges any judge
+            # fields written during that window into the result row.
+            if judge_input_dir and judge_enqueue:
+                score = result.get(f"{pid}_score")
+                if isinstance(score, (int, float)) and not isinstance(score, bool):
+                    sidecar = judge_sidecar_path(
+                        judge_input_dir, display_name or target_name, runner, pid,
                     )
+                    if os.path.isfile(sidecar):
+                        judge_enqueue(
+                            sidecar, display_name or target_name, runner, pid,
+                        )
+        finally:
+            if gate is not None:
+                gate.release()
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = {executor.submit(run_one, plugin): plugin for plugin in plugins_to_run}

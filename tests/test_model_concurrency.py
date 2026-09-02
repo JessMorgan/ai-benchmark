@@ -12,12 +12,13 @@ from benchmark.cli import (
     _resolve_judge_plugin_limit,
     _start_runner_pipeline,
 )
-from benchmark.judge_coordinator import JudgeCoordinator
+from benchmark.core import resolve_model_thread_limit
 from benchmark.scheduling import (
+    PluginSlotGate,
+    PluginSlotGateRegistry,
     SourceJudgeWorkerPool,
     _configure_judge_source,
 )
-from benchmark.core import resolve_model_thread_limit
 
 
 def test_resolve_judge_plugin_limit():
@@ -182,14 +183,19 @@ def test_partial_completed_row_keeps_benchmark_reservation_path_active():
     assert queues == {"NAS": ["nas-model"]}
 
 
-def test_judge_source_waits_for_benchmarks_before_starting_pool():
+def test_judge_source_reserves_only_slots_benchmarks_cannot_use():
     stop = threading.Event()
     pool = SourceJudgeWorkerPool("Cloud", 3, lambda _job: None, stop)
     limits = {"Cloud": 3}
 
-    _configure_judge_source(limits, "Cloud", 3, True, pool)
+    # A full benchmark queue leaves no free model slots for regular judges.
+    _configure_judge_source(limits, "Cloud", 3, ["a", "b", "c"], pool)
     assert limits["Cloud"] == 3
     assert pool.model_slots == 0
+
+    # A short queue leaves the unused model slots for judges.
+    _configure_judge_source(limits, "Cloud", 3, ["a"], pool)
+    assert pool.model_slots == 2
     pool.start(3)
     assert pool.model_slots == 3
     pool.stop(timeout=1)
@@ -412,7 +418,9 @@ def test_judge_pool_cancellation_discards_queued_work_and_joins():
     assert processed == [0]
 
 
-def test_judge_pool_expands_after_source_benchmark_completion():
+def test_judge_pool_uses_free_slots_during_benchmarks_then_expands():
+    """Judge workers fill model slots benchmarks cannot use, then take the
+    full pool once the source benchmark queue drains."""
     stop = threading.Event()
     benchmark_release = threading.Event()
     benchmark_started = threading.Event()
@@ -453,15 +461,15 @@ def test_judge_pool_expands_after_source_benchmark_completion():
             active_benchmarks -= 1
 
     full_limit = 3
-    benchmark_limit = full_limit
     pool = SourceJudgeWorkerPool("Cloud", full_limit, process_judge, stop)
     assert pool.model_slots == 0
     for judge in ("judge-0", "judge-1", "judge-2"):
         pool.enqueue((judge, None, None, None, judge, True))
 
     benchmark = SourceModelScheduler(
-        "Cloud", benchmark_limit, ["model-a", "model-b"], run_benchmark,
+        "Cloud", full_limit, ["model-a", "model-b"], run_benchmark,
         stop, lambda *_args: None,
+        active_models_callback=lambda _source, models: pool.set_benchmark_models(models),
         on_complete=lambda _source: pool.expand_full(),
     )
     benchmark_thread = threading.Thread(target=benchmark.run_until_drained)
@@ -469,31 +477,24 @@ def test_judge_pool_expands_after_source_benchmark_completion():
 
     assert benchmark_started.wait(timeout=1)
     assert benchmark_both_active.wait(timeout=1)
-    # Judge workers must not start while benchmark work is active, even when
-    # judge jobs are already queued.
-    assert not judge_started.wait(timeout=0.1)
+    # One free model slot (3 limit, 2 benchmarks) hosts one judge while the
+    # benchmarks are still running; the other two judges wait.
+    assert judge_started.wait(timeout=1)
     with lock:
         assert active_benchmarks == 2
         assert peak_benchmarks == 2
-        assert active_judges == 0
-        assert peak_judges == 0
-    assert pool.model_slots == 0
+        assert active_judges == 1
+        assert peak_judges == 1
+        assert active_benchmarks + active_judges == full_limit
+    assert pool.model_slots == 1
 
     benchmark_release.set()
     benchmark_thread.join(timeout=2)
     assert not benchmark_thread.is_alive()
-    pool.start(full_limit)
-    assert judge_started.wait(timeout=1)
-    assert pool.model_slots == full_limit
-
-    benchmark_release.set()
-    benchmark_thread.join(timeout=2)
-    assert not benchmark_thread.is_alive()
-
+    # Queue drained -> the full judge pool runs.
     assert full_pool_active.wait(timeout=1)
     with lock:
         assert peak_judges == full_limit
-        assert active_benchmarks == 0
         assert active_judges == full_limit
     assert pool.model_slots == full_limit
     assert len(judge_calls) == 3
@@ -580,3 +581,250 @@ def test_both_mode_queue_excludes_targets_with_no_pending_leg():
     assert targets_by_source == {"Cloud": ["pending"]}
     assert opencode_pending == {"Cloud": []}
     assert http_pending == {"Cloud": {"pending"}}
+
+
+def test_benchmark_scheduler_reports_pending_or_running_models():
+    """The active-models callback reports queued + running models so the
+    judge pool reserves exactly the load benchmarks will actually use."""
+    stop = threading.Event()
+    seen = []
+    release = threading.Event()
+
+    def run_benchmark(_name):
+        release.wait(timeout=2)
+
+    scheduler = SourceModelScheduler(
+        "Cloud", 2, ["a", "b", "c"], run_benchmark, stop,
+        lambda *_args: None,
+        active_models_callback=lambda _source, models: seen.append(models),
+    )
+    thread = threading.Thread(target=scheduler.run_until_drained)
+    thread.start()
+
+    deadline = time.time() + 1
+    while not seen and time.time() < deadline:
+        time.sleep(0.01)
+    assert seen
+    # The whole queue counts as pending load, not just the running pair.
+    assert seen[0] == frozenset({"a", "b", "c"})
+    release.set()
+    thread.join(timeout=2)
+    assert not thread.is_alive()
+    assert seen[-1] == frozenset()
+
+
+def test_dual_role_judge_activates_without_free_model_slot():
+    """A benchmarking model that is also a judge may start judging on its
+    open plugin slots even when every model slot is taken by benchmarks."""
+    stop = threading.Event()
+    release = threading.Event()
+    processed = []
+    lock = threading.Lock()
+
+    def process(job):
+        release.wait(timeout=2)
+        with lock:
+            processed.append(job[4])
+
+    pool = SourceJudgeWorkerPool("Cloud", 2, process, stop, plugin_limit=1)
+    # Two benchmarks fill the source's entire model limit.
+    pool.set_benchmark_models({"model-a", "model-b"})
+    assert pool.model_slots == 0
+    # The dual-role judge rides its model's benchmark slot and starts anyway.
+    pool.enqueue(("cell", None, None, None, "model-a", True))
+    # A regular judge must wait for a free model slot.
+    pool.enqueue(("cell", None, None, None, "other", True))
+    time.sleep(0.1)
+    assert pool.thread_count == 1
+
+    release.set()
+    deadline = time.time() + 1
+    while pool.thread_count > 0 and time.time() < deadline:
+        time.sleep(0.02)
+    assert pool.thread_count == 0
+    with lock:
+        assert processed == ["model-a"]
+
+    # When model-a's benchmark completes, a free slot appears and the
+    # regular judge can start.
+    pool.set_benchmark_models({"model-b"})
+    assert pool.model_slots == 1
+    deadline = time.time() + 1
+    while "other" not in processed and time.time() < deadline:
+        time.sleep(0.02)
+    pool.stop(timeout=2)
+    with lock:
+        assert sorted(processed) == ["model-a", "other"]
+
+
+def test_plugin_slot_gate_bounds_and_benchmark_priority():
+    """Benchmarks get freed slots before waiting judge cells, and combined
+    concurrency never exceeds the gate capacity."""
+    gate = PluginSlotGate(2)
+    gate.acquire(benchmark=True)
+    gate.acquire(benchmark=True)
+    assert gate.in_use == 2
+
+    judge_got_slot = threading.Event()
+
+    def judge_acquire():
+        gate.acquire(benchmark=False)
+        judge_got_slot.set()
+        gate.release()
+
+    judge_thread = threading.Thread(target=judge_acquire)
+    judge_thread.start()
+    time.sleep(0.05)
+    assert not judge_got_slot.is_set()
+
+    # A benchmark that arrives while the judge waits takes the next freed
+    # slot first (benchmark priority), leaving the judge blocked.
+    benchmark_got_slot = threading.Event()
+
+    def benchmark_acquire():
+        gate.acquire(benchmark=True)
+        benchmark_got_slot.set()
+        time.sleep(0.05)
+        gate.release()
+
+    benchmark_thread = threading.Thread(target=benchmark_acquire)
+    benchmark_thread.start()
+    time.sleep(0.05)
+    gate.release()  # free one slot
+    assert benchmark_got_slot.wait(timeout=1)
+    assert not judge_got_slot.is_set()
+    benchmark_thread.join(timeout=2)
+    assert judge_got_slot.wait(timeout=1)
+    judge_thread.join(timeout=2)
+    gate.release()  # the test's second benchmark-held slot
+    assert gate.in_use == 0
+
+
+def test_dual_role_judge_cells_bounded_by_plugin_gate():
+    """Judge cells for a benchmarking model wait for open plugin slots
+    instead of exceeding the model's plugin_thread_limit."""
+    stop = threading.Event()
+    gates = PluginSlotGateRegistry()
+    gates.create("Cloud", "model-a", 1)
+    processed = []
+    lock = threading.Lock()
+
+    def process(job):
+        with lock:
+            processed.append(job[0])
+
+    pool = SourceJudgeWorkerPool(
+        "Cloud", 1, process, stop, plugin_limit=2, plugin_gates=gates,
+    )
+    pool.set_benchmark_models({"model-a"})
+    # The benchmark holds the only plugin slot before any judge cell can
+    # start, so no judge cell may run while it is held.
+    gate = gates.get("Cloud", "model-a")
+    assert gate is not None
+    gate.acquire(benchmark=True)
+    pool.enqueue(("cell-0", None, None, None, "model-a", True))
+    pool.enqueue(("cell-1", None, None, None, "model-a", True))
+    time.sleep(0.1)
+    with lock:
+        assert processed == []
+    gate.release()
+    deadline = time.time() + 1
+    while len(processed) < 2 and time.time() < deadline:
+        time.sleep(0.02)
+    with lock:
+        assert sorted(processed) == ["cell-0", "cell-1"]
+    pool.stop(timeout=2)
+
+
+def test_gate_registry_only_created_for_known_keys():
+    gates = PluginSlotGateRegistry()
+    gates.create("Cloud", "model-a", 4)
+    assert len(gates) == 1
+    assert gates.get("Cloud", "model-a") is not None
+    assert gates.get("Cloud", "model-b") is None
+    assert gates.get("Other", "model-a") is None
+
+
+def _build_coordinator(targets, judge_models, judge_sources, source_config):
+    from benchmark.judge_coordinator import JudgeCoordinator
+    from benchmark.scheduling import _FlushGate
+
+    return JudgeCoordinator(
+        state=mock.Mock(),
+        source_config=source_config,
+        targets=targets,
+        active_plugins=[],
+        judge_models=judge_models,
+        judge_contracts={},
+        active_judge_contracts={},
+        judge_sources=judge_sources,
+        judge_model_limits={"Cloud": 3},
+        judge_plugin_limits={"Cloud": 2},
+        judge_effective_timeout=60.0,
+        judge_max_tokens=4096,
+        judge_temperature=0.0,
+        judge_request_params=None,
+        output_dir="/tmp",
+        args=mock.Mock(debug_logs=False, storage_profile="compact"),
+        model_thread_limits={"Cloud": 3},
+        stop_event=threading.Event(),
+        raw_targets={},
+        run_info={"judge_counts": {}},
+        flush_gate=_FlushGate(),
+        flusher=mock.Mock(),
+    )
+
+
+def test_judge_coordinator_gates_only_dual_role_models():
+    """The coordinator creates plugin gates only for judges that are also
+    benchmark targets on the same source, and seeds the pool's benchmark
+    reservation from the pending queue."""
+    targets = {
+        "model-a": {"source": "Cloud", "api_model": "model-a"},
+        "model-b": {"source": "Cloud", "api_model": "model-b"},
+        "model-c": {"source": "Other", "api_model": "model-c"},
+    }
+    judge_models = ["model-a", "model-b", "model-c", "judge-only"]
+    judge_sources = {
+        "model-a": "Cloud", "model-b": "Cloud",
+        "model-c": "Cloud", "judge-only": "Cloud",
+    }
+    coordinator = _build_coordinator(
+        targets, judge_models, judge_sources,
+        {"Cloud": {"plugin_thread_limit": 2}},
+    )
+    coordinator.build_pools()
+    gates = coordinator.plugin_slot_gates
+    # model-a/model-b benchmark on the same source they judge -> shared gate.
+    assert len(gates) == 2
+    assert gates.get("Cloud", "model-a") is not None
+    assert gates.get("Cloud", "model-b") is not None
+    # model-c judges on Cloud but benchmarks on Other -> no sharing; a judge
+    # that is not a benchmark target at all -> no sharing.
+    assert gates.get("Cloud", "model-c") is None
+    assert gates.get("Cloud", "judge-only") is None
+
+    pool = coordinator.pools["Cloud"]
+    # A queue that fills the limit leaves no free model slots for judges.
+    coordinator.start_judge_if_async(
+        {"Cloud": 3}, {"Cloud": ["model-a", "model-b", "model-c"]})
+    assert pool.model_slots == 0
+    # Live benchmark activity updates the reservation.
+    coordinator.set_benchmark_active("Cloud", {"model-a"})
+    assert pool.model_slots == 2
+    coordinator.set_benchmark_active("Cloud", set())
+    assert pool.model_slots == 3
+    pool.stop(timeout=1)
+
+
+def test_judge_coordinator_skips_gate_when_plugin_limit_unbounded():
+    """A non-positive plugin_thread_limit means benchmarks are unbounded, so
+    no gate is created (a gate would wrongly cap benchmark concurrency)."""
+    targets = {"model-a": {"source": "Cloud", "api_model": "model-a"}}
+    coordinator = _build_coordinator(
+        targets, ["model-a"], {"model-a": "Cloud"},
+        {"Cloud": {"plugin_thread_limit": 0}},
+    )
+    coordinator.build_pools()
+    assert len(coordinator.plugin_slot_gates) == 0
+    coordinator.pools["Cloud"].stop(timeout=1)
