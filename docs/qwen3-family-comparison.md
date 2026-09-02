@@ -34,6 +34,14 @@ default); for qwen3.8:27b and qwen3.8-flash-next the default is the
 before the `qwen3.8-flash-next` and `qwen3.8-thinking-xhigh-nas` config
 changes, so the cross-panel check covers the 35b and 27b families only.
 
+One addition to the family inventory: the **ornith** models are the operator's
+`qwen3.6:35b`-derived fine-tune line (the 35B variants below — ornith-1.0/1.5;
+the ornith 9b and 397b variants derive from other bases and are out of scope
+here). They belong to the qwen3.6:35b family, so their target rows are listed
+with that family in the tables; ornith-1.0-nas and ornith-1.5-nas also served
+as judges in these runs, and ornith-1.5-nas judged its own target row in
+panel A (see the footnotes).
+
 ## Family tables
 
 ### Panel A — 4-judge run (sqlite rev 35)
@@ -44,6 +52,9 @@ changes, so the cross-panel check covers the 35b and 27b families only.
 | `qwen3.6-general-instruct-nas:35b-64k` | 19 | 70.4 | **82.3** | 86.2 | 81.0 |
 | `qwen3.6-general-thinking-nas:35b-64k` | 19 | 66.7 | 97.6 | 98.6 | 97.3 |
 | `qwen3.6-coding-thinking-nas:35b-64k` | 19 | 73.5 | 97.9 | 98.7 | 97.7 |
+| `ornith-1.0:35b-64k`† | 18 | 70.3 | 96.5 | 97.9 | 96.0 |
+| `ornith-1.0-nas:35b-64k`† | 19 | 76.7 | 97.1 | 98.6 | 96.6 |
+| `ornith-1.5-nas:35b-64k`† | 19 | **78.2** | **98.4** | 99.6 | 98.0 |
 | `qwen3.8-instruct-nas:27b-64k` (default) | 19 | 67.4 | **86.8** | 87.9 | 86.4 |
 | `qwen3.8-thinking-low-nas:27b-64k` | 19 | 70.3 | 98.4 | 98.9 | 98.2 |
 | `qwen3.8-thinking-medium-nas:27b-64k` | 19 | 69.7 | 97.9 | 98.5 | 97.7 |
@@ -60,6 +71,12 @@ changes, so the cross-panel check covers the 35b and 27b families only.
 complete; ornith-1.5 voted on every listed cell except two of the 18 for the
 35b default.
 
+† ornith-1.x:35b = the operator's qwen3.6:35b-derived line. `ornith-1.5-nas`
+sat on this run's judge panel, so its target row includes its own votes on all
+19 cells; its +1.6 offset over the other judges on that row matches its usual
+generosity everywhere else, so there is no self-favoritism signal. `ornith-1.0`
+rows were judged by the full panel including ornith-1.5-nas.
+
 ### Panel B — 17-judge run (json state) — cross-panel check
 
 | Model | n | det | panel | ornith-1.5 |
@@ -68,6 +85,9 @@ complete; ornith-1.5 voted on every listed cell except two of the 18 for the
 | `qwen3.6-general-instruct-nas:35b-64k` | 18 | 69.6 | 86.2 | 91.2 |
 | `qwen3.6-general-thinking-nas:35b-64k` | 18 | 83.6 | 95.9 | 98.0 |
 | `qwen3.6-coding-thinking-nas:35b-64k` | 18 | 75.2 | 95.1 | 97.4 |
+| `ornith-1.0:35b-64k`† | 18 | 63.6 | 89.8 | 93.1 |
+| `ornith-1.0-nas:35b-64k`† | 18 | 70.1 | 95.9 | 98.8 |
+| `ornith-1.5-nas:35b-64k`† | — | — | — | — |
 | `qwen3.8-instruct-nas:27b-64k` (default) | 18 | 70.9 | 87.5 | 88.5 |
 | `qwen3.8-thinking-low-nas:27b-64k` | 18 | 60.5 | 97.4 | 99.6 |
 | `qwen3.8-thinking-medium-nas:27b-64k` | 18 | 64.9 | 95.1 | 97.3 |
@@ -80,6 +100,9 @@ complete; ornith-1.5 voted on every listed cell except two of the 18 for the
 ² ornith-1.5 did not cover `qwen3.6:35b-32k` in panel B (13–17 judges per cell).
 ³ The NAS xhigh variant ran only in panel B; it was dropped from the config for
 the next run (`#qwen3.8-thinking-xhigh-nas:27b-64k` is commented out).
+† ornith-1.x:35b = the operator's qwen3.6:35b-derived line (14 and 13 judges
+voted on the two rows, respectively). `ornith-1.5-nas:35b-64k` ran as a judge
+only in panel B — it has no target cells there; its target data is in panel A.
 
 ### Like-for-like slots (Panel A)
 
@@ -112,10 +135,11 @@ included the ox-alpha and nemotron-3-ultra anchors:
   variants is noisy across attempts (opus-thinking-xhigh: 89.4 in A vs 92.3
   in B; opus-thinking-medium: 88.0 vs 79.1) — treat intra-opus comparisons as
   provisional; the opus-below-NAS-thinking gap is stable.
-- **qwen3.6-general-thinking and coding-thinking top the 35b family in both
-  panels** (95–98), general-instruct is last, and the plain default sits in
-  between. Ornith-1.5's per-model means reproduce the panel ordering in B
-  wherever it voted.
+- **The top of the 35b family in both panels (95–98) is shared by
+  general-thinking, coding-thinking, and the ornith fine-tunes** (ornith-1.5-nas
+  98.4 in A; ornith-1.0-nas 95.9 in B), general-instruct is last, and the plain
+  default sits in between. Ornith-1.5's per-model means reproduce the panel
+  ordering wherever it voted.
 - **`qwen3.8-thinking-xhigh-nas` was a genuine dud** — judged 63.6 with det
   42.5 in panel B — which is why the next run dropped it in favor of the opus
   xhigh variant. This is an example of the judge panel catching what a rubric
@@ -136,12 +160,19 @@ quality failures (e.g. qwen3.8-thinking-medium's PRD det 0 while the panel and
 ornith-1.5 both scored it 100; the response used `## 1. Executive Summary`
 where the checker requires `## Executive Summary`).
 
-### qwen3.6:35b family — best default; weakest instruct member
+### qwen3.6:35b family (incl. the ornith fine-tunes) — strongest at the top; weakest instruct member
 - **Excels:** the plain default has the best rubric discipline of any default
   (74.7) with perfect det on instruction-following, long-context, multi-step,
   data-transformation and rate-limiter, and panel quality on par with the
   thinking variants (95.5, ornith-1.5 98.5). coding-thinking is the most
-  balanced member (73.5 / 97.9).
+  balanced member (73.5 / 97.9). The **ornith fine-tunes are the family's
+  strongest members**: ornith-1.5-nas posts the family's best rubric grade
+  (78.2) and best judged quality (98.4, ornith-1.5 99.6 on its own row), and
+  ornith-1.0-nas is close behind (76.7 / 97.1); both outscore the base 35b on
+  det, echoing the ranking report's top coding-composite and wireframes
+  placements for ornith-1.5-nas. ornith-1.0:35b-64k (Gaming PC, 70.3 / 96.5)
+  sits with the base model rather than with its NAS siblings — the fine-tune's
+  gap shows on format-heavy plugins rather than in judged quality.
 - **Difficulty:** format failures on the debug family (debug-consistency det 0
   at unanimous judge ~99), thin structured/design outputs (orchestration 50,
   software-architecture 46, error-recovery 44 det), and one **genuine
@@ -167,10 +198,12 @@ where the checker requires `## Executive Summary`).
   refunded-order/sorting errors), code-review det 0, multi-turn det 0. The opus
   256k line under-delivers relative to NAS 64k across both rubric and judges.
 
-### qwen3.8-flash-next family — best of the three, and its own cautionary tale
-- **Excels:** thinking-low and thinking-medium are the best models in this
-  comparison by both measures (det 76.0/75.7, panel 98.1/98.1, ornith-1.5
-  99.4/**99.6** — the highest ornith votes anywhere in the tables). Full det
+### qwen3.8-flash-next family — best of the stock variants, and its own cautionary tale
+- **Excels:** thinking-low and thinking-medium are the best non-ornith models
+  in this comparison by both measures (det 76.0/75.7, panel 98.1/98.1,
+  ornith-1.5 99.4/**99.6** — the highest ornith votes outside ornith's own
+  row). Only the ornith-1.5-nas fine-tune edges them on the rubric (78.2) and
+  ties their panel score (98.4). Full det
   100s on the contract plugins, error-recovery 100 (vs the 27b-medium's 20),
   code-review 87 (vs 0–60 for the smaller thinking siblings), and *much*
   shallower format damage on long-form outputs than the 27b line (prd 23–41
@@ -234,21 +267,27 @@ debug-traversal and orchestration is systemic — format-heavy long-form plugins
 
 ## Bottom line
 
-1. **qwen3.8-flash-next thinking-low/medium is the best family** — top rubric
-   discipline *and* top judged quality, with the smallest format penalty of
-   the thinking variants. Avoid its xhigh and instruct defaults.
-2. **qwen3.6:35b's plain default is the best as-delivered model** (best det of
-   any default, judge quality beside the thinking tier); coding-thinking is
-   its balanced alternative. general-instruct is the weakest member of any
+1. **The ornith-1.5-nas fine-tune is the best single model in either table** —
+   det 78.2 (the top rubric grade here), panel 98.4 (tied for best), ornith-1.5
+   99.6 — with its ornith-1.0-nas sibling close behind (76.7 / 97.1). Both are
+   qwen3.6:35b-derived, which makes the qwen3.6:35b family the strongest at
+   the top; caveat: ornith-1.5-nas judged its own row (see table footnote).
+2. **qwen3.8-flash-next thinking-low/medium is the best non-ornith line** —
+   top rubric discipline of the remaining thinking variants (76.0/75.7) with
+   the smallest format penalty. Avoid its xhigh and instruct defaults.
+3. **qwen3.6:35b's plain default is the best as-delivered base model** (best
+   det of any default, judge quality beside the thinking tier); coding-thinking
+   is its balanced alternative. general-instruct is the weakest member of any
    family judged.
-3. **qwen3.8:27b thinking-low/medium match the top tier in content quality**
+4. **qwen3.8:27b thinking-low/medium match the top tier in content quality**
    but pay the largest format-conformance penalty; its instruct default has
    the genuine task-following failures, and the opus 256k line trails its NAS
    64k siblings.
-4. **Ranking conclusions are robust to the judge panel** — all structural
+5. **Ranking conclusions are robust to the judge panel** — all structural
    results (thinking ≫ instruct, opus < NAS thinking, general-instruct
-   weakness, thinking-xhigh dud) reproduce with the 17-judge panel.
-5. **ornith-1.5 is a safe primary judge** but should be paired with a
+   weakness, thinking-xhigh dud, ornith's top placement) reproduce with the
+   17-judge panel.
+6. **ornith-1.5 is a safe primary judge** but should be paired with a
    rubric-disciplined coder (qwen3.8-thinking-medium) when grading
    tool-calling and code-review cells, where its generosity is systematic.
 
