@@ -5,6 +5,10 @@ Analysis of the local benchmark runs from late August 2026, comparing the
 rubric (deterministic) grade, the judge-panel consensus, and the votes of the
 `ornith-1.5` judge in particular.
 
+The judge models themselves — ranking, per-judge strengths/blind spots, and
+improvement recommendations — are reviewed in
+[`judge-panel-analysis.md`](./judge-panel-analysis.md).
+
 Scores below are 0–100: **det** is the plugin rubric grade (percent-v1),
 **panel** is the mean usable vote of the run's judge panel per cell, and
 **ornith-1.5** is that judge's own mean. Per-model figures are means over the
