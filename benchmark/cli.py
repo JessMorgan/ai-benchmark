@@ -100,6 +100,7 @@ from benchmark.tui_format import (
     PLUGIN_BLOCK_WIDTH,
     SCORE_COLUMN_WIDTH,
     row_style,
+    table_and_live_heights,
 )
 from plugins import discover_plugins
 
@@ -856,7 +857,7 @@ def _plugin_cell_block(pid, s, p, sleeping_lookup=None, judge_slots=None):
                 # post-completion ``count_tokens`` estimator (and
                 # matches the streaming content counter branch
                 # above) so the live number is the number the
-                # post-completion ``.think.txt`` file shows for
+                # post-completion ``think.txt`` file shows for
                 # length / 4.
                 text = f"[thinking{attempt_segment} - {thinking_bytes // 4} tok]"
             else:
@@ -1161,8 +1162,7 @@ def _build_frame_lines(state, active_plugins, source_abbrevs, frozen_hdr,
     }
     judge_progress = state.judge_progress_snapshot()
 
-    live_height = max(3, num_sources + 1)
-    visible_rows = max(0, max_y - 9 - live_height)
+    visible_rows, live_height = table_and_live_heights(max_y, num_sources, len(snap_items))
     frozen_width = FROZEN_VIEW_WIDTH
 
     def line(text, style=None):
@@ -1266,14 +1266,6 @@ def _build_frame_lines(state, active_plugins, source_abbrevs, frozen_hdr,
     for judge, activities in judge_groups.items():
         if len(live_lines) >= live_height:
             break
-        cells = " ".join(
-            f"[{activity['target']} {activity['plugin']} "
-            f"{('attempt=' + str(activity['attempt']) + ' ') if activity.get('attempt') is not None else ''}"
-            f"{activity['elapsed']}s "
-            f"thinking={activity.get('thinking_tokens', 0)} "
-            f"content={activity.get('content_tokens', 0)}]"
-            for activity in activities
-        )
         prog = judge_progress.get(judge) or {}
         progress_str = ""
         if prog:
@@ -1281,7 +1273,17 @@ def _build_frame_lines(state, active_plugins, source_abbrevs, frozen_hdr,
                 f" {prog.get('completed', 0)}\u2705{prog.get('failed', 0)}\u274c"
                 f"{prog.get('expected', 0)}\u03a3"
             )
-        live_lines.append((f" {_JUDGE_SCALES} Judge {judge}{progress_str} {cells}", None))
+        if len(activities) > 1 and live_height - len(live_lines) >= len(activities) + 1:
+            # Expanded form: the live section has room, so each active
+            # judge-target cell gets its own indented line instead of being
+            # crammed onto the judge's single line. Falls back to the
+            # compact one-line form when space is tight.
+            live_lines.append((f" {_JUDGE_SCALES} Judge {judge}{progress_str}", None))
+            for activity in activities:
+                live_lines.append((f"    {_judge_activity_cell(activity)}", None))
+        else:
+            cells = " ".join(_judge_activity_cell(activity) for activity in activities)
+            live_lines.append((f" {_JUDGE_SCALES} Judge {judge}{progress_str} {cells}", None))
     if sleeping_lookup:
         if len(live_lines) < live_height:
             live_lines.append(("429 Sleeping:", "bold"))
@@ -1381,6 +1383,17 @@ def _build_frame_lines(state, active_plugins, source_abbrevs, frozen_hdr,
         )
 
     return lines
+
+
+def _judge_activity_cell(activity):
+    """Render one live judge activity cell (shared by compact/expanded forms)."""
+    return (
+        f"[{activity['target']} {activity['plugin']} "
+        f"{('attempt=' + str(activity['attempt']) + ' ') if activity.get('attempt') is not None else ''}"
+        f"{activity['elapsed']}s "
+        f"thinking={activity.get('thinking_tokens', 0)} "
+        f"content={activity.get('content_tokens', 0)}]"
+    )
 
 
 def _wrap_judge_parts(judge_parts, max_width):

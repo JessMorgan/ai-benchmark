@@ -16,6 +16,7 @@ from benchmark.tui_format import (
     FROZEN_VIEW_WIDTH,
     MODEL_NUMBER_COLUMN_WIDTH,
     SCORE_COLUMN_WIDTH,
+    table_and_live_heights,
 )
 
 # Runtime rendering hooks are assigned by benchmark.cli after import. Keeping
@@ -182,7 +183,9 @@ class _BenchmarkTUIApp(App):  # pragma: no cover - live interactive loop
         """
         height = max(0, event.size.height)
         width = max(0, event.size.width)
-        visible_rows = max(0, height - 9 - max(3, self._num_sources + 1))
+        visible_rows, _live = table_and_live_heights(
+            height, self._num_sources, len(self._state.snapshot())
+        )
         self._scroll_y = min(
             self._scroll_y,
             max(0, len(self._state.snapshot()) - visible_rows),
@@ -196,8 +199,10 @@ class _BenchmarkTUIApp(App):  # pragma: no cover - live interactive loop
         self._last_frame_key = None
 
     def _visible_rows(self) -> int:
-        live_height = max(3, self._num_sources + 1)
-        return max(0, self.size.height - 9 - live_height)
+        visible_rows, _live = table_and_live_heights(
+            self.size.height, self._num_sources, len(self._state.snapshot())
+        )
+        return visible_rows
 
     def _visible_cols(self) -> int:
         return max(0, self.size.width - FROZEN_VIEW_WIDTH - 1)

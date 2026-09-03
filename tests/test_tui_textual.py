@@ -80,6 +80,55 @@ def _frame_text(lines):
     return "\n".join(text for text, _style in lines)
 
 
+class TestTableAndLiveHeights(unittest.TestCase):
+    """The shared table/live row allocation (``tui_format.table_and_live_heights``)."""
+
+    def test_tall_terminal_few_models_grows_live_view(self):
+        # 2 models on a 40-line terminal: the whole table fits beside the
+        # live minimum, so the leftover height goes to the live view instead
+        # of sitting blank below a capped live section.
+        rows, live = cli.table_and_live_heights(40, 1, 2)
+        self.assertEqual((rows, live), (2, 29))
+
+    def test_many_models_table_takes_priority(self):
+        # 40 models on a 40-line terminal: the table cannot fit, so it takes
+        # all space above the live view's floor (max(3, num_sources + 1))
+        # and the remaining rows are scrollable.
+        rows, live = cli.table_and_live_heights(40, 4, 40)
+        self.assertEqual((rows, live), (26, 5))
+
+    def test_short_terminal_keeps_minimum_table(self):
+        # 14 lines: the table keeps its 5-row floor and the live view is
+        # squeezed out entirely rather than push the scored rows away.
+        rows, live = cli.table_and_live_heights(14, 4, 20)
+        self.assertEqual((rows, live), (5, 0))
+
+    def test_extremely_short_terminal(self):
+        self.assertEqual(cli.table_and_live_heights(8, 1, 2), (0, 0))
+
+    def test_zero_live_height_still_renders_live_header(self):
+        # At max_y=8 the allocation is (0, 0): no model rows and no live
+        # rows, but the frame still emits the ``Live:`` header (the 2-line
+        # chrome safety margin absorbs it) and must not exceed the terminal.
+        lines = _render_lines(size=(8, 100))
+        self.assertIn("Live:", _frame_text(lines))
+        self.assertLessEqual(len(lines), 8)
+
+    def test_mid_terminal_table_and_live_floor(self):
+        # 24 lines, 20 models, 4 sources: 24-9=15 available; the live view
+        # keeps its 5-line floor and the table takes the remaining 10.
+        rows, live = cli.table_and_live_heights(24, 4, 20)
+        self.assertEqual((rows, live), (10, 5))
+
+    def test_continuity_point_between_fit_and_overflow(self):
+        # total_models == avail - min_live is the exact boundary between the
+        # "whole table fits" and "table overflows" branches: both must agree
+        # so the allocation is continuous as models are added.
+        # 24 lines, 4 sources: avail=15, min_live=5, boundary at 10 models.
+        self.assertEqual(cli.table_and_live_heights(24, 4, 10), (10, 5))
+        self.assertEqual(cli.table_and_live_heights(24, 4, 11), (10, 5))
+
+
 class TestFrameCache(unittest.TestCase):
     def test_frame_alignment_cache_reuses_unchanged_revision(self):
         state = mock.Mock()
@@ -347,6 +396,54 @@ class TestBuildFrameLinesAdvanced(unittest.TestCase):
                 mock.patch("benchmark.cli.get_429_stats", return_value={}):
             text = _frame_text(_render_lines(state, num_sources=4))
         self.assertIn("model-a rate-limiter attempt=2 3s thinking=123 content=45", text)
+
+    def test_expanded_judge_detail_when_live_view_has_room(self):
+        """With extra vertical space, a judge's active targets render one
+        per line instead of being crammed onto a single judge line."""
+        snapshot = {
+            "model-a": {"status": "running", "source": "Local",
+                        "running_pids": ["rate-limiter"],
+                        "rate-limiter_start_ts": 0},
+        }
+        state = self._state(
+            snapshot,
+            judge_activities=[
+                {"judge": "judge-a", "target": "model-a",
+                 "plugin": "rate-limiter", "elapsed": 3},
+                {"judge": "judge-a", "target": "model-b",
+                 "plugin": "wireframes", "attempt": 2, "elapsed": 5,
+                 "thinking_tokens": 10, "content_tokens": 20},
+            ],
+        )
+        with mock.patch("benchmark.cli.get_active_request_count", return_value=1), \
+                mock.patch("benchmark.cli.get_429_stats", return_value={}):
+            text = _frame_text(_render_lines(state, size=(40, 120), num_sources=4))
+        self.assertIn("Judge judge-a", text)
+        self.assertIn("    [model-a rate-limiter 3s thinking=0 content=0]", text)
+        self.assertIn("    [model-b wireframes attempt=2 5s thinking=10 content=20]", text)
+
+    def test_compact_judge_line_when_live_view_is_short(self):
+        """When the live section has little room, all activity cells stay on
+        the judge's single line (expanded form requires header + one line
+        per activity)."""
+        snapshot = {
+            "model-a": {"status": "completed", "source": "Local"},
+        }
+        activities = [
+            {"judge": "judge-a", "target": f"model-{i}",
+             "plugin": "rate-limiter", "elapsed": i}
+            for i in range(8)
+        ]
+        state = self._state(snapshot, judge_activities=activities)
+        with mock.patch("benchmark.cli.get_active_request_count", return_value=1), \
+                mock.patch("benchmark.cli.get_429_stats", return_value={}):
+            lines = _render_lines(state, size=(16, 400), num_sources=4)
+        text = _frame_text(lines)
+        self.assertIn("Judge judge-a", text)
+        # All cells are on the same line as the judge header.
+        judge_line = next(line for line in lines if "Judge judge-a" in line[0])
+        for i in range(8):
+            self.assertIn(f"model-{i} rate-limiter", judge_line[0])
 
     def test_live_judge_line_without_progress_has_no_counts(self):
         """A judge with no progress record shows only the activity cells."""
