@@ -120,8 +120,9 @@ polls it and rebuilds its frame only when something displayed changed
   `think.txt`, and `meta.json` (rubric + `error`/`traceback` when
   `plugin.evaluate()` crashes). Raw judge responses (`judge.*.txt` with
   paired `judge.*.meta.json`) for the plugin live in the same directory.
-- `judge-inputs/` — retained prompt/response sidecars used for resumable
-  semantic judging; raw judge responses are stored beside benchmark artifacts.
+- `judge-inputs/` — retained judge *input* sidecars used for resumable
+  semantic judging (`<runner>/<target>/<plugin>.json`); raw judge *responses*
+  live under `responses/<model>/<plugin>/` (see above).
 
 ## Built-in plugins (19)
 
@@ -160,19 +161,20 @@ unavailable.
 Before committing any complete change:
 1. Run the full CI checks defined in `.github/workflows/tests.yml` (or their local equivalent): `uv sync --frozen`; `uv run pre-commit run --all-files --show-diff-on-failure`; `uv run coverage run -m pytest tests/ plugins/challenges/ plugins/outputs/ -q`; `uv run coverage report -m`; and `uv run coverage report --fail-under=90`. The CI matrix runs these checks on Python 3.10 through 3.14. Fix every issue reported by these checks before committing, then rerun the checks until they pass.
 2. **Require a code review by a distinct AI model as a mandatory gate before committing.** After the CI checks pass and all changes are staged, obtain a review of the complete diff from a model other than the one that authored the change. The review must cover correctness, adherence to existing codebase patterns, the CI/coverage results, and any security or regression risks. Do **not** commit until this review has been produced. The reviewer must be a genuinely different model — routing the review to a subagent category that defaults to the committer's own model is **not** a valid review. The reviewing model's name must appear in the review output (for example, "Review performed by `deepseek-v4-*`" or another non-committer provider model such as `devstral-*`) so the separation is verifiable; record that name with the review findings.
-3. **Present the review results to the user and ask how to proceed.** Surface the distinct reviewer's findings and recommendation (approve / request changes / reject) to the user in the form of a recommendation header followed by a bulleted list of findings, then ask the user how to proceed. Options include committing as-is, revising per the review, or abandoning. Do not treat a clean or critical review as an automatic decision — the user's final call is definitive and cannot be overridden.
+3. **Present the review results to the user and ask how to proceed.** Surface the distinct reviewer's findings and recommendation to the user in exactly this shape: a `VERDICT: APPROVE | REQUEST CHANGES | REJECT` line that names the reviewing model, followed by a bulleted findings list in which every bullet is prefixed with its severity (`[blocker]`, `[major]`, `[minor]`, or `[nit]`); then ask the user how to proceed. Options include committing as-is, revising per the review, or abandoning. Do not treat a clean or critical review as an automatic decision — the user's final call is definitive and cannot be overridden.
 4. Update all relevant documentation to reflect the new reality, including `AGENTS.md`, `README.md`, `docs/`, plugin documentation, CLI/configuration references, and any other checked-in documentation affected by the change.
 5. Confirm the documentation and runtime metadata agree, then commit the complete change to git only after the user has decided how to proceed from the review.
 6. When adding a footer or co-author attribution, include the agent name (e.g. OpenCode, FreeBuff, CodeBuff, Hermes Agent, etc.) and model name (e.g. GPT-5.6 Luna, Big Pickle, DeepSeek v4 Flash 0731, etc.)
-7. **Attribute every commit message immediately after its detail body.** Every commit message must include, immediately after the commit message detail (the explanatory body) and prior to any footer (such as the `🤖 Generated with …` / `Co-Authored-By:` block), an attribution block of exactly this form:
+7. **Attribute every commit message immediately after its detail body — truthfully.** Every commit message must include, immediately after the commit message detail (the explanatory body) and prior to any footer (such as the `🤖 Generated with …` / `Co-Authored-By:` block), an attribution block of exactly this form:
 
    ```
-   
    Written by: [model] ([agent])
-   Reviewed by: [review-model] ([review agent])
+   Reviewed by: [review-model] ([review agent]) — VERDICT
    ```
 
-   The block is introduced by one blank line after the message detail — the explanatory body when one exists, otherwise directly under the subject line (the `\n\n` above). `[model]` / `[review-model]` are human-readable display names of the authoring model (step 2's distinct reviewer), e.g. `GLM-5.3 Flash` / `Beast Qwen3.8 27B`; the parenthesized agent is the tool that produced the change or ran the review (e.g. `CodeBuff`, `OpenCode`, `FreeBuff`) and is always included when known — omit the review agent's parenthetical only when the agent is genuinely unknown (the `Reviewed by:` line itself is never optional). Leave one blank line between the `Reviewed by:` line and any footer that follows.
+   One blank line separates the block from the message detail above (the explanatory body when one exists, otherwise the subject line) and from any footer below. `[model]` / `[review-model]` are human-readable display names, e.g. `GLM-5.3 Flash` / `Beast Qwen3.8 27B`; the parenthesized agent is the tool that produced the change or ran the review (e.g. `CodeBuff`, `OpenCode`, `FreeBuff`) and is included on both lines whenever the agent is known. `VERDICT` is the actual verdict surfaced in step 3 from the step-2 review (`APPROVE`, `REQUEST CHANGES`, or `REJECT`) — the final verdict when the change went through multiple review rounds.
+
+   The `Reviewed by:` line is an evidence-bearing assertion, not a formality: it must name the step-2 reviewer of **this diff**, obtained **before** the commit was created, and the review model must differ from the authoring model. Never include the line on a change that has not been reviewed, never reuse another diff's review, and never fill it in prospectively — if the review has not happened yet, the commit does not happen yet (step 2). Formatting-only or trivially mechanical changes are not exempt. This is an honesty-based gate: the message alone does not let a reader mechanically verify the claim, so hardening beyond wording (e.g. a pre-commit hook validating a review artifact) remains an option if violations recur.
 
 ## Plugin updates
 1. **Update challenge-plugin versions when modified from what's in git.** This policy applies only to challenge plugins and their shared challenge-plugin code under `plugins/challenges/`; it does not apply to `plugins/__init__.py`, output plugins, documentation, or tests. Every internal or externally visible challenge-plugin code change requires a version bump. Non-scoring changes, such as behavior-preserving refactors or internal/API plumbing that cannot affect evaluation results, increment the revision (for example, `0.2.0` → `0.2.1`). A minor-version bump is reserved for changes that could affect scoring in any way, including prompt, rubric, scoring-code, validation, normalization, or execution changes (for example, `0.2.0` → `0.3.0`, resetting the revision). Complete rewrites or very major changes increment the major version (for example, `0.2.0` → `1.0.0`, resetting minor and revision). A bump is not required for every intermediate edit; record the largest applicable change from the version currently in git.
@@ -277,14 +279,14 @@ and the OpenCode runner are exempt (the kwargs default off).
    (`_StopAwareRequestWatchdog`) that closes the response within ~0.25 s of
    `stop_event`, and the shutdown joins are stop_event-aware/bounded.
    Regression in `tests/test_benchmark_http.py::TestStopAwareWatchdog`.
-7. **`faulthandler` is enabled at CLI startup** (`_enable_faulthandler` in
+9. **`faulthandler` is enabled at CLI startup** (`_enable_faulthandler` in
    `benchmark/cli.py`, called first thing in `main()`) and in the
    ChatPlayground worker subprocess. A native crash (SIGSEGV/SIGABRT/…) now
    prints the Python stack to stderr instead of a bare "Segmentation fault",
    and `kill -USR1 <pid>` forces a live stack dump of a wedged run. The
    worker's dump lands in the parent's captured stderr and is surfaced in the
    per-request error. Tests in `tests/test_cli_coverage.py::TestEnableFaulthandler`.
-8. **ChatPlayground request timeout must reach the worker.** `_send_request`
+10. **ChatPlayground request timeout must reach the worker.** `_send_request`
    in `benchmark/chatplayground.py` binds `timeout` to a named parameter (for
    the parent's own wait deadline) — it must also be copied into the JSON
    message (`msg["timeout"] = timeout`) or the worker runs with `timeout=0`,
