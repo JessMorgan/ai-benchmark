@@ -4,6 +4,23 @@ Multi-source, plugin-based LLM benchmark over OpenAI-compatible APIs. Long-form
 reference lives in `docs/` (links at the bottom). Read this file in under 60 s
 to know what to grep first.
 
+## Honesty and integrity
+
+Honesty and integrity outrank every other consideration in this project —
+speed, convenience, and looking competent included. Never take shortcuts that
+diminish it: no fabricated results, no check skipped but reported as run, no
+inflated claims, no hiding a problem you noticed. Do not lie, and do not dodge
+difficult problems or blame — when something you did turns out wrong, say so
+plainly, keep the evidence, and fix it. The same duty runs toward the user:
+do not stay silent to appease them. If the user is wrong, is overlooking
+something, or asserts something untrue, call it out directly — state your
+disagreement plainly, cite the evidence (file, line, test output), and keep
+asserting the accurate position after pushback, while making clear the
+decision is the user's. This is not insubordination:
+the user still makes every final decision, and may overrule you — but the
+accurate position must be on the record first. (Git management step 7's
+review/attribution gate is one concrete application of this section.)
+
 ## Project map
 
 - **`benchmark/cli.py`** — CLI, argparse, TUI, main orchestrator (the entry point).
@@ -160,8 +177,18 @@ unavailable.
 ## Git management
 Before committing any complete change:
 1. Run the full CI checks defined in `.github/workflows/tests.yml` (or their local equivalent): `uv sync --frozen`; `uv run pre-commit run --all-files --show-diff-on-failure`; `uv run coverage run -m pytest tests/ plugins/challenges/ plugins/outputs/ -q`; `uv run coverage report -m`; and `uv run coverage report --fail-under=90`. The CI matrix runs these checks on Python 3.10 through 3.14. Fix every issue reported by these checks before committing, then rerun the checks until they pass.
-2. **Require a code review by a distinct AI model as a mandatory gate before committing.** After the CI checks pass and all changes are staged, obtain a review of the complete diff from a model other than the one that authored the change. The review must cover correctness, adherence to existing codebase patterns, the CI/coverage results, and any security or regression risks. Do **not** commit until this review has been produced. The reviewer must be a genuinely different model — routing the review to a subagent category that defaults to the committer's own model is **not** a valid review. The reviewing model's name must appear in the review output (for example, "Review performed by `deepseek-v4-*`" or another non-committer provider model such as `devstral-*`) so the separation is verifiable; record that name with the review findings.
-3. **Present the review results to the user and ask how to proceed.** Surface the distinct reviewer's findings and recommendation to the user in exactly this shape: a `VERDICT: APPROVE | REQUEST CHANGES | REJECT` line that names the reviewing model, followed by a bulleted findings list in which every bullet is prefixed with its severity (`[blocker]`, `[major]`, `[minor]`, or `[nit]`); then ask the user how to proceed. Options include committing as-is, revising per the review, or abandoning. Do not treat a clean or critical review as an automatic decision — the user's final call is definitive and cannot be overridden.
+2. **Require a code review by a distinct AI model as a mandatory gate before committing.** After the CI checks pass and all changes are staged, obtain a review of the complete diff from a model other than the one that authored the change. Do **not** commit until this review has been produced. The reviewer must be a genuinely different model — routing the review to a subagent category that defaults to the committer's own model is **not** a valid review. The reviewing model's name must appear in the review output (for example, "Review performed by `deepseek-v4-*`" or another non-committer provider model such as `devstral-*`) so the separation is verifiable; record that name with the review findings.
+
+   The review request must be adversarial and self-contained, containing at minimum:
+   - **Tone**: direct the reviewer to be **rigorous and adversarial**: trace the diff against the surrounding code and look for correctness bugs, race conditions, edge cases, and regressions.
+   - **Verification**: permit (and for nontrivial claims, expect) the reviewer to run the project's tests to verify claims — e.g. the affected test files via `uv run pytest <affected tests> -q`, or the full suite when needed (`uv run pytest tests/ plugins/challenges/ plugins/outputs/ -q`).
+   - **Change context**: what the code did before, what it does now, and why (including the relevant non-obvious invariants the change must preserve).
+   - **User requirements**: the user-approved requirements or decisions the change implements, so the reviewer can judge intent, not just implementation — or, where the change implements none (agent-initiated fixes/refactors), what motivated it.
+   - **Review scope**: an explicit check-at-minimum list tailored to the change (boundary conditions, consumer consistency, off-by-one risks, population/semantics of new parameters, test meaningfulness, stale docs/comments — as applicable).
+   - **Strict reply format**: `VERDICT: APPROVE | REQUEST CHANGES | REJECT`, a `REVIEWER MODEL:` line, a `FINDINGS:` header with findings as bullets prefixed `[blocker|major|minor|nit]` with file:line references, then a short overall assessment.
+
+   The review must cover correctness, adherence to existing codebase patterns, the CI/coverage results, and any security or regression risks.
+3. **Present the review results to the user and ask how to proceed.** Surface the distinct reviewer's findings and recommendation to the user in exactly this shape: a `VERDICT: APPROVE | REQUEST CHANGES | REJECT` line and a `REVIEWER MODEL:` line naming the reviewing model, followed by a bulleted findings list in which every bullet is prefixed with its severity (`[blocker]`, `[major]`, `[minor]`, or `[nit]`); then ask the user how to proceed. Options include committing as-is, revising per the review, or abandoning. Do not treat a clean or critical review as an automatic decision — the user's final call is definitive and cannot be overridden.
 4. Update all relevant documentation to reflect the new reality, including `AGENTS.md`, `README.md`, `docs/`, plugin documentation, CLI/configuration references, and any other checked-in documentation affected by the change.
 5. Confirm the documentation and runtime metadata agree, then commit the complete change to git only after the user has decided how to proceed from the review.
 6. When adding a footer or co-author attribution, include the agent name (e.g. OpenCode, FreeBuff, CodeBuff, Hermes Agent, etc.) and model name (e.g. GPT-5.6 Luna, Big Pickle, DeepSeek v4 Flash 0731, etc.)
