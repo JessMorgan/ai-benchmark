@@ -1,5 +1,4 @@
 """Core benchmark logic shared by the CLI and tests."""
-import contextlib
 import copy
 import json
 import os
@@ -19,25 +18,16 @@ from .http import (  # noqa: F401
     nonstream_request,
     stream_request,
 )
-from .judging import (
-    JUDGE_DEFAULT_MAX_TOKENS,
-    JUDGE_DEFAULT_REQUEST_PARAMS,
-    JUDGE_PROMPT_VERSION,
-    JudgeResult,
-    _is_exhausted_429,
-    _judge_response_diagnostics,
-    _judge_system_prompt,
-    _thinking_budget_retry_instruction,
-    build_judge_prompt,
-    judge_contract_id,
-    judge_instructions_version,
-    judge_response,
-    judge_sidecar_path,
-    parse_judge_response,
-    publish_judge_sidecars,
-    resolve_judge_request_params,
+from .judging import (  # noqa: F401 - re-export for compatibility
+    JUDGE_DEFAULT_MAX_TOKENS as JUDGE_DEFAULT_MAX_TOKENS,
+    JUDGE_PROMPT_VERSION as JUDGE_PROMPT_VERSION,
+    _is_exhausted_429 as _is_exhausted_429,
+    judge_contract_id as judge_contract_id,
+    judge_response as judge_response,
+    judge_sidecar_path as judge_sidecar_path,
+    publish_judge_sidecars as publish_judge_sidecars,
+    resolve_judge_request_params as resolve_judge_request_params,
 )
-from .observer import TaskObserver
 from .opencode import (
     run_process,
 )
@@ -54,10 +44,6 @@ from .plugin import (
     PluginTaskResult,
     normalize_score,
 )
-from .request_models import (
-    GenerationFields,
-    HTTPRequest,
-)
 from .response_classification import (  # noqa: F401 - compatibility exports
     classify_empty_reason,
     count_tokens,
@@ -66,16 +52,6 @@ from .response_classification import (  # noqa: F401 - compatibility exports
 from .state import BenchmarkState  # noqa: F401
 from .task_execution import TaskExecutionDependencies
 from .task_execution import _run_plugin_task as _execute_plugin_task
-from .transport import (
-    JUDGE_RETRY_POLICY,
-    TransportResult,
-    _split_token_budget,
-    _thinking_consumed_budget,
-    execute_task,
-)
-from .transport_options import (
-    HTTPTransportOptions,
-)
 
 PRELOAD_PROMPT = "Reply with the single word OK."
 PRELOAD_DEFAULT_TIMEOUT = 300
@@ -99,43 +75,6 @@ FLUSH_MAX_VOTES = 50
 # Maximum time the main thread waits for the background state flusher during
 # shutdown before reporting a failure and attempting a synchronous final save.
 PERSISTENCE_SHUTDOWN_TIMEOUT = 10.0
-
-
-def _thinking_budget_retry_instruction(token_budget: Any | int, fallback: int = JUDGE_DEFAULT_MAX_TOKENS) -> str:
-    """Return retry-only guidance reserving half the budget for the answer."""
-    reported, thinking_budget, answer_budget = _split_token_budget(token_budget, fallback)
-    return (
-        "\n\nRETRY GUIDANCE: On this retry you MUST keep internal thinking or "
-        f"reasoning below {thinking_budget} tokens and the entire response below "
-        f"{reported} total tokens ({answer_budget} tokens are reserved for the "
-        "final answer). Exceeding either limit is considered a failure."
-    )
-
-
-def _judge_system_prompt(total_budget: Any | int) -> str:
-    """Return a system prompt that sets token budgets before the judge prompt.
-
-    Thinking models allocate most of their generation budget to
-    ``reasoning_content`` before emitting any final answer.  Telling the
-    model up-front how much thinking and how much answer content is
-    expected gives it a chance to self-regulate, which is more effective
-    than appending guidance to the user message after the fact.
-    """
-    reported, thinking_budget, answer_budget = _split_token_budget(
-        total_budget, JUDGE_DEFAULT_MAX_TOKENS,
-    )
-    return (
-        "You are a benchmark semantic evaluator. Your response must be a single "
-        "JSON object matching the requested schema — nothing else.\n\n"
-        "TOKEN BUDGET:\n"
-        f"Total generation budget: {reported} tokens.\n"
-        f"Maximum internal thinking/reasoning: {thinking_budget} tokens.\n"
-        f"Maximum final answer content: {answer_budget} tokens.\n\n"
-        "Spend at most half of the budget on internal reasoning. The remaining "
-        "half must be reserved for the final JSON answer. Do not exceed these "
-        "limits — a response whose thinking consumes the full budget is "
-        "considered a failure because no answer content can follow."
-    )
 
 
 JUDGE_RESPONSE_SCHEMA = {
@@ -340,11 +279,6 @@ def preload_model(source_config: dict[str, Any], source: str, api_model: str, ti
     )
 
 
-def _is_exhausted_429(error: Any) -> bool:
-    """Return whether an HTTP error is an exhausted rate-limit response."""
-    return isinstance(error, str) and error.lstrip().startswith("HTTP 429:")
-
-
 def _schema_probe_error_status(error: Any) -> str:
     """Classify a sentinel request failure without conflating it with a model score."""
     lowered = str(error or "").lower()
@@ -453,27 +387,6 @@ def run_schema_sentinel(source_config: dict[str, Any], source: str, api_model: s
     }
 
 
-def resolve_judge_request_params(cfg: dict[str, Any]) -> dict[str, Any]:
-    """Return provider-specific request parameters for semantic judges.
-
-    The defaults preserve each model's native behavior and request a JSON
-    object. A ``judge`` config block may override or extend these values
-    through ``request_params``. Nested dictionaries are merged so explicit
-    provider-specific options can be combined safely.
-    """
-    params = copy.deepcopy(JUDGE_DEFAULT_REQUEST_PARAMS)
-    judge_cfg = cfg.get("judge") if isinstance(cfg, dict) else None
-    configured = judge_cfg.get("request_params") if isinstance(judge_cfg, dict) else None
-    if not isinstance(configured, dict):
-        return params
-    for key, value in configured.items():
-        if isinstance(params.get(key), dict) and isinstance(value, dict):
-            params[key].update(copy.deepcopy(value))
-        else:
-            params[key] = copy.deepcopy(value)
-    return params
-
-
 def _schema_request_metadata(plugin: Any, request_params: dict[str, Any] | None = None, *, response_schema_valid: bool | None = None,
                              error: str | None = None, request_applied: bool = True, schema_fallback_used: bool = False,
                              schema_fallback_error: str | None = None) -> dict[str, Any]:
@@ -542,205 +455,6 @@ def _schema_request_metadata(plugin: Any, request_params: dict[str, Any] | None 
         "schema_fallback_used": schema_fallback_used,
         "schema_fallback_error": schema_fallback_error,
     }
-
-
-def _judge_response_diagnostics(response: Any, request_params: dict[str, Any] | None, max_tokens: int) -> dict[str, Any]:
-    """Summarize request settings and response evidence for judge debugging.
-
-    OpenAI-compatible providers do not consistently expose whether a
-    ``chat_template_kwargs`` option was accepted. Recording the exact
-    requested values alongside usage, finish reason, and the provider's
-    reasoning-token count (when available) lets a completed run distinguish
-    an honored thinking cap from a provider that ignored it. The character
-    estimate is deliberately labeled as such because it is only a fallback
-    when usage details are unavailable.
-    """
-    params = copy.deepcopy(request_params) if isinstance(request_params, dict) else {}
-    chat_template = params.get("chat_template_kwargs")
-    requested_budget = (
-        chat_template.get("thinking_token_budget")
-        if isinstance(chat_template, dict)
-        else None
-    )
-    if isinstance(requested_budget, bool) or not isinstance(requested_budget, (int, float)):
-        requested_budget = None
-
-    usage = getattr(response, "usage", {})
-    if not isinstance(usage, dict):
-        usage = {}
-    details = usage.get("completion_tokens_details")
-    if not isinstance(details, dict):
-        details = usage.get("completion_token_details")
-    if not isinstance(details, dict):
-        details = {}
-    reported_reasoning = None
-    reasoning_source = None
-    for container, source in ((usage, "usage"), (details, "usage.details")):
-        for key in ("reasoning_tokens", "thinking_tokens"):
-            value = container.get(key)
-            if isinstance(value, (int, float)) and not isinstance(value, bool):
-                reported_reasoning = value
-                reasoning_source = f"{source}.{key}"
-                break
-        if reported_reasoning is not None:
-            break
-
-    think_text = getattr(response, "think_text", "") or ""
-    if not isinstance(think_text, str):
-        think_text = ""
-    estimated_reasoning = int(count_tokens(think_text)) if think_text else None
-    observed_reasoning = reported_reasoning
-    if observed_reasoning is None:
-        observed_reasoning = estimated_reasoning
-        if observed_reasoning is not None:
-            reasoning_source = "estimated_from_reasoning_content"
-
-    budget_honored = None
-    if requested_budget is not None and observed_reasoning is not None:
-        budget_honored = observed_reasoning <= requested_budget
-    return {
-        "request_max_tokens": max_tokens,
-        "request_params": params,
-        "requested_thinking_token_budget": requested_budget,
-        "response_finish_reason": (
-            getattr(response, "finish_reason", None)
-            if isinstance(getattr(response, "finish_reason", None), str)
-            else None
-        ),
-        "response_usage": usage,
-        "response_reasoning_tokens": observed_reasoning,
-        "response_reasoning_tokens_source": reasoning_source,
-        "thinking_budget_honored": budget_honored,
-    }
-
-
-def judge_response(source_config: dict[str, Any], judge_source: str, judge_api_model: str, sidecar: str,
-                   *, timeout: float, max_tokens: int | None = None, temperature: float = 0.0,
-                   drop_params: list[str] | None = None, request_params: dict[str, Any] | None = None, stop_event: threading.Event | None = None, log_path: str | None = None,
-                   plugin: Any = None, progress_callback: Callable[[str, str], None] | None = None,
-                   attempt_callback: Callable[[int], None] | None = None) -> JudgeResult:
-    """Run one streaming judge request, retrying once when its JSON is invalid."""
-    try:
-        with open(sidecar, encoding="utf-8") as handle:
-            item = json.load(handle)
-    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
-        raise ValueError(
-            f"Judge sidecar {sidecar} is corrupted or not valid UTF-8 JSON: {exc}"
-        ) from exc
-    if plugin is None:
-        # Fall back to a name/max_score stub when no plugin instance is
-        # supplied (e.g. resume-only judging); the stub has no judge
-        # sanitizer, so its prompt is built from the raw sidecar text.
-        plugin = type("JudgePlugin", (), {
-            "name": item["plugin_name"], "max_score": item["max_score"],
-        })()
-    prompt = build_judge_prompt(plugin, item["prompt"], item["response"])
-    try:
-        budget = int(max_tokens if max_tokens is not None else JUDGE_DEFAULT_MAX_TOKENS)
-    except (TypeError, ValueError):
-        budget = JUDGE_DEFAULT_MAX_TOKENS
-    if budget <= 0:
-        budget = JUDGE_DEFAULT_MAX_TOKENS
-
-    def report_progress(content_delta: str = "", thinking_delta: str = "") -> None:
-        if progress_callback is None:
-            return
-        # Progress is observational only; a broken TUI/state observer must
-        # never terminate a judge stream.
-        with contextlib.suppress(Exception):
-            progress_callback(content_delta, thinking_delta)
-
-    # The prompt is built by the current code path, so use the versions that
-    # actually govern this request rather than stale metadata in a retained
-    # sidecar created by an older benchmark run.
-    prompt_version = JUDGE_PROMPT_VERSION
-    instructions_version = judge_instructions_version(plugin)
-    judge_observer = TaskObserver(
-        pid=f"judge:{item['plugin']}",
-        on_chunk=report_progress,
-        on_think_chunk=lambda delta: report_progress("", delta),
-    )
-    judge_common = GenerationFields(
-        prompt=prompt,
-        max_tokens=budget,
-        source_config=source_config,
-        api_model=judge_api_model,
-        source=judge_source,
-        timeout=timeout,
-        temperature=temperature,
-        system_prompt=_judge_system_prompt(budget),
-        drop_params=drop_params or [],
-        stop_event=stop_event,
-        observer=judge_observer,
-        pid=f"judge:{item['plugin']}",
-        log_path=log_path,
-        log_label=(
-            f"Judge {item['target']} / {item['plugin']} "
-            f"(streaming attempt {{attempt}}, "
-            f"prompt_version={prompt_version}, "
-            f"judge_instructions_version={instructions_version})"
-        ),
-    )
-    judge_request = HTTPRequest(
-        judge_common,
-        HTTPTransportOptions(supports_streaming=True, request_params=request_params),
-    )
-
-    def json_error_prompt_alterer(result: TransportResult) -> str | None:
-        parsed = parse_judge_response(result.text)
-        if parsed.error is None:
-            return None
-        diagnostics = _judge_response_diagnostics(result, request_params, budget)
-        guidance = (
-            _thinking_budget_retry_instruction(budget)
-            if _thinking_consumed_budget(diagnostics) else ""
-        )
-        return (
-            "\n\nYour previous response was invalid. Return only the required JSON schema."
-            + guidance
-        )
-
-    execution = execute_task(
-        judge_request,
-        retry_policy=JUDGE_RETRY_POLICY,
-        base_prompt=prompt,
-        json_error_prompt_alterer=json_error_prompt_alterer,
-        attempt_callback=attempt_callback,
-        stream_request_fn=stream_request,
-    )
-    if execution.selected is None:
-        return JudgeResult(error="cancelled" if stop_event and stop_event.is_set() else "no judge attempt")
-    result = execution.selected.result
-    diagnostics = _judge_response_diagnostics(result, request_params, budget)
-    if result.error:
-        # Preserve partial streamed content for cancellation/transport
-        # diagnostics, while still treating the attempt as unsuccessful.
-        diagnostics["response_json_valid"] = False
-        return JudgeResult(
-            error=result.error,
-            response_text=result.text or None,
-            terminal_429=_is_exhausted_429(result.error),
-            diagnostics=diagnostics,
-        )
-    parsed = parse_judge_response(result.text)
-    diagnostics["response_json_valid"] = parsed.error is None
-    if parsed.error is None:
-        return JudgeResult(
-            score=parsed.score,
-            confidence=parsed.confidence,
-            rationale=parsed.rationale,
-            response_text=result.text,
-            diagnostics=diagnostics,
-            criteria=parsed.criteria,
-        )
-    return JudgeResult(
-        confidence=parsed.confidence,
-        rationale=parsed.rationale,
-        error=parsed.error,
-        response_text=result.text,
-        diagnostics=diagnostics,
-        criteria=parsed.criteria,
-    )
 
 
 def _overall_score(result: dict[str, Any], active_plugins: list[Any]) -> int | None:
@@ -851,7 +565,7 @@ def run_model(model_name: str, source: str, state: Any, active_plugins: list[Any
         for plugin in active_plugins
     } if judge_models or judge_model else {}
 
-    r = {
+    r: dict[str, Any] = {
         "score_schema": SCORE_SCHEMA,
         "model": display_name,
         "state_key": target_name,
@@ -889,7 +603,7 @@ def run_model(model_name: str, source: str, state: Any, active_plugins: list[Any
     if runner == "http" and cfg is None:
         r["status"] = "error"
         r["error"] = f"Unknown source '{source}' — not in SOURCE_CONFIG"
-        r["total_time"] = round(time.time() - start, 1)  # type: ignore[assignment]
+        r["total_time"] = round(time.time() - start, 1)
         state.publish_result(
             r, status="failed", error=r["error"], elapsed=r["total_time"],
             last_error=r["error"],
@@ -985,7 +699,7 @@ def run_model(model_name: str, source: str, state: Any, active_plugins: list[Any
             and not isinstance(r.get(f"{p.id}_score"), bool)
             for p in active_plugins
         )
-        r["total_time"] = round(time.time() - start, 1)  # type: ignore[assignment]
+        r["total_time"] = round(time.time() - start, 1)
         state.publish_result(
             r, status="completed", elapsed=r["total_time"],
         )
@@ -1045,7 +759,7 @@ def _run_plugins(target_name: str, api_model: str, source: str, state: Any, acti
     execution, so this helper is used for both sequential and parallel
     plugin execution.
     """
-    results = {plugin.id: None for plugin in plugins_to_run}
+    results: dict[str, Any] = {plugin.id: None for plugin in plugins_to_run}
     errors = {}
     lock = threading.Lock()
     model_stop_event = threading.Event()
@@ -1116,7 +830,7 @@ def _run_plugins(target_name: str, api_model: str, source: str, state: Any, acti
                 # (``run_model``) once all plugins resolve.
                 state.finish_plugin_run(target_name, pid)
             with lock:
-                results[pid] = result  # type: ignore[assignment]
+                results[pid] = result
                 if err:
                     errors[pid] = err
                 # A successful or non-429 test breaks the streak. Cancellation

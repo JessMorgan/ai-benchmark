@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 import sys
 import traceback
+from collections.abc import Callable
 from typing import ClassVar
 
 from textual.app import App
@@ -19,14 +20,14 @@ from benchmark.tui_format import (
 
 # Runtime rendering hooks are assigned by benchmark.cli after import. Keeping
 # them as explicit hooks avoids importing the orchestration module here.
-_build_frame_lines = None
-_display_width = None
-_line_cells = None
-_changed_cell_spans = None
-_FRAME_STYLE_MAP = {}
+_build_frame_lines: Callable[..., list[tuple[str, str | None]]] | None = None
+_display_width: Callable[[str], int] | None = None
+_line_cells: Callable[[str, int], list[str]] | None = None
+_changed_cell_spans: Callable[[list[str], list[str]], list[tuple[int, int]]] | None = None
+_FRAME_STYLE_MAP: dict[str, str] = {}
 _TUI_REFRESH_SECONDS = 0.5
-_unique_source_abbrevs = None
-_fallback_tui_loop = None
+_unique_source_abbrevs: Callable[[set[str]], dict[str, str]] | None = None
+_fallback_tui_loop: Callable[..., None] | None = None
 
 class _FrameRow(Static):  # pragma: no cover - live interactive loop
     """One TUI frame line that repaints only the cells that changed.
@@ -187,6 +188,7 @@ class _BenchmarkTUIApp(App):  # pragma: no cover - live interactive loop
             max(0, len(self._state.snapshot()) - visible_rows),
         )
         visible_cols = max(0, width - FROZEN_VIEW_WIDTH - 1)
+        assert _display_width is not None
         self._scroll_x = min(
             self._scroll_x,
             max(0, _display_width(self._plugin_hdr) - visible_cols),
@@ -204,6 +206,7 @@ class _BenchmarkTUIApp(App):  # pragma: no cover - live interactive loop
         return max(0, len(self._state.snapshot()) - self._visible_rows())
 
     def _max_col_offset(self) -> int:
+        assert _display_width is not None
         return max(0, _display_width(self._plugin_hdr) - self._visible_cols())
 
     def _frame_key(self):
@@ -239,6 +242,7 @@ class _BenchmarkTUIApp(App):  # pragma: no cover - live interactive loop
                 # Nothing the frame displays changed since the last tick.
                 return
             self._last_frame_key = key
+            assert _build_frame_lines is not None
             lines = _build_frame_lines(
                 self._state, self._active_plugins, self._source_abbrevs,
                 self._frozen_hdr, self._plugin_hdr, self._num_sources,

@@ -212,7 +212,7 @@ class TestJudgeCore(unittest.TestCase):
                 '<tool_call>{"name": "get_weather"}</tool_call>',
                 target="model", runner="http",
             )
-            with mock.patch("benchmark.core.stream_request", return_value=response) as request:
+            with mock.patch("benchmark.judging.stream_request", return_value=response) as request:
                 result = judge_response(
                     {}, "Local", "judge", sidecar, timeout=3,
                     plugin=ToolCallingPlugin(),
@@ -246,7 +246,7 @@ class TestJudgeCore(unittest.TestCase):
             legacy_item.pop("judge_instructions_version", None)
             with open(sidecar, "w", encoding="utf-8") as handle:
                 json.dump(legacy_item, handle)
-            with mock.patch("benchmark.core.stream_request", return_value=response) as request:
+            with mock.patch("benchmark.judging.stream_request", return_value=response) as request:
                 result = judge_response(
                     {}, "Local", "judge", sidecar, timeout=3,
                     progress_callback=progress,
@@ -346,7 +346,7 @@ class TestJudgeCore(unittest.TestCase):
                 sidecar, FakePlugin(), "Prompt", "Response",
                 target="model", runner="http",
             )
-            with mock.patch("benchmark.core.stream_request", return_value=response) as request:
+            with mock.patch("benchmark.judging.stream_request", return_value=response) as request:
                 result = judge_response({}, "Local", "judge", sidecar, timeout=3)
         self.assertEqual(result.error, "HTTP 429: rate limited")
         self.assertTrue(result.terminal_429)
@@ -360,7 +360,7 @@ class TestJudgeCore(unittest.TestCase):
                 sidecar, FakePlugin(), "Prompt", "Response",
                 target="model", runner="http",
             )
-            with mock.patch("benchmark.core.stream_request", return_value=response):
+            with mock.patch("benchmark.judging.stream_request", return_value=response):
                 result = judge_response({}, "Local", "judge", sidecar, timeout=3)
         self.assertIsNone(result.response_text)
         self.assertEqual(result.error, "timeout")
@@ -383,7 +383,7 @@ class TestJudgeCore(unittest.TestCase):
                 sidecar, FakePlugin(), "Prompt", "Response",
                 target="model", runner="http",
             )
-            with mock.patch("benchmark.core.stream_request", return_value=response):
+            with mock.patch("benchmark.judging.stream_request", return_value=response):
                 result = judge_response(
                     {}, "Local", "judge", sidecar, timeout=3,
                     request_params=request_params,
@@ -413,7 +413,7 @@ class TestJudgeCore(unittest.TestCase):
                 sidecar, FakePlugin(), "Prompt", "Response",
                 target="model", runner="http",
             )
-            with mock.patch("benchmark.core.stream_request", return_value=response) as request:
+            with mock.patch("benchmark.judging.stream_request", return_value=response) as request:
                 result = judge_response(
                     {}, "Local", "judge", sidecar, timeout=3,
                     request_params=request_params,
@@ -432,7 +432,7 @@ class TestJudgeCore(unittest.TestCase):
                 sidecar, FakePlugin(), "Prompt", "Response",
                 target="model", runner="http",
             )
-            with mock.patch("benchmark.core.stream_request", return_value=response) as request:
+            with mock.patch("benchmark.judging.stream_request", return_value=response) as request:
                 result = judge_response({}, "Local", "judge", sidecar, timeout=3)
         self.assertEqual(JUDGE_DEFAULT_MAX_TOKENS, 4096)
         self.assertEqual(result.score, 75)
@@ -443,7 +443,7 @@ class TestJudgeCore(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             sidecar = f"{tmp}/input.json"
             prepare_judge_sidecar(sidecar, FakePlugin(), "Prompt", "Response", target="model", runner="http")
-            with mock.patch("benchmark.core.stream_request", return_value=response) as request:
+            with mock.patch("benchmark.judging.stream_request", return_value=response) as request:
                 result = judge_response({}, "Local", "judge", sidecar, timeout=3)
         self.assertEqual(result.score, 75)
         request.assert_called_once()
@@ -461,7 +461,7 @@ class TestJudgeCore(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             sidecar = f"{tmp}/input.json"
             prepare_judge_sidecar(sidecar, FakePlugin(), "Prompt", "Response", target="model", runner="http")
-            with mock.patch("benchmark.core.stream_request", side_effect=[invalid, valid]):
+            with mock.patch("benchmark.judging.stream_request", side_effect=[invalid, valid]):
                 result = judge_response(
                     {}, "Local", "judge", sidecar, timeout=3,
                     max_tokens=2048, attempt_callback=attempts.append,
@@ -483,7 +483,7 @@ class TestJudgeCore(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             sidecar = f"{tmp}/input.json"
             prepare_judge_sidecar(sidecar, FakePlugin(), "Prompt", "Response", target="model", runner="http")
-            with mock.patch("benchmark.core.stream_request", side_effect=[first, second]) as request:
+            with mock.patch("benchmark.judging.stream_request", side_effect=[first, second]) as request:
                 result = judge_response({}, "Local", "judge", sidecar, timeout=3,
                                         max_tokens=2048)
         self.assertEqual(result.score, 75)
@@ -507,7 +507,7 @@ class TestJudgeCore(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             sidecar = f"{tmp}/input.json"
             prepare_judge_sidecar(sidecar, FakePlugin(), "Prompt", "Response", target="model", runner="http")
-            with mock.patch("benchmark.core.stream_request", side_effect=[first, second]) as request:
+            with mock.patch("benchmark.judging.stream_request", side_effect=[first, second]) as request:
                 result = judge_response({}, "Local", "judge", sidecar, timeout=3,
                                         max_tokens=2048)
         self.assertEqual(result.score, 75)
@@ -529,7 +529,7 @@ class TestJudgeCore(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             sidecar = f"{tmp}/input.json"
             prepare_judge_sidecar(sidecar, FakePlugin(), "Prompt", "Response", target="model", runner="http")
-            with mock.patch("benchmark.core.stream_request", side_effect=[first, second]) as request:
+            with mock.patch("benchmark.judging.stream_request", side_effect=[first, second]) as request:
                 result = judge_response({}, "Local", "judge", sidecar, timeout=3,
                                         max_tokens=2048)
         self.assertEqual(result.score, 75)

@@ -6,7 +6,6 @@ import copy
 import hashlib
 import json
 import os
-import threading
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -673,7 +672,7 @@ def _judge_response_diagnostics(response: Any, request_params: dict[str, Any] | 
 
 def judge_response(source_config: dict[str, Any], judge_source: str, judge_api_model: str, sidecar: str,
                    *, timeout: float, max_tokens: int | None = None, temperature: float = 0.0,
-                   drop_params: list[str] | None = None, request_params: dict[str, Any] | None = None, stop_event: threading.Event | None = None, log_path: str | None = None,
+                   drop_params: list[str] | None = None, request_params: dict[str, Any] | None = None, stop_event: Any = None, log_path: str | None = None,
                    plugin: Any = None, progress_callback: Callable[[str, str], None] | None = None,
                    attempt_callback: Callable[[int], None] | None = None) -> JudgeResult:
     """Run one streaming judge request, retrying once when its JSON is invalid."""

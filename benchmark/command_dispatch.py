@@ -34,8 +34,8 @@ def dispatch_early_command(args: Any) -> bool:
         except (OSError, json.JSONDecodeError, TypeError, ValueError, RuntimeError) as exc:
             print(f"❌ Could not generate reports: {exc}", file=sys.stderr)
             raise SystemExit(1) from exc
-        for report in reports:
-            print(report)
+        for report_line in reports:
+            print(report_line)
         raise SystemExit(0)
 
     if args.build_judge_queue:

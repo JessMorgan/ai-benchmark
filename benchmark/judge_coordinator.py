@@ -331,6 +331,9 @@ class JudgeCoordinator:
         state_key = target_name if runner == "http" else f"{target_name} [opencode]"
         plugin_obj = next((p for p in self._active_plugins if p.id == plugin_id), None)
         contract_id = judge_contract_id(plugin_obj) if plugin_obj is not None else None
+        if contract_id is None:
+            # Judging is scoped by contract; a plugin without one cannot be judged.
+            return
         _last_attempt = [1]
 
         try:
@@ -514,7 +517,7 @@ class JudgeCoordinator:
         target_name: str, runner: str, plugin_id: str,
         judge_name: str, state_key: str, previous_vote: dict[str, Any] | None,
         all_existing_votes: list[dict[str, Any]],
-        contract_id: str | None, attempt_number: int,
+        contract_id: str, attempt_number: int,
     ) -> None:
         from benchmark.core import JUDGE_PROMPT_VERSION
         from benchmark.judging import (

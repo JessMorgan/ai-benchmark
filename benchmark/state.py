@@ -1618,7 +1618,7 @@ class BenchmarkState:
             if info is None:
                 continue
             for key, value in row.items():  # type: ignore[assignment]
-                if key == "overall_score_100":  # type: ignore[comparison-overlap]
+                if key == "overall_score_100":
                     continue
                 for suffix in _RESUME_PERSISTENT_SUFFIXES:
                     if key.endswith(suffix):  # type: ignore[attr-defined]
