@@ -3,7 +3,7 @@
 | Property | Value |
 |---|---|
 | ID | `event-processor` |
-| Version | `0.1.0` |
+| Version | `0.3.0` |
 | Max Score | 20 |
 | Streaming | Yes |
 

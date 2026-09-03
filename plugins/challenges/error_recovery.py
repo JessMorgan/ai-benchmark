@@ -18,7 +18,7 @@ class ErrorRecoveryPlugin(BenchmarkTaskPlugin):
 
     @property
     def version(self) -> str:
-        return "1.3.0"
+        return "1.4.0"
 
     @property
     def name(self) -> str:

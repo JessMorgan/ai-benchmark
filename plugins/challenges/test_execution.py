@@ -21,13 +21,12 @@ def test_missing_podman_uses_restricted_local_fallback():
 
 
 def test_local_restricted_fallback_allows_thread_pools():
-    """The local-restricted sandbox must run thread-based submissions.
+    """The local-restricted sandbox must run the challenge-sized thread pool.
 
     RLIMIT_NPROC is per-user on Linux, so capping it counts every task the
-    host user already owns (always dozens on CI runners) and crashes correct
-    thread-based code the moment the child spawns a ThreadPoolExecutor. The
-    sandbox therefore omits that limit; this regression pins the behavior on
-    every host regardless of how busy the user is.
+    host user already owns and crashes correct thread-based code. Newer
+    Python runtimes also need more virtual address space for thread stacks;
+    this uses the 16-thread shape of the rate-limiter execution harness.
     """
     with mock.patch("plugins.challenges._execution.shutil.which", return_value=None):
         result = run_python_check(
@@ -36,8 +35,8 @@ def test_local_restricted_fallback_allows_thread_pools():
 def _double(value):
     return value * 2
 
-with ThreadPoolExecutor(max_workers=4) as _pool:
-    assert sorted(_pool.map(_double, range(16))) == [v * 2 for v in range(16)]
+with ThreadPoolExecutor(max_workers=16) as _pool:
+    assert sorted(_pool.map(_double, range(64))) == [v * 2 for v in range(64)]
 """,
         )
     assert result.status == "passed", result.output

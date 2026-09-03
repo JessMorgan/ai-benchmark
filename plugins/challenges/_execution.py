@@ -81,7 +81,21 @@ def _run_local_restricted(source: str, harness: str, *, timeout: float) -> Execu
     """
     with tempfile.TemporaryDirectory(prefix="ai-benchmark-local-exec-") as tmpdir:
         script = Path(tmpdir) / "check.py"
-        script.write_text(source + "\n\n" + harness, encoding="utf-8")
+        execution = source + "\n\n" + harness
+        if resource is not None:
+            # Keep thread stacks small enough for the address-space limit while
+            # still allowing the concurrent challenge harness to run. Compile
+            # the generated source separately so a response's future imports
+            # retain their normal module semantics.
+            execution = (
+                "import threading as _threading\n"
+                "try:\n"
+                "    _threading.stack_size(1024 * 1024)\n"
+                "except RuntimeError:\n"
+                "    pass\n"
+                f"exec(compile({execution!r}, {str(script)!r}, 'exec'))\n"
+            )
+        script.write_text(execution, encoding="utf-8")
 
         def limit_resources() -> None:
             if resource is None:
@@ -92,10 +106,9 @@ def _run_local_restricted(source: str, harness: str, *, timeout: float) -> Execu
             # RLIMIT_NPROC is deliberately NOT set here. On Linux the kernel
             # enforces it against every task (process + thread) already owned
             # by the user, not against this child alone, so a small cap makes
-            # correct thread-based submissions crash whenever the host user
-            # is busy (always true on CI runners, where the runner agent alone
-            # holds dozens of tasks). CPU, address-space, and file-size limits
-            # still bound runaway code.
+            # correct threaded submissions crash whenever the host user is
+            # busy. CPU, address-space, and file-size limits still constrain
+            # the single fallback process; Podman remains the security boundary.
 
         try:
             process = subprocess.Popen(

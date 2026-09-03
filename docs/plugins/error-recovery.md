@@ -3,7 +3,7 @@
 | Property | Value |
 |---|---|
 | ID | `error-recovery` |
-| Version | `1.1.0` |
+| Version | `1.4.0` |
 | Max Score | 20 |
 | Streaming | Yes |
 

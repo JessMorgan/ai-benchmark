@@ -3,7 +3,7 @@
 | Property | Value |
 |---|---|
 | ID | `debug-traversal` |
-| Version | `1.0.0` |
+| Version | `1.2.0` |
 | Max Score | 20 |
 | Streaming | Yes |
 
