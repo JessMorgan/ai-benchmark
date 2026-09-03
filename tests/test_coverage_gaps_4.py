@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 # ---------------------------------------------------------------------------
 # benchmark.state – judge activity, models, and contracts
@@ -37,7 +37,7 @@ class TestStateJudgeActivity:
 
         state = BenchmarkState({"m1": {}}, ["http"])
         aid = state.start_judge_activity("judge-1", "m1", "p1")
-        state.set_judge_activity_attempt(aid, "bad")
+        state.set_judge_activity_attempt(aid, cast(int, "bad"))
         snap = state.judge_activity_snapshot()
         assert snap[aid]["attempt"] == 1
 

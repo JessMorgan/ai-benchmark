@@ -112,6 +112,11 @@ check_untyped_defs = false
 # or redundant cast is now a mypy error in CI (pre-commit mypy hook).
 warn_unused_ignores = true
 warn_redundant_casts = true
+# Keeps the default-mode (pre-commit) run and the ``--strict`` CI run in
+# agreement on classes whose base is ``Any`` under ``follow_imports=skip``
+# (e.g. the Textual TUI); without it the strict-only error makes the
+# ``# type: ignore[misc]`` comments look unused in default mode.
+disallow_subclassing_any = true
 exclude = ["benchmark/cli.py"]
 
 [tool.ruff]

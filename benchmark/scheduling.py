@@ -6,22 +6,25 @@ import sys
 import threading
 import time
 from collections import deque
-from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+from collections.abc import Callable, Iterable
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from typing import Any
 
 from .scheduler_policy import SourceSchedulingPolicy
 
 
-def _runner_suffix(runner):
+def _runner_suffix(runner: str) -> str:
     """Return the stable state/artifact suffix for a non-HTTP runner."""
     return "" if runner == "http" else f" [{runner}]"
 
 
-def _runner_state_key(target_name, runner):
+def _runner_state_key(target_name: str, runner: str) -> str:
     return f"{target_name}{_runner_suffix(runner)}"
 
 
-def _targets_for_runner(targets, state_models, runner):
+def _targets_for_runner(
+    targets: dict[str, dict[str, Any]], state_models: Iterable[str], runner: str,
+) -> dict[str, dict[str, Any]]:
     """Return targets with a saved/configured identity for ``runner``."""
     suffix = _runner_suffix(runner)
     return {
@@ -31,7 +34,8 @@ def _targets_for_runner(targets, state_models, runner):
     }
 
 
-def _mark_preload_failed(state, model_name, result, phase_runner, runner_mode):
+def _mark_preload_failed(state: Any, model_name: str, result: Any,
+                         phase_runner: str, runner_mode: str) -> None:
     """Record a failed warm-up in the model's live state only.
 
     A preload failure means the model produced no per-plugin results, so it
@@ -68,8 +72,11 @@ def _mark_preload_failed(state, model_name, result, phase_runner, runner_mode):
         state.log(key, error)
 
 
-def _build_runner_queues(targets, snapshot, runner_mode, source_config,
-                         *, rerun_failed=True, plugin_ids=None):
+def _build_runner_queues(
+    targets: dict[str, dict[str, Any]], snapshot: dict[str, Any], runner_mode: str,
+    source_config: dict[str, Any], *, rerun_failed: bool = True,
+    plugin_ids: Iterable[str] | None = None,
+) -> dict[str, list[str]] | tuple[dict[str, list[str]], dict[str, list[str]], dict[str, set[str]]]:
     """Build pending runner queues from the loaded state snapshot.
 
     ``rerun_failed`` mirrors the resume option. Keeping this decision in the
@@ -90,7 +97,7 @@ def _build_runner_queues(targets, snapshot, runner_mode, source_config,
             )
         inferred_plugin_ids = list(dict.fromkeys(inferred_plugin_ids))
 
-    def needs_run(state):
+    def needs_run(state: dict[str, Any] | None) -> bool:
         if state is None:
             return False
         if state.get("status") == "failed" and not rerun_failed:
@@ -104,9 +111,9 @@ def _build_runner_queues(targets, snapshot, runner_mode, source_config,
         )
 
     if runner_mode == "both":
-        targets_by_source = {src: [] for src in source_config}
-        opencode_pending = {src: [] for src in targets_by_source}
-        http_pending = {src: set() for src in targets_by_source}
+        targets_by_source: dict[str, list[str]] = {src: [] for src in source_config}
+        opencode_pending: dict[str, list[str]] = {src: [] for src in targets_by_source}
+        http_pending: dict[str, set[str]] = {src: set() for src in targets_by_source}
         for name, info in targets.items():
             opencode_state = snapshot.get(f"{name} [opencode]")
             opencode_needed = needs_run(opencode_state)
@@ -121,7 +128,8 @@ def _build_runner_queues(targets, snapshot, runner_mode, source_config,
         return targets_by_source, opencode_pending, http_pending
 
     phase_runner = runner_mode
-    source_queues = {src: [] for src in {info["source"] for info in targets.values()}}
+    source_queues: dict[str, list[str]] = {
+        src: [] for src in {info["source"] for info in targets.values()}}
     for name, info in targets.items():
         state_key = _runner_state_key(name, phase_runner)
         if needs_run(snapshot.get(state_key)):
@@ -132,10 +140,15 @@ def _build_runner_queues(targets, snapshot, runner_mode, source_config,
 class SourceModelScheduler:
     """Run a FIFO queue of target pipelines with a source-local bound."""
 
-    def __init__(self, source, max_models, target_names, run_target,
-                 stop_event, on_error, *, runner_label="model",
-                 peak_callback=None, on_complete=None,
-                 active_models_callback=None):
+    def __init__(
+        self, source: str, max_models: int, target_names: Iterable[str],
+        run_target: Callable[[str], None], stop_event: Any,
+        on_error: Callable[[str, str, Exception], None], *,
+        runner_label: str = "model",
+        peak_callback: Callable[[str, int], None] | None = None,
+        on_complete: Callable[[str], None] | None = None,
+        active_models_callback: Callable[[str, frozenset[str]], None] | None = None,
+    ) -> None:
         self.source = source
         self.max_models = max(1, int(max_models))
         self.target_names = list(target_names)
@@ -150,7 +163,7 @@ class SourceModelScheduler:
     def run_until_drained(self) -> None:
         """Submit at most ``max_models`` targets and refill as they finish."""
         next_index = 0
-        futures = {}
+        futures: dict[Future[None], str] = {}
         active = 0
         running: set[str] = set()
         executor = ThreadPoolExecutor(max_workers=self.max_models)
@@ -245,7 +258,7 @@ class _FlushGate:
 
     """
 
-    def __init__(self, interval=60.0, max_changes=10):
+    def __init__(self, interval: float = 60.0, max_changes: int = 10) -> None:
         try:
             self.interval = float(interval)
         except (TypeError, ValueError):
@@ -258,22 +271,22 @@ class _FlushGate:
         self._changes = 0
         self._lock = threading.Lock()
 
-    def changed(self):
+    def changed(self) -> bool:
         """Record one in-memory change; return True when a flush is due."""
         with self._lock:
             self._changes += 1
             return self._due_locked()
 
-    def _due_locked(self):
+    def _due_locked(self) -> bool:
         return (self._changes >= self.max_changes
                 or time.monotonic() - self._last_flush >= self.interval)
 
-    def _due(self):
+    def _due(self) -> bool:
         """Return whether a flush is due, for diagnostics and tests."""
         with self._lock:
             return self._due_locked()
 
-    def reset(self):
+    def reset(self) -> None:
         """Mark the current flush as completed, starting a fresh cadence."""
         with self._lock:
             self._last_flush = time.monotonic()
@@ -302,28 +315,30 @@ class _BackgroundFlusher:
     save failure prominently.
     """
 
-    def __init__(self, flush_fn, name="background-flusher", failure_callback=None):
+    def __init__(self, flush_fn: Callable[[], None],
+                 name: str = "background-flusher",
+                 failure_callback: Callable[[Exception], None] | None = None) -> None:
         self._flush_fn = flush_fn
         self._failure_callback = failure_callback
         self._condition = threading.Condition()
         self._failure_lock = threading.Lock()
-        self._failures = []
+        self._failures: list[Exception] = []
         self._pending = False
         self._stopped = False
         self._thread = threading.Thread(
             target=self._run, name=name, daemon=True,
         )
 
-    def start(self):
+    def start(self) -> None:
         self._thread.start()
 
-    def request_flush(self):
+    def request_flush(self) -> None:
         """Request a flush; never blocks the caller."""
         with self._condition:
             self._pending = True
             self._condition.notify()
 
-    def stop(self, timeout=None):
+    def stop(self, timeout: float | None = None) -> bool:
         """Drain pending work and join, returning False if the timeout expires."""
         with self._condition:
             self._stopped = True
@@ -332,16 +347,16 @@ class _BackgroundFlusher:
         return not self._thread.is_alive()
 
     @property
-    def failures(self):
+    def failures(self) -> list[Exception]:
         """Return a snapshot of flush exceptions raised by the worker."""
         with self._failure_lock:
             return list(self._failures)
 
     @property
-    def is_alive(self):
+    def is_alive(self) -> bool:
         return self._thread.is_alive()
 
-    def _record_failure(self, exc):
+    def _record_failure(self, exc: Exception) -> None:
         with self._failure_lock:
             self._failures.append(exc)
         if self._failure_callback is not None:
@@ -359,7 +374,7 @@ class _BackgroundFlusher:
             file=sys.stderr,
         )
 
-    def _run(self):
+    def _run(self) -> None:
         while True:
             with self._condition:
                 while not self._pending and not self._stopped:
@@ -392,8 +407,9 @@ def _resolve_judge_plugin_limit(source_config: dict[str, Any], source: str) -> i
     return value if value > 0 else 1
 
 
-def _configure_judge_source(benchmark_limits, source, full_limit,
-                            benchmark_queue, pool):
+def _configure_judge_source(benchmark_limits: dict[str, int], source: str,
+                            full_limit: int, benchmark_queue: list[str],
+                            pool: SourceJudgeWorkerPool) -> None:
     """Configure judge capacity for one source.
 
     Benchmarks keep priority and claim every configured model slot while work
@@ -415,13 +431,13 @@ def _configure_judge_source(benchmark_limits, source, full_limit,
 class _CombinedStopEvent:
     """Expose several cancellation events through the Event interface."""
 
-    def __init__(self, *events):
+    def __init__(self, *events: Any) -> None:
         self._events = tuple(events)
 
-    def is_set(self):
+    def is_set(self) -> bool:
         return any(event.is_set() for event in self._events)
 
-    def wait(self, timeout=None):
+    def wait(self, timeout: float | None = None) -> bool:
         if timeout is None:
             while not self.is_set():
                 time.sleep(0.1)
@@ -445,39 +461,39 @@ class _JudgeQueue:
     in arrival order.
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         self._condition = threading.Condition()
-        self._fresh = deque()
-        self._retry = deque()
+        self._fresh: deque[Any] = deque()
+        self._retry: deque[Any] = deque()
         self._unfinished_tasks = 0
         self._stop_tokens = 0
 
     @property
-    def unfinished_tasks(self):
+    def unfinished_tasks(self) -> int:
         """Expose queue accounting used by tests and shutdown diagnostics."""
         with self._condition:
             return self._unfinished_tasks
 
     @property
-    def pending(self):
+    def pending(self) -> bool:
         """True while the judge still has unstarted cells queued."""
         with self._condition:
             return bool(self._fresh or self._retry)
 
     @staticmethod
-    def _job_is_fresh(job):
+    def _job_is_fresh(job: Any) -> bool:
         # ``expected_added`` is true when this judge has no prior vote for the
         # cell; failed/invalid prior attempts are retry work.
         return not isinstance(job, tuple) or len(job) <= 5 or bool(job[5])
 
-    def put(self, job):
+    def put(self, job: Any) -> None:
         bucket = self._fresh if self._job_is_fresh(job) else self._retry
         with self._condition:
             bucket.append(job)
             self._unfinished_tasks += 1
             self._condition.notify()
 
-    def get(self, timeout=None):
+    def get(self, timeout: float | None = None) -> Any:
         deadline = None if timeout is None else time.monotonic() + timeout
         with self._condition:
             while True:
@@ -486,7 +502,7 @@ class _JudgeQueue:
                     return _JUDGE_QUEUE_STOP
                 if self._fresh or self._retry:
                     return self._fresh.popleft() if self._fresh else self._retry.popleft()
-                if timeout is not None:
+                if timeout is not None and deadline is not None:
                     remaining = deadline - time.monotonic()
                     if remaining <= 0:
                         raise queue.Empty
@@ -494,7 +510,7 @@ class _JudgeQueue:
                 else:
                     self._condition.wait()
 
-    def task_done(self):
+    def task_done(self) -> None:
         with self._condition:
             if self._unfinished_tasks <= 0:
                 raise ValueError("task_done() called too many times")
@@ -502,12 +518,12 @@ class _JudgeQueue:
             if self._unfinished_tasks == 0:
                 self._condition.notify_all()
 
-    def join(self):
+    def join(self) -> None:
         with self._condition:
             while self._unfinished_tasks:
                 self._condition.wait()
 
-    def cancel_pending(self):
+    def cancel_pending(self) -> None:
         """Discard queued, not-yet-started jobs while preserving active jobs."""
         with self._condition:
             pending = len(self._fresh) + len(self._retry)
@@ -516,7 +532,7 @@ class _JudgeQueue:
             self._unfinished_tasks -= pending
             self._condition.notify_all()
 
-    def request_stop(self, count):
+    def request_stop(self, count: int) -> None:
         with self._condition:
             self._stop_tokens += count
             self._condition.notify_all()
@@ -613,8 +629,12 @@ class SourceJudgeWorkerPool:
     between judges.
     """
 
-    def __init__(self, source, model_limit, process_job, stop_event,
-                 plugin_limit=1, on_selection_change=None, plugin_gates=None):
+    def __init__(
+        self, source: str, model_limit: int, process_job: Callable[[Any], None],
+        stop_event: Any, plugin_limit: int = 1,
+        on_selection_change: Callable[[Any, bool], None] | None = None,
+        plugin_gates: PluginSlotGateRegistry | None = None,
+    ) -> None:
         self.source = source
         self.model_limit = max(1, int(model_limit))
         self.plugin_limit = max(1, int(plugin_limit))
@@ -623,32 +643,32 @@ class SourceJudgeWorkerPool:
         self.on_selection_change = on_selection_change
         self.plugin_gates = plugin_gates
         self._condition = threading.Condition()
-        self._queues = {}          # judge -> _JudgeQueue
-        self._order = []           # judge discovery order
-        self._active = {}          # judge -> judge-runner thread
+        self._queues: dict[Any, _JudgeQueue] = {}          # judge -> _JudgeQueue
+        self._order: list[Any] = []                        # judge discovery order
+        self._active: dict[Any, threading.Thread] = {}     # judge -> judge-runner thread
         self._active_limit = 0     # free model slots for regular judges
-        self._benchmark_models = set()  # pending/running benchmark models
+        self._benchmark_models: set[Any] = set()  # pending/running benchmark models
         self._stopped = False
 
     @property
-    def thread_count(self):
+    def thread_count(self) -> int:
         """Number of judge models currently running for this source."""
         with self._condition:
             return len(self._active)
 
     @property
-    def model_slots(self):
+    def model_slots(self) -> int:
         """Currently allowed number of concurrent judge models (reservation)."""
         with self._condition:
             return self._active_limit
 
     @staticmethod
-    def _job_key(job):
+    def _job_key(job: Any) -> Any:
         if isinstance(job, tuple) and len(job) > 4:
             return job[4]
         return None
 
-    def _queue_for(self, judge):
+    def _queue_for(self, judge: Any) -> _JudgeQueue:
         queue = self._queues.get(judge)
         if queue is None:
             queue = _JudgeQueue()
@@ -656,7 +676,7 @@ class SourceJudgeWorkerPool:
             self._order.append(judge)
         return queue
 
-    def enqueue(self, job):
+    def enqueue(self, job: Any) -> None:
         """Queue one judge job, keyed by its judge model."""
         judge = self._job_key(job)
         with self._condition:
@@ -713,7 +733,7 @@ class SourceJudgeWorkerPool:
             self._notify_selection(candidate, True)
             thread.start()
 
-    def _judge_runner(self, judge):
+    def _judge_runner(self, judge: Any) -> None:
         """Run one judge over its queued cells until drained.
 
         The judge holds a model slot while it still has cells, then tears down
@@ -748,7 +768,7 @@ class SourceJudgeWorkerPool:
             self._activate_locked()
             self._condition.notify_all()
 
-    def _cell_worker(self, judge, judge_queue):
+    def _cell_worker(self, judge: Any, judge_queue: _JudgeQueue) -> None:
         gate = None
         if self.plugin_gates is not None:
             gate = self.plugin_gates.get(self.source, judge)
@@ -790,7 +810,7 @@ class SourceJudgeWorkerPool:
                     gate.release()
                 judge_queue.task_done()
 
-    def start(self, count=1):
+    def start(self, count: int = 1) -> None:
         """Allow up to ``count`` judge models to run concurrently."""
         with self._condition:
             self._active_limit = min(self.model_limit, max(0, int(count)))
@@ -821,7 +841,7 @@ class SourceJudgeWorkerPool:
             self._activate_locked()
             self._condition.notify_all()
 
-    def drain(self):
+    def drain(self) -> bool:
         """Wait until every queued job has finished, unless cancellation starts."""
         with self._condition:
             judge_queues = list(self._queues.values())
@@ -837,7 +857,7 @@ class SourceJudgeWorkerPool:
                 self._condition.wait(timeout=0.05)
         return True
 
-    def stop(self, timeout=None, *, drain=False):
+    def stop(self, timeout: float | None = None, *, drain: bool = False) -> None:
         """Stop judges, optionally draining all queued jobs first.
 
         Normal completion uses ``drain=True`` and an unbounded join. The

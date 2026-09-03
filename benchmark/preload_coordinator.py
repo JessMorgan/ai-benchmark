@@ -39,9 +39,9 @@ class PreloadCoordinator:
         self._runner_mode = runner_mode
 
         self._lock = threading.Lock()
-        self._ok: set[tuple] = set()
-        self._failed: set[tuple] = set()
-        self._inflight: dict[tuple, threading.Event] = {}
+        self._ok: set[tuple[str, str]] = set()
+        self._failed: set[tuple[str, str]] = set()
+        self._inflight: dict[tuple[str, str], threading.Event] = {}
 
     # ── public API ──────────────────────────────────────────────────────
 
@@ -76,7 +76,8 @@ class PreloadCoordinator:
         if not preload_owner:
             inflight.wait()
             with self._lock:
-                return key in self._ok
+                return bool(key in self._ok)
+
         started = time.time()
         timeout_limit = resolve_preload_timeout(
             self._source_config, target_info["source"])
@@ -120,7 +121,7 @@ class PreloadCoordinator:
                     self._run_info["preload"]["failed"] += 1
                     self._mark_failed_in_state(
                         model_name, result, phase_runner)
-                return result.success
+                return bool(result.success)
         except Exception as exc:  # noqa: BLE001
             failure = PreloadResult(
                 success=False,

@@ -1579,7 +1579,9 @@ class BenchmarkState:
                             state._model_info[name]["status"] = "pending"
         state.results = data.get("results", [])
         projected_results = project_result_rows(state.results, plugin_ids)
-        projected_by_identity = {
+        projected_by_identity: dict[
+            tuple[Any, Any], dict[str, Any],
+        ] = {
             (
                 row.get("state_key", row.get("model")),
                 row.get("runner", "http"),
@@ -1614,16 +1616,16 @@ class BenchmarkState:
         # cells on JSON resume.
         for identity, row in projected_by_identity.items():
             state_key, runner_name = identity
-            info = state._model_info.get(state_key)  # type: ignore[arg-type]
+            info = state._model_info.get(state_key)
             if info is None:
                 continue
-            for key, value in row.items():  # type: ignore[assignment]
-                if key == "overall_score_100":
+            for info_key, value in row.items():
+                if info_key == "overall_score_100":
                     continue
                 for suffix in _RESUME_PERSISTENT_SUFFIXES:
-                    if key.endswith(suffix):  # type: ignore[attr-defined]
+                    if info_key.endswith(suffix):
                         if value is not None:
-                            info[key] = value  # type: ignore[index]
+                            info[info_key] = value
                         break
             # Older hand-built/legacy rows may not carry plugin_versions;
             # leave their explicit model status intact. Runtime result rows do

@@ -6,6 +6,7 @@ import os
 import sqlite3
 import tempfile
 from pathlib import Path
+from typing import Any, cast
 from unittest.mock import MagicMock
 
 import pytest
@@ -77,7 +78,9 @@ class TestStateJournal:
             {"seq": 3, "type": "judge", "data": {"state_key": "m_missing", "fields": {}}},
             {"seq": 4, "type": "unknown_type", "data": None},
         ]
-        result = BenchmarkState.apply_journal_events_to_data(data, events)
+        result = BenchmarkState.apply_journal_events_to_data(
+            cast(dict[str, Any], data), cast(list[dict[str, Any]], events))
+        assert result is not None
         assert len(result["results"]) == 2  # one added
         assert result["model_info"]["m1"]["http_judge_score"] == 88
         assert result["journal_sequence"] == 4
@@ -85,7 +88,8 @@ class TestStateJournal:
     def test_apply_journal_events_to_data_bad_input(self) -> None:
         from benchmark.state import BenchmarkState
 
-        assert BenchmarkState.apply_journal_events_to_data("not a dict", []) == "not a dict"
+        assert BenchmarkState.apply_journal_events_to_data(
+            cast(dict[str, Any], "not a dict"), cast(list[dict[str, Any]], [])) == "not a dict"
 
     def test_set_journal_path(self) -> None:
         from benchmark.state import BenchmarkState
@@ -231,7 +235,8 @@ class TestCoreSummarizers:
              "p1_response_schema_valid": False},
             {"p1_schema_requested": False},
         ]
-        summary = summarize_schema_compatibility(results, [plugin])
+        summary = summarize_schema_compatibility(
+            cast(list[dict[str, Any]], results), [plugin])
         assert summary["requested_cells"] == 2
         assert summary["response_valid_cells"] == 1
         assert summary["enforcement_verified_cells"] == 1

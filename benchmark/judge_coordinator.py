@@ -67,10 +67,10 @@ class JudgeCoordinator:
         self._flusher = flusher
         self._active_judge_contracts = active_judge_contracts
 
-        self._judge_seen: set[tuple] = set()
+        self._judge_seen: set[tuple[Any, ...]] = set()
         self._judge_seen_lock = threading.Lock()
         self._judge_counts_lock = threading.Lock()
-        self._judge_votes: dict[tuple, list[dict[str, Any]]] = {}
+        self._judge_votes: dict[tuple[Any, ...], list[dict[str, Any]]] = {}
         self._judge_votes_lock = threading.Lock()
         self._halted_judges: set[str] = set()
         self._halted_judges_lock = threading.Lock()
@@ -304,7 +304,7 @@ class JudgeCoordinator:
             with self._judge_counts_lock:
                 self._run_info["judge_counts"]["queued"] += 1
 
-    def process_judge_job(self, job: tuple) -> None:
+    def process_judge_job(self, job: tuple[Any, ...]) -> None:
         from benchmark.core import JUDGE_PROMPT_VERSION, judge_response
         from benchmark.judging import (
             confidence_weighted_consensus,

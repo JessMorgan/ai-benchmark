@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+from typing import Any, cast
 from unittest.mock import MagicMock
 
 import pytest
@@ -121,12 +122,14 @@ class TestCoreHelpers:
         from benchmark.judging import parse_judge_response
 
         result = parse_judge_response("not json at all")
+        assert result.error is not None
         assert "invalid judge JSON" in result.error
 
     def test_parse_judge_response_non_dict(self) -> None:
         from benchmark.judging import parse_judge_response
 
         result = parse_judge_response("[1, 2, 3]")
+        assert result.error is not None
         assert "JSON object" in result.error
 
     def test_parse_judge_response_bad_score(self) -> None:
@@ -136,6 +139,7 @@ class TestCoreHelpers:
             "score": "high", "confidence": "high", "rationale": "x",
             "criteria": [{"id": "c1", "criterion": "T", "status": "met", "evidence": "e"}],
         }))
+        assert result.error is not None
         assert "score must be numeric" in result.error
 
     def test_parse_judge_response_score_out_of_range(self) -> None:
@@ -145,6 +149,7 @@ class TestCoreHelpers:
             "score": 150, "confidence": "high", "rationale": "x",
             "criteria": [{"id": "c1", "criterion": "T", "status": "met", "evidence": "e"}],
         }))
+        assert result.error is not None
         assert "score must be numeric" in result.error
 
     def test_parse_judge_response_score_bool(self) -> None:
@@ -154,6 +159,7 @@ class TestCoreHelpers:
             "score": True, "confidence": "high", "rationale": "x",
             "criteria": [{"id": "c1", "criterion": "T", "status": "met", "evidence": "e"}],
         }))
+        assert result.error is not None
         assert "score must be numeric" in result.error
 
     def test_parse_judge_response_bad_confidence(self) -> None:
@@ -163,6 +169,7 @@ class TestCoreHelpers:
             "score": 50, "confidence": "very_high", "rationale": "x",
             "criteria": [{"id": "c1", "criterion": "T", "status": "met", "evidence": "e"}],
         }))
+        assert result.error is not None
         assert "confidence must be" in result.error
 
     def test_parse_judge_response_empty_rationale(self) -> None:
@@ -172,6 +179,7 @@ class TestCoreHelpers:
             "score": 50, "confidence": "high", "rationale": "",
             "criteria": [{"id": "c1", "criterion": "T", "status": "met", "evidence": "e"}],
         }))
+        assert result.error is not None
         assert "rationale" in result.error
 
     def test_parse_judge_response_no_criteria(self) -> None:
@@ -181,6 +189,7 @@ class TestCoreHelpers:
             "score": 50, "confidence": "high", "rationale": "x",
             "criteria": [],
         }))
+        assert result.error is not None
         assert "criteria" in result.error
 
     def test_parse_judge_response_bad_criterion(self) -> None:
@@ -190,6 +199,7 @@ class TestCoreHelpers:
             "score": 50, "confidence": "high", "rationale": "x",
             "criteria": ["not a dict"],
         }))
+        assert result.error is not None
         assert "criterion 1 must be an object" in result.error
 
     def test_parse_judge_response_criterion_no_id(self) -> None:
@@ -199,6 +209,7 @@ class TestCoreHelpers:
             "score": 50, "confidence": "high", "rationale": "x",
             "criteria": [{"criterion": "T", "status": "met", "evidence": "e"}],
         }))
+        assert result.error is not None
         assert "criterion 1 must have a non-empty id" in result.error
 
     def test_parse_judge_response_criterion_bad_status(self) -> None:
@@ -208,6 +219,7 @@ class TestCoreHelpers:
             "score": 50, "confidence": "high", "rationale": "x",
             "criteria": [{"id": "c1", "criterion": "T", "status": "maybe", "evidence": "e"}],
         }))
+        assert result.error is not None
         assert "invalid status" in result.error
 
     def test_parse_judge_response_criterion_no_evidence(self) -> None:
@@ -217,6 +229,7 @@ class TestCoreHelpers:
             "score": 50, "confidence": "high", "rationale": "x",
             "criteria": [{"id": "c1", "criterion": "T", "status": "met", "evidence": ""}],
         }))
+        assert result.error is not None
         assert "evidence" in result.error
 
     def test_judge_vote_identity(self) -> None:
@@ -225,7 +238,7 @@ class TestCoreHelpers:
         vote = {"model": "judge-1", "judge_contract_id": "contract-1"}
         assert judge_vote_identity(vote) == ("judge-1", "contract-1")
         assert judge_vote_identity({}) == (None, None)
-        assert judge_vote_identity("not a dict") == (None, None)
+        assert judge_vote_identity(cast(dict[str, Any], "not a dict")) == (None, None)
 
     def test_judge_votes_for_contract(self) -> None:
         from benchmark.judging import judge_votes_for_contract
@@ -323,7 +336,7 @@ class TestCoreHelpers:
     def test_json_object_fallback_params_non_dict(self) -> None:
         from benchmark.core import _json_object_fallback_params
 
-        assert _json_object_fallback_params("not a dict") is None
+        assert _json_object_fallback_params(cast(dict[str, Any], "not a dict")) is None
 
     def test_json_object_fallback_params_no_schema(self) -> None:
         from benchmark.core import _json_object_fallback_params
@@ -737,8 +750,8 @@ class TestStateRecovery:
         path.write_text(json.dumps(state))
         recovery = prepare_state_recovery(str(path))
         backup = apply_state_recovery(str(path), recovery)
+        assert backup is not None
         assert os.path.exists(backup)
-        # State file should still be valid
         with open(path) as f:
             data = json.load(f)
         assert len(data["results"]) == 1
@@ -860,7 +873,7 @@ class TestSQLiteRunStoreEdgeCases:
         from benchmark.storage import SQLiteRunStore
 
         store = SQLiteRunStore(":memory:")
-        store.start_run = MagicMock()
+        store.start_run = MagicMock()  # type: ignore[method-assign]
         store._revision_id = None
         store._results = {("m1", "http"): {"model": "m1"}}
         assert store.latest_results() == [{"model": "m1"}]

@@ -231,9 +231,11 @@ def main() -> int:
 
     # Stronger structural check if pyyaml is available.
     try:
-        import yaml  # type: ignore
+        import yaml
     except ImportError:
-        yaml = None  # type: ignore
+        # mypy understands this fallback pattern and types ``yaml`` as
+        # ``ModuleType | None`` without further suppression.
+        yaml = None
     if yaml is not None:
         data = yaml.safe_load(new_src)
         agents = data.get("agents", {}) if isinstance(data, dict) else {}

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from datetime import date, datetime
 from typing import Any
 
@@ -18,7 +19,7 @@ class ToolCallingPlugin(BenchmarkTaskPlugin):
 
     @property
     def version(self) -> str:
-        return "1.1.0"
+        return "1.1.1"
 
     @property
     def name(self) -> str:
@@ -101,7 +102,7 @@ class ToolCallingPlugin(BenchmarkTaskPlugin):
         distinct = len(set(names) & set(expected))
         rubric.add_criterion("Required tools present", 5.0, 5.0 if counts_ok else 5.0 * distinct / len(expected), negative_findings=[] if counts_ok else [{"finding": "exactly one call for each required tool is required"}])
         args = [call.get("args", {}) for call in calls if isinstance(call, dict)]
-        checks = [
+        checks: list[tuple[str, Callable[[dict[str, Any]], bool], float]] = [
             ("get_weather", lambda a: str(a.get("location", "")).lower() == "tokyo" and str(a.get("unit", "")).lower() in {"celsius", "c"}, 1.0),
             ("search_flights", lambda a: str(a.get("origin", "")).upper() == "JFK" and str(a.get("destination", "")).lower() == "tokyo" and self._date_matches(a.get("date"), "2024-08-15"), 1.5),
             ("book_hotel", lambda a: str(a.get("city", "")).lower() == "tokyo" and self._date_matches(a.get("check_in"), "2024-08-16") and self._date_matches(a.get("check_out"), "2024-08-20") and a.get("guests") == 2, 1.5),
@@ -109,7 +110,7 @@ class ToolCallingPlugin(BenchmarkTaskPlugin):
             ("convert_currency", lambda a: a.get("amount") == 1000 and str(a.get("from_curr")).upper() == "USD" and str(a.get("to_curr")).upper() == "JPY", 1.0),
             ("send_email", lambda a: str(a.get("to", "")).lower() == "alice@example.com" and "tokyo trip itinerary" in str(a.get("subject", "")).lower() and bool(a.get("body")), 2.0),
         ]
-        arg_score = sum(float(weight) for name, predicate, weight in checks for call_name, call_args in zip(names, args, strict=False) if call_name == name and isinstance(call_args, dict) and predicate(call_args))  # type: ignore[no-untyped-call,misc]
+        arg_score = sum(float(weight) for name, predicate, weight in checks for call_name, call_args in zip(names, args, strict=False) if call_name == name and isinstance(call_args, dict) and predicate(call_args))
         rubric.add_criterion("Correct arguments", 8.0, arg_score)
         rubric.add_criterion("Correct ordering / dependencies", 3.0, 3.0 if names == expected else 0.0)
         final = text[text.rfind("</tool_call>") + len("</tool_call>"):] if "</tool_call>" in text else ""

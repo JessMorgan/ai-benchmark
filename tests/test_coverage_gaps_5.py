@@ -430,6 +430,7 @@ class TestJsonFallbackMore:
             "response_format": {"type": "json_schema", "json_schema": {"name": "x"}},
         }
         result = _json_object_fallback_params(params)
+        assert result is not None
         assert result["temperature"] == 0.5
         assert result["response_format"]["type"] == "json_object"
 

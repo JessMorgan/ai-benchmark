@@ -5,7 +5,7 @@ import os
 import re
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from typing import Any, cast
@@ -522,8 +522,10 @@ def _source_abbrev(name: str) -> str:
     return ab if len(ab) >= 2 else (name * 2)[:2].upper()
 
 
-def _unique_source_abbrevs(sources: list[str]) -> dict[str, str]:
+def _unique_source_abbrevs(sources: Iterable[str]) -> dict[str, str]:
     """Return a mapping from source names to short, unique abbreviations."""
+    # Accepts any iterable (list, set, generator): the TUI passes a set of
+    # source names while the CLI passes lists.
     abbrevs = {}
     used = set()
     for src in sources:

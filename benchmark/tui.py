@@ -4,8 +4,8 @@ from __future__ import annotations
 import os
 import sys
 import traceback
-from collections.abc import Callable
-from typing import ClassVar
+from collections.abc import Callable, Iterable
+from typing import Any, ClassVar
 
 from textual.app import App
 from textual.geometry import Region
@@ -27,10 +27,10 @@ _line_cells: Callable[[str, int], list[str]] | None = None
 _changed_cell_spans: Callable[[list[str], list[str]], list[tuple[int, int]]] | None = None
 _FRAME_STYLE_MAP: dict[str, str] = {}
 _TUI_REFRESH_SECONDS = 0.5
-_unique_source_abbrevs: Callable[[set[str]], dict[str, str]] | None = None
+_unique_source_abbrevs: Callable[[Iterable[str]], dict[str, str]] | None = None
 _fallback_tui_loop: Callable[..., None] | None = None
 
-class _FrameRow(Static):  # pragma: no cover - live interactive loop
+class _FrameRow(Static):  # type: ignore[misc]  # pragma: no cover - live interactive loop
     """One TUI frame line that repaints only the cells that changed.
 
     ``Static.update`` marks the entire widget dirty, so a whole-screen frame
@@ -41,20 +41,21 @@ class _FrameRow(Static):  # pragma: no cover - live interactive loop
     compositor emits just those cells.
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__(markup=False)
         self.styles.width = "1fr"
         self.styles.height = 1
         self._line_text = ""
-        self._line_style = None
-        self._line_cells = None
+        self._line_style: str | None = None
+        self._line_cells: list[str] | None = None
         self._line_width = 0
 
-    def render(self):
+    def render(self) -> Any:
         from rich.text import Text
 
+        assert _line_cells is not None
         text = Text(self._line_text)
-        style = _FRAME_STYLE_MAP.get(self._line_style, "")
+        style = _FRAME_STYLE_MAP.get(self._line_style or "", "")
         if style:
             # Apply the style as a SPAN (not the Text base style) so Textual's
             # ``Content.from_rich_text`` converts it through the app's ANSI
@@ -67,7 +68,7 @@ class _FrameRow(Static):  # pragma: no cover - live interactive loop
             text.stylize(style)
         return text
 
-    def update_line(self, content, style, width):
+    def update_line(self, content: str, style: str | None, width: int) -> bool:
         """Switch to ``content`` (styled ``style``), repainting changed cells only.
 
         Returns ``True`` when the row changed (and a repaint was queued). The
@@ -76,11 +77,13 @@ class _FrameRow(Static):  # pragma: no cover - live interactive loop
         """
         if width <= 0:
             return False
+        assert _line_cells is not None
+        assert _changed_cell_spans is not None
         cells = _line_cells(content, width)
         if (self._line_cells is not None and cells == self._line_cells
                 and style == self._line_style and width == self._line_width):
             return False
-        spans = []
+        spans: list[tuple[int, int]] = []
         if self._line_cells is not None:
             spans = _changed_cell_spans(self._line_cells, cells)
             if (not spans
@@ -102,7 +105,7 @@ class _FrameRow(Static):  # pragma: no cover - live interactive loop
         return True
 
 
-class _BenchmarkTUIApp(App):  # pragma: no cover - live interactive loop
+class _BenchmarkTUIApp(App):  # type: ignore[misc]  # pragma: no cover - live interactive loop
     """Textual app that re-renders the benchmark status frame adaptively.
 
     The frame is rebuilt at most every ``_TUI_REFRESH_SECONDS`` (2 fps), and
@@ -130,9 +133,19 @@ class _BenchmarkTUIApp(App):  # pragma: no cover - live interactive loop
         ("ctrl+right", "scroll_end_x", "Far Right"),
     ]
 
-    def __init__(self, state, stop_event, source_abbrevs, frozen_hdr,
-                 plugin_hdr, num_sources, active_plugins, session_seed,
-                 model_thread_limits, close_requests=close_active_requests):
+    def __init__(
+        self,
+        state: Any,
+        stop_event: Any,
+        source_abbrevs: dict[str, str],
+        frozen_hdr: str,
+        plugin_hdr: str,
+        num_sources: int,
+        active_plugins: list[Any],
+        session_seed: Any,
+        model_thread_limits: Any,
+        close_requests: Callable[[], None] = close_active_requests,
+    ) -> None:
         super().__init__()
         self._state = state
         self._stop_event = stop_event
@@ -147,13 +160,13 @@ class _BenchmarkTUIApp(App):  # pragma: no cover - live interactive loop
         self._scroll_y = 0
         self._scroll_x = 0
         self._rows: list[_FrameRow] = []
-        self._last_frame_key = None
+        self._last_frame_key: tuple[Any, ...] | None = None
 
     def on_mount(self) -> None:
         self.set_interval(_TUI_REFRESH_SECONDS, self._refresh)
         self._refresh()
 
-    def _sync_rows(self, lines) -> None:
+    def _sync_rows(self, lines: list[tuple[str, str | None]]) -> None:
         """Mount/unmount row widgets to match the frame, updating changed rows."""
         width = max(0, self.size.width)
         if len(self._rows) < len(lines):
@@ -173,7 +186,7 @@ class _BenchmarkTUIApp(App):  # pragma: no cover - live interactive loop
         for i, (content, style) in enumerate(lines):
             self._rows[i].update_line(content, style, width)
 
-    def on_resize(self, event) -> None:
+    def on_resize(self, event: Any) -> None:
         """Clamp scroll and invalidate the frame during terminal resizes.
 
         Textual can deliver intermediate zero/small dimensions while a mobile
@@ -202,10 +215,10 @@ class _BenchmarkTUIApp(App):  # pragma: no cover - live interactive loop
         visible_rows, _live = table_and_live_heights(
             self.size.height, self._num_sources, len(self._state.snapshot())
         )
-        return visible_rows
+        return int(visible_rows)
 
     def _visible_cols(self) -> int:
-        return max(0, self.size.width - FROZEN_VIEW_WIDTH - 1)
+        return max(0, int(self.size.width) - int(FROZEN_VIEW_WIDTH) - 1)
 
     def _max_row_offset(self) -> int:
         return max(0, len(self._state.snapshot()) - self._visible_rows())
@@ -214,7 +227,7 @@ class _BenchmarkTUIApp(App):  # pragma: no cover - live interactive loop
         assert _display_width is not None
         return max(0, _display_width(self._plugin_hdr) - self._visible_cols())
 
-    def _frame_key(self):
+    def _frame_key(self) -> tuple[Any, ...]:
         """Identity of the frame's static inputs (excludes ticking content)."""
         return (
             self._state.revision,
@@ -320,13 +333,21 @@ class _BenchmarkTUIApp(App):  # pragma: no cover - live interactive loop
         self._scroll_x = self._max_col_offset()
 
 
-def _tui_main_textual(state, stop_event, num_sources, active_plugins, session_seed=None,
-                      model_thread_limits=None):  # pragma: no cover - live interactive loop
+def _tui_main_textual(
+    state: Any,
+    stop_event: Any,
+    num_sources: int,
+    active_plugins: list[Any],
+    session_seed: Any = None,
+    model_thread_limits: Any = None,
+) -> None:  # pragma: no cover - live interactive loop
     """Run the live TUI with Textual, re-rendering the full frame each tick."""
+    assert _unique_source_abbrevs is not None
     source_abbrevs = _unique_source_abbrevs({s["source"] for s in state.snapshot().values()})
-    frozen_cols = [("#", MODEL_NUMBER_COLUMN_WIDTH), ("S", 4), ("Model", 18), ("St", 4)]
+    assert source_abbrevs is not None
+    frozen_cols: list[tuple[str, int]] = [("#", MODEL_NUMBER_COLUMN_WIDTH), ("S", 4), ("Model", 18), ("St", 4)]
     frozen_hdr = " ".join(f"{h:>{w}}" for h, w in frozen_cols)
-    plugin_cols = []
+    plugin_cols: list[tuple[str, int]] = []
     for p in active_plugins:
         plugin_cols.extend([
             (f"{p.id[:3]}Sc", SCORE_COLUMN_WIDTH),
@@ -343,7 +364,7 @@ def _tui_main_textual(state, stop_event, num_sources, active_plugins, session_se
     ).run()
 
 
-def _textual_tui_enabled():
+def _textual_tui_enabled() -> bool:
     """Return whether the Textual TUI should be used (interactive terminal)."""
     if os.environ.get("AI_BENCHMARK_NO_TEXTUAL"):
         return False
@@ -355,8 +376,14 @@ def _textual_tui_enabled():
         return False
 
 
-def tui_main(state, stop_event, num_sources, active_plugins, session_seed=None,
-             model_thread_limits=None):
+def tui_main(
+    state: Any,
+    stop_event: Any,
+    num_sources: int,
+    active_plugins: list[Any],
+    session_seed: Any = None,
+    model_thread_limits: Any = None,
+) -> None:
     """Run the live TUI: Textual on interactive terminals, plain text otherwise."""
     if _textual_tui_enabled():
         try:
@@ -369,6 +396,7 @@ def tui_main(state, stop_event, num_sources, active_plugins, session_seed=None,
                     traceback.print_exc(file=handle)
             except Exception:  # noqa: BLE001, S110 - logging must not crash the TUI thread
                 pass
+    assert _fallback_tui_loop is not None
     _fallback_tui_loop(state, stop_event, session_seed, model_thread_limits)
 
 

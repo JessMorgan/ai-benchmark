@@ -52,10 +52,18 @@ uv run pytest tests/test_cli.py -v
 
 ## Type Checking
 
-Run `mypy` on the core modules:
+Run `mypy` on the core modules (the pre-commit hook also checks tests and
+scripts in default mode):
 
 ```sh
 uv run mypy benchmark/ ai-benchmark.py
+```
+
+CI additionally runs strict mode over production code (``benchmark/cli.py``
+is excluded as a legacy untyped orchestrator):
+
+```sh
+uv run mypy --strict benchmark plugins --exclude 'test_' --exclude 'benchmark/cli.py'
 ```
 
 ## Linting

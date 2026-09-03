@@ -258,12 +258,12 @@ class TestSQLitePayloadStore:
     def test_put_non_bytes(self) -> None:
         conn, store = self._make_store()
         with pytest.raises(TypeError, match="must be bytes"):
-            store.put("kind", "not bytes")  # type: ignore
+            store.put("kind", "not bytes")
 
     def test_put_text_non_str(self) -> None:
         conn, store = self._make_store()
         with pytest.raises(TypeError, match="must be str"):
-            store.put_text("kind", b"not str")  # type: ignore
+            store.put_text("kind", b"not str")
 
     def test_build_payload_only_judge_input(self) -> None:
         from benchmark.sqlite_payloads import build_payload_only_judge_input
@@ -345,7 +345,7 @@ class TestSQLiteWriteQueue:
         result = q.close(timeout=5)
         assert result is True
         # After close, submit should return a future with RuntimeError
-        future: Future = q.submit(lambda conn: None)  # type: ignore[arg-type]
+        future: Future = q.submit(lambda conn: None)
         with pytest.raises(RuntimeError, match="closed"):
             future.result(timeout=5)
 
@@ -355,7 +355,7 @@ class TestSQLiteWriteQueue:
         errors: list[Exception] = []
         q = SQLiteWriteQueue(
             str(tmp_path / "test.db"),
-            failure_callback=lambda e: errors.append(e),
+            failure_callback=errors.append,
         )
         q.start()
 
@@ -388,7 +388,7 @@ class TestSQLiteWriteQueue:
         q.start()
         results = []
         for i in range(10):
-            future = q.submit(lambda conn, _i=i: _i * 2)
+            future = q.submit(lambda conn, _i=i: _i * 2)  # type: ignore[misc]
             results.append(future)
         q.flush()
         for i, f in enumerate(results):

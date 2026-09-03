@@ -151,20 +151,20 @@ The runtime inventory below matches `uv run ai-benchmark --list-plugins`:
 | `debug-consistency` | 0.1.0 | 20 | Yes |
 | `debug-traversal` | 1.0.0 | 20 | Yes |
 | `decomposition` | 0.1.0 | 20 | Yes |
-| `error-recovery` | 1.1.0 | 20 | Yes |
+| `error-recovery` | 1.2.0 | 20 | Yes |
 | `event-processor` | 0.1.0 | 20 | Yes |
 | `instruction-following` | 1.0.0 | 20 | Yes |
 | `long-context` | 0.1.0 | 20 | Yes |
 | `moe-dense` | 1.0.1 | 17 | Yes |
-| `multi-step` | 1.0.0 | 20 | Yes |
+| `multi-step` | 1.1.0 | 20 | Yes |
 | `multi-turn-conversation` | 1.0.0 | 20 | Yes |
 | `orchestration` | 1.0.0 | 16 | Yes |
 | `prd-creation` | 1.0.0 | 22 | Yes |
-| `rate-limiter` | 1.0.0 | 20 | Yes |
-| `reasoning` | 1.0.0 | 20 | Yes |
+| `rate-limiter` | 1.1.0 | 20 | Yes |
+| `reasoning` | 1.1.0 | 20 | Yes |
 | `software-architecture` | 1.0.0 | 20 | Yes |
 | `data-transformation` | 1.0.2 | 22 | No |
-| `tool-calling` | 1.0.0 | 25 | Yes |
+| `tool-calling` | 1.1.1 | 25 | Yes |
 | `wireframes` | 1.0.0 | 20 | Yes |
 
 `code-review` and `data-transformation` set
@@ -176,7 +176,7 @@ unavailable.
 
 ## Git management
 Before committing any complete change:
-1. Run the full CI checks defined in `.github/workflows/tests.yml` (or their local equivalent): `uv sync --frozen`; `uv run pre-commit run --all-files --show-diff-on-failure`; `uv run coverage run -m pytest tests/ plugins/challenges/ plugins/outputs/ -q`; `uv run coverage report -m`; and `uv run coverage report --fail-under=90`. The CI matrix runs these checks on Python 3.10 through 3.14. Fix every issue reported by these checks before committing, then rerun the checks until they pass.
+1. Run the full CI checks defined in `.github/workflows/tests.yml` (or their local equivalent): `uv sync --frozen`; `uv run pre-commit run --all-files --show-diff-on-failure`; `uv run ruff check benchmark plugins tests`; `uv run mypy --strict benchmark plugins --exclude 'test_' --exclude 'benchmark/cli.py'`; `uv run python -m compileall -q benchmark plugins ai-benchmark.py`; the persistence contract tests (`uv run pytest tests/test_storage.py tests/test_sqlite_writer.py tests/test_state.py tests/test_sqlite_integrity.py -q`); `uv run coverage run -m pytest tests/ plugins/challenges/ plugins/outputs/ -q`; `uv run coverage report -m`; and `uv run coverage report --fail-under=90`. The CI matrix runs these checks on Python 3.10 through 3.14. Fix every issue reported by these checks before committing, then rerun the checks until they pass.
 2. **Require a code review by a distinct AI model as a mandatory gate before committing.** After the CI checks pass and all changes are staged, obtain a review of the complete diff from a model other than the one that authored the change. Do **not** commit until this review has been produced. The reviewer must be a genuinely different model — routing the review to a subagent category that defaults to the committer's own model is **not** a valid review. The reviewing model's name must appear in the review output (for example, "Review performed by `deepseek-v4-*`" or another non-committer provider model such as `devstral-*`) so the separation is verifiable; record that name with the review findings.
 
    The review request must be adversarial and self-contained, containing at minimum:
