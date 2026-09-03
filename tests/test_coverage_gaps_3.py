@@ -672,6 +672,7 @@ class TestStorageMore:
         initialize_schema(conn)
         store = SQLitePayloadStore(conn)
         assert isinstance(store, PayloadStore)
+        conn.close()
 
     def test_debug_log_store_protocol_compliance(self) -> None:
         from benchmark.storage import DebugLogStore, JsonDebugLogStore

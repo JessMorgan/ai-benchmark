@@ -462,6 +462,7 @@ class TestSQLiteReportSource:
         source = SQLiteReportSource(conn)
         with pytest.raises(ValueError, match="no current revision"):
             source._resolve_revision(None)
+        conn.close()
 
     def test_resolve_revision_not_found(self) -> None:
         from benchmark.sqlite_reports import SQLiteReportSource
@@ -475,6 +476,7 @@ class TestSQLiteReportSource:
         source = SQLiteReportSource(conn)
         with pytest.raises(ValueError, match="does not exist"):
             source._resolve_revision(9999)
+        conn.close()
 
     def test_load_results_bad_revision(self) -> None:
         from benchmark.sqlite_reports import SQLiteReportSource
@@ -488,6 +490,7 @@ class TestSQLiteReportSource:
         source = SQLiteReportSource(conn)
         with pytest.raises(ValueError, match="does not exist"):
             source.load_results(revision=9999)
+        conn.close()
 
     def test_json_load_none(self) -> None:
         from benchmark.sqlite_reports import SQLiteReportSource
@@ -550,6 +553,7 @@ class TestSqlitePathFromReportPath:
         source = SQLiteReportSource(conn)
         source._owned_connection = None
         source.close()  # should not raise
+        conn.close()
 
 
 # ---------------------------------------------------------------------------
@@ -852,6 +856,7 @@ class TestSQLiteSchema:
         configure_connection(conn)
         row = conn.execute("PRAGMA foreign_keys").fetchone()
         assert row[0] == 1
+        conn.close()
 
     def test_configure_connection_invalid_sync(self) -> None:
         from benchmark.sqlite_schema import configure_connection
@@ -859,6 +864,7 @@ class TestSQLiteSchema:
         conn = sqlite3.connect(":memory:")
         with pytest.raises(ValueError, match="synchronous"):
             configure_connection(conn, synchronous="INVALID")
+        conn.close()
 
     def test_initialize_schema_idempotent(self, tmp_path: Path) -> None:
         from benchmark.sqlite_schema import (
