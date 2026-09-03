@@ -379,8 +379,14 @@ class SQLiteBenchmarkStore:
         attempt = self.current_attempt(revision_id, cell_id)
         if attempt is None:
             return []
-        target_dir = os.path.join(output_dir, "responses", sanitize_filename(target_name))
-        os.makedirs(target_dir, exist_ok=True)
+        # Mirror the live save-responses layout: one subdirectory per plugin
+        # under ``responses/<target>/`` holding ``prompt.txt``/``content.txt``/
+        # ``think.txt`` (see ``benchmark.results.save_task_result``).
+        plugin_dir = os.path.join(
+            output_dir, "responses", sanitize_filename(target_name),
+            sanitize_filename(plugin_id),
+        )
+        os.makedirs(plugin_dir, exist_ok=True)
         paths: list[str] = []
         for suffix, column in (
             ("prompt.txt", "prompt_payload_id"),
@@ -390,7 +396,7 @@ class SQLiteBenchmarkStore:
             payload_id = attempt.get(column)
             if payload_id is None:
                 continue
-            path = os.path.join(target_dir, f"{plugin_id}.{suffix}")
+            path = os.path.join(plugin_dir, suffix)
             with open(path, "wb") as handle:
                 handle.write(self.payloads.get(payload_id))
             paths.append(path)

@@ -565,8 +565,8 @@ The following blocks move verbatim into `save_task_result`:
    and `result.schema_fallback_error` instead of closure-captured variables).
 2. **Judge sidecar preparation** — `prepare_judge_sidecar()` call.
 3. **Response file persistence** — the `if save_responses and output_dir:` block
-   that writes `*.prompt.txt`, `*.content.txt`, `*.txt`, `*.think.txt`, and
-   `*.meta.json`.
+   that writes `prompt.txt`, `content.txt`, `response.txt`, `think.txt`, and
+   `meta.json` inside a per-plugin subdirectory under `responses/<target>/`.
 4. **Result dict construction** — the `result = { f"{pid}_{key}": value ... }`
    block.
 5. **Meta dict construction** — the `meta = { ... }` block (returned alongside

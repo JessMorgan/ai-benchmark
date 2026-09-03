@@ -889,7 +889,7 @@ class TestRunnerAwareExecution(unittest.TestCase):
         self.assertEqual(result["opencode_model"], "local/model-a")
 
     def test_opencode_thinking_writes_think_sidecar(self):
-        """Reasoning events must flow into ``{pid}.think.txt`` like HTTP."""
+        """Reasoning events must flow into ``think.txt`` inside the plugin dir."""
         plugin = next(p for p in discover_plugins() if p.id == "rate-limiter")
         target_key = "model-a [opencode]"
         state = BenchmarkState({
@@ -916,12 +916,12 @@ class TestRunnerAwareExecution(unittest.TestCase):
                 config_target_name="model-a", save_responses=True,
             )
 
-            responses_dir = os.path.join(tmpdir, "responses", "model-a")
-            think_path = os.path.join(responses_dir, f"{plugin.id}.think.txt")
-            self.assertTrue(os.path.isfile(think_path), "expected a .think.txt sidecar")
+            plugin_dir = os.path.join(tmpdir, "responses", "model-a", plugin.id)
+            think_path = os.path.join(plugin_dir, "think.txt")
+            self.assertTrue(os.path.isfile(think_path), "expected a think.txt sidecar")
             with open(think_path, encoding="utf-8") as handle:
                 self.assertEqual(handle.read(), "chain of thought")
-            joined_path = os.path.join(responses_dir, f"{plugin.id}.txt")
+            joined_path = os.path.join(plugin_dir, "response.txt")
             with open(joined_path, encoding="utf-8") as handle:
                 self.assertIn("<thinking>\nchain of thought\n</thinking>", handle.read())
 
@@ -955,12 +955,12 @@ class TestRunnerAwareExecution(unittest.TestCase):
                 config_target_name="model-a", save_responses=True,
             )
 
-            responses_dir = os.path.join(tmpdir, "responses", "model-a")
-            think_path = os.path.join(responses_dir, f"{plugin.id}.think.txt")
-            self.assertTrue(os.path.isfile(think_path), "failed run must keep .think.txt")
+            plugin_dir = os.path.join(tmpdir, "responses", "model-a", plugin.id)
+            think_path = os.path.join(plugin_dir, "think.txt")
+            self.assertTrue(os.path.isfile(think_path), "failed run must keep think.txt")
             with open(think_path, encoding="utf-8") as handle:
                 self.assertEqual(handle.read(), "reasoning before timeout")
-            with open(os.path.join(responses_dir, f"{plugin.id}.meta.json"), encoding="utf-8") as handle:
+            with open(os.path.join(plugin_dir, "meta.json"), encoding="utf-8") as handle:
                 meta = json.load(handle)
             self.assertEqual(meta["error"], "OpenCode timed out after 1800s")
             self.assertEqual(meta["think_text"], "reasoning before timeout")

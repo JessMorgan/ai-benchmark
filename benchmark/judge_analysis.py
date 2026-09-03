@@ -13,8 +13,11 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any, cast
 
-from .judging import JUDGE_CONFIDENCE_WEIGHTS, is_successful_judge_vote
-from .outputs import sanitize_filename
+from .judging import (
+    JUDGE_CONFIDENCE_WEIGHTS,
+    is_successful_judge_vote,
+    judge_response_path,
+)
 
 DEFAULT_SPREAD_THRESHOLD = 30.0
 DEFAULT_DEVIATION_THRESHOLD = 40.0
@@ -213,11 +216,16 @@ def build_disagreement_queue(
                 "valid_judges": len(votes),
                 "triggers": triggers,
                 "judge_response_paths": [
-                    str(
-                        Path(runner)
-                        / "responses"
-                        / sanitize_filename(str(result.get("model", state_key)))
-                        / f"{plugin_id}.judge.{sanitize_filename(str(vote.get('model')))}.txt"
+                    # Derive from the writer's own path helper (with an
+                    # empty output_dir, yielding a run-relative path) so the
+                    # queue can never drift from the saved artifact layout.
+                    judge_response_path(
+                        "",
+                        str(result.get("model", state_key)),
+                        runner,
+                        plugin_id,
+                        str(vote.get("model")),
+                        vote.get("judge_contract_id"),
                     )
                     for vote in votes
                 ],

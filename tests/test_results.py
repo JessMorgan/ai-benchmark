@@ -1,4 +1,5 @@
 import json
+import os
 import tempfile
 import unittest
 from types import SimpleNamespace
@@ -53,8 +54,8 @@ class TestResults(unittest.TestCase):
                 prepare_judge_sidecar_fn=prepare,
                 judge_sidecar_path_fn=sidecar_path,
             )
-            meta_path = f"{tmp}/responses/model/fake.meta.json"
-            response_path = f"{tmp}/responses/model/fake.txt"
+            meta_path = f"{tmp}/responses/model/fake/meta.json"
+            response_path = f"{tmp}/responses/model/fake/response.txt"
             self.assertEqual(result["fake_score"], 80)
             self.assertEqual(result["fake_total_tokens"], 5)
             self.assertEqual(result["fake_attempts"][0]["response_nature"], "completed")
@@ -64,6 +65,48 @@ class TestResults(unittest.TestCase):
             self.assertEqual(meta["score"], 80)
             with open(response_path, encoding="utf-8") as handle:
                 self.assertIn("<thinking>", handle.read())
+
+    def test_plugin_dir_matches_judge_reader_for_nonslug_plugin_ids(self):
+        """Writer and judge reader must derive the SAME plugin directory.
+
+        Plugin ids are only validated as non-empty strings, so a non-slug
+        id (spaces, slashes) must sanitize identically on the save-responses
+        writer (``save_task_result``) and the judge-artifact writer/reader
+        (``judge_response_path``). A mismatch silently strands judge raw
+        responses outside the directory the reports link to.
+        """
+        from benchmark.judging import judge_response_path
+        from benchmark.outputs import sanitize_filename
+
+        for plugin_id in ("my plugin", "a/b", "plugin..dots"):
+            with self.subTest(plugin_id=plugin_id):
+                with tempfile.TemporaryDirectory() as tmp:
+                    save_task_result(
+                        None,
+                        state=None,
+                        model_name="model",
+                        pid=plugin_id,
+                        plugin=_Plugin(),
+                        output_dir=tmp,
+                        save_responses=True,
+                        selected_prompt="Prompt",
+                        selected_text="Answer",
+                    )
+                    expected_dir = os.path.join(
+                        tmp, "responses", "model", sanitize_filename(plugin_id),
+                    )
+                    self.assertTrue(
+                        os.path.isfile(os.path.join(expected_dir, "response.txt")),
+                        "writer must place response.txt in the sanitized plugin dir",
+                    )
+                    # The judge path helper must sanitize the plugin id
+                    # identically. The judge helper lives under the runner
+                    # namespace (``<runner>/responses/...``) while the live
+                    # writer does not, so compare the plugin-dir component.
+                    judge_dir = os.path.dirname(
+                        judge_response_path(tmp, "model", "http", plugin_id, "judge-a")
+                    )
+                    self.assertEqual(os.path.basename(judge_dir), os.path.basename(expected_dir))
 
     def test_save_judge_result_uses_parsed_values_and_contract(self):
         result = SimpleNamespace(

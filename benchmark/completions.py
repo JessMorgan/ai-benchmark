@@ -157,7 +157,7 @@ def build_parser(
     output_group.add_argument('--revision', type=int, default=None, metavar='N',
                               help='Report a specific SQLite revision number or ID (default: current revision)')
     output_group.add_argument('--save-responses', action='store_true',
-                              help='Save each model\'s plugin response text to <output_dir>/responses/')
+                              help='Save each model\'s plugin response text to <output_dir>/{runner}/responses/<model>/<plugin>/')
 
     judge_group = parser.add_argument_group('Judge analysis')
     judge_group.add_argument('--judge-models', nargs='+', default=None, metavar='MODEL',

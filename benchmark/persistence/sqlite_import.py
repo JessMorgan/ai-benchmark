@@ -217,7 +217,12 @@ class LegacySQLiteImporter:
                 contract_hash=contract_hash,
             )
             judge_store.activate_contract(revision_id, plugin_id, contract_id)
-            target = str(result.get("state_key", result.get("model", "target")))
+            # Artifact directories are keyed by the PLAIN target name (the
+            # writer's ``artifact_target or model_name``), not the runner-
+            # suffixed state key (``model-a [opencode]``). Prefer ``model``
+            # and keep ``state_key`` as the legacy-row fallback so both eras
+            # probe the directory the writer actually created.
+            target = str(result.get("model") or result.get("state_key") or "target")
             runner = str(result.get("runner", "http"))
             sidecar = _judge_sidecar_file(
                 source_dir, target, runner, plugin_id,
@@ -392,11 +397,32 @@ def _judge_sidecar_file(source_dir: str, target: str, runner: str,
 def _judge_response_file(source_dir: str, target: str, runner: str,
                          plugin_id: str, judge_model: str,
                          contract_id: str) -> str:
+    """Resolve one judge raw-response artifact, preferring the current layout.
+
+    State files produced after the per-plugin response grouping store judge
+    responses inside the plugin's response subdirectory
+    (``responses/<target>/<plugin>/judge.<judge>[.<contract>].txt``), while
+    legacy flat-layout runs kept them directly under ``responses/<target>/``.
+    Import must accept both eras: the nested path is tried first and the
+    historical flat path is used as a fallback so converting an old
+    ``--storage json`` run never loses judge raw responses.
+    """
     suffix = sanitize_filename(judge_model)
     if contract_id:
         suffix += f".{sanitize_filename(contract_id)}"
+    target_dir = sanitize_filename(target)
+    # Nested probe must sanitize the plugin id exactly like the current
+    # writer (``judging.judge_response_path``) does.
+    nested = os.path.join(
+        source_dir, runner, "responses", target_dir, sanitize_filename(plugin_id),
+        f"judge.{suffix}.txt",
+    )
+    if os.path.exists(nested):
+        return nested
+    # Flat fallback stays faithful to the legacy-era writer, which embedded
+    # the raw (unsanitized) plugin id in the filename.
     return os.path.join(
-        source_dir, runner, "responses", sanitize_filename(target),
+        source_dir, runner, "responses", target_dir,
         f"{plugin_id}.judge.{suffix}.txt",
     )
 

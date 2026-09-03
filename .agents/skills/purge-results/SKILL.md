@@ -38,9 +38,10 @@ Load this skill when the user asks to:
    mutation: `benchmark_state.json.pre-purge-<ms-ts>.bak`. The millisecond
    suffix prevents collisions when multiple purges fire in the same
    second. The user can inspect or restore from any backup file.
-5. The script never deletes `responses/<model>/<plugin>.txt` or
-   `.meta.json` files — they will be overwritten on the next run. This
-   keeps the backup fully sufficient for undo.
+5. The script never deletes anything under `responses/<model>/<plugin>/`
+   (response, prompt, thinking, and metadata files) — they will be
+   overwritten on the next run. This keeps the backup fully sufficient
+   for undo.
 
 ## Schema discovery (self-maintaining)
 

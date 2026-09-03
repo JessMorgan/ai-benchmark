@@ -296,12 +296,12 @@ class TestJudgeCore(unittest.TestCase):
             JUDGE_RESPONSE_SCHEMA,
         )
 
-    def test_judge_response_artifact_uses_existing_response_naming_convention(self):
+    def test_judge_response_artifact_lives_inside_plugin_dir(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = save_judge_response(
                 tmp, "model", "http", "rate-limiter", "judge/model", '{"score": 90}'
             )
-            self.assertTrue(path.endswith("rate-limiter.judge.judge_model.txt"))
+            self.assertTrue(path.endswith("rate-limiter/judge.judge_model.txt"))
             versioned_path = save_judge_response(
                 tmp, "model", "http", "rate-limiter", "judge/model", '{"score": 91}',
                 "judge-contract-v1:abc",
@@ -331,8 +331,8 @@ class TestJudgeCore(unittest.TestCase):
                 tmp, "model", "http", "fake", "judge",
                 {"status": "error", "response_present": False, "error": "timeout"},
             )
-            self.assertTrue(raw_path.endswith("fake.judge.judge.txt"))
-            self.assertTrue(metadata_path.endswith("fake.judge.judge.meta.json"))
+            self.assertTrue(raw_path.endswith("fake/judge.judge.txt"))
+            self.assertTrue(metadata_path.endswith("fake/judge.judge.meta.json"))
             with open(metadata_path, encoding="utf-8") as handle:
                 metadata = json.load(handle)
             self.assertEqual(metadata["status"], "error")

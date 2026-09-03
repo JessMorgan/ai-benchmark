@@ -679,15 +679,17 @@ class TestSaveResponses(unittest.TestCase):
                 save_responses=True,
             )
 
-            responses_dir = os.path.join(tmpdir, "responses", "dummy-model")
-            prompt_path = os.path.join(responses_dir, "rate-limiter.prompt.txt")
-            response_path = os.path.join(responses_dir, "rate-limiter.txt")
-            think_path = os.path.join(responses_dir, "rate-limiter.think.txt")
-            content_path = os.path.join(responses_dir, "rate-limiter.content.txt")
+            # Responses are grouped into a per-plugin subdirectory:
+            # ``responses/<model>/<plugin>/{prompt,content,response,meta}.*``.
+            plugin_dir = os.path.join(tmpdir, "responses", "dummy-model", "rate-limiter")
+            prompt_path = os.path.join(plugin_dir, "prompt.txt")
+            response_path = os.path.join(plugin_dir, "response.txt")
+            think_path = os.path.join(plugin_dir, "think.txt")
+            content_path = os.path.join(plugin_dir, "content.txt")
 
             self.assertTrue(os.path.isfile(prompt_path))
             self.assertTrue(os.path.isfile(response_path))
-            # No think_text was returned by the mock, so .think.txt must NOT
+            # No think_text was returned by the mock, so think.txt must NOT
             # be written (only created when thinking content is non-empty).
             self.assertFalse(os.path.isfile(think_path))
             self.assertTrue(os.path.isfile(content_path))
@@ -702,10 +704,10 @@ class TestSaveResponses(unittest.TestCase):
             self.assertIn("<CACHE-BUST-", prompt_content)
             self.assertTrue(prompt_content.endswith(plugins[0].get_prompt()))
             self.assertEqual(response_content, expected_response)
-            # Without thinking, .txt and .content.txt are identical.
+            # Without thinking, response.txt and content.txt are identical.
             self.assertEqual(content_content, expected_response)
 
-            meta_path = os.path.join(responses_dir, "rate-limiter.meta.json")
+            meta_path = os.path.join(plugin_dir, "meta.json")
             self.assertTrue(os.path.isfile(meta_path))
             with open(meta_path, encoding="utf-8") as f:
                 meta = json.load(f)
@@ -734,17 +736,17 @@ class TestSaveResponses(unittest.TestCase):
 
     def test_save_responses_with_thinking_writes_three_files(self):
         """When the model returns thinking content, all three response-file
-        variants are written:
+        variants are written inside the plugin's subdirectory:
 
-        * ``.txt`` — joined form with ``<thinking>…</thinking>`` markers
-          followed by the final content.
-        * ``.think.txt`` — pure thinking content only.
-        * ``.content.txt`` — pure final content without thinking markers.
+        * ``response.txt`` — joined form with ``<thinking>…</thinking>``
+          markers followed by the final content.
+        * ``think.txt`` — pure thinking content only.
+        * ``content.txt`` — pure final content without thinking markers.
 
         The existing ``test_save_responses_writes_prompt_and_response_files``
         pins the empty-think-text (non-thinking model) path where
-        ``.think.txt`` is NOT created and ``.txt == .content.txt``. This test
-        pins the opposite: non-empty thinking content produces all three
+        ``think.txt`` is NOT created and ``response.txt == content.txt``. This
+        test pins the opposite: non-empty thinking content produces all three
         distinct files.
         """
         plugins = [p for p in self.plugins if p.id == "rate-limiter"]
@@ -766,10 +768,10 @@ class TestSaveResponses(unittest.TestCase):
                 save_responses=True,
             )
 
-            responses_dir = os.path.join(tmpdir, "responses", "dummy-model")
-            response_path = os.path.join(responses_dir, "rate-limiter.txt")
-            think_path = os.path.join(responses_dir, "rate-limiter.think.txt")
-            content_path = os.path.join(responses_dir, "rate-limiter.content.txt")
+            plugin_dir = os.path.join(tmpdir, "responses", "dummy-model", "rate-limiter")
+            response_path = os.path.join(plugin_dir, "response.txt")
+            think_path = os.path.join(plugin_dir, "think.txt")
+            content_path = os.path.join(plugin_dir, "content.txt")
 
             # All three files must exist when thinking content is non-empty.
             self.assertTrue(os.path.isfile(response_path))
@@ -783,12 +785,12 @@ class TestSaveResponses(unittest.TestCase):
             with open(content_path, encoding="utf-8") as f:
                 content_content = f.read()
 
-            # .txt = <thinking>\n{think_text}\n</thinking>\n\n{final_content}
+            # response.txt = <thinking>\n{think_text}\n</thinking>\n\n{final_content}
             expected_joined = f"<thinking>\n{thinking}\n</thinking>\n\n{final_content}"
             self.assertEqual(response_content, expected_joined)
-            # .think.txt = pure thinking content
+            # think.txt = pure thinking content
             self.assertEqual(think_content, thinking)
-            # .content.txt = pure final content (no thinking markers)
+            # content.txt = pure final content (no thinking markers)
             self.assertEqual(content_content, final_content)
 
     def test_save_responses_disabled_does_not_write_files(self):
@@ -1212,7 +1214,7 @@ class TestEmptyReasonClassification(unittest.TestCase):
                 task_result.result["rate-limiter_empty_reason"], "thinking-truncation")
             self.assertTrue(task_result.result["rate-limiter_truncated"])
             meta_path = os.path.join(
-                tmpdir, "responses", "dummy-model", "rate-limiter.meta.json")
+                tmpdir, "responses", "dummy-model", "rate-limiter", "meta.json")
             with open(meta_path, encoding="utf-8") as f:
                 meta = json.load(f)
             self.assertEqual(meta["empty_reason"], "thinking-truncation")

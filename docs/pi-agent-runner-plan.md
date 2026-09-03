@@ -291,10 +291,10 @@ The Python side should assemble:
 Artifacts should live under a runner-specific namespace, for example:
 
 ```text
-<output_dir>/pi/responses/<target>/<plugin>.txt
-<output_dir>/pi/responses/<target>/<plugin>.think.txt
-<output_dir>/pi/responses/<target>/<plugin>.content.txt
-<output_dir>/pi/responses/<target>/<plugin>.meta.json
+<output_dir>/pi/responses/<target>/<plugin>/response.txt
+<output_dir>/pi/responses/<target>/<plugin>/think.txt
+<output_dir>/pi/responses/<target>/<plugin>/content.txt
+<output_dir>/pi/responses/<target>/<plugin>/meta.json
 <output_dir>/pi/logs/<target>/<plugin>.stdout.ndjson
 <output_dir>/pi/logs/<target>/<plugin>.stderr.txt
 ```

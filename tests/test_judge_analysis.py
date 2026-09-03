@@ -94,7 +94,8 @@ class TestJudgeAnalysis(unittest.TestCase):
             output_path = Path(tmp) / "queue.json"
             state = self._state()
             state["results"][1]["code-review_judge_votes"].append(
-                {"model": "judge-b", "score": 20, "confidence": "high", "rationale": "weak"}
+                {"model": "judge-b", "score": 20, "confidence": "high", "rationale": "weak",
+                 "judge_contract_id": "contract-v1:abc"}
             )
             state_path.write_text(json.dumps(state), encoding="utf-8")
             result = write_disagreement_queue(state_path, output_path)
@@ -102,8 +103,20 @@ class TestJudgeAnalysis(unittest.TestCase):
             payload = json.loads(output_path.read_text(encoding="utf-8"))
             self.assertEqual(payload["schema"], "judge-disagreement-queue-v1")
             self.assertEqual(len(payload["entries"]), 1)
+            paths = payload["entries"][0]["judge_response_paths"]
             self.assertTrue(
-                all(path.startswith(str(Path(tmp))) for path in payload["entries"][0]["judge_response_paths"])
+                all(path.startswith(str(Path(tmp))) for path in paths)
+            )
+            # Queue paths must mirror the writer's per-plugin layout exactly
+            # (``responses/<model>/<plugin>/judge.<judge>.<contract>.txt``):
+            # a stale flat path here points a human reviewer at a file that
+            # does not exist. Regression pin for the queue-path derivation.
+            self.assertEqual(
+                [path[len(str(Path(tmp))):].lstrip("/") for path in paths],
+                [
+                    "http/responses/model-a/code-review/judge.judge-a.txt",
+                    "http/responses/model-a/code-review/judge.judge-b.contract-v1_abc.txt",
+                ],
             )
 
 

@@ -126,8 +126,8 @@ class MarkdownOutputPlugin(BenchmarkOutputPlugin):
                         f"{r.get(f'{p.id}_response_nature','-')} | "
                         f"{r.get(f'{p.id}_failure_cause','-')} |")
                 if output_dir:
-                    runner_prefix = f"{runner}/" if runner in ("http", "opencode") else ""
-                    rel_path = f"{runner_prefix}responses/{sanitize_filename(r['model'])}/{p.id}.txt"
+                    runner_prefix = f"{runner}/" if runner in ("http", "opencode", "pi") else ""
+                    rel_path = f"{runner_prefix}responses/{sanitize_filename(r['model'])}/{sanitize_filename(p.id)}/response.txt"
                     row += f" [view]({rel_path}) |"
             overall = r.get("overall_score_100", tot)
             scored_plugins = r.get("overall_scored_plugins", _scored_plugin_count(r, active_plugins))

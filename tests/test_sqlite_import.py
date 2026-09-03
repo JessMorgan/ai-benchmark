@@ -221,6 +221,67 @@ class TestSQLiteImport(unittest.TestCase):
             self.assertEqual(payloads.get_text(manifest["prompt_payload_id"]), "judge prompt with details")
             self.assertEqual(payloads.get_text(manifest["response_payload_id"]), "candidate response")
 
+    def test_import_reads_nested_and_flat_judge_response_layouts(self):
+        """The importer must accept both layout eras.
+
+        Runs saved after the per-plugin response grouping keep judge raw
+        responses inside ``responses/<target>/<plugin>/``; legacy flat runs
+        kept them directly under ``responses/<target>/``. Converting either
+        era must retain the judge raw response.
+        """
+        for layout in ("nested", "flat"):
+            for state_key, runner, responses_root in (
+                ("model-a", "http", "http"),
+                # Runner-suffixed state keys must resolve to the SAME plain
+                # target directory the writer used (``model-a [opencode]``
+                # -> ``responses/model-a/``), never a sanitized-state-key dir.
+                ("model-a [opencode]", "opencode", "opencode"),
+            ):
+                with self.subTest(layout=layout, state_key=state_key):
+                    with tempfile.TemporaryDirectory() as tmp:
+                        source = os.path.join(tmp, "benchmark_state.json")
+                        database = os.path.join(tmp, "run.sqlite3")
+                        plugin_dir = os.path.join(tmp, responses_root, "responses", "model-a")
+                        # Flat layout: <plugin>.judge.<suffix>.txt beside the
+                        # target dir; nested layout: judge.<suffix>.txt inside
+                        # the plugin's subdirectory.
+                        response_name = (
+                            "judge.judge-a.contract-1.txt" if layout == "nested"
+                            else "rate-limiter.judge.judge-a.contract-1.txt"
+                        )
+                        if layout == "nested":
+                            plugin_dir = os.path.join(plugin_dir, "rate-limiter")
+                        os.makedirs(plugin_dir)
+                        with open(os.path.join(plugin_dir, response_name), "w", encoding="utf-8") as handle:
+                            handle.write('{"score": 17}')
+                        state = {
+                            "runner": runner, "active_plugins": ["rate-limiter"],
+                            "plugin_versions": {"rate-limiter": "1.0.0"},
+                            "model_info": {}, "results": [{
+                                "model": "model-a", "state_key": state_key,
+                                "source": "Local", "api_model": "model-a",
+                                "runner": runner,
+                                "status": "ok", "rate-limiter_score": 18,
+                                "rate-limiter_judge_votes": [{
+                                    "model": "judge-a", "judge_contract_id": "contract-1",
+                                    "score": 17, "usable": True,
+                                }],
+                            }],
+                        }
+                        with open(source, "w", encoding="utf-8") as handle:
+                            json.dump(state, handle)
+
+                        LegacySQLiteImporter.import_path(source, database)
+                        connection = connect_database(database)
+                        self.addCleanup(connection.close)
+                        attempt = connection.execute(
+                            "SELECT raw_response_payload_id FROM judge_attempts"
+                        ).fetchone()
+                        self.assertIsNotNone(
+                            attempt[0],
+                            f"{layout}/{state_key} layout must retain the raw response",
+                        )
+
     def test_debug_log_import_is_opt_in_and_compresses_output(self):
         with tempfile.TemporaryDirectory() as tmp:
             source = os.path.join(tmp, "benchmark_state.json")

@@ -279,7 +279,7 @@ The invocation must:
 
 The installed OpenCode CLI's supported machine-readable mode should be checked during implementation. The benchmark uses `--format json` and extracts the final assistant text from the NDJSON event stream without including progress/event wrappers in the score input; stderr is retained as diagnostics. Every invocation also uses `--pure` so external OpenCode plugins cannot change the benchmark's tools, prompts, permissions, or event stream.
 
-Thinking content: every invocation passes `--thinking`, because non-interactive `opencode run` defaults the `thinking` option to false and without it the CLI never emits `reasoning` NDJSON events — thinking-capable models' chain-of-thought would be silently dropped even though the provider returned it. The adapter joins `reasoning` events into the same `think_text` the HTTP runner accumulates from `reasoning_content`, so OpenCode results produce the same `{plugin}.think.txt` and `<thinking>…</thinking>`-wrapped `{plugin}.txt` sidecars as HTTP under `--save-responses`. Preflight therefore requires the installed CLI to advertise `--thinking`.
+Thinking content: every invocation passes `--thinking`, because non-interactive `opencode run` defaults the `thinking` option to false and without it the CLI never emits `reasoning` NDJSON events — thinking-capable models' chain-of-thought would be silently dropped even though the provider returned it. The adapter joins `reasoning` events into the same `think_text` the HTTP runner accumulates from `reasoning_content`, so OpenCode results produce the same `think.txt` and `<thinking>…</thinking>`-wrapped `response.txt` sidecars (inside `responses/<target>/<plugin>/`) as HTTP under `--save-responses`. Preflight therefore requires the installed CLI to advertise `--thinking`.
 
 ### Prompt handling
 
@@ -339,7 +339,7 @@ Metrics that cannot be measured through OpenCode must be explicit (`null`, unava
 Capture separate artifacts:
 
 ```text
-<output_dir>/opencode/responses/<target>/<plugin>.txt
+<output_dir>/opencode/responses/<target>/<plugin>/response.txt
 <output_dir>/opencode/logs/<target>/<plugin>.stdout.txt
 <output_dir>/opencode/logs/<target>/<plugin>.stderr.txt
 <output_dir>/opencode/... metadata as supported by existing save-response behavior

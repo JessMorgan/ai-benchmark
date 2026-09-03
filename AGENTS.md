@@ -114,10 +114,12 @@ polls it and rebuilds its frame only when something displayed changed
   operator actually ran.
 - `run.sqlite3` — authoritative normalized store for new runs; `benchmark_state.json` remains the explicit JSON compatibility backend.
 - `logs/<model>.log.gz` — redacted curl + response diagnostics only in debug mode; Pi/OpenCode subprocess streams likewise use gzip members in debug mode.
-- `responses/<model>/<plugin>.txt` — model output; `.prompt.txt` is the
-  prompt; `.think.txt` and `<plugin>.meta.json` preserve reasoning and rubric
-  diagnostics. Failed evaluations include `error`/`traceback` when
-  `plugin.evaluate()` crashes.
+- `responses/<model>/<plugin>/` — per-plugin response directory holding
+  `response.txt` (model output, `<thinking>…</thinking>`-wrapped when the
+  model produced reasoning), `prompt.txt`, `content.txt`, optional
+  `think.txt`, and `meta.json` (rubric + `error`/`traceback` when
+  `plugin.evaluate()` crashes). Raw judge responses (`judge.*.txt` with
+  paired `judge.*.meta.json`) for the plugin live in the same directory.
 - `judge-inputs/` — retained prompt/response sidecars used for resumable
   semantic judging; raw judge responses are stored beside benchmark artifacts.
 
@@ -158,7 +160,7 @@ unavailable.
 Before committing any complete change:
 1. Run the full CI checks defined in `.github/workflows/tests.yml` (or their local equivalent): `uv sync --frozen`; `uv run pre-commit run --all-files --show-diff-on-failure`; `uv run coverage run -m pytest tests/ plugins/challenges/ plugins/outputs/ -q`; `uv run coverage report -m`; and `uv run coverage report --fail-under=90`. The CI matrix runs these checks on Python 3.10 through 3.14. Fix every issue reported by these checks before committing, then rerun the checks until they pass.
 2. **Require a code review by a distinct AI model as a mandatory gate before committing.** After the CI checks pass and all changes are staged, obtain a review of the complete diff from a model other than the one that authored the change. The review must cover correctness, adherence to existing codebase patterns, the CI/coverage results, and any security or regression risks. Do **not** commit until this review has been produced. The reviewer must be a genuinely different model — routing the review to a subagent category that defaults to the committer's own model is **not** a valid review. The reviewing model's name must appear in the review output (for example, "Review performed by `deepseek-v4-*`" or another non-committer provider model such as `devstral-*`) so the separation is verifiable; record that name with the review findings.
-3. **Present the review results to the user and ask how to proceed.** Surface the distinct reviewer's findings and recommendation (approve / request changes / reject) to the user, then ask the user how to proceed. Options include committing as-is, revising per the review, or abandoning. Do not treat a clean or critical review as an automatic decision — the user's final call is definitive and cannot be overridden.
+3. **Present the review results to the user and ask how to proceed.** Surface the distinct reviewer's findings and recommendation (approve / request changes / reject) to the user in the form of a recommendation header followed by a bulleted list of findings, then ask the user how to proceed. Options include committing as-is, revising per the review, or abandoning. Do not treat a clean or critical review as an automatic decision — the user's final call is definitive and cannot be overridden.
 4. Update all relevant documentation to reflect the new reality, including `AGENTS.md`, `README.md`, `docs/`, plugin documentation, CLI/configuration references, and any other checked-in documentation affected by the change.
 5. Confirm the documentation and runtime metadata agree, then commit the complete change to git only after the user has decided how to proceed from the review.
 6. When adding a footer or co-author attribution, include the agent name (e.g. OpenCode, FreeBuff, CodeBuff, Hermes Agent, etc.) and model name (e.g. GPT-5.6 Luna, Big Pickle, DeepSeek v4 Flash 0731, etc.)
@@ -235,7 +237,7 @@ and the OpenCode runner are exempt (the kwargs default off).
    belt-and-suspenders for the live TUI / `meta.json`. Model keeps
    `status="completed"`. The `purge-results` skill
    (`.agents/skills/purge-results/SKILL.md`) automates this. Never delete
-   `responses/*.txt` — regenerated on next run.
+   anything under `responses/` — regenerated on next run.
 3. **Output_Tokens == 0 means EMPTY response.** `count_tokens(text) = max(0, len(text)/4)`
    returns 0 when `text` is empty. Zero-token entries in `results.csv`
    are uniformly 0-byte `.txt` files — model timed out or connection dropped

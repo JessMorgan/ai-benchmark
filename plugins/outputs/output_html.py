@@ -78,8 +78,8 @@ class HTMLOutputPlugin(BenchmarkOutputPlugin):
             for p in active_plugins:
                 score_val = r.get(f"{p.id}_score", "-")
                 if output_dir:
-                    runner_prefix = f"{runner}/" if runner in ("http", "opencode") else ""
-                    rel_path = f"{runner_prefix}responses/{sanitize_filename(r['model'])}/{p.id}.txt"
+                    runner_prefix = f"{runner}/" if runner in ("http", "opencode", "pi") else ""
+                    rel_path = f"{runner_prefix}responses/{sanitize_filename(r['model'])}/{sanitize_filename(p.id)}/response.txt"
                     score_cell = f'<a href="{rel_path}">{score_val}</a>'
                 else:
                     score_cell = f"{score_val}"

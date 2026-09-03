@@ -350,12 +350,18 @@ def judge_response_path(output_dir: str, target: str, runner: str, plugin_id: st
     suffix = sanitize_filename(judge_model)
     if contract_id:
         suffix += f".{sanitize_filename(contract_id)}"
+    # Judge artifacts live inside the plugin's response subdirectory, next to
+    # the benchmark task artifacts they grade (``<plugin_id>/``). The
+    # ``.removesuffix(".txt") + ".meta.json"`` pairing in
+    # ``judge_response_metadata_path`` keeps the raw response and its
+    # metadata sidecar adjacent regardless of the directory layout.
     return os.path.join(
         output_dir,
         runner,
         "responses",
         sanitize_filename(target),
-        f"{plugin_id}.judge.{suffix}.txt",
+        sanitize_filename(plugin_id),
+        f"judge.{suffix}.txt",
     )
 
 

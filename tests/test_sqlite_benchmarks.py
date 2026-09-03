@@ -133,6 +133,13 @@ class TestSQLiteBenchmarkStore(unittest.TestCase):
         )
         self.assertEqual(len(paths), 3)
         self.assertTrue(all(os.path.isfile(path) for path in paths))
+        # The export must mirror the live save-responses layout: one
+        # subdirectory per plugin holding the bare suffix filenames.
+        plugin_dir = os.path.join(self.tmpdir.name, "responses", "model-a", "plugin")
+        self.assertEqual(
+            sorted(os.path.relpath(path, plugin_dir) for path in paths),
+            ["content.txt", "prompt.txt", "think.txt"],
+        )
         self.assertEqual(
             self.connection.execute("SELECT count(*) FROM payloads").fetchone()[0],
             3,

@@ -168,21 +168,29 @@ def save_task_result(
         meta["disposition"] = disposition
 
     if save_responses and output_dir:
-        responses_dir = os.path.join(output_dir, "responses", sanitize_filename(target))
-        os.makedirs(responses_dir, exist_ok=True)
+        # One subdirectory per plugin keeps every artifact of a (model,
+        # plugin) pair together: ``responses/<target>/<pid>/`` holds
+        # ``prompt.txt``, ``content.txt``, ``response.txt``, ``think.txt``
+        # and ``meta.json``. Plugin ids are operator/plugin-declared slugs
+        # (validated only as non-empty strings), so the directory component
+        # goes through the same ``sanitize_filename`` guard as ``target``.
+        plugin_dir = os.path.join(
+            output_dir, "responses", sanitize_filename(target), sanitize_filename(pid)
+        )
+        os.makedirs(plugin_dir, exist_ok=True)
         files = {
-            f"{pid}.prompt.txt": selected_prompt,
-            f"{pid}.content.txt": selected_text,
-            f"{pid}.txt": (
+            "prompt.txt": selected_prompt,
+            "content.txt": selected_text,
+            "response.txt": (
                 f"<thinking>\n{selected_think}\n</thinking>\n\n{selected_text}"
                 if selected_think else selected_text
             ),
         }
         if selected_think:
-            files[f"{pid}.think.txt"] = selected_think
+            files["think.txt"] = selected_think
         for filename, content in files.items():
-            _write_text(os.path.join(responses_dir, filename), content)
-        _write_json(os.path.join(responses_dir, f"{pid}.meta.json"), meta)
+            _write_text(os.path.join(plugin_dir, filename), content)
+        _write_json(os.path.join(plugin_dir, "meta.json"), meta)
 
     return {
         **{f"{pid}_{key}": value for key, value in schema_metadata.items()},
