@@ -1,6 +1,7 @@
 """Execution of one benchmark plugin cell."""
 from __future__ import annotations
 
+import secrets
 import threading
 import time
 import traceback
@@ -61,6 +62,26 @@ def _schema_request_metadata(plugin: Any, request_params: dict[str, Any] | None 
     return {"schema_requested": True, "schema_request_status": status, "response_schema_valid": response_schema_valid, "schema_enforcement_verified": False, "schema_fallback_used": schema_fallback_used, "schema_fallback_error": schema_fallback_error}
 
 
+def _cache_busting_prompt(prompt: str) -> str:
+    """Prepend a unique, semantically inert nonce to defeat prompt caching.
+
+    Providers that support prompt caching key their cache on an exact
+    token-prefix match. A benchmark that re-sends the same plugin prompt cell
+    after cell would otherwise short-circuit on the provider's cached
+    response. Prepending a fresh random nonce on every dispatch perturbs the
+    leading tokens, forcing a genuine generation while leaving the underlying
+    prompt byte-identical after the marker.
+
+    The marker is deliberately minimal (a bare hex nonce inside inert
+    ``<CACHE-BUST-...>`` tags) so it adds only a handful of input tokens and
+    cannot shift model behavior or push near-ceiling context windows over
+    their limit. It carries no instructions, so the answer to the actual task
+    is unchanged. The original ``prompt`` is preserved verbatim as the suffix.
+    """
+    nonce = secrets.token_hex(8)  # 16 hex chars → 64 bits of entropy per cell
+    return f"<CACHE-BUST-{nonce}></CACHE-BUST-{nonce}>\n\n{prompt}"
+
+
 def _run_plugin_task(target_name: str, api_model: str, source: str, plugin: Any, source_config: dict[str, Any], timeout: float,
                      max_tokens: int, session_seed: int, log_file: str | None, global_cfg: dict[str, Any], state: Any,
                      stop_event: threading.Event | None = None, save_responses: bool = False, output_dir: str | None = None,
@@ -95,7 +116,7 @@ def _run_plugin_task(target_name: str, api_model: str, source: str, plugin: Any,
 
     guard_values = (dependencies.resolve_stream_guards_fn if dependencies and dependencies.resolve_stream_guards_fn else resolve_stream_guards)(source_config, source)
     max_content_tokens, max_thinking_tokens, repetition_guard = guard_values
-    base_prompt = plugin.get_prompt()
+    base_prompt = _cache_busting_prompt(plugin.get_prompt())
     temperature = plugin.get_temperature(global_cfg or {})
     config_target_name = config_target_name or target_name
     artifact_target = artifact_target_name or config_target_name
@@ -426,6 +447,7 @@ def _run_plugin_task(target_name: str, api_model: str, source: str, plugin: Any,
         selected_prompt=selected_prompt,
         selected_text=selected_text,
         selected_think=selected_think,
+        judge_prompt=plugin.get_prompt(),
         response_time=response_time,
         output_tokens=output_tokens,
         thinking_tokens=thinking_tokens,

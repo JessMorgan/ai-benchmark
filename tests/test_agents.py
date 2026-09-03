@@ -388,7 +388,12 @@ class TestAgentHTTPRequest(unittest.TestCase):
         self.assertIn("body", captured)
         messages = captured["body"]["messages"]
         self.assertEqual(messages[0], {"role": "system", "content": "You are a coding agent."})
-        self.assertEqual(messages[1], {"role": "user", "content": plugins[0].get_prompt()})
+        user_prompt = messages[1]["role"] == "user"
+        self.assertTrue(user_prompt)
+        prompted = messages[1]["content"]
+        original = plugins[0].get_prompt()
+        self.assertIn("<CACHE-BUST-", prompted)
+        self.assertTrue(prompted.endswith(original))
 
 
 class TestAgentStatePersistence(unittest.TestCase):

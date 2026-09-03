@@ -10,6 +10,7 @@ import contextlib
 import io
 import json
 import os
+import re
 import tempfile
 import unittest
 from unittest import mock
@@ -36,6 +37,7 @@ from benchmark.core import (
     run_model,
 )
 from benchmark.http import NonStreamResult, StreamResult
+from benchmark.task_execution import _cache_busting_prompt
 from benchmark.transport import _retry_prompt_alteration
 
 
@@ -366,6 +368,38 @@ class TestRunPluginTaskGuards(unittest.TestCase):
         self.assertEqual(captured["max_content_tokens"], 1024)
         self.assertEqual(captured["max_thinking_tokens"], 2048)
         self.assertFalse(captured["repetition_guard"])
+
+    def test_cache_busting_prompt_preserves_original_and_is_unique(self):
+        original = _FakePlugin().get_prompt()
+        first = _cache_busting_prompt(original)
+        second = _cache_busting_prompt(original)
+        self.assertTrue(first.endswith(original))
+        self.assertTrue(second.endswith(original))
+        self.assertIn("<CACHE-BUST-", first)
+        self.assertNotEqual(first, second)
+
+    def test_run_plugin_task_sends_unique_cache_busting_prompt(self):
+        sent = []
+
+        def fake_stream(source_config, timeout, model, source, prompt, *args, **kwargs):
+            sent.append(prompt)
+            return StreamResult("hello", "", None, 0.1, None, "stop", {})
+
+        source_config = {"S": {"api_url": "http://x", "headers": {}}}
+        with mock.patch("benchmark.core.stream_request", side_effect=fake_stream):
+            _run_plugin_task(
+                "m", "model", "S", _FakePlugin(), source_config, 1, 100,
+                0, None, {}, self._state(),
+            )
+            _run_plugin_task(
+                "m", "model", "S", _FakePlugin(), source_config, 1, 100,
+                0, None, {}, self._state(),
+            )
+        self.assertEqual(len(sent), 2)
+        marker_re = re.compile(r"^<CACHE-BUST-[0-9a-f]{16}>.*</CACHE-BUST-[0-9a-f]{16}>\n\nprompt$", re.S)
+        for dispatched in sent:
+            self.assertRegex(dispatched, marker_re)
+        self.assertNotEqual(sent[0], sent[1])
 
 
 class TestRunModelGuards(unittest.TestCase):

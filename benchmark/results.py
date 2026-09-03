@@ -53,6 +53,7 @@ def save_task_result(
     selected_prompt: str = "",
     selected_text: str = "",
     selected_think: str = "",
+    judge_prompt: str | None = None,
     response_time: float | None = None,
     output_tokens: int = 0,
     thinking_tokens: int = 0,
@@ -111,7 +112,7 @@ def save_task_result(
         sidecar = judge_sidecar_path_fn(judge_input_dir, target, runner, pid)
         try:
             prepare_judge_sidecar_fn(
-                sidecar, plugin, selected_prompt, selected_text,
+                sidecar, plugin, (judge_prompt or selected_prompt), selected_text,
                 target=target, state_key=model_name, runner=runner,
             )
         except OSError:

@@ -699,7 +699,8 @@ class TestSaveResponses(unittest.TestCase):
             with open(content_path, encoding="utf-8") as f:
                 content_content = f.read()
 
-            self.assertEqual(prompt_content, plugins[0].get_prompt())
+            self.assertIn("<CACHE-BUST-", prompt_content)
+            self.assertTrue(prompt_content.endswith(plugins[0].get_prompt()))
             self.assertEqual(response_content, expected_response)
             # Without thinking, .txt and .content.txt are identical.
             self.assertEqual(content_content, expected_response)
