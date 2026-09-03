@@ -149,18 +149,18 @@ The runtime inventory below matches `uv run ai-benchmark --list-plugins`:
 |---|---:|---:|---|
 | `code-review` | 1.0.0 | 15 | No |
 | `debug-consistency` | 0.1.0 | 20 | Yes |
-| `debug-traversal` | 1.0.0 | 20 | Yes |
+| `debug-traversal` | 1.1.0 | 20 | Yes |
 | `decomposition` | 0.1.0 | 20 | Yes |
-| `error-recovery` | 1.2.0 | 20 | Yes |
-| `event-processor` | 0.1.0 | 20 | Yes |
+| `error-recovery` | 1.3.0 | 20 | Yes |
+| `event-processor` | 0.2.0 | 20 | Yes |
 | `instruction-following` | 1.0.0 | 20 | Yes |
 | `long-context` | 0.1.0 | 20 | Yes |
 | `moe-dense` | 1.0.1 | 17 | Yes |
-| `multi-step` | 1.1.0 | 20 | Yes |
+| `multi-step` | 1.2.0 | 20 | Yes |
 | `multi-turn-conversation` | 1.0.0 | 20 | Yes |
 | `orchestration` | 1.0.0 | 16 | Yes |
 | `prd-creation` | 1.0.0 | 22 | Yes |
-| `rate-limiter` | 1.1.0 | 20 | Yes |
+| `rate-limiter` | 1.2.0 | 20 | Yes |
 | `reasoning` | 1.1.0 | 20 | Yes |
 | `software-architecture` | 1.0.0 | 20 | Yes |
 | `data-transformation` | 1.0.2 | 22 | No |

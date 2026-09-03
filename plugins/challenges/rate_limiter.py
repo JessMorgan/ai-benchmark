@@ -18,7 +18,7 @@ class RateLimiterPlugin(BenchmarkTaskPlugin):
 
     @property
     def version(self) -> str:
-        return "1.1.0"
+        return "1.2.0"
 
     @property
     def name(self) -> str:

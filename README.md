@@ -264,18 +264,18 @@ Plugins are discovered automatically from `plugins/challenges/`. Each plugin is 
 |---|---|---:|---:|---|
 | `code-review` | Code Review | 1.0.0 | 15 | No |
 | `debug-consistency` | Debug Report Consistency | 0.1.0 | 20 | Yes |
-| `debug-traversal` | Debug Traversal | 1.0.0 | 20 | Yes |
+| `debug-traversal` | Debug Traversal | 1.1.0 | 20 | Yes |
 | `decomposition` | Design-Doc Decomposition | 0.1.0 | 20 | Yes |
-| `error-recovery` | Error Recovery | 1.2.0 | 20 | Yes |
-| `event-processor` | Concurrent Event Processor | 0.1.0 | 20 | Yes |
+| `error-recovery` | Error Recovery | 1.3.0 | 20 | Yes |
+| `event-processor` | Concurrent Event Processor | 0.2.0 | 20 | Yes |
 | `instruction-following` | Instruction Following | 1.0.0 | 20 | Yes |
 | `long-context` | Long-Context Retrieval | 0.1.0 | 20 | Yes |
 | `moe-dense` | MoE vs Dense | 1.0.1 | 17 | Yes |
-| `multi-step` | Multi-Step Instructions | 1.1.0 | 20 | Yes |
+| `multi-step` | Multi-Step Instructions | 1.2.0 | 20 | Yes |
 | `multi-turn-conversation` | Multi-Turn Conversation | 1.0.0 | 20 | Yes |
 | `orchestration` | Orchestration & Workflow | 1.0.0 | 16 | Yes |
 | `prd-creation` | PRD Creation | 1.0.0 | 22 | Yes |
-| `rate-limiter` | Rate Limiter | 1.1.0 | 20 | Yes |
+| `rate-limiter` | Rate Limiter | 1.2.0 | 20 | Yes |
 | `reasoning` | Logical Reasoning | 1.1.0 | 20 | Yes |
 | `software-architecture` | Software Architecture | 1.0.0 | 20 | Yes |
 | `data-transformation` | Data Transformation | 1.0.2 | 22 | No |

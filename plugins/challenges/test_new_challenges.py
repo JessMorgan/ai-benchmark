@@ -7,7 +7,7 @@ from plugins.challenges.multi_turn_conversation import MultiTurnConversationPlug
 
 def test_debug_traversal_prompt_contains_real_threshold_bug():
     plugin = DebugTraversalPlugin()
-    assert plugin.version == "1.0.0"
+    assert plugin.version == "1.1.0"
     assert "count > 2" in plugin.get_prompt()
 
 

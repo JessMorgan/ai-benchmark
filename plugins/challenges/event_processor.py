@@ -18,7 +18,7 @@ class EventProcessorPlugin(BenchmarkTaskPlugin):
 
     @property
     def version(self) -> str:
-        return "0.1.0"
+        return "0.2.0"
 
     @property
     def name(self) -> str:

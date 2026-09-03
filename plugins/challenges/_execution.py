@@ -89,8 +89,13 @@ def _run_local_restricted(source: str, harness: str, *, timeout: float) -> Execu
             resource.setrlimit(resource.RLIMIT_CPU, (2, 2))
             resource.setrlimit(resource.RLIMIT_AS, (128 * 1024 * 1024, 128 * 1024 * 1024))
             resource.setrlimit(resource.RLIMIT_FSIZE, (2 * 1024 * 1024, 2 * 1024 * 1024))
-            if hasattr(resource, "RLIMIT_NPROC"):
-                resource.setrlimit(resource.RLIMIT_NPROC, (32, 32))
+            # RLIMIT_NPROC is deliberately NOT set here. On Linux the kernel
+            # enforces it against every task (process + thread) already owned
+            # by the user, not against this child alone, so a small cap makes
+            # correct thread-based submissions crash whenever the host user
+            # is busy (always true on CI runners, where the runner agent alone
+            # holds dozens of tasks). CPU, address-space, and file-size limits
+            # still bound runaway code.
 
         try:
             process = subprocess.Popen(

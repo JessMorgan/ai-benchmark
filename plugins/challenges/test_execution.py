@@ -20,6 +20,30 @@ def test_missing_podman_uses_restricted_local_fallback():
     assert result.isolation == "local-restricted"
 
 
+def test_local_restricted_fallback_allows_thread_pools():
+    """The local-restricted sandbox must run thread-based submissions.
+
+    RLIMIT_NPROC is per-user on Linux, so capping it counts every task the
+    host user already owns (always dozens on CI runners) and crashes correct
+    thread-based code the moment the child spawns a ThreadPoolExecutor. The
+    sandbox therefore omits that limit; this regression pins the behavior on
+    every host regardless of how busy the user is.
+    """
+    with mock.patch("plugins.challenges._execution.shutil.which", return_value=None):
+        result = run_python_check(
+            "from concurrent.futures import ThreadPoolExecutor",
+            """
+def _double(value):
+    return value * 2
+
+with ThreadPoolExecutor(max_workers=4) as _pool:
+    assert sorted(_pool.map(_double, range(16))) == [v * 2 for v in range(16)]
+""",
+        )
+    assert result.status == "passed", result.output
+    assert result.isolation == "local-restricted"
+
+
 def test_podman_command_is_network_disabled_and_never_pulls():
     process = mock.Mock(returncode=0)
     process.communicate.return_value = ("ok\n", "")
