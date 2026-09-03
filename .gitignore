@@ -28,3 +28,28 @@ dist/
 
 # Standalone scratch/experiment scripts not part of the project
 scratch/
+
+# Run-data / configs with API keys (never commit)
+benchmark-agents.yml
+benchmark-config.yml
+benchmark-config-*.yml
+config-nanbeige.yml
+models-*.json
+all7.csv
+.manual-judge-*/
+.manual-judge-inputs/
+.manual-judge-results/
+ai-judging/
+err.txt
+tui_render_errors.log
+PRAGMA*
+.omo/
+
+# Scratch analysis docs and helper scripts
+empty-content-investigation.md
+moe-dense-opencode-vs-http.md
+opencode-failure-analysis-*.md
+opencode-timeout-analysis.md
+vibethinker-opencode-vs-http.md
+collate*.sh
+fix-cols.sh
