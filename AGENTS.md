@@ -162,6 +162,15 @@ Before committing any complete change:
 4. Update all relevant documentation to reflect the new reality, including `AGENTS.md`, `README.md`, `docs/`, plugin documentation, CLI/configuration references, and any other checked-in documentation affected by the change.
 5. Confirm the documentation and runtime metadata agree, then commit the complete change to git only after the user has decided how to proceed from the review.
 6. When adding a footer or co-author attribution, include the agent name (e.g. OpenCode, FreeBuff, CodeBuff, Hermes Agent, etc.) and model name (e.g. GPT-5.6 Luna, Big Pickle, DeepSeek v4 Flash 0731, etc.)
+7. **Attribute every commit message immediately after its detail body.** Every commit message must include, immediately after the commit message detail (the explanatory body) and prior to any footer (such as the `🤖 Generated with …` / `Co-Authored-By:` block), an attribution block of exactly this form:
+
+   ```
+   
+   Written by: [model] ([agent])
+   Reviewed by: [review-model] ([review agent])
+   ```
+
+   The block is introduced by one blank line after the message detail — the explanatory body when one exists, otherwise directly under the subject line (the `\n\n` above). `[model]` / `[review-model]` are human-readable display names of the authoring model (step 2's distinct reviewer), e.g. `GLM-5.3 Flash` / `Beast Qwen3.8 27B`; the parenthesized agent is the tool that produced the change or ran the review (e.g. `CodeBuff`, `OpenCode`, `FreeBuff`) and is always included when known — omit the review agent's parenthetical only when the agent is genuinely unknown (the `Reviewed by:` line itself is never optional). Leave one blank line between the `Reviewed by:` line and any footer that follows.
 
 ## Plugin updates
 1. **Update challenge-plugin versions when modified from what's in git.** This policy applies only to challenge plugins and their shared challenge-plugin code under `plugins/challenges/`; it does not apply to `plugins/__init__.py`, output plugins, documentation, or tests. Every internal or externally visible challenge-plugin code change requires a version bump. Non-scoring changes, such as behavior-preserving refactors or internal/API plumbing that cannot affect evaluation results, increment the revision (for example, `0.2.0` → `0.2.1`). A minor-version bump is reserved for changes that could affect scoring in any way, including prompt, rubric, scoring-code, validation, normalization, or execution changes (for example, `0.2.0` → `0.3.0`, resetting the revision). Complete rewrites or very major changes increment the major version (for example, `0.2.0` → `1.0.0`, resetting minor and revision). A bump is not required for every intermediate edit; record the largest applicable change from the version currently in git.
