@@ -12,18 +12,35 @@ def test_event_processor_requires_behavioral_contract():
 
 def test_event_processor_complete_implementation_scores_high():
     response = '''```python
+import threading
 from concurrent.futures import ThreadPoolExecutor
 class EventProcessor:
     """Idempotent retrying event processor."""
     def __init__(self, handler, max_workers=4, max_retries=2):
-        if max_workers < 1 or max_retries < 0: raise ValueError("invalid configuration")
+        if not callable(handler): raise TypeError("handler must be callable")
+        if not isinstance(max_workers, int) or isinstance(max_workers, bool): raise TypeError("max_workers must be an int")
+        if not callable(handler): raise TypeError("handler must be callable")
+        if not isinstance(max_workers, int) or isinstance(max_workers, bool):
+            raise TypeError("max_workers must be an int")
+        if not isinstance(max_retries, int) or isinstance(max_retries, bool):
+            raise TypeError("max_retries must be an int")
+        if max_workers < 1: raise ValueError("max_workers must be >= 1")
+        if not isinstance(max_retries, int) or isinstance(max_retries, bool): raise TypeError("max_retries must be an int")
+        if max_retries < 0: raise ValueError("max_retries must be >= 0")
         self.handler, self.max_workers, self.max_retries = handler, max_workers, max_retries
+        self._completed, self._state_lock = set(), threading.Lock()
     def process(self, events):
         seen, unique, duplicates = set(), [], []
         for event in events:
-            if not isinstance(event, dict) or not isinstance(event.get("id"), str): raise ValueError("invalid event")
-            if event["id"] in seen: duplicates.append(event["id"])
-            else: seen.add(event["id"]); unique.append(event)
+            if not isinstance(event, dict): raise ValueError("event must be a dict")
+            event_id = event.get("id")
+            if not isinstance(event_id, str) or not event_id: raise ValueError("invalid event id")
+            with self._state_lock:
+                already_done = event_id in seen or event_id in self._completed
+            if already_done:
+                duplicates.append(event_id)
+            else:
+                seen.add(event_id); unique.append(event)
         def run(event):
             for attempt in range(self.max_retries + 1):
                 try: self.handler(event); return event["id"], None
@@ -31,6 +48,9 @@ class EventProcessor:
                     if attempt == self.max_retries: return event["id"], exc
         with ThreadPoolExecutor(max_workers=self.max_workers) as pool:
             outcomes = list(pool.map(run, unique))
+        with self._state_lock:
+            for key, error in outcomes:
+                if error is None: self._completed.add(key)
         return {"processed": [key for key, error in outcomes if error is None], "duplicates": duplicates, "failed": [key for key, error in outcomes if error is not None]}
 ```'''
     assert EventProcessorPlugin().score(response) >= 18.0
@@ -38,11 +58,12 @@ class EventProcessor:
 
 def test_rate_limiter_complete_three_strategy_implementation_scores_high():
     response = '''```python
+import math
 import threading
 class _Base:
     """Deterministic thread-safe window limiter."""
     def __init__(self, limit: int, window_seconds: float):
-        if limit <= 0 or window_seconds <= 0: raise ValueError("invalid")
+        if limit <= 0 or not math.isfinite(window_seconds) or window_seconds <= 0: raise ValueError("invalid")
         self.limit, self.window_seconds, self.counts, self.lock = limit, window_seconds, {}, threading.RLock()
     def allow_request(self, client_id: str, now: float) -> bool:
         with self.lock:

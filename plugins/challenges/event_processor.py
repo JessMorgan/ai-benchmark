@@ -18,7 +18,7 @@ class EventProcessorPlugin(BenchmarkTaskPlugin):
 
     @property
     def version(self) -> str:
-        return "0.3.0"
+        return "0.4.0"
 
     @property
     def name(self) -> str:
@@ -42,8 +42,18 @@ class EventProcessorPlugin(BenchmarkTaskPlugin):
             "with IDs in their original first-seen order. Invoke the handler concurrently for "
             "unique events, retry a failed handler up to max_retries, invoke it at most once "
             "successfully per ID, and put permanently failed IDs in `failed`. Duplicate IDs "
-            "must never invoke the handler again. Protect shared state and validate malformed "
-            "events and invalid constructor arguments. Include type hints and docstrings. Return code only."
+            "must never invoke the handler again. Idempotency is instance-scoped: an ID that "
+            "has already been processed successfully by this instance is reported in "
+            "`duplicates` on any later `process()` call and must not re-invoke the handler. "
+            "Protect shared state.\n\n"
+            "Validation semantics (must raise, never silently skip): malformed events — an "
+            "element of `events` that is not a dict, or a dict whose `id` is missing or is not "
+            "a non-empty string — must raise `TypeError` or `ValueError`. Invalid constructor "
+            "arguments must raise `TypeError` for wrong types (including a `handler` that is "
+            "not callable) or `ValueError` for out-of-range values (`max_workers < 1`, "
+            "including negatives, `max_retries < 0`). Do not skip, ignore, or drop malformed "
+            "input.\n\n"
+            "Include type hints and docstrings. Return code only."
         )
 
     def get_temperature(self, global_config: ConfigMap) -> float | None:
@@ -79,9 +89,49 @@ class EventProcessorPlugin(BenchmarkTaskPlugin):
 
         source = extract_python_source(text)
         if source:
-            harness = r'''
+            validation_harness = r'''
 import threading
-import time
+
+_calls = []
+_lock = threading.Lock()
+def _handler(event):
+    with _lock:
+        _calls.append(event["id"])
+
+_reject = []
+def _must_raise(label, fn):
+    # Strict: wrong types must raise TypeError; ValueError is only accepted
+    # for out-of-range values, matching the prompt's promise.
+    try:
+        fn()
+    except (TypeError, ValueError):
+        return
+    except Exception as exc:
+        _reject.append(label + ": raised " + type(exc).__name__ + " instead of TypeError/ValueError")
+        return
+    _reject.append(label + ": accepted invalid input")
+
+_processor = EventProcessor(_handler, max_workers=4, max_retries=2)
+_must_raise("non-dict event", lambda: _processor.process(["not-a-dict"]))
+_must_raise("non-string id", lambda: _processor.process([{"id": 42}]))
+_must_raise("empty id", lambda: _processor.process([{"id": ""}]))
+_must_raise("missing id", lambda: _processor.process([{"value": 1}]))
+_must_raise("max_workers=0", lambda: EventProcessor(_handler, max_workers=0, max_retries=2))
+_must_raise("max_workers=-2", lambda: EventProcessor(_handler, max_workers=-2, max_retries=2))
+_must_raise("max_retries=-1", lambda: EventProcessor(_handler, max_workers=4, max_retries=-1))
+_must_raise("max_workers wrong type", lambda: EventProcessor(_handler, max_workers="4", max_retries=2))
+_must_raise("non-callable handler", lambda: EventProcessor(None, max_workers=4, max_retries=2))
+assert not _reject, "; ".join(_reject)
+'''
+            validation_exec = run_python_check(source, validation_harness)
+            rubric.add_criterion("Validation semantics", 4.0,
+                4.0 if validation_exec.status == "passed" else 0.0,
+                evidence=[validation_exec.as_evidence()],
+                negative_findings=[] if validation_exec.status == "passed" else [{"finding": validation_exec.error or validation_exec.status}],
+            )
+
+            behavioral_harness = r'''
+import threading
 
 _calls = []
 _lock = threading.Lock()
@@ -95,22 +145,7 @@ def _handler(event):
     if event["id"] == "bad":
         raise RuntimeError("permanent")
 
-for _bad_args in ((0, 2), (4, -1)):
-    try:
-        EventProcessor(_handler, max_workers=_bad_args[0], max_retries=_bad_args[1])
-    except (ValueError, TypeError):
-        pass
-    else:
-        raise AssertionError("invalid constructor arguments must be rejected")
-
 _processor = EventProcessor(_handler, max_workers=4, max_retries=2)
-try:
-    _processor.process([{"value": 1}])
-except (ValueError, TypeError):
-    pass
-else:
-    raise AssertionError("malformed events must be rejected")
-
 _result = _processor.process([
     {"id": "a", "value": 1}, {"id": "a", "value": 1},
     {"id": "retry", "value": 2}, {"id": "bad", "value": 3},
@@ -121,17 +156,22 @@ assert _result["failed"] == ["bad"]
 assert _attempts["retry"] == 2
 assert _attempts["bad"] == 3
 assert _calls.count("a") == 1
-assert _result["processed"] == ["a", "retry"]
-'''
-            execution = run_python_check(source, harness)
-            rubric.add_criterion("Behavioral event tests", 12.0,
-                12.0 if execution.status == "passed" else 0.0,
 
-                evidence=[{"kind": "execution", "status": execution.status, "isolation": execution.isolation}],
-                negative_findings=[] if execution.status == "passed" else [{"finding": execution.error or execution.status}],
+_second = _processor.process([{"id": "a", "value": 1}, {"id": "fresh", "value": 9}])
+assert _second["duplicates"] == ["a"]
+assert "a" not in _second["processed"]
+assert "fresh" in _second["processed"]
+assert _calls.count("a") == 1
+'''
+            behavioral_exec = run_python_check(source, behavioral_harness)
+            rubric.add_criterion("Behavioral event tests", 8.0,
+                8.0 if behavioral_exec.status == "passed" else 0.0,
+                evidence=[behavioral_exec.as_evidence()],
+                negative_findings=[] if behavioral_exec.status == "passed" else [{"finding": behavioral_exec.error or behavioral_exec.status}],
             )
         else:
-            rubric.add_criterion("Behavioral event tests", 12.0, 0.0, negative_findings=[{"finding": "no executable source"}])
+            rubric.add_criterion("Validation semantics", 4.0, 0.0, negative_findings=[{"finding": "no executable source"}])
+            rubric.add_criterion("Behavioral event tests", 8.0, 0.0, negative_findings=[{"finding": "no executable source"}])
         return rubric.results()
 
     def score(self, response_text: str) -> float:

@@ -18,7 +18,7 @@ class RateLimiterPlugin(BenchmarkTaskPlugin):
 
     @property
     def version(self) -> str:
-        return "1.3.0"
+        return "1.4.0"
 
     @property
     def name(self) -> str:
@@ -43,8 +43,15 @@ class RateLimiterPlugin(BenchmarkTaskPlugin):
             "- cleanup(now: float) -> int\n\n"
             "The first limit requests in a window are allowed and later requests are denied; "
             "time advances through the supplied `now` argument so behavior is deterministic. "
-            "Support independent client IDs, zero/negative configuration validation, stale-entry "
-            "cleanup, and thread safety. Include docstrings and type hints. Return only the code."
+            "Support independent client IDs and thread safety.\n\n"
+            "Validation semantics (must raise, never silently degrade): a `limit` of zero or "
+            "less must raise `ValueError` — zero is invalid configuration, not a 'deny all' "
+            "mode. A non-positive or non-finite `window_seconds` must also raise `ValueError`. "
+            "Wrong argument types must raise `TypeError` (a `ValueError` is never acceptable "
+            "for wrong types). Do not accept and reinterpret invalid configuration.\n\n"
+            "Implement stale-entry cleanup that removes per-client state for idle clients and "
+            "returns the number of entries removed. Include docstrings and type hints. "
+            "Return only the code."
         )
 
     def get_temperature(self, global_config: ConfigMap) -> float | None:
@@ -147,12 +154,34 @@ for _cls in _classes:
     assert _instance.allow_request("b", 0.0) is True
     assert isinstance(_instance.get_usage_stats("a"), dict)
     assert isinstance(_instance.cleanup(100.0), int)
-    try:
-        _cls(limit=0, window_seconds=10.0)
-    except (ValueError, TypeError):
-        pass
-    else:
-        raise AssertionError("invalid limit must be rejected")
+    # 0 and negatives fail a naive `<= 0` check; nan and inf only fail with a
+    # non-finite guard (nan comparisons are always False).
+    for _bad_window in (0.0, -1.0, float("nan"), float("inf")):
+        try:
+            _cls(limit=2, window_seconds=_bad_window)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("invalid window_seconds must be rejected with ValueError")
+    for _bad_limit in (0, -2):
+        try:
+            _cls(limit=_bad_limit, window_seconds=10.0)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("invalid limit must be rejected with ValueError")
+    # Wrong argument types must raise TypeError specifically (ValueError is
+    # only for out-of-range values): a str limit/window_seconds cannot be
+    # ordered against 0, so any implementation that actually validates will
+    # raise TypeError here.
+    for _label, _kwargs in (("limit", {"limit": "2", "window_seconds": 10.0}),
+                            ("window_seconds", {"limit": 2, "window_seconds": "10"})):
+        try:
+            _cls(**_kwargs)
+        except TypeError:
+            pass
+        else:
+            raise AssertionError(_label + " wrong type must be rejected with TypeError")
 
 _instance = TokenBucket(limit=100, window_seconds=10.0)
 _results = []
@@ -170,7 +199,7 @@ assert len(_results) == 16
             rubric.add_criterion(
                 "Behavioral strategy tests", 10.0,
                 10.0 if execution.status == "passed" else 0.0,
-                evidence=[{"kind": "execution", "status": execution.status, "isolation": execution.isolation}],
+                evidence=[execution.as_evidence()],
                 negative_findings=[] if execution.status == "passed" else [{"finding": execution.error or execution.status}],
             )
         else:
