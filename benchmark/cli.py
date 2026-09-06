@@ -28,6 +28,7 @@ from benchmark import tui as _tui
 from benchmark.cli_parser import build_parser
 from benchmark.configuration import (
     _apply_http_retry_default,
+    _apply_timeout_retry_default,
     get_target_plugins_blacklist,
     load_config,
     load_dotenv_file,
@@ -1788,6 +1789,11 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
     # Apply the global --retry-on-429 / --no-retry-on-429 toggle before any
     # plugin sees the config so per-source defaults are aligned with the flag.
     _apply_http_retry_default(cfg, args.retry_on_429)
+    # Same for the timeout-retry toggle: --retry-on-timeout opts every source
+    # that did not set its own retry_on_timeout into retrying deadline kills;
+    # --no-retry-on-timeout forces them terminal everywhere. Unset (None)
+    # leaves per-source values (default: terminal) untouched.
+    _apply_timeout_retry_default(cfg, getattr(args, "retry_on_timeout", None))
     source_config = cfg.get("sources", {})
     models = cfg.get("models", {})
 

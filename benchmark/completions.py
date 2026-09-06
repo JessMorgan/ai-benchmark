@@ -104,6 +104,18 @@ def build_parser(
                              help='Disable HTTP 429 retries globally. Overrides per-source max_429_retries '
                                   'only when the source did not set its own; explicit per-source values '
                                   'are preserved.')
+    timeout_retry_group = execution_group.add_mutually_exclusive_group()
+    # default=None (not True like --retry-on-429): flag absence means "defer
+    # to per-source config", whereas default=True would force-enable timeout
+    # retries for every source.
+    timeout_retry_group.add_argument('--retry-on-timeout', action='store_true', default=None,
+                                     help='Retry requests that hit the per-request timeout deadline (default: '
+                                          'timeouts are terminal — a model that burned its whole deadline usually '
+                                          'will not do better on a second full-length attempt). The partial '
+                                          'response is retained and scored either way.')
+    timeout_retry_group.add_argument('--no-retry-on-timeout', action='store_false', dest='retry_on_timeout',
+                                     help='Force timeouts to be terminal for every source, overriding any '
+                                          'per-source retry_on_timeout: true.')
 
     tools_group = parser.add_argument_group('Tools')
     tools_group.add_argument('--list-plugins', action='store_true',

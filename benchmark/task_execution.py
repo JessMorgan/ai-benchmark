@@ -6,7 +6,7 @@ import threading
 import time
 import traceback
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 from .http import nonstream_request, stream_request
@@ -24,7 +24,7 @@ from .request_models import (
 from .response_classification import count_tokens
 from .results import save_task_result
 from .runtime_records import BenchmarkAttemptRecord
-from .transport import BENCHMARK_RETRY_POLICY, _retry_prompt_alteration, execute_task
+from .transport import BENCHMARK_RETRY_POLICY, RetryPolicy, _retry_prompt_alteration, execute_task
 from .transport_options import HTTPTransportOptions, OpenCodeTransportOptions, PiTransportOptions
 
 DEFAULT_MAX_THINKING_TOKENS = 32768
@@ -36,6 +36,7 @@ class TaskExecutionDependencies:
     nonstream_request_fn: Callable[..., Any] = nonstream_request
     run_process_fn: Callable[..., Any] = run_process
     resolve_stream_guards_fn: Callable[[dict[str, Any], str], tuple[int, int, bool]] | None = None
+    resolve_retry_policy_fn: Callable[[dict[str, Any], str], RetryPolicy] | None = None
 
 
 def resolve_stream_guards(source_config: dict[str, Any], source: str) -> tuple[int, int, bool]:
@@ -49,6 +50,22 @@ def resolve_stream_guards(source_config: dict[str, Any], source: str) -> tuple[i
             return default
         return value if value > 0 else default
     return tokens("max_content_tokens", DEFAULT_MAX_CONTENT_TOKENS), tokens("max_thinking_tokens", DEFAULT_MAX_THINKING_TOKENS), bool(cfg.get("repetition_guard", True))
+
+
+def resolve_retry_policy(source_config: dict[str, Any], source: str) -> RetryPolicy:
+    """Return the retry policy for one source.
+
+    Timeouts are terminal by default (a second 20-minute request for a model
+    that already burned its whole deadline is usually wasted wall-clock), but
+    an operator can opt in per source with ``retry_on_timeout: true`` or
+    globally with ``--retry-on-timeout``. All other policy knobs stay at the
+    benchmark defaults.
+    """
+    cfg = source_config.get(source)
+    retry_on_timeout = bool(cfg.get("retry_on_timeout", False)) if isinstance(cfg, dict) else False
+    if retry_on_timeout == BENCHMARK_RETRY_POLICY.retry_on_timeout:
+        return BENCHMARK_RETRY_POLICY
+    return replace(BENCHMARK_RETRY_POLICY, retry_on_timeout=retry_on_timeout)
 
 
 def _schema_request_metadata(plugin: Any, request_params: dict[str, Any] | None = None, *, response_schema_valid: bool | None = None, error: str | None = None, request_applied: bool = True, schema_fallback_used: bool = False, schema_fallback_error: str | None = None) -> dict[str, Any]:
@@ -96,8 +113,10 @@ def _run_plugin_task(target_name: str, api_model: str, source: str, plugin: Any,
     """Run one benchmark cell with one scalar budget and at most one policy retry.
 
     Transport retries preserve the prompt. Token-limit and repetition retries
-    append a machine-readable, purpose-specific instruction. Timeouts and
-    cancellation are terminal and retain any partial response.
+    append a machine-readable, purpose-specific instruction. Cancellation is
+    always terminal; timeouts are terminal by default and retained with any
+    partial response, but a source may opt into retrying them via
+    ``retry_on_timeout: true`` (or globally via ``--retry-on-timeout``).
     """
     pid = plugin.id
     cfg = source_config.get(source)
@@ -217,9 +236,12 @@ def _run_plugin_task(target_name: str, api_model: str, source: str, plugin: Any,
             return "fail", [], {}, f"plugin.evaluate raised {type(exc).__name__}: {exc}", traceback.format_exc()
 
     deps = dependencies or TaskExecutionDependencies()
+    resolve_retry_policy_fn = (
+        dependencies.resolve_retry_policy_fn if dependencies else None
+    ) or resolve_retry_policy
     execution = execute_task(
         request,
-        retry_policy=BENCHMARK_RETRY_POLICY,
+        retry_policy=resolve_retry_policy_fn(source_config, source),
         base_prompt=base_prompt,
         prompt_alterer=_retry_prompt_alteration,
         attempt_callback=on_attempt,

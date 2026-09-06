@@ -34,6 +34,11 @@ class PostRequestResult:
     response: requests.Response | None
     error: str | None
     curl_cmd: str | None
+    # The per-request watchdog when one was armed. Published so
+    # ``stream_request``/``nonstream_request`` can classify a mid-read
+    # closure as a timeout (the watchdog closed the response) rather than a
+    # generic transport error. See ``_check_total_timeout``.
+    watchdog: Any = None
 
 
 @dataclass(frozen=True)
@@ -237,6 +242,15 @@ class _StopAwareRequestWatchdog:
         self._timeout = max(0.0, float(timeout))
         self._stop_event = stop_event
         self._cancel = threading.Event()
+        # Set when the watchdog closed the response because its own timeout
+        # deadline expired (never on cancellation). Request callers read this
+        # after a mid-read failure to classify the closure as a timeout.
+        self.reason: str | None = None
+        # Set when the watchdog closed the response because a stop event
+        # fired (operator quit) rather than its own deadline. Request
+        # callers use this to keep a quit-induced urllib3 read failure from
+        # being classified as a timeout.
+        self.stopped: bool = False
         self._thread = threading.Thread(
             target=self._run, name="request-watchdog", daemon=True,
         )
@@ -250,14 +264,25 @@ class _StopAwareRequestWatchdog:
 
     def _run(self) -> None:
         deadline = time.monotonic() + self._timeout
+        timed_out = False
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
+                timed_out = True
                 break
             if self._stop_event is not None and self._stop_event.is_set():
                 break
             if self._cancel.wait(min(remaining, 0.25)):
                 return
+        # Publish the closure reason BEFORE closing so a concurrently failing
+        # read observes the classification flag. Stop-event closures stay
+        # unclassified (cancellation is already reported via ``stop_event``)
+        # but are marked via ``stopped`` so they can never be mistaken for
+        # deadline kills.
+        if timed_out:
+            self.reason = f"Stream watchdog timeout ({self._timeout:g}s) exceeded"
+        elif self._stop_event is not None and self._stop_event.is_set():
+            self.stopped = True
         with contextlib.suppress(Exception):
             close_fn = getattr(self._resp, "close", None)
             if callable(close_fn):
@@ -431,10 +456,56 @@ def log_request_entry(log_path: str, curl_cmd: str, response_body: str, request_
             f.write(block)
 
 
-def _check_total_timeout(start_time: float, timeout: float, error: str | None, finish_reason: str | None = None) -> str | None:
-    """Return a timeout error if the overall request duration was exceeded."""
+def _is_watchdog_closure(error: str | None, watchdog: Any) -> bool:
+    """Return whether a read failure was caused by the request watchdog.
+
+    The watchdog closes the response when the per-request timeout deadline
+    expires; a worker blocked in ``iter_lines``/``iter_content`` then fails
+    with an implementation-specific error (urllib3 raises ``AttributeError:
+    'NoneType' object has no attribute 'read'`` once the connection is torn
+    down).
+
+    Two evidence sources, strongest first:
+    1. A watchdog-armed request whose published ``reason`` names a watchdog
+       timeout — the only path that can relabel an arbitrary error, because
+       the reason is set by the watchdog itself immediately before it closes
+       the response.
+    2. The historical urllib3 AttributeError signature, accepted only when no
+       watchdog is armed, or with an armed one that published no verdict and
+       did not exit for a stop event (``stopped is False``). This keeps
+       results reconstructed from logs classifiable while preventing a
+       same-window guard abort (``token_limit``), a cooperative
+       ``Cancelled`` error, or a quit-induced close from being relabelled
+       ``timeout`` just because a watchdog happened to be armed.
+    """
+    reason = getattr(watchdog, "reason", None)
+    if isinstance(reason, str) and "watchdog timeout" in reason:
+        return True
+    if watchdog is not None and reason is not None:
+        # A watchdog is armed and published a different classification
+        # (cancellation, etc.) — never override its verdict.
+        return False
+    if watchdog is not None and getattr(watchdog, "stopped", False):
+        # The armed watchdog closed the response because a stop event fired
+        # (operator quit), not because its deadline expired: the subsequent
+        # read failure is a quit artifact, not a timeout.
+        return False
+    return bool(error) and "'NoneType' object has no attribute 'read'" in str(error)
+
+
+def _check_total_timeout(start_time: float, timeout: float, error: str | None, finish_reason: str | None = None, watchdog: Any = None) -> str | None:
+    """Return a timeout error if the overall request duration was exceeded.
+
+    A response closed by the per-request watchdog mid-read is reclassified
+    as a timeout even when the underlying socket failure surfaces as a
+    generic ``AttributeError``. Previously such closures were recorded as
+    ``transport_error``, which mislabelled deadline kills as transport
+    failures and hid ``truncated_due_to_time`` from run metadata.
+    """
     if not error and not finish_reason and time.time() - start_time > timeout:
         return f"Total timeout ({timeout}s) exceeded"
+    if error and _is_watchdog_closure(error, watchdog):
+        return f"Stream watchdog timeout ({timeout:g}s) exceeded"
     return error
 
 
@@ -606,7 +677,7 @@ def _post_request_context(source_config: dict[str, Any], source: str, body: dict
                             f"HTTP {resp.status_code}: {resp.text[:500]}", log_label)
                     yield PostRequestResult(None, error, curl_cmd)
                 else:
-                    yield PostRequestResult(resp, None, curl_cmd)
+                    yield PostRequestResult(resp, None, curl_cmd, watchdog)
                 return
 
             # HTTP 429 — decide whether to surface or retry.
@@ -1031,7 +1102,9 @@ def stream_request(source_config: dict[str, Any], timeout: float, model: str, so
                         if guard_error:
                             error = guard_error
                             break
-            error = _check_total_timeout(start, timeout, error, finish_reason)
+            error = _check_total_timeout(
+                start, timeout, error, finish_reason,
+                watchdog=getattr(request, "watchdog", None))
             _log_response(log_path, request.curl_cmd, text, log_label)
             return StreamResult(text, think_text, first_tok, time.time(),
                                 error, finish_reason, usage, tool_calls)
@@ -1097,7 +1170,8 @@ def stream_request(source_config: dict[str, Any], timeout: float, model: str, so
             if guard_error:
                 error = guard_error
                 break
-        error = _check_total_timeout(start, timeout, error, finish_reason)
+        error = _check_total_timeout(
+            start, timeout, error, finish_reason, watchdog=getattr(request, "watchdog", None))
         # Render any captured native tool calls into the final text so the
         # tool-calling plugin can score them (they arrive in ``tool_calls``
         # deltas, not ``content``, and were previously dropped -> empty
@@ -1195,8 +1269,13 @@ def nonstream_request(source_config: dict[str, Any], timeout: float, model: str,
                                    "HTTP request returned no response", finish_reason)
         response = _read_response_body(request.response, stop_event)
         if response.error:
-            return NonStreamResult(text, think_text, usage, time.time() - start,
-                                   response.error, finish_reason)
+            return NonStreamResult(
+                text, think_text, usage, time.time() - start,
+                _check_total_timeout(
+                    start, timeout, response.error, finish_reason,
+                    watchdog=getattr(request, "watchdog", None)),
+                finish_reason,
+            )
         raw_resp_text = response.text
         if raw_resp_text is None:
             return NonStreamResult(text, think_text, usage, time.time() - start,

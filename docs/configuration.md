@@ -383,6 +383,29 @@ benchmark task path only — preload probes and judge requests do not use the
 benchmark task watchdog (although judge requests are streamed and honor the
 shared shutdown cancellation). OpenCode has its own subprocess timeout and loop guards; those outcomes feed the shared attempt metadata but do not use the HTTP stream watchdog.
 
+### Timeout Retry
+
+When a request reaches the source's per-request `timeout` deadline, the
+response watchdog closes it and the partial response is retained and
+scored. By default the attempt is **terminal**: the runner does not issue
+a second full-length request for a model that already consumed its whole
+deadline. Operators who prefer the old behaviour can opt in:
+
+```yaml
+sources:
+  AI Server:
+    api_url: ...
+    headers: ...
+    retry_on_timeout: true     # default false (terminal)
+```
+
+or globally with `--retry-on-timeout`. The flags mirror the 429 toggle:
+`--retry-on-timeout` only opts in sources that did not set their own
+`retry_on_timeout`, while `--no-retry-on-timeout` is the kill-switch that
+forces timeouts terminal everywhere, overriding per-source opt-ins. A
+retried timeout preserves the original prompt (no retry guidance is
+appended) and counts as a `timeout` retry reason in the attempt metadata.
+
 ### Environment Variable Expansion
 
 Any string value in the config supports `${VAR}` and `${VAR:default}` syntax

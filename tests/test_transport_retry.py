@@ -4,6 +4,7 @@ from unittest import mock
 from benchmark.http import StreamResult
 from benchmark.observer import TaskObserver
 from benchmark.request_models import GenerationFields, HTTPRequest
+from benchmark.task_execution import resolve_retry_policy
 from benchmark.transport import (
     BENCHMARK_RETRY_POLICY,
     JUDGE_RETRY_POLICY,
@@ -104,6 +105,43 @@ class TestTransportRetry(unittest.TestCase):
             execution = execute_task(self._request(), retry_policy=RetryPolicy(max_attempts=2), base_prompt="base prompt")
         execution.select(execution.attempts[0])
         self.assertIs(execution.selected, execution.attempts[0])
+
+    def test_timeout_is_terminal_by_default(self):
+        responses = [StreamResult("", "", None, 1.0, "Stream watchdog timeout (1200s) exceeded", None, {})]
+        with mock.patch("benchmark.transport.stream_request", side_effect=responses) as request:
+            execution = execute_task(self._request(), retry_policy=resolve_retry_policy({"S": {}}, "S"), base_prompt="base prompt")
+        self.assertEqual(execution.attempt_count, 1)
+        request.assert_called_once()
+        self.assertEqual(execution.attempts[0].result.response_nature, "timeout")
+
+    def test_timeout_retries_when_source_opts_in(self):
+        responses = [
+            StreamResult("", "", None, 1.0, "Stream watchdog timeout (1200s) exceeded", None, {}),
+            StreamResult("answer", "", 1.0, 2.0, None, "stop", {}),
+        ]
+        policy = resolve_retry_policy({"S": {"retry_on_timeout": True}}, "S")
+        self.assertIsNot(policy, BENCHMARK_RETRY_POLICY)
+        self.assertTrue(policy.retry_on_timeout)
+        with mock.patch("benchmark.transport.stream_request", side_effect=responses) as request:
+            execution = execute_task(self._request(), retry_policy=policy, base_prompt="base prompt")
+        self.assertEqual(execution.attempt_count, 2)
+        self.assertEqual(request.call_count, 2)
+        self.assertEqual(execution.retry_reasons, ["timeout"])
+
+    def test_resolve_retry_policy_defaults_and_mutation_safety(self):
+        # Unknown source: benchmark defaults (timeout terminal).
+        self.assertIs(resolve_retry_policy({}, "missing"), BENCHMARK_RETRY_POLICY)
+        # Non-dict source config: same.
+        self.assertIs(resolve_retry_policy({"S": "bogus"}, "S"), BENCHMARK_RETRY_POLICY)
+        # Explicit false matches the default singleton.
+        self.assertIs(resolve_retry_policy({"S": {"retry_on_timeout": False}}, "S"), BENCHMARK_RETRY_POLICY)
+        # Opt-in returns a new policy and must NOT mutate the shared default.
+        policy = resolve_retry_policy({"S": {"retry_on_timeout": True}}, "S")
+        self.assertIsNot(policy, BENCHMARK_RETRY_POLICY)
+        self.assertTrue(policy.retry_on_timeout)
+        self.assertFalse(BENCHMARK_RETRY_POLICY.retry_on_timeout)
+        # Judge policy is untouched by the benchmark helper.
+        self.assertFalse(JUDGE_RETRY_POLICY.retry_on_timeout)
 
 
 if __name__ == "__main__":

@@ -365,6 +365,35 @@ def _apply_http_retry_default(cfg: dict[str, Any], retry_on_429: bool) -> None:
             src_cfg["max_429_retries"] = 0
 
 
+def _apply_timeout_retry_default(cfg: dict[str, Any], retry_on_timeout: bool | None) -> None:
+    """Mutate ``cfg`` so timeout retries align with a global toggle.
+
+    Timeouts are terminal by default (``retry_on_timeout`` False): a request
+    that consumed its entire deadline is not re-issued by default, and the
+    partial response is retained and scored. The toggle mirrors
+    :func:`_apply_http_retry_default`:
+
+    - ``None`` (no CLI flag passed) is a no-op; per-source
+      ``retry_on_timeout`` values (default False) stay in force.
+    - ``True`` (``--retry-on-timeout``) opts in every source that did NOT
+      explicitly set ``retry_on_timeout``.
+    - ``False`` (``--no-retry-on-timeout``) forces every source terminal,
+      including sources that opted in with ``retry_on_timeout: true`` —
+      the explicit operator kill-switch wins over per-source opt-ins.
+    """
+    if retry_on_timeout is None:
+        return
+    sources = cfg.get("sources") or {}
+    for src_cfg in sources.values():
+        if not isinstance(src_cfg, dict):
+            continue
+        if retry_on_timeout and "retry_on_timeout" in src_cfg:
+            # --retry-on-timeout only opts in sources that made no choice;
+            # an explicit per-source value (True or False) is preserved.
+            continue
+        src_cfg["retry_on_timeout"] = retry_on_timeout
+
+
 def dump_default_config() -> None:
     """Print the default config JSON to stdout."""
     cfg = {
@@ -547,6 +576,9 @@ class Configuration:
         retry = getattr(args, "retry_on_429", None)
         if retry is not None:
             _apply_http_retry_default(raw, retry)
+        timeout_retry = getattr(args, "retry_on_timeout", None)
+        if timeout_retry is not None:
+            _apply_timeout_retry_default(raw, timeout_retry)
         for key in ("timeout", "max_tokens", "temperature"):
             value = getattr(args, key, None)
             if value is not None:

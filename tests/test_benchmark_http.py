@@ -12,6 +12,7 @@ from unittest import mock
 
 from benchmark.http import (
     PostRequestResult,
+    _check_total_timeout,
     _repeats_detected,
     _StreamGuards,
     build_curl_cmd,
@@ -649,6 +650,66 @@ class TestStopAwareWatchdog(unittest.TestCase):
         )
         watchdog.start()
         self.assertTrue(closed.wait(timeout=2.0))
+
+    def test_timeout_close_publishes_reason_after_real_deadline(self):
+        """The watchdog thread itself must publish ``reason`` on deadline
+        expiry (before the close) and leave it unset otherwise. Callers
+        hand-setting ``reason`` in tests must not mask a regression where
+        ``_run`` stops publishing it."""
+        from benchmark.http import _StopAwareRequestWatchdog
+
+        closed = threading.Event()
+
+        class FakeResponse:
+            def close(self):
+                closed.set()
+
+        watchdog = _StopAwareRequestWatchdog(
+            FakeResponse(), timeout=0.1, stop_event=None,
+        )
+        self.assertIsNone(watchdog.reason)
+        watchdog.start()
+        self.assertTrue(closed.wait(timeout=2.0))
+        self.assertIsNotNone(watchdog.reason)
+        self.assertIn("watchdog timeout", watchdog.reason)
+
+    def test_stop_close_marks_stopped_and_leaves_reason_none(self):
+        """A stop-event closure must mark ``stopped`` (not publish a reason):
+        downstream classification relies on that distinction to keep
+        quit-induced read failures from becoming timeouts."""
+        from benchmark.http import _StopAwareRequestWatchdog
+
+        stop_event = threading.Event()
+        stop_event.set()
+        closed = threading.Event()
+
+        class FakeResponse:
+            def close(self):
+                closed.set()
+
+        watchdog = _StopAwareRequestWatchdog(
+            FakeResponse(), timeout=60.0, stop_event=stop_event,
+        )
+        watchdog.start()
+        self.assertTrue(closed.wait(timeout=2.0))
+        self.assertTrue(watchdog.stopped)
+        self.assertIsNone(watchdog.reason)
+
+    def test_check_total_timeout_ignores_signature_when_watchdog_stopped(self):
+        """A quit-closed response (armed watchdog, ``stopped``) whose read
+        fails with the historical urllib3 signature must stay a transport
+        error, not be relabelled a timeout."""
+        class FakeWatchdog:
+            reason = None
+            stopped = True
+
+        error = _check_total_timeout(
+            time.time(), 1200.0,
+            "AttributeError: 'NoneType' object has no attribute 'read'",
+            None, watchdog=FakeWatchdog(),
+        )
+        self.assertEqual(
+            error, "AttributeError: 'NoneType' object has no attribute 'read'")
 
 
 class TestNonstreamRequest(unittest.TestCase):
@@ -1583,6 +1644,174 @@ class TestOneMinProtocol(unittest.TestCase):
         )
         self.assertIn("API-KEY: secret", command)
         self.assertIn("Content-Type: application/json", command)
+
+
+class TestWatchdogTimeoutClassification(unittest.TestCase):
+    """A response closed by the request watchdog must be classified as a
+    timeout, not a transport error.
+
+    Regression: in run ``2026-09-05-rtx-pro-6000-qwen-v-ornith`` the
+    ``beast/qwen3.8-coding-xhigh:27b`` rate-limiter attempt died at exactly
+    the 1200 s deadline with ``AttributeError: 'NoneType' object has no
+    attribute 'read'`` -- urllib3 raises that once the watchdog has closed
+    the response and the worker's ``iter_lines`` reaches into the torn-down
+    connection. ``response_nature`` mapped the error to
+    ``transport_error`` (it contains no "timeout" substring), so the
+    attempt was marked unusable and ``truncated_due_to_time`` stayed
+    ``false`` in the persisted meta, mislabeling a deadline kill as a
+    transport failure.
+    """
+
+    HISTORICAL_URLLIB3_ERROR = "AttributeError: 'NoneType' object has no attribute 'read'"
+
+    def test_check_total_timeout_reclassifies_watchdog_reason(self):
+        """A watchdog with a published reason overrides the read error."""
+        class FakeWatchdog:
+            reason = "Stream watchdog timeout (1200s) exceeded"
+
+        error = _check_total_timeout(
+            time.time(), 1200.0, self.HISTORICAL_URLLIB3_ERROR,
+            None, watchdog=FakeWatchdog(),
+        )
+        self.assertIsNotNone(error)
+        self.assertIn("watchdog timeout", error)
+
+    def test_check_total_timeout_reclassifies_historical_urlib3_signature(self):
+        """The historical urllib3 AttributeError signature is recognized even
+        without a watchdog object (e.g. results reconstructed from logs)."""
+        error = _check_total_timeout(
+            time.time(), 1200.0, self.HISTORICAL_URLLIB3_ERROR,
+        )
+        self.assertIsNotNone(error)
+        self.assertIn("watchdog timeout", error)
+
+    def test_check_total_timeout_leaves_genuine_transport_errors_alone(self):
+        """Connection-refused-style errors must stay transport errors."""
+        error = _check_total_timeout(
+            time.time(), 1200.0, "ConnectionError: connection refused",
+        )
+        self.assertEqual(error, "ConnectionError: connection refused")
+
+    def test_check_total_timeout_unclassified_when_watchdog_never_fired(self):
+        """An armed watchdog that published nothing (reason None) must not
+        reclassify an error that lacks the historical urllib3 signature."""
+        class FakeWatchdog:
+            reason = None
+            stopped = False
+
+        error = _check_total_timeout(
+            time.time(), 1200.0, "ConnectionError: connection refused",
+            None, watchdog=FakeWatchdog(),
+        )
+        self.assertEqual(error, "ConnectionError: connection refused")
+
+    def test_check_total_timeout_respects_armed_watchdogs_own_verdict(self):
+        """An armed watchdog that published a NON-watchdog reason (e.g. a
+        cancellation marker) must not let its presence relabel an arbitrary
+        same-window error as a timeout."""
+        class FakeWatchdog:
+            reason = "cancelled by client"
+            stopped = False
+
+        error = _check_total_timeout(
+            time.time(), 1200.0, "Repetition detected in content — stream aborted",
+            None, watchdog=FakeWatchdog(),
+        )
+        self.assertEqual(
+            error, "Repetition detected in content — stream aborted")
+
+    def test_check_total_timeout_watchdog_reason_requires_watchdog_string(self):
+        """A published reason that does not name a watchdog timeout (defensive:
+        a future reason string change must not silently reclassify)."""
+        class FakeWatchdog:
+            reason = "something else"
+
+        error = _check_total_timeout(
+            time.time(), 1200.0, "ConnectionError: connection refused",
+            None, watchdog=FakeWatchdog(),
+        )
+        self.assertEqual(error, "ConnectionError: connection refused")
+
+    def test_stream_request_classifies_watchdog_closure_as_timeout(self):
+        """End-to-end: a stream whose response is closed by the watchdog
+        mid-iteration returns a timeout error (and keeps streamed text)."""
+        stop_event = threading.Event()
+
+        class WatchdogClosingResponse:
+            """Mimics a response whose socket dies when the watchdog fires."""
+
+            def __init__(self):
+                self._deadline = time.monotonic() + 0.3
+
+            def _check_deadline(self):
+                if time.monotonic() >= self._deadline:
+                    # Same signature urllib3 surfaces after a watchdog close.
+                    raise AttributeError(
+                        "'NoneType' object has no attribute 'read'")
+
+            def iter_lines(self, decode_unicode=False):
+                self._check_deadline()
+                yield "data: " + json.dumps({
+                    "choices": [{"delta": {"content": "partial"}}],
+                })
+                while True:
+                    time.sleep(0.05)
+                    self._check_deadline()
+
+            def close(self):
+                pass
+
+        fake_response = WatchdogClosingResponse()
+        from benchmark.http import _StopAwareRequestWatchdog
+        armed_watchdog = _StopAwareRequestWatchdog(fake_response, 0.3, stop_event)
+        armed_watchdog.reason = "Stream watchdog timeout (0.3s) exceeded"
+
+        @contextlib.contextmanager
+        def fake_ctx(*a, **kw):
+            yield PostRequestResult(fake_response, None, None, watchdog=armed_watchdog)
+
+        with mock.patch("benchmark.http._post_request_context", fake_ctx):
+            result = stream_request(
+                {"src": {"api_url": "http://x", "headers": {}}},
+                0.3, "m", "src", "p", 100, stop_event=stop_event,
+            )
+        self.assertIn("partial", result.text)
+        self.assertIsNotNone(result.error)
+        self.assertIn("watchdog timeout", result.error)
+
+    def test_nonstream_request_classifies_watchdog_closure_as_timeout(self):
+        """End-to-end: a body read killed by the watchdog returns a timeout."""
+
+        class WatchdogClosingResponse:
+            def __init__(self):
+                self._deadline = time.monotonic() + 0.3
+
+            def iter_content(self, chunk_size=8192):
+                while True:
+                    if time.monotonic() >= self._deadline:
+                        raise AttributeError(
+                            "'NoneType' object has no attribute 'read'")
+                    time.sleep(0.05)
+
+            def close(self):
+                pass
+
+        fake_response = WatchdogClosingResponse()
+        from benchmark.http import _StopAwareRequestWatchdog
+        armed_watchdog = _StopAwareRequestWatchdog(fake_response, 0.3, None)
+        armed_watchdog.reason = "Stream watchdog timeout (0.3s) exceeded"
+
+        @contextlib.contextmanager
+        def fake_ctx(*a, **kw):
+            yield PostRequestResult(fake_response, None, None, watchdog=armed_watchdog)
+
+        with mock.patch("benchmark.http._post_request_context", fake_ctx):
+            result = nonstream_request(
+                {"src": {"api_url": "http://x", "headers": {}}},
+                0.3, "m", "src", "p", 100,
+            )
+        self.assertIsNotNone(result.error)
+        self.assertIn("watchdog timeout", result.error)
 
 
 if __name__ == "__main__":
