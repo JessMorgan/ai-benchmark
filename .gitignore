@@ -15,6 +15,9 @@ htmlcov/
 coverage.xml
 .coverage.*
 
+# Local code-search tool index (large, machine-generated)
+.zvec-grep/
+
 # Generated per-run output directories
 runs/
 

@@ -66,6 +66,12 @@ uv run python -m py_compile ai-benchmark.py benchmark/*.py
   run, the remaining tests for that model are cancelled. A successful or
   non-429 test resets the consecutive count. See
   `benchmark.http._post_request_context` for the retry math.
+- `--retry-on-timeout` / `--no-retry-on-timeout` — toggle retrying requests
+  that hit the per-request timeout deadline (default OFF: timeouts are
+  terminal and the partial response is retained and scored). Mirrors the 429
+  toggle: the opt-in flag only affects sources without their own
+  `retry_on_timeout` key, the kill-switch overrides per-source opt-ins. See
+  `benchmark.task_execution.resolve_retry_policy`.
 - `--no-rerun-failed` — keep `failed` models on resume; default re-runs them.
 - `--scripted` — continue non-interactively instead of prompting on resume/plugin changes.
 - `--restart` — discard prior state and start every model fresh.
@@ -152,7 +158,7 @@ The runtime inventory below matches `uv run ai-benchmark --list-plugins`:
 | `debug-traversal` | 1.2.0 | 20 | Yes |
 | `decomposition` | 0.1.0 | 20 | Yes |
 | `error-recovery` | 1.4.0 | 20 | Yes |
-| `event-processor` | 0.3.0 | 20 | Yes |
+| `event-processor` | 0.4.0 | 20 | Yes |
 | `instruction-following` | 1.0.0 | 20 | Yes |
 | `long-context` | 0.1.0 | 20 | Yes |
 | `moe-dense` | 1.0.1 | 17 | Yes |
@@ -160,7 +166,7 @@ The runtime inventory below matches `uv run ai-benchmark --list-plugins`:
 | `multi-turn-conversation` | 1.0.0 | 20 | Yes |
 | `orchestration` | 1.0.0 | 16 | Yes |
 | `prd-creation` | 1.0.0 | 22 | Yes |
-| `rate-limiter` | 1.3.0 | 20 | Yes |
+| `rate-limiter` | 1.4.0 | 20 | Yes |
 | `reasoning` | 1.1.0 | 20 | Yes |
 | `software-architecture` | 1.0.0 | 20 | Yes |
 | `data-transformation` | 1.0.2 | 22 | No |
@@ -320,6 +326,17 @@ and the OpenCode runner are exempt (the kwargs default off).
    declares completion instantly, and reads the answer before generation
    finishes (fast empty `(empty response)` legs, score 0, no error).
    Regression in `tests/test_chatplayground.py::TestWorkerSubprocess::test_request_forwards_timeout_to_worker`.
+11. **Sandbox evidence must be self-diagnosing, and judges catch what static
+   criteria miss.** Execution-based criteria retain
+   `ExecutionResult.as_evidence()` (output + error tails) in `meta.json` —
+   `container exited 1` alone is not diagnosable after the fact (the
+   2026-09-05 ornith rate-limiter 50 needed a local re-run to pin: its
+   `FixedWindow.get_usage_stats` referenced an undefined `now`, a `NameError`
+   at harness time, even though its `limit <= 0` check was correct). The
+   xhigh judge had flagged exactly this bug from static reading while the
+   other judges scored the response 95+. Event-processor splits its
+   execution block into validation semantics (4 pts) and behavioral tests
+   (8 pts) so one failed phase no longer zeroes both.
 
 ## Freebuff skills
 

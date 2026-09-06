@@ -200,6 +200,7 @@ python ai-benchmark.py [options]  # repository launcher
 | `--runner {http,opencode,both}` | Select the existing HTTP runner (default), the OpenCode runner, or both (per-target OpenCode→HTTP pipeline) |
 | `--no-preload` | Disable configured source preload probes |
 | `--retry-on-429 / --no-retry-on-429` | Enable or disable default HTTP 429 backoff |
+| `--retry-on-timeout / --no-retry-on-timeout` | Retry requests that hit the timeout deadline (default: terminal) |
 | `--save-responses` | Save prompts, responses, reasoning, and metadata sidecars |
 | `--storage {json,sqlite}` | Select run storage; SQLite is the default, JSON remains an explicit compatibility fallback |
 | `--storage-profile {compact,debug,portable}` | Select artifact policy; compact omits full successful transcripts |
@@ -267,7 +268,7 @@ Plugins are discovered automatically from `plugins/challenges/`. Each plugin is 
 | `debug-traversal` | Debug Traversal | 1.2.0 | 20 | Yes |
 | `decomposition` | Design-Doc Decomposition | 0.1.0 | 20 | Yes |
 | `error-recovery` | Error Recovery | 1.4.0 | 20 | Yes |
-| `event-processor` | Concurrent Event Processor | 0.3.0 | 20 | Yes |
+| `event-processor` | Concurrent Event Processor | 0.4.0 | 20 | Yes |
 | `instruction-following` | Instruction Following | 1.0.0 | 20 | Yes |
 | `long-context` | Long-Context Retrieval | 0.1.0 | 20 | Yes |
 | `moe-dense` | MoE vs Dense | 1.0.1 | 17 | Yes |
@@ -275,7 +276,7 @@ Plugins are discovered automatically from `plugins/challenges/`. Each plugin is 
 | `multi-turn-conversation` | Multi-Turn Conversation | 1.0.0 | 20 | Yes |
 | `orchestration` | Orchestration & Workflow | 1.0.0 | 16 | Yes |
 | `prd-creation` | PRD Creation | 1.0.0 | 22 | Yes |
-| `rate-limiter` | Rate Limiter | 1.3.0 | 20 | Yes |
+| `rate-limiter` | Rate Limiter | 1.4.0 | 20 | Yes |
 | `reasoning` | Logical Reasoning | 1.1.0 | 20 | Yes |
 | `software-architecture` | Software Architecture | 1.0.0 | 20 | Yes |
 | `data-transformation` | Data Transformation | 1.0.2 | 22 | No |
