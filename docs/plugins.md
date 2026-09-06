@@ -6,7 +6,7 @@ AI Benchmark uses a plugin architecture. Each plugin defines a benchmark task, a
 
 | ID | Name | Version | Internal Max Score | Streaming |
 |---|---|---:|---:|---|
-| `code-review` | Code Review | 1.0.0 | 15 | No |
+| `code-review` | Code Review | 1.1.0 | 15 | Yes |
 | `debug-consistency` | Debug Report Consistency | 0.1.0 | 20 | Yes |
 | `debug-traversal` | Debug Traversal | 1.2.0 | 20 | Yes |
 | `decomposition` | Design-Doc Decomposition | 0.1.0 | 20 | Yes |
@@ -22,7 +22,7 @@ AI Benchmark uses a plugin architecture. Each plugin defines a benchmark task, a
 | `rate-limiter` | Rate Limiter | 1.4.0 | 20 | Yes |
 | `reasoning` | Logical Reasoning | 1.1.0 | 20 | Yes |
 | `software-architecture` | Software Architecture | 1.0.0 | 20 | Yes |
-| `data-transformation` | Data Transformation | 1.0.2 | 22 | No |
+| `data-transformation` | Data Transformation | 1.1.0 | 22 | Yes |
 | `tool-calling` | Tool Calling Agent | 1.1.1 | 25 | Yes |
 | `wireframes` | Wireframes | 1.0.0 | 20 | Yes |
 
@@ -113,8 +113,8 @@ identity.
 
 ## Streaming vs Non-Streaming
 
-- If `supports_streaming` is `True`, the benchmark first tries the streaming API path and falls back to non-streaming if needed.
-- If `supports_streaming` is `False`, only the non-streaming path is used.
+- Every challenge plugin uses the streaming API path by default (base-class default `True`); the benchmark falls back to non-streaming if needed.
+- A plugin may still override `supports_streaming = False` to force the non-streaming path, but no built-in challenge does (since 1.1.0, `code-review` and `data-transformation` stream too).
 
 ## Writing a Plugin
 

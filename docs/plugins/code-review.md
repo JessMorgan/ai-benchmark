@@ -4,9 +4,9 @@
 |---|---|
 | ID | `code-review` |
 | Name | Code Review |
-| Version | `1.0.0` |
+| Version | `1.1.0` |
 | Max Score | 15 |
-| Streaming | No |
+| Streaming | Yes |
 
 ## Task
 

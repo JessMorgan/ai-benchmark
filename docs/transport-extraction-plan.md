@@ -226,7 +226,7 @@ else:
 
 This is the most intricate transport-specific behavior. It applies only when:
 - `transport="http"`
-- `supports_streaming=False` (code-review, moe-dense, structured-output plugins)
+- `supports_streaming=False` (no built-in plugin since the 1.1.0 streaming migration; historical: code-review, data-transformation, and the retired structured-output ID)
 - `request_params` contains `response_format: { type: "json_schema", ... }`
 
 **Current flow:**

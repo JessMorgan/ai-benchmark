@@ -110,7 +110,7 @@ class DataTransformationPlugin(BenchmarkTaskPlugin):
 
     @property
     def version(self) -> str:
-        return "1.0.2"
+        return "1.1.0"
 
     @property
     def name(self) -> str:
@@ -119,10 +119,6 @@ class DataTransformationPlugin(BenchmarkTaskPlugin):
     @property
     def max_score(self) -> int:
         return int(22.0)
-
-    @property
-    def supports_streaming(self) -> bool:
-        return False
 
     def get_prompt(self) -> str:
         return (

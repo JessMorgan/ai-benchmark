@@ -263,7 +263,7 @@ Plugins are discovered automatically from `plugins/challenges/`. Each plugin is 
 
 | ID | Name | Version | Max score | Streaming |
 |---|---|---:|---:|---|
-| `code-review` | Code Review | 1.0.0 | 15 | No |
+| `code-review` | Code Review | 1.1.0 | 15 | Yes |
 | `debug-consistency` | Debug Report Consistency | 0.1.0 | 20 | Yes |
 | `debug-traversal` | Debug Traversal | 1.2.0 | 20 | Yes |
 | `decomposition` | Design-Doc Decomposition | 0.1.0 | 20 | Yes |
@@ -279,7 +279,7 @@ Plugins are discovered automatically from `plugins/challenges/`. Each plugin is 
 | `rate-limiter` | Rate Limiter | 1.4.0 | 20 | Yes |
 | `reasoning` | Logical Reasoning | 1.1.0 | 20 | Yes |
 | `software-architecture` | Software Architecture | 1.0.0 | 20 | Yes |
-| `data-transformation` | Data Transformation | 1.0.2 | 22 | No |
+| `data-transformation` | Data Transformation | 1.1.0 | 22 | Yes |
 | `tool-calling` | Tool Calling Agent | 1.1.1 | 25 | Yes |
 | `wireframes` | Wireframes | 1.0.0 | 20 | Yes |
 

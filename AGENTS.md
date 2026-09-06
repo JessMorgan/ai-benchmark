@@ -153,7 +153,7 @@ The runtime inventory below matches `uv run ai-benchmark --list-plugins`:
 
 | ID | Version | Max | Stream |
 |---|---:|---:|---|
-| `code-review` | 1.0.0 | 15 | No |
+| `code-review` | 1.1.0 | 15 | Yes |
 | `debug-consistency` | 0.1.0 | 20 | Yes |
 | `debug-traversal` | 1.2.0 | 20 | Yes |
 | `decomposition` | 0.1.0 | 20 | Yes |
@@ -169,13 +169,13 @@ The runtime inventory below matches `uv run ai-benchmark --list-plugins`:
 | `rate-limiter` | 1.4.0 | 20 | Yes |
 | `reasoning` | 1.1.0 | 20 | Yes |
 | `software-architecture` | 1.0.0 | 20 | Yes |
-| `data-transformation` | 1.0.2 | 22 | No |
+| `data-transformation` | 1.1.0 | 22 | Yes |
 | `tool-calling` | 1.1.1 | 25 | Yes |
 | `wireframes` | 1.0.0 | 20 | Yes |
 
-`code-review` and `data-transformation` set
-`supports_streaming=False` and use the **non-streaming** request path. `moe-dense`
-uses the streaming path. Code-shaped plugins
+All challenge plugins stream by default: the
+`BenchmarkTaskPlugin.supports_streaming` base default is `True` (since 1.1.0,
+`code-review` and `data-transformation` stream too). Code-shaped plugins
 use a pytest-compatible assertion harness in the Podman sandbox, with a
 resource-limited local fallback recorded as `local-restricted` when Podman is
 unavailable.

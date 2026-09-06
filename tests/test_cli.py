@@ -87,7 +87,7 @@ class TestCLIArgs(unittest.TestCase):
         self.assertIn("data-transformation", output)
         self.assertIn("Data Transformation", output)
         # Check a specific ID/name/version line
-        self.assertRegex(output, r"data-transformation\s+Data Transformation\s+1\.0\.2")
+        self.assertRegex(output, r"data-transformation\s+Data Transformation\s+1\.1\.0")
         # Footer hint helps users use the IDs
         self.assertIn("--plugins-whitelist", output)
         self.assertIn("--plugins-blacklist", output)
@@ -948,9 +948,10 @@ class TestDropParams(unittest.TestCase):
 
 class TestNonStreamingPluginRetry(unittest.TestCase):
     """Regression tests for the ``on_retry`` closure-scope bug that
-    previously raised ``UnboundLocalError`` on every
-    ``supports_streaming=False`` plugin (``code-review``, ``moe-dense``,
-    ``data-transformation``).
+    previously raised ``UnboundLocalError`` on every plugin using the
+    non-streaming request path (historically ``code-review`` and
+    ``data-transformation``, before they migrated to streaming in 1.1.0;
+    a stub pins the non-streaming flag for these tests).
 
     Bug history: ``def on_retry():`` was defined *inside* the
     ``if plugin.supports_streaming:`` branch of
@@ -980,7 +981,19 @@ class TestNonStreamingPluginRetry(unittest.TestCase):
             len(candidates), 1,
             "data-transformation plugin must be present for this regression test",
         )
-        return candidates[0]
+        plugin = candidates[0]
+        if plugin.supports_streaming:
+            # Since 1.1.0 data-transformation streams by default like every
+            # built-in plugin. These tests protect the non-streaming request
+            # path, so pin it with a stub that flips only the transport flag
+            # and keeps the plugin's schema/identity intact.
+            class NonStreamingStub(type(plugin)):
+                @property
+                def supports_streaming(self) -> bool:
+                    return False
+
+            return NonStreamingStub()
+        return plugin
 
     def test_run_plugin_task_nonstreaming_plugin_binds_on_retry(self):
         """A successful ``_run_plugin_task`` call with a

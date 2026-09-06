@@ -3,9 +3,9 @@
 | Property | Value |
 |---|---|
 | ID | `data-transformation` |
-| Version | `1.0.2` |
+| Version | `1.1.0` |
 | Max Score | 22 |
-| Streaming | No |
+| Streaming | Yes |
 
 This challenge evaluates deterministic multi-record processing rather than
 mere JSON generation. The model receives an order feed containing historical
