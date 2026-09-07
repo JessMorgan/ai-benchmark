@@ -62,3 +62,25 @@ def test_wrong_behavior_loses_behavioral_points():
 
 def test_missing_fences_loses_contract_points():
     assert MultiStepPlugin().score("def greet_user(name):\n    return name") < 10.0
+
+
+def unfenced_response():
+    """Correct code plus the mandated summary line, but no Python fences.
+
+    The trailing summary line is not Python; before the fix it corrupted the
+    raw-ast.parse fallback and collapsed this correct response to ~1 point.
+    """
+    return (
+        "def greet_user(name: str) -> str:\n"
+        '    return f"Hello, {name}! Welcome."\n'
+        "def validate_name(name: str) -> bool:\n"
+        "    return bool(name.strip()) and name.replace(' ', '').isalpha() and len(name) <= 50\n"
+        "def format_greeting(greeting: str, times: int) -> str:\n"
+        "    return '' if times < 1 else '\\n'.join([greeting] * times)\n"
+        "[SUMMARY: 3 functions, 3 code blocks, completed all steps]."
+    )
+
+
+def test_unfenced_correct_response_not_zeroed():
+    score = MultiStepPlugin().score(unfenced_response())
+    assert score >= 15.0

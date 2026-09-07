@@ -12,6 +12,13 @@ from plugins.challenges._execution import extract_python_source, run_python_chec
 from plugins.challenges._rubric import Rubric
 from plugins.challenges._validators import parse_python, stub_definitions
 
+# The prompt mandates this exact trailing summary line. It is not Python, so
+# for unfenced responses it would corrupt the raw-ast.parse fallback and the
+# execution source; it is stripped before any raw-text parsing or execution.
+_SUMMARY_LINE_RE = re.compile(
+    r"\[SUMMARY:\s*3\s+functions,\s*3\s+code\s+blocks,\s*completed all steps\]\.\s*"
+)
+
 
 class MultiStepPlugin(BenchmarkTaskPlugin):
     @property
@@ -73,13 +80,29 @@ class MultiStepPlugin(BenchmarkTaskPlugin):
                 return False
         return isinstance(node.returns, ast.Name) and node.returns.id == returns
 
+    @staticmethod
+    def _strip_trailing_summary(text: str) -> str:
+        """Drop the prompt-mandated trailing summary line when it is the last line.
+
+        The summary line is not Python. For an unfenced response it would make
+        the raw-ast.parse fallback (and the execution source) fail to compile,
+        zeroing nearly every criterion; stripping it lets the fallback retry
+        parse the actual code. It is a no-op for fenced responses, where only
+        the fenced blocks are parsed.
+        """
+        lines = text.splitlines()
+        if lines and _SUMMARY_LINE_RE.fullmatch(lines[-1]):
+            return "\n".join(lines[:-1]).rstrip()
+        return text
+
     def evaluate(self, response_text: str) -> EvaluationResult:
         if not response_text or not response_text.strip():
             return EvaluationResult(0.0, [])
         text = response_text.strip()
         rubric = Rubric(self.max_score)
         blocks = fenced_blocks(text, "python")
-        validation = parse_python(text)
+        parse_text = self._strip_trailing_summary(text)
+        validation = parse_python(parse_text)
         rubric.record_validation(validation)
         tree = validation.value if validation.valid else None
         definitions = self._definitions(tree) if tree is not None else set()
@@ -118,9 +141,8 @@ class MultiStepPlugin(BenchmarkTaskPlugin):
             evidence=signature_evidence,
         )
 
-        summary = re.fullmatch(
-            r"\[SUMMARY:\s*3\s+functions,\s*3\s+code\s+blocks,\s*completed all steps\]\.\s*",
-            text.splitlines()[-1] if text.splitlines() else "",
+        summary = (
+            _SUMMARY_LINE_RE.fullmatch(text.splitlines()[-1]) if text.splitlines() else None
         )
         block_contract = False
         if len(blocks) == 3 and summary:
@@ -171,7 +193,7 @@ class MultiStepPlugin(BenchmarkTaskPlugin):
             negative_findings=[{"finding": value} for value in forbidden],
         )
 
-        source = extract_python_source(text)
+        source = extract_python_source(parse_text)
         execution = None
         if source:
             # Type-identity asserts pin the return types, so a response that
