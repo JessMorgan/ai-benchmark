@@ -118,6 +118,38 @@ class FixedWindow(RateLimiterBase): pass
         assert not any("placeholder" in finding["finding"] for finding in item["negative_findings"])
 
 
+def test_rate_limiter_bool_cleanup_return_is_not_full_behavioral_credit():
+    response = """```python
+import math
+import threading
+class _Base:
+    def __init__(self, limit: int, window_seconds: float):
+        if limit <= 0 or not math.isfinite(window_seconds) or window_seconds <= 0: raise ValueError("invalid")
+        self.limit, self.window_seconds, self.counts, self.lock = limit, window_seconds, {}, threading.RLock()
+    def allow_request(self, client_id: str, now: float) -> bool:
+        with self.lock:
+            window, count = self.counts.get(client_id, (now, 0))
+            if now - window >= self.window_seconds: window, count = now, 0
+            if count >= self.limit: self.counts[client_id] = (window, count); return False
+            self.counts[client_id] = (window, count + 1); return True
+    def get_usage_stats(self, client_id: str) -> dict:
+        with self.lock: return {"count": self.counts.get(client_id, (0, 0))[1], "limit": self.limit}
+    def cleanup(self, now: float) -> int:
+        with self.lock:
+            old = [key for key, (start, _) in self.counts.items() if now - start >= self.window_seconds]
+            for key in old: del self.counts[key]
+            return True
+class TokenBucket(_Base): pass
+class SlidingWindowLog(_Base): pass
+class FixedWindow(_Base): pass
+```"""
+    result = RateLimiterPlugin().evaluate(response)
+    item = next(item for item in result.rubric if item["name"] == "Behavioral strategy tests")
+    # bool is a subclass of int, so a cleanup returning a bool must not pass
+    # the return-type check; the behavioral criterion must score 0.
+    assert item["earned"] == 0.0
+
+
 def test_error_recovery_missing_injection_is_not_full_credit():
     response = """```python
 class AllProvidersFailedError(Exception):

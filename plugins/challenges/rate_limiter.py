@@ -187,7 +187,10 @@ for _cls in _classes:
     assert _fresh.allow_request("a", 0.0) is False
     assert _fresh.allow_request("a", 11.0) is True
     assert isinstance(_instance.get_usage_stats("a"), dict)
-    assert isinstance(_instance.cleanup(100.0), int)
+    _removed = _instance.cleanup(100.0)
+    # bool is a subclass of int, so isinstance(True, int) is True; a cleanup
+    # that returns a bool (e.g. an always-False no-op) must not pass the type check.
+    assert isinstance(_removed, int) and not isinstance(_removed, bool)
     # 0 and negatives fail a naive `<= 0` check; nan and inf only fail with a
     # non-finite guard (nan comparisons are always False).
     for _bad_window in (0.0, -1.0, float("nan"), float("inf")):
