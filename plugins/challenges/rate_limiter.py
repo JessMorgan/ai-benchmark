@@ -152,6 +152,15 @@ for _cls in _classes:
     assert _instance.allow_request("a", 0.0) is True
     assert _instance.allow_request("a", 0.0) is False
     assert _instance.allow_request("b", 0.0) is True
+    # Fresh-instance expiry anchor: the simulated clock must advance. With a
+    # limit of 1, two calls at t=0 deny the second, and the window must expire
+    # so a call at t=11.0 (window_seconds=10.0) is allowed again. A deny-forever
+    # implementation (never expires) and a wall-clock implementation (ignores
+    # `now`) both fail this anchor.
+    _fresh = _cls(limit=1, window_seconds=10.0)
+    assert _fresh.allow_request("a", 0.0) is True
+    assert _fresh.allow_request("a", 0.0) is False
+    assert _fresh.allow_request("a", 11.0) is True
     assert isinstance(_instance.get_usage_stats("a"), dict)
     assert isinstance(_instance.cleanup(100.0), int)
     # 0 and negatives fail a naive `<= 0` check; nan and inf only fail with a
