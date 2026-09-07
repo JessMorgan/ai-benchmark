@@ -192,6 +192,44 @@ class FixedWindow(_Base): pass
     assert result.score < 15.0
 
 
+def test_rate_limiter_behavior_rejects_wall_clock_implementations():
+    response = """```python
+import math
+import threading
+import time
+class _Base:
+    def __init__(self, limit, window_seconds):
+        if not isinstance(limit, int) or isinstance(limit, bool): raise TypeError("limit")
+        if not isinstance(window_seconds, (int, float)) or isinstance(window_seconds, bool): raise TypeError("window")
+        if limit <= 0: raise ValueError("limit")
+        if not math.isfinite(window_seconds) or window_seconds <= 0: raise ValueError("window")
+        self.limit, self.window_seconds, self.counts, self.lock = limit, window_seconds, {}, threading.Lock()
+    def allow_request(self, client_id, now):
+        with self.lock:
+            now = time.time()
+            window, count = self.counts.get(client_id, (now, 0))
+            if now - window >= self.window_seconds: window, count = now, 0
+            if count >= self.limit: return False
+            self.counts[client_id] = (window, count + 1)
+            return True
+    def get_usage_stats(self, client_id):
+        with self.lock: return {"count": self.counts.get(client_id, (0, 0))[1], "limit": self.limit}
+    def cleanup(self, now):
+        with self.lock:
+            now = time.time()
+            old = [key for key, (start, _) in self.counts.items() if now - start >= self.window_seconds]
+            for key in old: del self.counts[key]
+            return len(old)
+class TokenBucket(_Base): pass
+class SlidingWindowLog(_Base): pass
+class FixedWindow(_Base): pass
+```"""
+    result = RateLimiterPlugin().evaluate(response)
+    behavior = next(item for item in result.rubric if item["name"] == "Behavioral strategy tests")
+    assert behavior["earned"] == 0.0
+    assert result.score < 15.0
+
+
 def test_architecture_keywords_without_required_sections_score_low():
     response = "microservices API gateway PostgreSQL Redis OAuth2 Kubernetes 1M DAU circuit breaker 99.9%."
     assert SoftwareArchitecturePlugin().score(response) < 8.0
