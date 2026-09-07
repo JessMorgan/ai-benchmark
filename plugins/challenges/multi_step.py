@@ -7,7 +7,7 @@ from typing import Any
 
 from benchmark.plugin import BenchmarkTaskPlugin, EvaluationResult
 from benchmark.types import ConfigMap
-from plugins.challenges._analysis import fenced_blocks, text_without_fences
+from plugins.challenges._analysis import fenced_blocks
 from plugins.challenges._execution import extract_python_source, run_python_check
 from plugins.challenges._rubric import Rubric
 from plugins.challenges._validators import parse_python, stub_definitions
@@ -18,6 +18,11 @@ from plugins.challenges._validators import parse_python, stub_definitions
 _SUMMARY_LINE_RE = re.compile(
     r"\[SUMMARY:\s*3\s+functions,\s*3\s+code\s+blocks,\s*completed all steps\]\.\s*"
 )
+
+# Matches only Python fenced blocks (label aliases: python3/python/py3/py).
+# Used to remove just the Python blocks when scanning for forbidden prose, so
+# prose hidden in other fences (e.g. ```text) is still visible to the scan.
+_PY_FENCE_RE = re.compile(r"```(?:python3|python|py3|py)[^\n]*\n[\s\S]*?```", re.IGNORECASE)
 
 
 class MultiStepPlugin(BenchmarkTaskPlugin):
@@ -103,6 +108,15 @@ class MultiStepPlugin(BenchmarkTaskPlugin):
             return "\n".join(lines[:-1]).rstrip()
         return text
 
+    @staticmethod
+    def _text_minus_python_blocks(text: str) -> str:
+        """Remove only the Python fenced blocks, keeping other fences and prose.
+
+        The forbidden-prose scan must see prose hidden in non-Python fences
+        (e.g. a ```text block); stripping every fence would hide that prose.
+        """
+        return _PY_FENCE_RE.sub("", text)
+
     def evaluate(self, response_text: str) -> EvaluationResult:
         if not response_text or not response_text.strip():
             return EvaluationResult(0.0, [])
@@ -172,9 +186,11 @@ class MultiStepPlugin(BenchmarkTaskPlugin):
             block_contract = block_contract and block_names == [
                 "greet_user", "validate_name", "format_greeting"
             ]
+        # Strip only the Python blocks (not all fences) so the "followed only by
+        # the exact summary" check still sees prose hidden in a non-Python fence.
         rubric.add_criterion(
             "Exact response contract", 2.0,
-            3.0 if block_contract and text_without_fences(text).strip() == text.splitlines()[-1].strip() else 0.0,
+            3.0 if block_contract and self._text_minus_python_blocks(text).strip() == text.splitlines()[-1].strip() else 0.0,
             negative_findings=(
                 [{"finding": "each required function must occupy its own Python block, followed only by the exact summary"}]
                 if not block_contract else []
@@ -189,10 +205,14 @@ class MultiStepPlugin(BenchmarkTaskPlugin):
         )
 
         forbidden = []
-        outside = text_without_fences(text)
-        if re.search(r"(?m)^\s*if\s+__name__\s*==", outside):
+        # A __main__ guard is a main block wherever it appears, including
+        # inside a Python fence, so scan the whole text for it.
+        if re.search(r"(?m)^\s*if\s+__name__\s*==", text):
             forbidden.append("main block")
-        if re.search(r"(?m)^\s*(?:Here|Explanation|The following|This code)\b", outside, re.IGNORECASE):
+        # Prose is only forbidden outside the Python blocks; prose hidden in a
+        # non-Python fence (e.g. ```text) must still be visible to the scan.
+        non_python = self._text_minus_python_blocks(text)
+        if re.search(r"(?m)^\s*(?:Here|Explanation|The following|This code)\b", non_python, re.IGNORECASE):
             forbidden.append("explanatory prose")
         rubric.add_criterion(
             "No forbidden prose or main block", 1.0,

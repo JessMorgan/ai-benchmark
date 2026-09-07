@@ -107,3 +107,37 @@ class _Impl:
 def test_nested_functions_no_module_api_score_low():
     score = MultiStepPlugin().score(nested_response())
     assert score < 5.0
+
+
+def text_fence_prose_response():
+    """Three correct Python blocks plus a ```text fence holding prose.
+
+    Before the fix the prose scan removed all fences, so the prose in the
+    text fence was invisible and the response scored 20/20.
+    """
+    return full_response().replace(
+        "[SUMMARY:",
+        "```text\nHere is the explanation of the code above.\n```\n[SUMMARY:",
+    )
+
+
+def test_prose_in_text_fence_is_penalized():
+    score = MultiStepPlugin().score(text_fence_prose_response())
+    assert score < 20.0
+
+
+def main_guard_response():
+    """A __main__ guard inside the first Python block.
+
+    Before the fix the __main__ scan only looked outside fences, so an
+    in-block guard was invisible and the response scored 20/20.
+    """
+    return full_response().replace(
+        '    return f"Hello, {name}! Welcome."\n```',
+        '    return f"Hello, {name}! Welcome."\nif __name__ == "__main__":\n    print(greet_user("Ada"))\n```',
+    )
+
+
+def test_main_guard_inside_block_is_penalized():
+    score = MultiStepPlugin().score(main_guard_response())
+    assert score < 20.0
