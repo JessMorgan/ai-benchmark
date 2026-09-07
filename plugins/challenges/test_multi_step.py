@@ -141,3 +141,23 @@ def main_guard_response():
 def test_main_guard_inside_block_is_penalized():
     score = MultiStepPlugin().score(main_guard_response())
     assert score < 20.0
+
+
+def codeless_response():
+    """A response with no Python blocks and no forbidden content.
+
+    Before the fix the 'no forbidden prose' discipline point was credited
+    for free (the response has no forbidden content), so a codeless
+    response earned 1.0 for it. After the fix the discipline point is
+    gated on >=1 Python block defining a required function, so a
+    codeless response earns 0.0.
+    """
+    return "[SUMMARY: 3 functions, 3 code blocks, completed all steps]."
+
+
+def test_codeless_response_no_discipline_point():
+    result = MultiStepPlugin().evaluate(codeless_response())
+    discipline = next(
+        c for c in result.rubric if c["name"] == "No forbidden prose or main block"
+    )
+    assert discipline["earned"] == 0.0

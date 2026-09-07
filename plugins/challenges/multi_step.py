@@ -79,6 +79,19 @@ class MultiStepPlugin(BenchmarkTaskPlugin):
         ]
 
     @staticmethod
+    def _any_block_defines_required(blocks: list[str], expected: set[str]) -> bool:
+        """Return whether any Python block defines a required function at module level."""
+        for block in blocks:
+            try:
+                block_tree = ast.parse(block)
+            except SyntaxError:
+                continue
+            for node in block_tree.body:
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name in expected:
+                    return True
+        return False
+
+    @staticmethod
     def _signature_matches(node: Any, args: tuple[tuple[str, str], ...], returns: str) -> bool:
         """Check a FunctionDef's positional argument names/types and return type.
 
@@ -214,10 +227,16 @@ class MultiStepPlugin(BenchmarkTaskPlugin):
         non_python = self._text_minus_python_blocks(text)
         if re.search(r"(?m)^\s*(?:Here|Explanation|The following|This code)\b", non_python, re.IGNORECASE):
             forbidden.append("explanatory prose")
+        # The discipline point is only credited when the response actually
+        # contains code: a codeless response must not earn it for free.
+        has_required_code = self._any_block_defines_required(blocks, expected)
+        negative_findings = [{"finding": value} for value in forbidden]
+        if not has_required_code:
+            negative_findings.append({"finding": "no Python block defines a required function"})
         rubric.add_criterion(
             "No forbidden prose or main block", 1.0,
-            2.0 if not forbidden else 0.0,
-            negative_findings=[{"finding": value} for value in forbidden],
+            2.0 if not forbidden and has_required_code else 0.0,
+            negative_findings=negative_findings,
         )
 
         source = extract_python_source(parse_text)
