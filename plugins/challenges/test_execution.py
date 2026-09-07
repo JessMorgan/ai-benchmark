@@ -156,3 +156,127 @@ def test_clean_local_run_reports_harness_ok():
         result = run_python_check("x = 1", "assert x == 1")
     assert result.harness_ok is True
     assert HARNESS_SENTINEL in result.output
+
+
+def test_ep1_harness_ok_gates_execution_criteria():
+    """EP-1: execution criteria are credited only when harness_ok (passed AND
+    completion sentinel), not merely when status == "passed".
+
+    A passed result without the sentinel (a sys.exit(0) early exit) must score 0
+    on both execution criteria; a passed result with the sentinel scores full.
+    """
+    target = plugin("event-processor")
+    module = __import__(target.__class__.__module__, fromlist=["run_python_check"])
+    response = "```python\nclass EventProcessor:\n    pass\n```"
+
+    with mock.patch.object(module, "run_python_check",
+                           return_value=ExecutionResult("passed", passed=True, output="")):
+        result = target.evaluate(response)
+    validation = next(i for i in result.rubric if i["name"] == "Validation semantics")
+    behavioral = next(i for i in result.rubric if i["name"] == "Behavioral event tests")
+    assert validation["earned"] == 0.0
+    assert behavioral["earned"] == 0.0
+    assert validation["negative_findings"]
+
+    with mock.patch.object(module, "run_python_check",
+                           return_value=ExecutionResult("passed", passed=True, output=HARNESS_SENTINEL)):
+        result = target.evaluate(response)
+    validation = next(i for i in result.rubric if i["name"] == "Validation semantics")
+    behavioral = next(i for i in result.rubric if i["name"] == "Behavioral event tests")
+    assert validation["earned"] == 4.0
+    assert behavioral["earned"] == 8.0
+
+
+def test_ep1_exit_zero_response_scores_zero_on_execution_criteria():
+    """EP-1: a zero-implementation response that exits 0 before the harness runs
+    (sys.exit(0) in the constructor) must score 0 on both execution criteria,
+    not the 20/20 the un-gated status == "passed" check allowed.
+    """
+    response = '''```python
+import sys
+
+class EventProcessor:
+    """Concurrent event processor."""
+    def __init__(self, handler, max_workers=4, max_retries=2):
+        sys.exit(0)
+    def process(self, events):
+        return {"processed": [], "duplicates": [], "failed": []}
+```'''
+    target = plugin("event-processor")
+    with mock.patch("plugins.challenges._execution.shutil.which", return_value=None):
+        result = target.evaluate(response)
+    validation = next(i for i in result.rubric if i["name"] == "Validation semantics")
+    behavioral = next(i for i in result.rubric if i["name"] == "Behavioral event tests")
+    assert validation["earned"] == 0.0
+    assert behavioral["earned"] == 0.0
+
+
+def test_ep2_valueerror_everything_scores_zero_on_validation():
+    """EP-2: a response that raises ValueError for wrong-type checks must not be
+    credited. The prompt promises TypeError specifically for wrong types, so a
+    ValueError-everything implementation (measured 4.0/4.0 before the fix) must
+    now score 0 on the validation criterion.
+    """
+    response = '''```python
+class EventProcessor:
+    """Concurrent event processor."""
+    def __init__(self, handler, max_workers=4, max_retries=2):
+        if not callable(handler):
+            raise ValueError("handler must be callable")
+        if not isinstance(max_workers, int):
+            raise ValueError("max_workers must be an int")
+        if max_workers < 1:
+            raise ValueError("max_workers must be >= 1")
+        if max_retries < 0:
+            raise ValueError("max_retries must be >= 0")
+        self._handler = handler
+    def process(self, events):
+        for event in events:
+            if not isinstance(event, dict):
+                raise ValueError("event must be a dict")
+            eid = event.get("id")
+            if not isinstance(eid, str) or not eid:
+                raise ValueError("id must be a non-empty string")
+        return {"processed": [], "duplicates": [], "failed": []}
+```'''
+    target = plugin("event-processor")
+    with mock.patch("plugins.challenges._execution.shutil.which", return_value=None):
+        result = target.evaluate(response)
+    validation = next(i for i in result.rubric if i["name"] == "Validation semantics")
+    assert validation["earned"] == 0.0
+
+
+def test_ep2_correct_exception_split_scores_full_validation():
+    """EP-2 positive control: a response that raises TypeError for wrong types
+    and ValueError for out-of-range / malformed input must still earn the full
+    validation criterion (the per-check split must not over-tighten).
+    """
+    response = '''```python
+class EventProcessor:
+    """Concurrent event processor."""
+    def __init__(self, handler, max_workers=4, max_retries=2):
+        if not isinstance(max_workers, int):
+            raise TypeError("max_workers must be an int")
+        if max_workers < 1:
+            raise ValueError("max_workers must be >= 1")
+        if not isinstance(max_retries, int):
+            raise TypeError("max_retries must be an int")
+        if max_retries < 0:
+            raise ValueError("max_retries must be >= 0")
+        if not callable(handler):
+            raise TypeError("handler must be callable")
+        self._handler = handler
+    def process(self, events):
+        for event in events:
+            if not isinstance(event, dict):
+                raise TypeError("event must be a dict")
+            eid = event.get("id")
+            if not isinstance(eid, str) or not eid:
+                raise ValueError("id must be a non-empty string")
+        return {"processed": [], "duplicates": [], "failed": []}
+```'''
+    target = plugin("event-processor")
+    with mock.patch("plugins.challenges._execution.shutil.which", return_value=None):
+        result = target.evaluate(response)
+    validation = next(i for i in result.rubric if i["name"] == "Validation semantics")
+    assert validation["earned"] == 4.0
