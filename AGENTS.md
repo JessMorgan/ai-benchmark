@@ -162,7 +162,7 @@ The runtime inventory below matches `uv run ai-benchmark --list-plugins`:
 | `instruction-following` | 1.0.0 | 20 | Yes |
 | `long-context` | 0.1.0 | 20 | Yes |
 | `moe-dense` | 1.0.1 | 17 | Yes |
-| `multi-step` | 1.3.0 | 20 | Yes |
+| `multi-step` | 1.4.0 | 20 | Yes |
 | `multi-turn-conversation` | 1.0.0 | 20 | Yes |
 | `orchestration` | 1.0.0 | 16 | Yes |
 | `prd-creation` | 1.0.0 | 22 | Yes |
