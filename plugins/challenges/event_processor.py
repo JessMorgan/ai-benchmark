@@ -124,10 +124,12 @@ _must_raise("non-callable handler", lambda: EventProcessor(None, max_workers=4, 
 assert not _reject, "; ".join(_reject)
 '''
             validation_exec = run_python_check(source, validation_harness)
+            # Gate on harness_ok (passed AND sentinel), not status == "passed": a
+            # response that exits 0 before the harness runs must not pass.
             rubric.add_criterion("Validation semantics", 4.0,
-                4.0 if validation_exec.status == "passed" else 0.0,
+                4.0 if validation_exec.harness_ok else 0.0,
                 evidence=[validation_exec.as_evidence()],
-                negative_findings=[] if validation_exec.status == "passed" else [{"finding": validation_exec.error or validation_exec.status}],
+                negative_findings=[] if validation_exec.harness_ok else [{"finding": validation_exec.error or "harness did not complete (missing completion sentinel)"}],
             )
 
             behavioral_harness = r'''
@@ -165,9 +167,9 @@ assert _calls.count("a") == 1
 '''
             behavioral_exec = run_python_check(source, behavioral_harness)
             rubric.add_criterion("Behavioral event tests", 8.0,
-                8.0 if behavioral_exec.status == "passed" else 0.0,
+                8.0 if behavioral_exec.harness_ok else 0.0,
                 evidence=[behavioral_exec.as_evidence()],
-                negative_findings=[] if behavioral_exec.status == "passed" else [{"finding": behavioral_exec.error or behavioral_exec.status}],
+                negative_findings=[] if behavioral_exec.harness_ok else [{"finding": behavioral_exec.error or "harness did not complete (missing completion sentinel)"}],
             )
         else:
             rubric.add_criterion("Validation semantics", 4.0, 0.0, negative_findings=[{"finding": "no executable source"}])

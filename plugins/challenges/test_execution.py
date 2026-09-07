@@ -156,3 +156,56 @@ def test_clean_local_run_reports_harness_ok():
         result = run_python_check("x = 1", "assert x == 1")
     assert result.harness_ok is True
     assert HARNESS_SENTINEL in result.output
+
+
+def test_ep1_harness_ok_gates_execution_criteria():
+    """EP-1: execution criteria are credited only when harness_ok (passed AND
+    completion sentinel), not merely when status == "passed".
+
+    A passed result without the sentinel (a sys.exit(0) early exit) must score 0
+    on both execution criteria; a passed result with the sentinel scores full.
+    """
+    target = plugin("event-processor")
+    module = __import__(target.__class__.__module__, fromlist=["run_python_check"])
+    response = "```python\nclass EventProcessor:\n    pass\n```"
+
+    with mock.patch.object(module, "run_python_check",
+                           return_value=ExecutionResult("passed", passed=True, output="")):
+        result = target.evaluate(response)
+    validation = next(i for i in result.rubric if i["name"] == "Validation semantics")
+    behavioral = next(i for i in result.rubric if i["name"] == "Behavioral event tests")
+    assert validation["earned"] == 0.0
+    assert behavioral["earned"] == 0.0
+    assert validation["negative_findings"]
+
+    with mock.patch.object(module, "run_python_check",
+                           return_value=ExecutionResult("passed", passed=True, output=HARNESS_SENTINEL)):
+        result = target.evaluate(response)
+    validation = next(i for i in result.rubric if i["name"] == "Validation semantics")
+    behavioral = next(i for i in result.rubric if i["name"] == "Behavioral event tests")
+    assert validation["earned"] == 4.0
+    assert behavioral["earned"] == 8.0
+
+
+def test_ep1_exit_zero_response_scores_zero_on_execution_criteria():
+    """EP-1: a zero-implementation response that exits 0 before the harness runs
+    (sys.exit(0) in the constructor) must score 0 on both execution criteria,
+    not the 20/20 the un-gated status == "passed" check allowed.
+    """
+    response = '''```python
+import sys
+
+class EventProcessor:
+    """Concurrent event processor."""
+    def __init__(self, handler, max_workers=4, max_retries=2):
+        sys.exit(0)
+    def process(self, events):
+        return {"processed": [], "duplicates": [], "failed": []}
+```'''
+    target = plugin("event-processor")
+    with mock.patch("plugins.challenges._execution.shutil.which", return_value=None):
+        result = target.evaluate(response)
+    validation = next(i for i in result.rubric if i["name"] == "Validation semantics")
+    behavioral = next(i for i in result.rubric if i["name"] == "Behavioral event tests")
+    assert validation["earned"] == 0.0
+    assert behavioral["earned"] == 0.0
