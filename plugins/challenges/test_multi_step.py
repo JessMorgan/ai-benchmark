@@ -161,3 +161,26 @@ def test_codeless_response_no_discipline_point():
         c for c in result.rubric if c["name"] == "No forbidden prose or main block"
     )
     assert discipline["earned"] == 0.0
+
+
+def early_exit_response():
+    """A response whose Python block calls sys.exit(0) before the harness.
+
+    Before the fix the execution-based criteria were credited when
+    status == 'passed' (exit code 0), so an early exit masqueraded as a
+    clean pass. After the fix the criteria are credited only when
+    harness_ok is True (the completion sentinel was printed), so an early
+    exit scores 0 for the execution-based criteria.
+    """
+    return full_response().replace(
+        '    return f"Hello, {name}! Welcome."',
+        '    import sys\n    sys.exit(0)\n    return f"Hello, {name}! Welcome."',
+    )
+
+
+def test_early_exit_no_execution_credit():
+    result = MultiStepPlugin().evaluate(early_exit_response())
+    behavioral = next(
+        c for c in result.rubric if c["name"] == "Behavioral API tests"
+    )
+    assert behavioral["earned"] == 0.0

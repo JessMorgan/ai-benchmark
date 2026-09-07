@@ -272,13 +272,22 @@ assert format_greeting("Hi", -1) == ""
                 penalty=1.0,
                 failure_reason="required function behavior failed its isolated API tests",
             )
-            if execution.status == "passed":
+            # Credit only when the harness actually ran to completion (the
+            # sentinel was printed); an early exit (sys.exit / SystemExit)
+            # exits 0 before the harness and must not credit it.
+            if execution.harness_ok:
                 rubric.credit_criterion("Non-stub implementation", 1.0, "all API tests passed")
         else:
             rubric.add_criterion("Behavioral API tests", 11.0, 0.0, negative_findings=[{"finding": "no executable Python source"}])
-        if execution is not None and execution.status != "passed":
-            # Keep partial lexical credit, but make the behavioral failure visible.
-            rubric.add_criterion("Behavioral API tests", 11.0, 0.0, negative_findings=[{"finding": execution.error or execution.status}])
+        if execution is not None and not execution.harness_ok:
+            # The harness did not run to completion: it failed/timed out, or the
+            # response exited early (sys.exit / SystemExit) before the sentinel.
+            finding = (
+                "harness did not run to completion (early exit before the completion sentinel)"
+                if execution.status == "passed"
+                else execution.error or execution.status
+            )
+            rubric.add_criterion("Behavioral API tests", 11.0, 0.0, negative_findings=[{"finding": finding}])
         elif execution is not None:
             rubric.add_criterion("Behavioral API tests", 11.0, 11.0, evidence=[{"kind": "execution", "status": execution.status}])
 
