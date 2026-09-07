@@ -7,6 +7,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
+from plugins.challenges._analysis import fence_label_matches, normalize_heading
+
 try:
     import yaml
 except ImportError:  # pragma: no cover
@@ -35,7 +37,7 @@ def extract_fenced_blocks(text: str, language: str | None = None) -> list[str]:
     blocks = []
     for match in re.finditer(r"```([^\n`]*)\n(.*?)```", text, re.DOTALL):
         label = match.group(1).strip().lower()
-        if wanted and label and label != wanted:
+        if wanted and label and not fence_label_matches(label, wanted):
             continue
         blocks.append(match.group(2))
     return blocks
@@ -63,13 +65,34 @@ def parse_python(text: str, *, require_block: bool = False) -> Validation:
     )
 
 
+def _declares_exception_base(node: ast.ClassDef) -> bool:
+    """Return whether a class declares an exception base (Exception/*Error/*Exception)."""
+    return any(
+        isinstance(base, ast.Name) and (
+            base.id in {"Exception", "BaseException"}
+            or base.id.endswith("Error")
+            or base.id.endswith("Exception")
+        )
+        for base in node.bases
+    )
+
+
 def stub_definitions(tree: ast.AST, names: set[str]) -> list[str]:
-    """Return required definitions whose bodies contain only stubs."""
+    """Return required definitions whose bodies contain only stubs.
+
+    A body counts as a stub when it has no real statements (docstring-only or
+    empty) or when every remaining statement is a ``pass``/``...`` placeholder.
+    Exception classes (declaring an ``Exception``/``BaseException`` or
+    ``*Error``/``*Exception`` base) are exempt: a minimal body is idiomatic for
+    an exception, so they are never flagged.
+    """
     found = []
     for node in ast.walk(tree):
         if not isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
         if node.name not in names:
+            continue
+        if isinstance(node, ast.ClassDef) and _declares_exception_base(node):
             continue
         meaningful = [
             item for item in node.body
@@ -79,7 +102,7 @@ def stub_definitions(tree: ast.AST, names: set[str]) -> list[str]:
                 and isinstance(item.value.value, str)
             )
         ]
-        if meaningful and all(
+        if not meaningful or all(
             isinstance(item, ast.Pass)
             or (isinstance(item, ast.Expr) and isinstance(item.value, ast.Constant) and item.value.value is Ellipsis)
             for item in meaningful
@@ -156,7 +179,7 @@ def parse_structured(text: str, *, fmt: str | None = None) -> Validation:
         return Validation(
             False,
             evidence=[{"kind": "structured-candidate-count", "count": len(candidates)}],
-            errors=["multiple structured candidates found; exactly one is required"],
+            errors=[f"exactly one structured candidate is required (found {len(candidates)}); multiple fenced candidates are rejected"],
         )
     source = candidates[0] if candidates else text.strip()
     if not source:
@@ -182,12 +205,21 @@ def parse_structured(text: str, *, fmt: str | None = None) -> Validation:
 
 
 def heading_occurrences(text: str) -> list[tuple[str, str]]:
-    """Return every normalized Markdown heading and its body."""
-    matches = list(re.finditer(r"(?m)^\s{0,3}#{1,6}\s+(.+?)\s*$", text))
+    """Return every normalized Markdown heading and its body.
+
+    A heading's body extends to the next heading of the same or shallower
+    depth; deeper subheadings stay inside the enclosing heading's body.
+    """
+    matches = list(re.finditer(r"(?m)^\s{0,3}(#{1,6})\s+(.+?)\s*$", text))
     occurrences = []
     for index, match in enumerate(matches):
-        heading = re.sub(r"[*_`]+", "", match.group(1)).strip().lower()
-        end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
+        heading = normalize_heading(match.group(2))
+        depth = len(match.group(1))
+        end = len(text)
+        for following in matches[index + 1:]:
+            if len(following.group(1)) <= depth:
+                end = following.start()
+                break
         occurrences.append((heading, text[match.end():end].strip()))
     return occurrences
 

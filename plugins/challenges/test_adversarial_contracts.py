@@ -173,7 +173,7 @@ def test_data_transformation_rejects_multiple_candidates():
         "```json\n" + json.dumps(payload) + "\n```\n```json\n" + json.dumps(payload) + "\n```"
     )
     assert result.score == 0.0
-    assert any("multiple structured candidates" in error for error in result.diagnostics["errors"])
+    assert any("exactly one structured candidate is required" in error for error in result.diagnostics["errors"])
 
 
 def test_tool_calling_rejects_unknown_extra_tool():
