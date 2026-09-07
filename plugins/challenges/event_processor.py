@@ -99,28 +99,26 @@ def _handler(event):
         _calls.append(event["id"])
 
 _reject = []
-def _must_raise(label, fn):
-    # Strict: wrong types must raise TypeError; ValueError is only accepted
-    # for out-of-range values, matching the prompt's promise.
+def _must_raise(label, fn, expected):
     try:
         fn()
-    except (TypeError, ValueError):
+    except expected:
         return
     except Exception as exc:
-        _reject.append(label + ": raised " + type(exc).__name__ + " instead of TypeError/ValueError")
+        _reject.append(label + ": raised " + type(exc).__name__ + " instead of " + "/".join(e.__name__ for e in expected))
         return
     _reject.append(label + ": accepted invalid input")
 
 _processor = EventProcessor(_handler, max_workers=4, max_retries=2)
-_must_raise("non-dict event", lambda: _processor.process(["not-a-dict"]))
-_must_raise("non-string id", lambda: _processor.process([{"id": 42}]))
-_must_raise("empty id", lambda: _processor.process([{"id": ""}]))
-_must_raise("missing id", lambda: _processor.process([{"value": 1}]))
-_must_raise("max_workers=0", lambda: EventProcessor(_handler, max_workers=0, max_retries=2))
-_must_raise("max_workers=-2", lambda: EventProcessor(_handler, max_workers=-2, max_retries=2))
-_must_raise("max_retries=-1", lambda: EventProcessor(_handler, max_workers=4, max_retries=-1))
-_must_raise("max_workers wrong type", lambda: EventProcessor(_handler, max_workers="4", max_retries=2))
-_must_raise("non-callable handler", lambda: EventProcessor(None, max_workers=4, max_retries=2))
+_must_raise("non-dict event", lambda: _processor.process(["not-a-dict"]), (TypeError, ValueError))
+_must_raise("non-string id", lambda: _processor.process([{"id": 42}]), (TypeError, ValueError))
+_must_raise("empty id", lambda: _processor.process([{"id": ""}]), (TypeError, ValueError))
+_must_raise("missing id", lambda: _processor.process([{"value": 1}]), (TypeError, ValueError))
+_must_raise("max_workers=0", lambda: EventProcessor(_handler, max_workers=0, max_retries=2), (ValueError,))
+_must_raise("max_workers=-2", lambda: EventProcessor(_handler, max_workers=-2, max_retries=2), (ValueError,))
+_must_raise("max_retries=-1", lambda: EventProcessor(_handler, max_workers=4, max_retries=-1), (ValueError,))
+_must_raise("max_workers wrong type", lambda: EventProcessor(_handler, max_workers="4", max_retries=2), (TypeError,))
+_must_raise("non-callable handler", lambda: EventProcessor(None, max_workers=4, max_retries=2), (TypeError,))
 assert not _reject, "; ".join(_reject)
 '''
             validation_exec = run_python_check(source, validation_harness)

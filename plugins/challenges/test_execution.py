@@ -209,3 +209,74 @@ class EventProcessor:
     behavioral = next(i for i in result.rubric if i["name"] == "Behavioral event tests")
     assert validation["earned"] == 0.0
     assert behavioral["earned"] == 0.0
+
+
+def test_ep2_valueerror_everything_scores_zero_on_validation():
+    """EP-2: a response that raises ValueError for wrong-type checks must not be
+    credited. The prompt promises TypeError specifically for wrong types, so a
+    ValueError-everything implementation (measured 4.0/4.0 before the fix) must
+    now score 0 on the validation criterion.
+    """
+    response = '''```python
+class EventProcessor:
+    """Concurrent event processor."""
+    def __init__(self, handler, max_workers=4, max_retries=2):
+        if not callable(handler):
+            raise ValueError("handler must be callable")
+        if not isinstance(max_workers, int):
+            raise ValueError("max_workers must be an int")
+        if max_workers < 1:
+            raise ValueError("max_workers must be >= 1")
+        if max_retries < 0:
+            raise ValueError("max_retries must be >= 0")
+        self._handler = handler
+    def process(self, events):
+        for event in events:
+            if not isinstance(event, dict):
+                raise ValueError("event must be a dict")
+            eid = event.get("id")
+            if not isinstance(eid, str) or not eid:
+                raise ValueError("id must be a non-empty string")
+        return {"processed": [], "duplicates": [], "failed": []}
+```'''
+    target = plugin("event-processor")
+    with mock.patch("plugins.challenges._execution.shutil.which", return_value=None):
+        result = target.evaluate(response)
+    validation = next(i for i in result.rubric if i["name"] == "Validation semantics")
+    assert validation["earned"] == 0.0
+
+
+def test_ep2_correct_exception_split_scores_full_validation():
+    """EP-2 positive control: a response that raises TypeError for wrong types
+    and ValueError for out-of-range / malformed input must still earn the full
+    validation criterion (the per-check split must not over-tighten).
+    """
+    response = '''```python
+class EventProcessor:
+    """Concurrent event processor."""
+    def __init__(self, handler, max_workers=4, max_retries=2):
+        if not isinstance(max_workers, int):
+            raise TypeError("max_workers must be an int")
+        if max_workers < 1:
+            raise ValueError("max_workers must be >= 1")
+        if not isinstance(max_retries, int):
+            raise TypeError("max_retries must be an int")
+        if max_retries < 0:
+            raise ValueError("max_retries must be >= 0")
+        if not callable(handler):
+            raise TypeError("handler must be callable")
+        self._handler = handler
+    def process(self, events):
+        for event in events:
+            if not isinstance(event, dict):
+                raise TypeError("event must be a dict")
+            eid = event.get("id")
+            if not isinstance(eid, str) or not eid:
+                raise ValueError("id must be a non-empty string")
+        return {"processed": [], "duplicates": [], "failed": []}
+```'''
+    target = plugin("event-processor")
+    with mock.patch("plugins.challenges._execution.shutil.which", return_value=None):
+        result = target.evaluate(response)
+    validation = next(i for i in result.rubric if i["name"] == "Validation semantics")
+    assert validation["earned"] == 4.0
