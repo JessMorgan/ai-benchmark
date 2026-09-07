@@ -166,7 +166,7 @@ The runtime inventory below matches `uv run ai-benchmark --list-plugins`:
 | `multi-turn-conversation` | 1.0.0 | 20 | Yes |
 | `orchestration` | 1.0.0 | 16 | Yes |
 | `prd-creation` | 1.0.0 | 22 | Yes |
-| `rate-limiter` | 1.4.0 | 20 | Yes |
+| `rate-limiter` | 1.5.0 | 20 | Yes |
 | `reasoning` | 1.1.0 | 20 | Yes |
 | `software-architecture` | 1.0.0 | 20 | Yes |
 | `data-transformation` | 1.1.0 | 22 | Yes |
