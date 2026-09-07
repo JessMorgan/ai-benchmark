@@ -92,18 +92,23 @@ class CodeReviewPlugin(BenchmarkTaskPlugin):
         findings: list[str],
         groups: tuple[tuple[str, ...], ...],
         denials: tuple[str, ...],
-    ) -> tuple[bool, str]:
+        used: set[int],
+    ) -> tuple[bool, str, int]:
         """Require one finding to assert the defect and its remediation.
 
         A finding matching any of the defect's denial patterns is a
-        negation, not an assertion, and does not count.
+        negation, not an assertion, and does not count. Findings already
+        consumed by another defect are skipped: one finding satisfies at
+        most one defect.
         """
-        for finding in findings:
+        for index, finding in enumerate(findings):
+            if index in used:
+                continue
             if any(re.search(term, finding, re.IGNORECASE) for term in denials):
                 continue
             if all(any(re.search(term, finding, re.IGNORECASE) for term in group) for group in groups):
-                return True, finding
-        return False, ""
+                return True, finding, index
+        return False, "", -1
 
     def evaluate(self, response_text: str) -> EvaluationResult:
         text = response_text.strip()
@@ -151,10 +156,14 @@ class CodeReviewPlugin(BenchmarkTaskPlugin):
                 (r"\bare used\b", r"both (are )?used", r"\bno unused\b", r"used elsewhere", r"imports? are used"),
             ),
         ]
+        used: set[int] = set()
         matched_findings: list[str] = []
         for name, maximum, groups, denials in checks:
-            matched, finding = self._finding_matches(findings, groups, _SHARED_DENIALS + denials)
+            matched, finding, index = self._finding_matches(
+                findings, groups, _SHARED_DENIALS + denials, used,
+            )
             if matched:
+                used.add(index)
                 matched_findings.append(finding)
             rubric.add_criterion(
                 name, maximum, maximum if matched else 0.0,
@@ -178,11 +187,14 @@ class CodeReviewPlugin(BenchmarkTaskPlugin):
             any(re.search(term, finding, re.IGNORECASE) for term in citation_terms)
             for finding in findings
         )
+        citations_ok = citations >= 3
         rubric.add_criterion(
             "Source citations", 1.0,
-            1.0 if citations >= min(3, len(findings)) else 0.0,
+            1.0 if citations_ok else 0.0,
             evidence=[{"kind": "source-citation-count", "count": citations}],
-            negative_findings=[] if citations >= min(3, len(findings)) else [{"finding": "cite the relevant variable, call, or literal"}],
+            negative_findings=[] if citations_ok else [
+                {"finding": "cite the relevant variable, call, or literal in at least three distinct findings"},
+            ],
         )
         return rubric.results()
 

@@ -54,6 +54,31 @@ def test_code_review_denying_every_defect_scores_low():
     assert result.score < 5.0
 
 
+def test_code_review_one_stuffed_line_cannot_score_full():
+    # Measured pre-fix: this single keyword-stuffed line scored 15/15 because
+    # every defect check reused the same finding and the citations floor
+    # degraded to 1. Now one finding satisfies at most one defect and the
+    # citations point needs >=3 distinct findings.
+    response = json.dumps({"issues": [{
+        "description": "open(db_path) is not closed so it leaks; user_id == None should use is None; "
+        "the /tmp/data.txt path should be a parameter; fetch_data may raise an exception so add "
+        "try/except; the os and time imports are unused, remove them",
+    }]})
+    result = CodeReviewPlugin().evaluate(response)
+    defect_names = {
+        "File handle not closed / resource leak",
+        "== None instead of is None",
+        "Hardcoded /tmp path",
+        "Missing error handling / fetch_data may fail",
+        "Unused imports",
+    }
+    defect_earned = [item for item in result.rubric if item["name"] in defect_names and item["earned"] > 0]
+    assert len(defect_earned) <= 1
+    citations = next(item for item in result.rubric if item["name"] == "Source citations")
+    assert citations["earned"] == 0.0
+    assert result.score < 8.0
+
+
 def test_debug_consistency_rejects_a_patch_for_a_reproducible_report():
     response = """## Reproduction
 The output is ['abc'].
