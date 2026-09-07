@@ -30,7 +30,11 @@ def normalize_heading(value: str) -> str:
 
 
 def markdown_sections(text: str) -> list[Section]:
-    """Return every Markdown section, excluding headings inside code fences."""
+    """Return every Markdown section, excluding headings inside code fences.
+
+    A section's body extends to the next heading of the same or shallower
+    depth; deeper subheadings stay inside the enclosing section's body.
+    """
     matches = []
     # A model cannot satisfy a document section by putting a fake heading in
     # an example block.
@@ -38,13 +42,18 @@ def markdown_sections(text: str) -> list[Section]:
         (match.start(), match.end())
         for match in re.finditer(r"(?ms)^\s{0,3}(?:```|~~~).*?^\s{0,3}(?:```|~~~)\s*$", text)
     ]
-    for match in re.finditer(r"(?m)^\s{0,3}#{1,6}\s+(.+?)\s*$", text):
+    for match in re.finditer(r"(?m)^\s{0,3}(#{1,6})\s+(.+?)\s*$", text):
         if not any(start <= match.start() < end for start, end in fence_ranges):
             matches.append(match)
     sections: list[Section] = []
     for index, match in enumerate(matches):
-        end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
-        heading = match.group(1).strip()
+        depth = len(match.group(1))
+        end = len(text)
+        for following in matches[index + 1:]:
+            if len(following.group(1)) <= depth:
+                end = following.start()
+                break
+        heading = match.group(2).strip()
         sections.append(Section(
             heading=heading,
             normalized=normalize_heading(heading),

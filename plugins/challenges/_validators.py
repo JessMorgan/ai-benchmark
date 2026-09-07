@@ -205,12 +205,21 @@ def parse_structured(text: str, *, fmt: str | None = None) -> Validation:
 
 
 def heading_occurrences(text: str) -> list[tuple[str, str]]:
-    """Return every normalized Markdown heading and its body."""
-    matches = list(re.finditer(r"(?m)^\s{0,3}#{1,6}\s+(.+?)\s*$", text))
+    """Return every normalized Markdown heading and its body.
+
+    A heading's body extends to the next heading of the same or shallower
+    depth; deeper subheadings stay inside the enclosing heading's body.
+    """
+    matches = list(re.finditer(r"(?m)^\s{0,3}(#{1,6})\s+(.+?)\s*$", text))
     occurrences = []
     for index, match in enumerate(matches):
-        heading = re.sub(r"[*_`]+", "", match.group(1)).strip().lower()
-        end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
+        heading = re.sub(r"[*_`]+", "", match.group(2)).strip().lower()
+        depth = len(match.group(1))
+        end = len(text)
+        for following in matches[index + 1:]:
+            if len(following.group(1)) <= depth:
+                end = following.start()
+                break
         occurrences.append((heading, text[match.end():end].strip()))
     return occurrences
 

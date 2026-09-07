@@ -1,6 +1,7 @@
 """Targeted regressions for structured scoring behavior."""
 import unittest
 
+from plugins.challenges._analysis import markdown_sections
 from plugins.challenges._validators import parse_workflow_graph, validate_sections
 from plugins.challenges.code_review import CodeReviewPlugin
 from plugins.challenges.multi_step import MultiStepPlugin
@@ -75,6 +76,23 @@ Weather in Tokyo, flight JFK to Tokyo, hotel for 2 guests, SONY stock, 150000 JP
         validation = validate_sections(response, ["Data Model", "Security"], aliases={"Data Model": ("Data Design",), "Security": ("Threat Model",)})
         self.assertTrue(validation.valid)
         self.assertGreater(SoftwareArchitecturePlugin().score(response), 0.0)
+
+    def test_subheading_does_not_truncate_parent_section(self):
+        text = (
+            "## Overview\n"
+            "Parent body text.\n"
+            "### Details\n"
+            "Subheading body that must stay inside the parent section.\n"
+            "## Next\n"
+            "Next section body.\n"
+        )
+        sections = markdown_sections(text)
+        overview = next(section for section in sections if section.normalized == "overview")
+        self.assertIn("### Details", overview.body)
+        self.assertIn("Subheading body", overview.body)
+        self.assertNotIn("Next section body", overview.body)
+        next_section = next(section for section in sections if section.normalized == "next")
+        self.assertEqual(next_section.body.strip(), "Next section body.")
 
 
 if __name__ == "__main__":
