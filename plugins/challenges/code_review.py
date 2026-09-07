@@ -7,7 +7,7 @@ import re
 from benchmark.plugin import BenchmarkTaskPlugin, EvaluationResult
 from benchmark.types import ConfigMap
 from plugins.challenges._rubric import Rubric
-from plugins.challenges._validators import parse_structured
+from plugins.challenges._validators import Validation, parse_structured
 
 # Keyword co-occurrence is polarity-blind: a finding that denies a defect
 # ("closed properly", "never raises") matches the same keywords as one that
@@ -60,15 +60,21 @@ class CodeReviewPlugin(BenchmarkTaskPlugin):
         return float(val) if isinstance(val, (int, float)) else None
 
     @staticmethod
-    def _descriptions(text: str) -> list[str]:
-        """Extract independent findings without requiring valid JSON syntax."""
+    def _descriptions(text: str) -> tuple[list[str], bool]:
+        """Extract independent findings without requiring valid JSON syntax.
+
+        Returns the findings plus a flag for the JSON dead-end: a JSON
+        object was recognized but yielded no recognized findings, in which
+        case bullet extraction is the fallback.
+        """
+        json_dead_end = False
         try:
             start, end = text.find("{"), text.rfind("}")
             if start >= 0 and end > start:
                 value = json.loads(text[start:end + 1])
                 issues = value.get("issues", []) if isinstance(value, dict) else []
                 if isinstance(issues, list):
-                    return [
+                    descriptions = [
                         str(
                             item.get("description")
                             or item.get("finding")
@@ -78,6 +84,10 @@ class CodeReviewPlugin(BenchmarkTaskPlugin):
                         for item in issues
                         if item
                     ]
+                    descriptions = [description for description in descriptions if description]
+                    if descriptions:
+                        return descriptions, False
+                    json_dead_end = True
         except (json.JSONDecodeError, AttributeError, TypeError):
             pass
         return [
@@ -85,7 +95,7 @@ class CodeReviewPlugin(BenchmarkTaskPlugin):
             for match in re.finditer(
                 r"(?m)^\s*(?:[-*]|\d+[.)])\s+(.+?)\s*$", text
             )
-        ]
+        ], json_dead_end
 
     @staticmethod
     def _finding_matches(
@@ -115,11 +125,28 @@ class CodeReviewPlugin(BenchmarkTaskPlugin):
         rubric = Rubric(self.max_score)
         if not text:
             return EvaluationResult(0.0, [])
-        findings = self._descriptions(text)
-        if not findings:
-            return EvaluationResult(0.0, [])
+        findings, json_dead_end = self._descriptions(text)
         validation = parse_structured(text, fmt="json")
         rubric.record_validation(validation)
+        if json_dead_end:
+            # A recognized JSON object with no findings is a format-contract
+            # violation; name it (or surface the shared multi-candidate
+            # rejection verbatim when that is the cause).
+            contract = next(
+                (
+                    error
+                    for error in validation.errors
+                    if "exactly one structured candidate is required" in error
+                ),
+                (
+                    "no findings recognized from the JSON object; expected the format "
+                    'contract: a JSON object with an "issues" array of issue objects, '
+                    "or bullet findings"
+                ),
+            )
+            rubric.record_validation(Validation(False, errors=[contract]))
+        if not findings:
+            return rubric.results()
 
         checks = [
             (

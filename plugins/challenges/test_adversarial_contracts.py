@@ -79,6 +79,31 @@ def test_code_review_one_stuffed_line_cannot_score_full():
     assert result.score < 8.0
 
 
+def test_code_review_json_with_unrecognized_keys_falls_back_to_bullets():
+    # Measured pre-fix (ornith-nas): valid JSON with unrecognized keys
+    # dead-ended at 0/15 while judges said ~90 — the bullet fallback never
+    # ran because the JSON branch returned an empty finding list.
+    response = (
+        "```json\n"
+        '{"problems": ["the open(db_path) handle is never closed; use a context manager"]}\n'
+        "```\n"
+        "- open(db_path) is never closed; use a context manager to avoid the leak\n"
+        "- user_id == None should be user_id is None\n"
+        "- the /tmp/data.txt path is hardcoded; parameterize db_path\n"
+        "- fetch_data may raise; wrap in try/except\n"
+        "- the os and time imports are unused; remove them\n"
+    )
+    result = CodeReviewPlugin().evaluate(response)
+    assert result.score >= 13.0
+    assert any("format contract" in error for error in result.diagnostics["errors"])
+
+
+def test_code_review_json_without_recognized_findings_names_the_contract():
+    result = CodeReviewPlugin().evaluate('{"problems": ["nothing to see here"]}')
+    assert result.score == 0.0
+    assert any("format contract" in error for error in result.diagnostics["errors"])
+
+
 def test_debug_consistency_rejects_a_patch_for_a_reproducible_report():
     response = """## Reproduction
 The output is ['abc'].
