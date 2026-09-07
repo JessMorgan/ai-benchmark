@@ -174,14 +174,28 @@ class MultiStepPlugin(BenchmarkTaskPlugin):
         source = extract_python_source(text)
         execution = None
         if source:
+            # Type-identity asserts pin the return types, so a response that
+            # returns an object with a lying ``__eq__`` cannot pass the
+            # behavioral contract (value-only ``==`` compares credit it). The
+            # extra probes cover inputs the base asserts never exercised:
+            # a second name, the 50-character boundary, symbol rejection,
+            # single repetition, and negative ``times``.
             checks = """
+assert type(greet_user("Ada")) is str
 assert greet_user("Ada") == "Hello, Ada! Welcome."
+assert greet_user("Grace") == "Hello, Grace! Welcome."
+assert type(validate_name("Ada Lovelace")) is bool
 assert validate_name("Ada Lovelace") is True
+assert validate_name("x" * 50) is True
 assert validate_name("") is False
 assert validate_name("Ada123") is False
+assert validate_name("Ada-Lovelace") is False
 assert validate_name("x" * 51) is False
+assert type(format_greeting("Hi", 3)) is str
 assert format_greeting("Hi", 3) == "Hi\\nHi\\nHi"
+assert format_greeting("Hi", 1) == "Hi"
 assert format_greeting("Hi", 0) == ""
+assert format_greeting("Hi", -1) == ""
 """
             execution = run_python_check(source, checks)
             rubric.record_execution(
