@@ -85,6 +85,39 @@ class FixedWindow(_Base): pass
     assert RateLimiterPlugin().score(response) >= 18.0
 
 
+def test_rate_limiter_delegation_exempt_for_any_shared_base_name():
+    response = """```python
+import math
+import threading
+class RateLimiterBase:
+    def __init__(self, limit: int, window_seconds: float):
+        if limit <= 0 or not math.isfinite(window_seconds) or window_seconds <= 0: raise ValueError("invalid")
+        self.limit, self.window_seconds, self.counts, self.lock = limit, window_seconds, {}, threading.RLock()
+    def allow_request(self, client_id: str, now: float) -> bool:
+        with self.lock:
+            window, count = self.counts.get(client_id, (now, 0))
+            if now - window >= self.window_seconds: window, count = now, 0
+            if count >= self.limit: self.counts[client_id] = (window, count); return False
+            self.counts[client_id] = (window, count + 1); return True
+    def get_usage_stats(self, client_id: str) -> dict:
+        with self.lock: return {"count": self.counts.get(client_id, (0, 0))[1], "limit": self.limit}
+    def cleanup(self, now: float) -> int:
+        with self.lock:
+            old = [key for key, (start, _) in self.counts.items() if now - start >= self.window_seconds]
+            for key in old: del self.counts[key]
+            return len(old)
+class TokenBucket(RateLimiterBase): pass
+class SlidingWindowLog(RateLimiterBase): pass
+class FixedWindow(RateLimiterBase): pass
+```"""
+    result = RateLimiterPlugin().evaluate(response)
+    # The pass-body subclasses delegate to a real (non-stub) base whose name
+    # is not the hardcoded "_Base"; they must NOT be penalized as placeholders.
+    for criterion in ("TokenBucket", "SlidingWindowLog", "FixedWindow"):
+        item = next(item for item in result.rubric if item["name"] == criterion)
+        assert not any("placeholder" in finding["finding"] for finding in item["negative_findings"])
+
+
 def test_error_recovery_missing_injection_is_not_full_credit():
     response = """```python
 class AllProvidersFailedError(Exception):

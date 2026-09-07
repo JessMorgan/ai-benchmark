@@ -63,12 +63,23 @@ class RateLimiterPlugin(BenchmarkTaskPlugin):
         return {node.name for node in ast.walk(tree) if isinstance(node, ast.ClassDef)} if tree else set()
 
     @staticmethod
-    def _inherits(node: ast.ClassDef, base_name: str) -> bool:
-        """Return whether a class inherits the named base class directly."""
-        return any(
-            isinstance(base, ast.Name) and base.id == base_name
+    def _real_bases(
+        node: ast.ClassDef,
+        class_nodes: dict[str, ast.ClassDef],
+        stub_classes: set[str],
+    ) -> set[str]:
+        """Return the names of defined, non-stub bases a class inherits.
+
+        A pass-body subclass of such a base delegates its implementation to
+        that base, so the base's name is irrelevant (not just ``_Base``).
+        """
+        return {
+            base.id
             for base in node.bases
-        )
+            if isinstance(base, ast.Name)
+            and base.id in class_nodes
+            and base.id not in stub_classes
+        }
 
     @staticmethod
     def _method_bodies(node: ast.ClassDef) -> str:
@@ -111,13 +122,18 @@ class RateLimiterPlugin(BenchmarkTaskPlugin):
             for node in ast.walk(validation.value)
             if isinstance(node, ast.ClassDef)
         } if validation.valid else {}
-        base_text = self._method_bodies(class_nodes["_Base"]) if "_Base" in class_nodes else ""
+        stub_classes = set(stub_definitions(validation.value, set(class_nodes))) if validation.valid else set()
         for name in ("TokenBucket", "SlidingWindowLog", "FixedWindow"):
             node = class_nodes.get(name)
             class_text = self._method_bodies(node) if node is not None else ""
-            strategy_text = class_text + (
-                base_text if node is not None and self._inherits(node, "_Base") else ""
+            base_text = (
+                "\n".join(
+                    self._method_bodies(class_nodes[base])
+                    for base in sorted(self._real_bases(node, class_nodes, stub_classes))
+                )
+                if node is not None else ""
             )
+            strategy_text = class_text + base_text
             points = 1.0 if name in present else 0.0
             if name == "TokenBucket":
                 points += 1.0 if re.search(r"refill|token|capacity", strategy_text, re.IGNORECASE) else 0.0
@@ -138,10 +154,10 @@ class RateLimiterPlugin(BenchmarkTaskPlugin):
         quality_hits = sum(bool(re.search(pattern, text)) for pattern in (r"->\s*(?:bool|dict|int)", r"\"\"\""))
         rubric.add_criterion("Types and documentation", 1.0, min(1.0, float(quality_hits) / 2.0))
 
-        stubs = stub_definitions(validation.value, required) if validation.valid else []
         stubs = [
-            name for name in stubs
-            if name not in class_nodes or not self._inherits(class_nodes[name], "_Base")
+            name for name in required
+            if name in stub_classes
+            and not self._real_bases(class_nodes[name], class_nodes, stub_classes)
         ]
         if stubs:
             for criterion in ("TokenBucket", "SlidingWindowLog", "FixedWindow"):
