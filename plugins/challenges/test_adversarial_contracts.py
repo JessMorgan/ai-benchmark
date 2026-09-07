@@ -104,6 +104,35 @@ def test_code_review_json_without_recognized_findings_names_the_contract():
     assert any("format contract" in error for error in result.diagnostics["errors"])
 
 
+def test_code_review_stray_brace_prose_with_fenced_json_scores():
+    # Measured pre-fix: a stray brace in the prose before the fenced JSON
+    # made the find("{")..rfind("}") slice span the brace to the JSON's last
+    # brace; the slice failed to parse and the response scored 0.
+    response = (
+        "Here is my review (note: the {brace} in the prompt is a red herring):\n\n"
+        "```json\n"
+        '{"issues": [\n'
+        '  {"description": "open(db_path) is never closed; use a context manager to avoid the leak"},\n'
+        '  {"description": "user_id == None should be user_id is None"},\n'
+        '  {"description": "the /tmp/data.txt path is hardcoded; parameterize db_path"},\n'
+        '  {"description": "fetch_data may raise an exception; wrap it in try/except"},\n'
+        '  {"description": "the os and time imports are unused; remove them"}\n'
+        "]}\n"
+        "```"
+    )
+    result = CodeReviewPlugin().evaluate(response)
+    assert result.score >= 13.0
+
+
+def test_code_review_non_dict_issue_items_do_not_crash():
+    # The candidate is parsed by parse_structured, so the old try/except no
+    # longer guards item access: non-dict issue entries must be skipped
+    # (dead-end + contract finding), not crash evaluate().
+    result = CodeReviewPlugin().evaluate('{"issues": ["a plain string finding", 42]}')
+    assert result.score == 0.0
+    assert any("format contract" in error for error in result.diagnostics["errors"])
+
+
 def test_debug_consistency_rejects_a_patch_for_a_reproducible_report():
     response = """## Reproduction
 The output is ['abc'].

@@ -1,7 +1,6 @@
 """Source-aware code-review challenge."""
 from __future__ import annotations
 
-import json
 import re
 
 from benchmark.plugin import BenchmarkTaskPlugin, EvaluationResult
@@ -60,36 +59,34 @@ class CodeReviewPlugin(BenchmarkTaskPlugin):
         return float(val) if isinstance(val, (int, float)) else None
 
     @staticmethod
-    def _descriptions(text: str) -> tuple[list[str], bool]:
+    def _descriptions(text: str, validation: Validation) -> tuple[list[str], bool]:
         """Extract independent findings without requiring valid JSON syntax.
 
-        Returns the findings plus a flag for the JSON dead-end: a JSON
-        object was recognized but yielded no recognized findings, in which
-        case bullet extraction is the fallback.
+        Uses the shared structured-extraction candidate (the single fenced
+        JSON block, or the whole response, as parsed by parse_structured)
+        before falling back to bullet extraction. Returns the findings plus
+        a flag for the JSON dead-end: a JSON object was recognized but
+        yielded no recognized findings.
         """
         json_dead_end = False
-        try:
-            start, end = text.find("{"), text.rfind("}")
-            if start >= 0 and end > start:
-                value = json.loads(text[start:end + 1])
-                issues = value.get("issues", []) if isinstance(value, dict) else []
-                if isinstance(issues, list):
-                    descriptions = [
-                        str(
-                            item.get("description")
-                            or item.get("finding")
-                            or item.get("issue")
-                            or ""
-                        ).strip().lower()
-                        for item in issues
-                        if item
-                    ]
-                    descriptions = [description for description in descriptions if description]
-                    if descriptions:
-                        return descriptions, False
-                    json_dead_end = True
-        except (json.JSONDecodeError, AttributeError, TypeError):
-            pass
+        value = validation.value
+        if isinstance(value, dict):
+            issues = value.get("issues", [])
+            if isinstance(issues, list):
+                descriptions = [
+                    str(
+                        item.get("description")
+                        or item.get("finding")
+                        or item.get("issue")
+                        or ""
+                    ).strip().lower()
+                    for item in issues
+                    if isinstance(item, dict)
+                ]
+                descriptions = [description for description in descriptions if description]
+                if descriptions:
+                    return descriptions, False
+                json_dead_end = True
         return [
             match.group(1).strip().lower()
             for match in re.finditer(
@@ -125,8 +122,8 @@ class CodeReviewPlugin(BenchmarkTaskPlugin):
         rubric = Rubric(self.max_score)
         if not text:
             return EvaluationResult(0.0, [])
-        findings, json_dead_end = self._descriptions(text)
         validation = parse_structured(text, fmt="json")
+        findings, json_dead_end = self._descriptions(text, validation)
         rubric.record_validation(validation)
         if json_dead_end:
             # A recognized JSON object with no findings is a format-contract
