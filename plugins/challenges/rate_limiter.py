@@ -233,11 +233,16 @@ for _thread in _threads:
 assert len(_results) == 16
 '''
             execution = run_python_check(source, harness)
+            # Credit the behavioral criterion only when the assertion harness
+            # itself ran to completion (exit 0 AND the completion sentinel
+            # printed). A response that exits 0 before the harness (sys.exit /
+            # os._exit / SystemExit) reports status "passed" but harness_ok
+            # False, and must score 0 rather than a clean pass.
             rubric.add_criterion(
                 "Behavioral strategy tests", 10.0,
-                10.0 if execution.status == "passed" else 0.0,
+                10.0 if execution.harness_ok else 0.0,
                 evidence=[execution.as_evidence()],
-                negative_findings=[] if execution.status == "passed" else [{"finding": execution.error or execution.status}],
+                negative_findings=[] if execution.harness_ok else [{"finding": execution.error or "harness did not run to completion"}],
             )
         else:
             rubric.add_criterion("Behavioral strategy tests", 10.0, 0.0, negative_findings=[{"finding": "no executable source"}])

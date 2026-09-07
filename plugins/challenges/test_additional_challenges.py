@@ -1,4 +1,7 @@
 """Tests for newly added capability-focused challenges."""
+from unittest import mock
+
+from plugins.challenges._execution import ExecutionResult
 from plugins.challenges.error_recovery import ErrorRecoveryPlugin
 from plugins.challenges.event_processor import EventProcessorPlugin
 from plugins.challenges.long_context import LongContextPlugin
@@ -148,6 +151,20 @@ class FixedWindow(_Base): pass
     # bool is a subclass of int, so a cleanup returning a bool must not pass
     # the return-type check; the behavioral criterion must score 0.
     assert item["earned"] == 0.0
+
+
+def test_rate_limiter_behavioral_credit_requires_harness_ok():
+    response = "```python\nclass TokenBucket: pass\n```"
+    with mock.patch(
+        "plugins.challenges.rate_limiter.run_python_check",
+        return_value=ExecutionResult("passed", passed=True, output=""),
+    ):
+        result = RateLimiterPlugin().evaluate(response)
+    item = next(item for item in result.rubric if item["name"] == "Behavioral strategy tests")
+    # status "passed" but no completion sentinel (harness_ok False) — a
+    # sys.exit(0)/os._exit(0) response — must score 0, not a clean 10.0 pass.
+    assert item["earned"] == 0.0
+    assert item["negative_findings"]
 
 
 def test_error_recovery_missing_injection_is_not_full_credit():
