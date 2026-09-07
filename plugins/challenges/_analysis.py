@@ -131,6 +131,16 @@ def has_real_code_block(text: str, language: str = "python") -> bool:
     return any(block.strip() for block in re.findall(pattern, text, re.IGNORECASE))
 
 
+FENCE_ALIASES: dict[str, frozenset[str]] = {
+    "python": frozenset({"python", "py", "python3", "py3"}),
+}
+
+
+def fence_label_matches(label: str, wanted: str) -> bool:
+    """Return whether a fence label matches the wanted language (with aliases)."""
+    return label == wanted or label in FENCE_ALIASES.get(wanted, frozenset())
+
+
 def fenced_blocks(text: str, language: str | None = None) -> list[str]:
     """Extract fenced blocks, optionally restricted by language."""
     pattern = r"```([^\n`]*)\n(.*?)```"
@@ -138,7 +148,7 @@ def fenced_blocks(text: str, language: str | None = None) -> list[str]:
     wanted = language.lower() if language else None
     for match in re.finditer(pattern, text, re.DOTALL):
         label = match.group(1).strip().lower()
-        if wanted and label != wanted:
+        if wanted and not fence_label_matches(label, wanted):
             continue
         blocks.append(match.group(2))
     return blocks

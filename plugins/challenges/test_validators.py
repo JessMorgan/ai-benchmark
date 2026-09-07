@@ -1,7 +1,9 @@
 """Tests for shared typed scoring validators."""
 import ast
 
+from plugins.challenges._analysis import fenced_blocks
 from plugins.challenges._validators import (
+    extract_fenced_blocks,
     parse_python,
     parse_structured,
     parse_tool_calls,
@@ -100,3 +102,25 @@ def test_stub_definitions_error_recovery_ab():
         '    print("ok")\n'
     )
     assert stub_definitions(ast.parse(source), {"AllProvidersFailedError"}) == []
+
+
+def test_extract_fenced_blocks_accepts_python_aliases():
+    for label in ("python", "py", "python3", "py3"):
+        blocks = extract_fenced_blocks(f"```{label}\nx = 1\n```", "python")
+        assert blocks == ["x = 1\n"], label
+
+
+def test_extract_fenced_blocks_rejects_other_languages():
+    assert extract_fenced_blocks("```javascript\nx = 1\n```", "python") == []
+
+
+def test_extract_fenced_blocks_includes_unlabeled_when_filtering():
+    assert extract_fenced_blocks("```\nx = 1\n```", "python") == ["x = 1\n"]
+
+
+def test_fenced_blocks_accepts_python_aliases():
+    assert fenced_blocks("```py\nx = 1\n```", "python") == ["x = 1\n"]
+
+
+def test_fenced_blocks_rejects_other_languages():
+    assert fenced_blocks("```javascript\nx = 1\n```", "python") == []

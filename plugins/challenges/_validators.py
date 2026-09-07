@@ -7,6 +7,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
+from plugins.challenges._analysis import fence_label_matches
+
 try:
     import yaml
 except ImportError:  # pragma: no cover
@@ -35,7 +37,7 @@ def extract_fenced_blocks(text: str, language: str | None = None) -> list[str]:
     blocks = []
     for match in re.finditer(r"```([^\n`]*)\n(.*?)```", text, re.DOTALL):
         label = match.group(1).strip().lower()
-        if wanted and label and label != wanted:
+        if wanted and label and not fence_label_matches(label, wanted):
             continue
         blocks.append(match.group(2))
     return blocks
