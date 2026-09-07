@@ -63,13 +63,34 @@ def parse_python(text: str, *, require_block: bool = False) -> Validation:
     )
 
 
+def _declares_exception_base(node: ast.ClassDef) -> bool:
+    """Return whether a class declares an exception base (Exception/*Error/*Exception)."""
+    return any(
+        isinstance(base, ast.Name) and (
+            base.id in {"Exception", "BaseException"}
+            or base.id.endswith("Error")
+            or base.id.endswith("Exception")
+        )
+        for base in node.bases
+    )
+
+
 def stub_definitions(tree: ast.AST, names: set[str]) -> list[str]:
-    """Return required definitions whose bodies contain only stubs."""
+    """Return required definitions whose bodies contain only stubs.
+
+    A body counts as a stub when it has no real statements (docstring-only or
+    empty) or when every remaining statement is a ``pass``/``...`` placeholder.
+    Exception classes (declaring an ``Exception``/``BaseException`` or
+    ``*Error``/``*Exception`` base) are exempt: a minimal body is idiomatic for
+    an exception, so they are never flagged.
+    """
     found = []
     for node in ast.walk(tree):
         if not isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
         if node.name not in names:
+            continue
+        if isinstance(node, ast.ClassDef) and _declares_exception_base(node):
             continue
         meaningful = [
             item for item in node.body
@@ -79,7 +100,7 @@ def stub_definitions(tree: ast.AST, names: set[str]) -> list[str]:
                 and isinstance(item.value.value, str)
             )
         ]
-        if meaningful and all(
+        if not meaningful or all(
             isinstance(item, ast.Pass)
             or (isinstance(item, ast.Expr) and isinstance(item.value, ast.Constant) and item.value.value is Ellipsis)
             for item in meaningful
