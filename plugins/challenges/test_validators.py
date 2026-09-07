@@ -25,6 +25,13 @@ def test_parse_structured_requires_object():
     assert not parse_structured("[1, 2]", fmt="json").valid
 
 
+def test_parse_structured_rejects_multiple_candidates_with_stable_error():
+    text = '```json\n{"a": 1}\n```\n```json\n{"b": 2}\n```'
+    result = parse_structured(text)
+    assert not result.valid
+    assert result.errors == ["exactly one structured candidate is required (found 2); multiple fenced candidates are rejected"]
+
+
 def test_parse_tool_calls_validates_schema():
     valid = '<tool_call>{"name":"get_weather","args":{"location":"Tokyo","unit":"celsius"}}</tool_call>'
     assert parse_tool_calls(valid).valid

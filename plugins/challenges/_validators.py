@@ -179,7 +179,7 @@ def parse_structured(text: str, *, fmt: str | None = None) -> Validation:
         return Validation(
             False,
             evidence=[{"kind": "structured-candidate-count", "count": len(candidates)}],
-            errors=["multiple structured candidates found; exactly one is required"],
+            errors=[f"exactly one structured candidate is required (found {len(candidates)}); multiple fenced candidates are rejected"],
         )
     source = candidates[0] if candidates else text.strip()
     if not source:
