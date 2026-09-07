@@ -70,6 +70,15 @@ class RateLimiterPlugin(BenchmarkTaskPlugin):
             for base in node.bases
         )
 
+    @staticmethod
+    def _method_bodies(node: ast.ClassDef) -> str:
+        """Return unparsed method definitions, excluding the class-name line."""
+        return "\n".join(
+            ast.unparse(item)
+            for item in ast.walk(node)
+            if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
+        )
+
     def evaluate(self, response_text: str) -> EvaluationResult:
         rubric = Rubric(self.max_score)
         if not response_text or not response_text.strip():
@@ -102,10 +111,10 @@ class RateLimiterPlugin(BenchmarkTaskPlugin):
             for node in ast.walk(validation.value)
             if isinstance(node, ast.ClassDef)
         } if validation.valid else {}
-        base_text = ast.unparse(class_nodes["_Base"]) if "_Base" in class_nodes else ""
+        base_text = self._method_bodies(class_nodes["_Base"]) if "_Base" in class_nodes else ""
         for name in ("TokenBucket", "SlidingWindowLog", "FixedWindow"):
             node = class_nodes.get(name)
-            class_text = ast.unparse(node) if node is not None else ""
+            class_text = self._method_bodies(node) if node is not None else ""
             strategy_text = class_text + (
                 base_text if node is not None and self._inherits(node, "_Base") else ""
             )

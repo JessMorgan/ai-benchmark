@@ -21,6 +21,23 @@ def test_rate_limiter_stub_is_not_implementation_credit():
     assert plugin("rate-limiter").score("class TokenBucket:\n    pass") < 5.0
 
 
+def test_rate_limiter_keyword_credit_ignores_class_name():
+    response = """class TokenBucket:
+    def allow_request(self, client_id, now):
+        return True
+    def get_usage_stats(self, client_id):
+        return {}
+    def cleanup(self, now):
+        return 0
+"""
+    result = plugin("rate-limiter").evaluate(response)
+    token = next(item for item in result.rubric if item["name"] == "TokenBucket")
+    # The class name "TokenBucket" must not satisfy the "token" keyword: with
+    # no token/refill/capacity in the method bodies, only the presence point
+    # is earned (0.5 of the 1.0 max), not the keyword sub-credit.
+    assert token["earned"] == 0.5
+
+
 def test_moe_keyword_listing_without_sections_is_limited():
     score = plugin("moe-dense").score("MoE gating, load balancing, training, inference, benchmarks, and papers.")
     assert score < 10.0
