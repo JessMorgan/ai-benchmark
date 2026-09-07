@@ -19,6 +19,12 @@ from typing import Any
 
 from plugins.challenges._validators import extract_fenced_blocks
 
+# Printed as the final line of every combined check script. It executes only
+# when the harness itself runs to completion, so a zero-implementation response
+# that calls ``sys.exit(0)``/``os._exit(0)`` or raises ``SystemExit`` exits
+# before the sentinel is emitted and can no longer masquerade as a clean pass.
+HARNESS_SENTINEL = "HARNESS_EXEC_OK"
+
 
 @dataclass
 class ExecutionResult:
@@ -31,11 +37,23 @@ class ExecutionResult:
     isolation: str = "podman"
     skipped_reason: str | None = None
 
+    @property
+    def harness_ok(self) -> bool:
+        """Whether the assertion harness itself ran to completion.
+
+        ``True`` only when the process exited 0 AND the completion sentinel was
+        printed, i.e. the harness actually executed. ``False`` for
+        timeout/skipped/failed results and for any early exit (``sys.exit`` /
+        ``os._exit`` / ``SystemExit``) that skipped the harness.
+        """
+        return self.passed and HARNESS_SENTINEL in self.output
+
     def as_evidence(self) -> dict[str, Any]:
         return {
             "kind": "execution",
             "status": self.status,
             "passed": self.passed,
+            "harness_ok": self.harness_ok,
             "output": self.output[-4000:],
             "error": self.error,
             "isolation": self.isolation,
@@ -71,6 +89,18 @@ def _kill_process_group(process: subprocess.Popen[str]) -> None:
         process.kill()
 
 
+def _sentinel_script(source: str, harness: str) -> str:
+    """Combine source and harness into one script ending in the sentinel.
+
+    Appending the sentinel to the *combined* script (rather than running it
+    separately) keeps the guarantee on both execution paths: the
+    ``local-restricted`` fallback wraps this combined string in
+    ``exec(compile(...))``, so the sentinel executes only when the harness
+    completes there too.
+    """
+    return source + "\n\n" + harness + f'\n\nprint("{HARNESS_SENTINEL}")'
+
+
 def _run_local_restricted(source: str, harness: str, *, timeout: float) -> ExecutionResult:
     """Run a check without Podman using resource limits and a clean process.
 
@@ -81,7 +111,7 @@ def _run_local_restricted(source: str, harness: str, *, timeout: float) -> Execu
     """
     with tempfile.TemporaryDirectory(prefix="ai-benchmark-local-exec-") as tmpdir:
         script = Path(tmpdir) / "check.py"
-        execution = source + "\n\n" + harness
+        execution = _sentinel_script(source, harness)
         if resource is not None:
             # Keep thread stacks small enough for the address-space limit while
             # still allowing the concurrent challenge harness to run. Compile
@@ -163,7 +193,7 @@ def run_python_check(source: str, harness: str, *, timeout: float = 5.0) -> Exec
         # other than the generated check script.
         os.chmod(tmpdir, 0o755)
         script = Path(tmpdir) / "check.py"
-        script.write_text(source + "\n\n" + harness, encoding="utf-8")
+        script.write_text(_sentinel_script(source, harness), encoding="utf-8")
         script.chmod(0o644)
         command = [
             podman, "run", "--rm", "--pull=never",

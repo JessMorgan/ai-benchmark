@@ -3,7 +3,13 @@ import subprocess
 from unittest import mock
 
 from plugins import discover_plugins
-from plugins.challenges._execution import ExecutionResult, extract_python_source, run_python_check
+from plugins.challenges._execution import (
+    HARNESS_SENTINEL,
+    ExecutionResult,
+    _sentinel_script,
+    extract_python_source,
+    run_python_check,
+)
 
 
 def plugin(plugin_id):
@@ -113,3 +119,40 @@ class FixedWindow(TokenBucket): pass
     behavior = next(item for item in result.rubric if item["name"] == "Behavioral strategy tests")
     assert behavior["negative_findings"]
     assert result.diagnostics["errors"] == []
+
+
+def test_sentinel_script_combines_source_harness_and_sentinel():
+    script = _sentinel_script("x = 1", "assert x == 1")
+    assert "x = 1" in script
+    assert "assert x == 1" in script
+    assert script.endswith(f'print("{HARNESS_SENTINEL}")')
+
+
+def test_harness_ok_requires_pass_and_sentinel():
+    assert ExecutionResult("passed", passed=True, output=HARNESS_SENTINEL).harness_ok is True
+    assert ExecutionResult("passed", passed=True, output="").harness_ok is False
+    assert ExecutionResult("failed", passed=False, output=HARNESS_SENTINEL).harness_ok is False
+    assert ExecutionResult("timeout", output=HARNESS_SENTINEL).harness_ok is False
+    assert ExecutionResult("skipped", output=HARNESS_SENTINEL, skipped_reason="x").harness_ok is False
+
+
+def test_exit_zero_without_harness_is_not_harness_ok():
+    """A zero-implementation response that exits 0 before the harness runs must
+    not masquerade as a clean pass on the local-restricted path.
+
+    ``sys.exit(0)`` raises ``SystemExit`` which propagates out of the combined
+    script before the sentinel line, so the process exits 0 (``passed``) but the
+    sentinel is never printed (``harness_ok`` is False).
+    """
+    with mock.patch("plugins.challenges._execution.shutil.which", return_value=None):
+        result = run_python_check("import sys\nsys.exit(0)", "assert True")
+    assert result.passed is True
+    assert result.harness_ok is False
+    assert HARNESS_SENTINEL not in result.output
+
+
+def test_clean_local_run_reports_harness_ok():
+    with mock.patch("plugins.challenges._execution.shutil.which", return_value=None):
+        result = run_python_check("x = 1", "assert x == 1")
+    assert result.harness_ok is True
+    assert HARNESS_SENTINEL in result.output
