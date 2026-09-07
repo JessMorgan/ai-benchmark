@@ -9,6 +9,18 @@ from benchmark.types import ConfigMap
 from plugins.challenges._rubric import Rubric
 from plugins.challenges._validators import parse_structured
 
+# Keyword co-occurrence is polarity-blind: a finding that denies a defect
+# ("closed properly", "never raises") matches the same keywords as one that
+# asserts it. Shared denials apply to every defect; each check adds its own.
+_SHARED_DENIALS: tuple[str, ...] = (
+    r"\bis fine\b",
+    r"\bworks correctly\b",
+    r"\bno problem\b",
+    r"\bno issues?\b",
+    r"\bcorrect as written\b",
+    r"\bno defects?\b",
+)
+
 
 class CodeReviewPlugin(BenchmarkTaskPlugin):
     @property
@@ -76,9 +88,19 @@ class CodeReviewPlugin(BenchmarkTaskPlugin):
         ]
 
     @staticmethod
-    def _finding_matches(findings: list[str], groups: tuple[tuple[str, ...], ...]) -> tuple[bool, str]:
-        """Require one finding to contain every semantic part of an issue."""
+    def _finding_matches(
+        findings: list[str],
+        groups: tuple[tuple[str, ...], ...],
+        denials: tuple[str, ...],
+    ) -> tuple[bool, str]:
+        """Require one finding to assert the defect and its remediation.
+
+        A finding matching any of the defect's denial patterns is a
+        negation, not an assertion, and does not count.
+        """
         for finding in findings:
+            if any(re.search(term, finding, re.IGNORECASE) for term in denials):
+                continue
             if all(any(re.search(term, finding, re.IGNORECASE) for term in group) for group in groups):
                 return True, finding
         return False, ""
@@ -98,27 +120,40 @@ class CodeReviewPlugin(BenchmarkTaskPlugin):
             (
                 "File handle not closed / resource leak", 3.0,
                 ((r"f\s*=|open\(",), (r"close|context\s+manager|with\s+open|leak",)),
+                (
+                    r"\bno leak", r"does not leak", r"doesn'?t leak",
+                    r"closed properly", r"properly closed", r"already closed",
+                    r"no resource leak",
+                ),
             ),
             (
                 "== None instead of is None", 2.0,
                 ((r"==\s*none|identity",), (r"is\s+none|comparison|user_id",)),
+                (r"correct comparison", r"comparison is correct", r"identity check is fine"),
             ),
             (
                 "Hardcoded /tmp path", 2.0,
                 ((r"/tmp/data\.txt|hardcoded",), (r"path|parameter|config|inject",)),
+                (r"\bacceptable\b", r"standard practice", r"no problem with the path"),
             ),
             (
                 "Missing error handling / fetch_data may fail", 3.0,
                 ((r"fetch_data",), (r"exception|error|try|except|failure|handling",)),
+                (
+                    r"never raises", r"\bno exception", r"does not fail", r"doesn'?t fail",
+                    r"cannot fail", r"no (error|exception) handling (is )?needed",
+                    r"no handling needed",
+                ),
             ),
             (
                 "Unused imports", 2.0,
                 ((r"unused|not used|remove",), (r"os|time|import",)),
+                (r"\bare used\b", r"both (are )?used", r"\bno unused\b", r"used elsewhere", r"imports? are used"),
             ),
         ]
         matched_findings: list[str] = []
-        for name, maximum, groups in checks:
-            matched, finding = self._finding_matches(findings, groups)
+        for name, maximum, groups, denials in checks:
+            matched, finding = self._finding_matches(findings, groups, _SHARED_DENIALS + denials)
             if matched:
                 matched_findings.append(finding)
             rubric.add_criterion(

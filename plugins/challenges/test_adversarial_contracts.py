@@ -32,6 +32,28 @@ def test_code_review_cannot_reuse_one_finding_for_every_defect():
     assert sum(item["earned"] for item in result.rubric) < 8.0
 
 
+def test_code_review_denying_every_defect_scores_low():
+    # Measured pre-fix: this all-denial response scored 15/15 because keyword
+    # co-occurrence cannot see negation.
+    response = json.dumps({"issues": [
+        {"description": "open(db_path) is fine; the file handle is closed properly, no leak"},
+        {"description": "user_id == None is fine; the comparison works correctly"},
+        {"description": "the /tmp/data.txt path is fine and acceptable"},
+        {"description": "fetch_data never raises; no exception handling is needed"},
+        {"description": "the os and time imports are used; no unused imports"},
+    ]})
+    result = CodeReviewPlugin().evaluate(response)
+    defect_names = {
+        "File handle not closed / resource leak",
+        "== None instead of is None",
+        "Hardcoded /tmp path",
+        "Missing error handling / fetch_data may fail",
+        "Unused imports",
+    }
+    assert sum(item["earned"] for item in result.rubric if item["name"] in defect_names) == 0.0
+    assert result.score < 5.0
+
+
 def test_debug_consistency_rejects_a_patch_for_a_reproducible_report():
     response = """## Reproduction
 The output is ['abc'].
