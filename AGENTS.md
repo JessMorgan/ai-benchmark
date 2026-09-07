@@ -153,7 +153,7 @@ The runtime inventory below matches `uv run ai-benchmark --list-plugins`:
 
 | ID | Version | Max | Stream |
 |---|---:|---:|---|
-| `code-review` | 1.1.0 | 15 | Yes |
+| `code-review` | 1.2.0 | 15 | Yes |
 | `debug-consistency` | 0.1.0 | 20 | Yes |
 | `debug-traversal` | 1.2.0 | 20 | Yes |
 | `decomposition` | 0.1.0 | 20 | Yes |
@@ -166,7 +166,7 @@ The runtime inventory below matches `uv run ai-benchmark --list-plugins`:
 | `multi-turn-conversation` | 1.0.0 | 20 | Yes |
 | `orchestration` | 1.0.0 | 16 | Yes |
 | `prd-creation` | 1.0.0 | 22 | Yes |
-| `rate-limiter` | 1.4.0 | 20 | Yes |
+| `rate-limiter` | 1.5.0 | 20 | Yes |
 | `reasoning` | 1.1.0 | 20 | Yes |
 | `software-architecture` | 1.0.0 | 20 | Yes |
 | `data-transformation` | 1.1.0 | 22 | Yes |

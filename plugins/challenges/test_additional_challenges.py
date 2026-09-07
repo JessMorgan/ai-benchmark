@@ -1,4 +1,7 @@
 """Tests for newly added capability-focused challenges."""
+from unittest import mock
+
+from plugins.challenges._execution import ExecutionResult
 from plugins.challenges.error_recovery import ErrorRecoveryPlugin
 from plugins.challenges.event_processor import EventProcessorPlugin
 from plugins.challenges.long_context import LongContextPlugin
@@ -83,6 +86,106 @@ class SlidingWindowLog(_Base): pass
 class FixedWindow(_Base): pass
 ```'''
     assert RateLimiterPlugin().score(response) >= 18.0
+
+
+def test_rate_limiter_delegation_exempt_for_any_shared_base_name():
+    response = """```python
+import math
+import threading
+class RateLimiterBase:
+    def __init__(self, limit: int, window_seconds: float):
+        if limit <= 0 or not math.isfinite(window_seconds) or window_seconds <= 0: raise ValueError("invalid")
+        self.limit, self.window_seconds, self.counts, self.lock = limit, window_seconds, {}, threading.RLock()
+    def allow_request(self, client_id: str, now: float) -> bool:
+        with self.lock:
+            window, count = self.counts.get(client_id, (now, 0))
+            if now - window >= self.window_seconds: window, count = now, 0
+            if count >= self.limit: self.counts[client_id] = (window, count); return False
+            self.counts[client_id] = (window, count + 1); return True
+    def get_usage_stats(self, client_id: str) -> dict:
+        with self.lock: return {"count": self.counts.get(client_id, (0, 0))[1], "limit": self.limit}
+    def cleanup(self, now: float) -> int:
+        with self.lock:
+            old = [key for key, (start, _) in self.counts.items() if now - start >= self.window_seconds]
+            for key in old: del self.counts[key]
+            return len(old)
+class TokenBucket(RateLimiterBase): pass
+class SlidingWindowLog(RateLimiterBase): pass
+class FixedWindow(RateLimiterBase): pass
+```"""
+    result = RateLimiterPlugin().evaluate(response)
+    # The pass-body subclasses delegate to a real (non-stub) base whose name
+    # is not the hardcoded "_Base"; they must NOT be penalized as placeholders.
+    for criterion in ("TokenBucket", "SlidingWindowLog", "FixedWindow"):
+        item = next(item for item in result.rubric if item["name"] == criterion)
+        assert not any("placeholder" in finding["finding"] for finding in item["negative_findings"])
+
+
+def test_rate_limiter_stub_base_subclass_is_placeholder_penalized():
+    response = """```python
+import threading
+class _Base: pass
+class TokenBucket(_Base): pass
+class SlidingWindowLog(_Base): pass
+class FixedWindow(_Base): pass
+```"""
+    result = RateLimiterPlugin().evaluate(response)
+    # A pass-body class whose only base is a stub must still be penalized as a
+    # placeholder (the RL-3 name-agnostic exemption must not open a free-credit
+    # path for stub-only bases).
+    placeholder = [
+        finding
+        for item in result.rubric
+        for finding in item.get("negative_findings", [])
+        if "placeholder" in finding["finding"]
+    ]
+    assert placeholder, "expected a placeholder penalty for the stub-base subclasses"
+
+
+def test_rate_limiter_bool_cleanup_return_is_not_full_behavioral_credit():
+    response = """```python
+import math
+import threading
+class _Base:
+    def __init__(self, limit: int, window_seconds: float):
+        if limit <= 0 or not math.isfinite(window_seconds) or window_seconds <= 0: raise ValueError("invalid")
+        self.limit, self.window_seconds, self.counts, self.lock = limit, window_seconds, {}, threading.RLock()
+    def allow_request(self, client_id: str, now: float) -> bool:
+        with self.lock:
+            window, count = self.counts.get(client_id, (now, 0))
+            if now - window >= self.window_seconds: window, count = now, 0
+            if count >= self.limit: self.counts[client_id] = (window, count); return False
+            self.counts[client_id] = (window, count + 1); return True
+    def get_usage_stats(self, client_id: str) -> dict:
+        with self.lock: return {"count": self.counts.get(client_id, (0, 0))[1], "limit": self.limit}
+    def cleanup(self, now: float) -> int:
+        with self.lock:
+            old = [key for key, (start, _) in self.counts.items() if now - start >= self.window_seconds]
+            for key in old: del self.counts[key]
+            return True
+class TokenBucket(_Base): pass
+class SlidingWindowLog(_Base): pass
+class FixedWindow(_Base): pass
+```"""
+    result = RateLimiterPlugin().evaluate(response)
+    item = next(item for item in result.rubric if item["name"] == "Behavioral strategy tests")
+    # bool is a subclass of int, so a cleanup returning a bool must not pass
+    # the return-type check; the behavioral criterion must score 0.
+    assert item["earned"] == 0.0
+
+
+def test_rate_limiter_behavioral_credit_requires_harness_ok():
+    response = "```python\nclass TokenBucket: pass\n```"
+    with mock.patch(
+        "plugins.challenges.rate_limiter.run_python_check",
+        return_value=ExecutionResult("passed", passed=True, output=""),
+    ):
+        result = RateLimiterPlugin().evaluate(response)
+    item = next(item for item in result.rubric if item["name"] == "Behavioral strategy tests")
+    # status "passed" but no completion sentinel (harness_ok False) — a
+    # sys.exit(0)/os._exit(0) response — must score 0, not a clean 10.0 pass.
+    assert item["earned"] == 0.0
+    assert item["negative_findings"]
 
 
 def test_error_recovery_missing_injection_is_not_full_credit():

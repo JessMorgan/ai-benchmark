@@ -18,7 +18,7 @@ class RateLimiterPlugin(BenchmarkTaskPlugin):
 
     @property
     def version(self) -> str:
-        return "1.4.0"
+        return "1.5.0"
 
     @property
     def name(self) -> str:
@@ -63,11 +63,31 @@ class RateLimiterPlugin(BenchmarkTaskPlugin):
         return {node.name for node in ast.walk(tree) if isinstance(node, ast.ClassDef)} if tree else set()
 
     @staticmethod
-    def _inherits(node: ast.ClassDef, base_name: str) -> bool:
-        """Return whether a class inherits the named base class directly."""
-        return any(
-            isinstance(base, ast.Name) and base.id == base_name
+    def _real_bases(
+        node: ast.ClassDef,
+        class_nodes: dict[str, ast.ClassDef],
+        stub_classes: set[str],
+    ) -> set[str]:
+        """Return the names of defined, non-stub bases a class inherits.
+
+        A pass-body subclass of such a base delegates its implementation to
+        that base, so the base's name is irrelevant (not just ``_Base``).
+        """
+        return {
+            base.id
             for base in node.bases
+            if isinstance(base, ast.Name)
+            and base.id in class_nodes
+            and base.id not in stub_classes
+        }
+
+    @staticmethod
+    def _method_bodies(node: ast.ClassDef) -> str:
+        """Return unparsed method definitions, excluding the class-name line."""
+        return "\n".join(
+            ast.unparse(item)
+            for item in ast.walk(node)
+            if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
         )
 
     def evaluate(self, response_text: str) -> EvaluationResult:
@@ -102,13 +122,18 @@ class RateLimiterPlugin(BenchmarkTaskPlugin):
             for node in ast.walk(validation.value)
             if isinstance(node, ast.ClassDef)
         } if validation.valid else {}
-        base_text = ast.unparse(class_nodes["_Base"]) if "_Base" in class_nodes else ""
+        stub_classes = set(stub_definitions(validation.value, set(class_nodes))) if validation.valid else set()
         for name in ("TokenBucket", "SlidingWindowLog", "FixedWindow"):
             node = class_nodes.get(name)
-            class_text = ast.unparse(node) if node is not None else ""
-            strategy_text = class_text + (
-                base_text if node is not None and self._inherits(node, "_Base") else ""
+            class_text = self._method_bodies(node) if node is not None else ""
+            base_text = (
+                "\n".join(
+                    self._method_bodies(class_nodes[base])
+                    for base in sorted(self._real_bases(node, class_nodes, stub_classes))
+                )
+                if node is not None else ""
             )
+            strategy_text = class_text + base_text
             points = 1.0 if name in present else 0.0
             if name == "TokenBucket":
                 points += 1.0 if re.search(r"refill|token|capacity", strategy_text, re.IGNORECASE) else 0.0
@@ -129,10 +154,10 @@ class RateLimiterPlugin(BenchmarkTaskPlugin):
         quality_hits = sum(bool(re.search(pattern, text)) for pattern in (r"->\s*(?:bool|dict|int)", r"\"\"\""))
         rubric.add_criterion("Types and documentation", 1.0, min(1.0, float(quality_hits) / 2.0))
 
-        stubs = stub_definitions(validation.value, required) if validation.valid else []
         stubs = [
-            name for name in stubs
-            if name not in class_nodes or not self._inherits(class_nodes[name], "_Base")
+            name for name in required
+            if name in stub_classes
+            and not self._real_bases(class_nodes[name], class_nodes, stub_classes)
         ]
         if stubs:
             for criterion in ("TokenBucket", "SlidingWindowLog", "FixedWindow"):
@@ -152,8 +177,20 @@ for _cls in _classes:
     assert _instance.allow_request("a", 0.0) is True
     assert _instance.allow_request("a", 0.0) is False
     assert _instance.allow_request("b", 0.0) is True
+    # Fresh-instance expiry anchor: the simulated clock must advance. With a
+    # limit of 1, two calls at t=0 deny the second, and the window must expire
+    # so a call at t=11.0 (window_seconds=10.0) is allowed again. A deny-forever
+    # implementation (never expires) and a wall-clock implementation (ignores
+    # `now`) both fail this anchor.
+    _fresh = _cls(limit=1, window_seconds=10.0)
+    assert _fresh.allow_request("a", 0.0) is True
+    assert _fresh.allow_request("a", 0.0) is False
+    assert _fresh.allow_request("a", 11.0) is True
     assert isinstance(_instance.get_usage_stats("a"), dict)
-    assert isinstance(_instance.cleanup(100.0), int)
+    _removed = _instance.cleanup(100.0)
+    # bool is a subclass of int, so isinstance(True, int) is True; a cleanup
+    # that returns a bool (e.g. an always-False no-op) must not pass the type check.
+    assert isinstance(_removed, int) and not isinstance(_removed, bool)
     # 0 and negatives fail a naive `<= 0` check; nan and inf only fail with a
     # non-finite guard (nan comparisons are always False).
     for _bad_window in (0.0, -1.0, float("nan"), float("inf")):
@@ -196,11 +233,16 @@ for _thread in _threads:
 assert len(_results) == 16
 '''
             execution = run_python_check(source, harness)
+            # Credit the behavioral criterion only when the assertion harness
+            # itself ran to completion (exit 0 AND the completion sentinel
+            # printed). A response that exits 0 before the harness (sys.exit /
+            # os._exit / SystemExit) reports status "passed" but harness_ok
+            # False, and must score 0 rather than a clean pass.
             rubric.add_criterion(
                 "Behavioral strategy tests", 10.0,
-                10.0 if execution.status == "passed" else 0.0,
+                10.0 if execution.harness_ok else 0.0,
                 evidence=[execution.as_evidence()],
-                negative_findings=[] if execution.status == "passed" else [{"finding": execution.error or execution.status}],
+                negative_findings=[] if execution.harness_ok else [{"finding": execution.error or "harness did not run to completion"}],
             )
         else:
             rubric.add_criterion("Behavioral strategy tests", 10.0, 0.0, negative_findings=[{"finding": "no executable source"}])
