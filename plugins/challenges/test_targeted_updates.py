@@ -1,7 +1,7 @@
 """Targeted regressions for structured scoring behavior."""
 import unittest
 
-from plugins.challenges._analysis import markdown_sections
+from plugins.challenges._analysis import markdown_sections, normalize_heading
 from plugins.challenges._validators import parse_workflow_graph, validate_sections
 from plugins.challenges.code_review import CodeReviewPlugin
 from plugins.challenges.multi_step import MultiStepPlugin
@@ -93,6 +93,18 @@ Weather in Tokyo, flight JFK to Tokyo, hotel for 2 guests, SONY stock, 150000 JP
         self.assertNotIn("Next section body", overview.body)
         next_section = next(section for section in sections if section.normalized == "next")
         self.assertEqual(next_section.body.strip(), "Next section body.")
+
+    def test_normalize_heading_strips_numbering_and_ampersand(self):
+        self.assertEqual(normalize_heading("1. Executive Summary"), "executive summary")
+        self.assertEqual(normalize_heading("Goals & Objectives"), "goals and objectives")
+
+    def test_validate_sections_matches_numbered_heading(self):
+        response = (
+            "## 1. Executive Summary\n"
+            "FlowState improves productivity by reducing context switching and protecting deep focus."
+        )
+        validation = validate_sections(response, ["executive summary"])
+        self.assertTrue(validation.valid)
 
 
 if __name__ == "__main__":

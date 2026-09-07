@@ -7,7 +7,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
-from plugins.challenges._analysis import fence_label_matches
+from plugins.challenges._analysis import fence_label_matches, normalize_heading
 
 try:
     import yaml
@@ -213,7 +213,7 @@ def heading_occurrences(text: str) -> list[tuple[str, str]]:
     matches = list(re.finditer(r"(?m)^\s{0,3}(#{1,6})\s+(.+?)\s*$", text))
     occurrences = []
     for index, match in enumerate(matches):
-        heading = re.sub(r"[*_`]+", "", match.group(2)).strip().lower()
+        heading = normalize_heading(match.group(2))
         depth = len(match.group(1))
         end = len(text)
         for following in matches[index + 1:]:

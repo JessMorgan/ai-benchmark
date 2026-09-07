@@ -23,8 +23,10 @@ class Section:
 
 
 def normalize_heading(value: str) -> str:
-    """Normalize Markdown decoration and punctuation for heading matching."""
+    """Normalize Markdown decoration, list numbering, and punctuation for heading matching."""
     value = re.sub(r"[*_`]+", "", value).strip().lower()
+    value = re.sub(r"^\d+[.)]\s+", "", value)
+    value = value.replace("&", "and")
     value = re.sub(r"[^a-z0-9]+", " ", value)
     return re.sub(r"\s+", " ", value).strip()
 
