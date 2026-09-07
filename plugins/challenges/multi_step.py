@@ -59,11 +59,19 @@ class MultiStepPlugin(BenchmarkTaskPlugin):
         return float(val) if isinstance(val, (int, float)) else None
 
     @staticmethod
-    def _definitions(tree: ast.AST) -> set[str]:
-        return {
-            node.name for node in ast.walk(tree)
+    def _module_level_defs(tree: ast.AST) -> list[ast.FunctionDef | ast.AsyncFunctionDef]:
+        """Return only the module-level function definitions (top-level body).
+
+        Nested or wrapped definitions (inside a class, another function, or a
+        factory) do not expose a module-level API, so the contract and
+        signature criteria must not credit them.
+        """
+        if not isinstance(tree, ast.Module):
+            return []
+        return [
+            node for node in tree.body
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-        }
+        ]
 
     @staticmethod
     def _signature_matches(node: Any, args: tuple[tuple[str, str], ...], returns: str) -> bool:
@@ -105,7 +113,8 @@ class MultiStepPlugin(BenchmarkTaskPlugin):
         validation = parse_python(parse_text)
         rubric.record_validation(validation)
         tree = validation.value if validation.valid else None
-        definitions = self._definitions(tree) if tree is not None else set()
+        module_defs = self._module_level_defs(tree) if tree is not None else []
+        definitions = {node.name for node in module_defs}
 
         expected = {"greet_user", "validate_name", "format_greeting"}
         present = expected & definitions
@@ -125,17 +134,15 @@ class MultiStepPlugin(BenchmarkTaskPlugin):
         }
         signature_hits = 0
         signature_evidence = []
-        if tree is not None:
-            for name, (args, returns) in expected_signatures.items():
-                matching = [
-                    node for node in ast.walk(tree)
-                    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-                    and node.name == name
-                    and self._signature_matches(node, args, returns)
-                ]
-                if matching:
-                    signature_hits += 1
-                    signature_evidence.append({"kind": "signature", "name": name})
+        for name, (args, returns) in expected_signatures.items():
+            matching = [
+                node for node in module_defs
+                if node.name == name
+                and self._signature_matches(node, args, returns)
+            ]
+            if matching:
+                signature_hits += 1
+                signature_evidence.append({"kind": "signature", "name": name})
         rubric.add_criterion(
             "Typed signatures", 1.0, 1.0 * signature_hits / 3.0,
             evidence=signature_evidence,

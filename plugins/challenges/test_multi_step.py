@@ -84,3 +84,26 @@ def unfenced_response():
 def test_unfenced_correct_response_not_zeroed():
     score = MultiStepPlugin().score(unfenced_response())
     assert score >= 15.0
+
+
+def nested_response():
+    """The three functions wrapped inside a class, exposing no module-level API.
+
+    Before the fix, ast.walk name matching credited the nested methods for the
+    contract even though no module-level API exists (measured 5/20).
+    """
+    return """```python
+class _Impl:
+    def greet_user(self, name: str) -> str:
+        return f"Hello, {name}! Welcome."
+    def validate_name(self, name: str) -> bool:
+        return bool(name.strip()) and name.replace(' ', '').isalpha() and len(name) <= 50
+    def format_greeting(self, greeting: str, times: int) -> str:
+        return '' if times < 1 else '\\n'.join([greeting] * times)
+```
+[SUMMARY: 3 functions, 3 code blocks, completed all steps]."""
+
+
+def test_nested_functions_no_module_api_score_low():
+    score = MultiStepPlugin().score(nested_response())
+    assert score < 5.0
