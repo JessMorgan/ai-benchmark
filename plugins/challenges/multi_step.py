@@ -203,7 +203,7 @@ class MultiStepPlugin(BenchmarkTaskPlugin):
         # the exact summary" check still sees prose hidden in a non-Python fence.
         rubric.add_criterion(
             "Exact response contract", 2.0,
-            3.0 if block_contract and self._text_minus_python_blocks(text).strip() == text.splitlines()[-1].strip() else 0.0,
+            2.0 if block_contract and self._text_minus_python_blocks(text).strip() == text.splitlines()[-1].strip() else 0.0,
             negative_findings=(
                 [{"finding": "each required function must occupy its own Python block, followed only by the exact summary"}]
                 if not block_contract else []
@@ -213,7 +213,7 @@ class MultiStepPlugin(BenchmarkTaskPlugin):
         stubs = stub_definitions(tree, expected) if tree is not None else []
         rubric.add_criterion(
             "Non-stub implementation", 1.0,
-            2.0 if not stubs and present == expected else 0.0,
+            1.0 if not stubs and present == expected else 0.0,
             negative_findings=[{"finding": f"stub definition: {name}"} for name in stubs],
         )
 
@@ -235,7 +235,7 @@ class MultiStepPlugin(BenchmarkTaskPlugin):
             negative_findings.append({"finding": "no Python block defines a required function"})
         rubric.add_criterion(
             "No forbidden prose or main block", 1.0,
-            2.0 if not forbidden and has_required_code else 0.0,
+            1.0 if not forbidden and has_required_code else 0.0,
             negative_findings=negative_findings,
         )
 
@@ -273,7 +273,7 @@ assert format_greeting("Hi", -1) == ""
                 failure_reason="required function behavior failed its isolated API tests",
             )
             if execution.status == "passed":
-                rubric.credit_criterion("Non-stub implementation", 2.0, "all API tests passed")
+                rubric.credit_criterion("Non-stub implementation", 1.0, "all API tests passed")
         else:
             rubric.add_criterion("Behavioral API tests", 11.0, 0.0, negative_findings=[{"finding": "no executable Python source"}])
         if execution is not None and execution.status != "passed":
