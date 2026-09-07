@@ -121,6 +121,27 @@ class FixedWindow(RateLimiterBase): pass
         assert not any("placeholder" in finding["finding"] for finding in item["negative_findings"])
 
 
+def test_rate_limiter_stub_base_subclass_is_placeholder_penalized():
+    response = """```python
+import threading
+class _Base: pass
+class TokenBucket(_Base): pass
+class SlidingWindowLog(_Base): pass
+class FixedWindow(_Base): pass
+```"""
+    result = RateLimiterPlugin().evaluate(response)
+    # A pass-body class whose only base is a stub must still be penalized as a
+    # placeholder (the RL-3 name-agnostic exemption must not open a free-credit
+    # path for stub-only bases).
+    placeholder = [
+        finding
+        for item in result.rubric
+        for finding in item.get("negative_findings", [])
+        if "placeholder" in finding["finding"]
+    ]
+    assert placeholder, "expected a placeholder penalty for the stub-base subclasses"
+
+
 def test_rate_limiter_bool_cleanup_return_is_not_full_behavioral_credit():
     response = """```python
 import math
