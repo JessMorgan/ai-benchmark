@@ -141,7 +141,7 @@ assert find_duplicate_users([
             negative_findings=depth_findings,
         )
 
-        fix_correct = bool(re.search(r"(?:>=\s*2|count\s*\)\s*>=\s*2|count\s*>=\s*2)", fix_text))
+        fix_correct = bool(re.search(r"(?:>=\s*2|count\s*\)\s*>=\s*2|count\s*>=\s*2|count\s*>\s*1)", fix_text))
         fix_findings = []
         if not fix_correct:
             fix_findings.append({"finding": "corrected code must accept exactly two occurrences"})

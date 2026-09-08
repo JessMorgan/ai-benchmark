@@ -354,6 +354,44 @@ def test_debug_traversal_inverted_diagnosis_cannot_earn_depth():
     assert result.score < 20.0
 
 
+def test_debug_traversal_fix_accepts_equivalent_count_gt_one():
+    # DT-3: `count > 1` is the equivalent corrected form (for integer counts it
+    # admits exactly count >= 2) and the execution harness already credits it;
+    # the lexical fix criterion must accept it too, not only `>= 2`.
+    response = (
+        "## Root Cause\n"
+        "The comparison `count > 2` is too strict; it should be `count > 1`.\n"
+        "## Analysis\n"
+        "For abc123, count is 2. Since 2 > 2 is False, abc123 is not added and the "
+        "function returns an empty list. def456 has count 1.\n"
+        "## Fix\n"
+        "```python\n"
+        "def find_duplicate_users(log_entries):\n"
+        "    user_counts = {}\n"
+        "    for entry in log_entries:\n"
+        "        user_id = entry.get('user_id')\n"
+        "        if user_id:\n"
+        "            user_counts[user_id] = user_counts.get(user_id, 0) + 1\n"
+        "    result = []\n"
+        "    for user_id, count in user_counts.items():\n"
+        "        if count > 1:\n"
+        "            result.append(user_id)\n"
+        "    return result\n"
+        "```\n"
+        "## Test\n"
+        "```python\n"
+        "def test_find_duplicate_users():\n"
+        "    assert find_duplicate_users([{'user_id': 'abc123'}, {'user_id': 'abc123'}, {'user_id': 'def456'}]) == ['abc123']\n"
+        "```\n"
+        "## Side Effects\n"
+        "Ordering is preserved; empty IDs are skipped; duplicates are counted.\n"
+    )
+    result = DebugTraversalPlugin().evaluate(response)
+    fix = next(item for item in result.rubric if item["name"] == "Proposed fix / corrected code")
+    assert fix["earned"] == 3.0
+    assert result.score == 20.0
+
+
 def test_instruction_following_wrong_tie_break_does_not_pass():
     response = """ORDER T-05 | CUSTOMER NOOR | TOTAL 120.00
 ORDER T-02 | CUSTOMER JULES | TOTAL 120.00
