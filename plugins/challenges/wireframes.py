@@ -115,7 +115,7 @@ class WireframesPlugin(BenchmarkTaskPlugin):
         notes = sum(bool(re.search(r"annotation|note:|interaction|on tap|on click|when user|behavior", section.body, re.IGNORECASE)) for section in unique.values())
         rubric.add_criterion("Annotations and interaction notes", 2.0, 2.0 if notes >= 2 else float(notes))
         screen_text = " ".join(section.body for section in unique.values())
-        feature_hits = sum(bool(re.search(pattern, screen_text, re.IGNORECASE)) for pattern in (r"focus", r"calendar", r"music", r"schedule|planning", r"timer|session", r"settings"))
+        feature_hits = sum(bool(re.search(pattern, screen_text, re.IGNORECASE)) for pattern in (r"focus", r"calendar", r"schedule|planning", r"timer|session", r"settings"))
         rubric.add_criterion("Coverage of PRD features", 1.0, 1.0 if feature_hits >= 5 else 0.5 if feature_hits >= 3 else 0.0)
         return rubric.results()
 

@@ -164,6 +164,21 @@ def test_duplicate_edges_count_once():
     assert navigation["earned"] == 2.0
 
 
+def test_prd_feature_criterion_ignores_features_the_prompt_does_not_name():
+    # The prompt names focus, calendar, planning/schedule, session/timer, and
+    # settings — not music. Mentioning music must not substitute for a
+    # missing named feature (calendar here).
+    response = (
+        "## Dashboard\nPurpose: focus and planning.\n"
+        "## Focus Session\nPurpose: timer session.\n"
+        "## AI Planning\nPurpose: schedule.\n"
+        "## Settings\nPurpose: settings and music.\n"
+    )
+    result = WireframesPlugin().evaluate(response)
+    features = next(item for item in result.rubric if item["name"] == "Coverage of PRD features")
+    assert features["earned"] == 0.5
+
+
 def test_navigation_and_tabletop_do_not_match_component_keywords():
     response = (
         "## Dashboard\nPurpose: the navigation panel.\n"
