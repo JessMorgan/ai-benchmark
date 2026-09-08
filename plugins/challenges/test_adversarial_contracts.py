@@ -991,6 +991,178 @@ TIME: 09:30"""
     assert ReasoningPlugin().score(response) < ReasoningPlugin().max_score
 
 
+def test_reasoning_clue_restatement_with_wrong_answer_scores_low():
+    # RE-1: a response that restates the clue wording measured 14.0 while a
+    # naturally-phrased correct answer measured 13.3 (6 of 8 reasoning points
+    # were earnable by copying the clues). The four reasoning-point criteria
+    # are now capped at half their max when the final answer lines are wrong
+    # or absent.
+    response = """1. Auth is immediately before Search, Profile is before Auth, Upload is after Search, and Billing is after Upload but before Notifications.
+2. Therefore Profile is at 09:00, Auth is at 09:15, Search is at 09:30, Upload is at 09:45, Billing is at 10:00, and Notifications is at 10:15.
+3. Ben owned Search, Eli owned Upload, and Ana owned Notifications at 10:15.
+4. Auth is P1, Notifications is P2, and Upload has higher priority than Search, which has higher priority than Billing; therefore Search is P5.
+FAILED_SERVICE: Profile
+OWNER: Ana
+PRIORITY: P4
+TIME: 09:00"""
+    result = ReasoningPlugin().evaluate(response)
+    assert result.score < 8.0
+    for name in (
+        "Time-chain deductions",
+        "Derived time assignments",
+        "Ownership deductions",
+        "Priority-chain deductions",
+    ):
+        item = next(item for item in result.rubric if item["name"] == name)
+        assert item["earned"] <= item["max"] / 2.0
+    # The restatement no longer beats a naturally-phrased correct answer.
+    correct = response.replace(
+        "FAILED_SERVICE: Profile\nOWNER: Ana\nPRIORITY: P4\nTIME: 09:00",
+        "FAILED_SERVICE: Search\nOWNER: Ben\nPRIORITY: P5\nTIME: 09:30",
+    )
+    assert result.score < ReasoningPlugin().score(correct)
+
+
+def test_reasoning_accepts_owns_phrasing_and_gt_priority_chains():
+    # RE-2: "Ben owns Search" (the ownership patterns required the literal
+    # words "owned"/"owner") and "Upload > Search > Billing" (the chain
+    # pattern required the literal word "higher") were phrasing traps; a
+    # table-format correct answer measured 10.7, the same as a
+    # wrong-priority answer. Both phrasings now earn their criteria.
+    response = """1. Auth is immediately before Search, Profile is before Auth, Upload is after Search, and Billing is after Upload but before Notifications.
+2. Profile 09:00, Auth 09:15, Search 09:30, Upload 09:45, Billing 10:00, Notifications 10:15.
+3. Ben owns Search, Eli owns Upload, and Ana owns Notifications at 10:15.
+4. Auth is P1, Notifications is P2, and Upload > Search > Billing, so Search is P5.
+FAILED_SERVICE: Search
+OWNER: Ben
+PRIORITY: P5
+TIME: 09:30"""
+    result = ReasoningPlugin().evaluate(response)
+    ownership = next(item for item in result.rubric if item["name"] == "Ownership deductions")
+    assert ownership["earned"] == ownership["max"]
+    priorities = next(item for item in result.rubric if item["name"] == "Priority-chain deductions")
+    assert priorities["earned"] == priorities["max"]
+    assert result.score == ReasoningPlugin().max_score
+
+
+def test_reasoning_takes_the_last_label_occurrence_for_final_answer():
+    # RE-3: the first `LABEL:` match used to win, so a tentative mid-text
+    # line plus correct finals still earned the wrong value, and the
+    # no-numbering penalty scanned the whole text so "Step 1:" style
+    # deductions tripped it. The final answer now reads the LAST occurrence
+    # of each label, and the numbering penalty is scoped to the tail after
+    # the last FAILED_SERVICE line.
+    response = """Step 1: Auth is immediately before Search, Profile is before Auth, Upload is after Search, and Billing is after Upload but before Notifications.
+Step 2: Therefore Profile is at 09:00, Auth is at 09:15, Search is at 09:30, Upload is at 09:45, Billing is at 10:00, and Notifications is at 10:15.
+Step 3: Ben owned Search, Eli owned Upload, and Ana owned Notifications at 10:15.
+Step 4: Auth is P1, Notifications is P2, and Upload has higher priority than Search, which has higher priority than Billing; therefore Search is P5.
+FAILED_SERVICE: Upload
+OWNER: Ben
+PRIORITY: P5
+TIME: 09:30
+FAILED_SERVICE: Search
+OWNER: Ben
+PRIORITY: P5
+TIME: 09:30"""
+    result = ReasoningPlugin().evaluate(response)
+    final = next(item for item in result.rubric if item["name"] == "Final answer")
+    assert final["earned"] == 8.0
+    time_item = next(item for item in result.rubric if item["name"] == "Time-chain deductions")
+    assert time_item["earned"] == 4.0
+
+
+def test_reasoning_numbered_trailing_prose_after_final_lines_is_penalized():
+    # RE-3: the finals contract ("exactly four final lines") was unenforced
+    # against trailing prose. Numbered lines after the last FAILED_SERVICE
+    # line now trigger the numbering penalty.
+    response = """1. Auth is immediately before Search, Profile is before Auth, Upload is after Search, and Billing is after Upload but before Notifications.
+2. Therefore Profile is at 09:00, Auth is at 09:15, Search is at 09:30, Upload is at 09:45, Billing is at 10:00, and Notifications is at 10:15.
+3. Ben owned Search, Eli owned Upload, and Ana owned Notifications at 10:15.
+4. Auth is P1, Notifications is P2, and Upload has higher priority than Search, which has higher priority than Billing; therefore Search is P5.
+FAILED_SERVICE: Search
+OWNER: Ben
+PRIORITY: P5
+TIME: 09:30
+1. Profile at 09:00
+2. Auth at 09:15"""
+    result = ReasoningPlugin().evaluate(response)
+    time_item = next(item for item in result.rubric if item["name"] == "Time-chain deductions")
+    assert time_item["earned"] == 3.0
+
+
+def test_reasoning_penalizes_contradictory_service_time_pairs():
+    # RE-4: the contradiction detector only recognized the literal phrasing
+    # "Search is at HH:MM" (plus the FAILED_SERVICE field), so a wrong
+    # assignment phrased as "Search at 09:45" escaped it. All service/time
+    # pairs are now extracted and compared against the unique solution.
+    response = """1. Auth is immediately before Search, Profile is before Auth, Upload is after Search, and Billing is after Upload but before Notifications.
+2. Therefore Profile is at 09:00, Auth is at 09:15, Search at 09:45, Upload is at 09:30, Billing is at 10:00, and Notifications is at 10:15.
+3. Ben owned Search, Eli owned Upload, and Ana owned Notifications at 10:15.
+4. Auth is P1, Notifications is P2, and Upload has higher priority than Search, which has higher priority than Billing; therefore Search is P5.
+FAILED_SERVICE: Search
+OWNER: Ben
+PRIORITY: P5
+TIME: 09:30"""
+    result = ReasoningPlugin().evaluate(response)
+    assignments = next(item for item in result.rubric if item["name"] == "Derived time assignments")
+    assert any("contradictory" in finding["finding"] for finding in assignments["negative_findings"])
+    assert assignments["earned"] < 3.0
+
+
+def test_reasoning_penalizes_final_time_field_that_disagrees_with_failed_service():
+    # RE-4: the TIME field is compared against the unique solution time of
+    # the last FAILED_SERVICE, so "FAILED_SERVICE: Search" plus
+    # "TIME: 09:45" is a contradiction even with no service/time pair in
+    # the prose.
+    response = """1. Auth is immediately before Search, Profile is before Auth, Upload is after Search, and Billing is after Upload but before Notifications.
+FAILED_SERVICE: Search
+OWNER: Ben
+PRIORITY: P5
+TIME: 09:45"""
+    result = ReasoningPlugin().evaluate(response)
+    assignments = next(item for item in result.rubric if item["name"] == "Derived time assignments")
+    assert any("contradictory" in finding["finding"] for finding in assignments["negative_findings"])
+
+
+def test_reasoning_p5_association_spans_newlines_in_final_block():
+    # RE-5: the P5 pin used `.` (which does not match newlines), so a
+    # sparse final block like "Search\n09:30\nP5" failed the association
+    # check and a correct answer measured 16/20. The check now spans
+    # newlines.
+    response = """1. Auth is immediately before Search, Profile is before Auth, Upload is after Search, and Billing is after Upload but before Notifications.
+2. Profile 09:00, Auth 09:15, Search 09:30, Upload 09:45, Billing 10:00, Notifications 10:15.
+3. Ben owns Search, Eli owns Upload, and Ana owns Notifications at 10:15.
+4. Auth is P1, Notifications is P2, and Upload > Search > Billing.
+FAILED_SERVICE: Search
+OWNER: Ben
+PRIORITY: P5
+TIME: 09:30
+Search
+09:30
+P5"""
+    result = ReasoningPlugin().evaluate(response)
+    priorities = next(item for item in result.rubric if item["name"] == "Priority-chain deductions")
+    assert priorities["earned"] == priorities["max"]
+    assert result.score == ReasoningPlugin().max_score
+
+
+def test_reasoning_negated_time_chain_earns_no_deduction():
+    # RE-6: the time-chain patterns were negation-blind, so "Auth is NOT
+    # immediately before Search" still earned the deduction. A negation
+    # word in the gap now blocks the match.
+    response = """1. Auth is NOT immediately before Search.
+2. Profile is before Auth.
+3. Upload is after Search.
+4. Billing is after Upload and before Notifications.
+FAILED_SERVICE: Search
+OWNER: Ben
+PRIORITY: P5
+TIME: 09:30"""
+    result = ReasoningPlugin().evaluate(response)
+    time_item = next(item for item in result.rubric if item["name"] == "Time-chain deductions")
+    assert time_item["earned"] == 3.0
+
+
 def test_long_context_requires_the_joined_evidence_chain():
     response = "INCIDENT: I-17\nOWNER: Omar\nESCALATION CHANNEL: PagerDuty\nEVIDENCE: F02\nREASONING: I guessed this."
     assert LongContextPlugin().score(response) < 15.0
