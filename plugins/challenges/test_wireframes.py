@@ -189,3 +189,20 @@ def test_navigation_and_tabletop_do_not_match_component_keywords():
     result = WireframesPlugin().evaluate(response)
     components = next(item for item in result.rubric if item["name"] == "Key UI components")
     assert components["earned"] == 0.0
+
+
+def test_partial_credit_cannot_reach_full_without_passing_gate():
+    # Five screens, but only four carry a purpose and visual evidence: the
+    # partial-credit path must stay strictly below the full score.
+    lines = []
+    for index, name in enumerate(("Dashboard", "Focus Session", "Calendar Integration", "AI Planning", "Settings")):
+        lines.append(f"## {name}")
+        if index < 4:
+            lines.append("Purpose: the top bar.")
+            lines.append("[Button] Action")
+        else:
+            lines.append("Plain text only.")
+    result = WireframesPlugin().evaluate("\n".join(lines))
+    by_name = {item["name"]: item for item in result.rubric}
+    assert by_name["Screen names and purposes"]["earned"] < by_name["Screen names and purposes"]["max"]
+    assert by_name["Visual/structural wireframe"]["earned"] < by_name["Visual/structural wireframe"]["max"]
