@@ -291,6 +291,48 @@ Verify the fix and patch the comparison.
     assert diagnosis["earned"] == 4.0, f"Expected 4.0 (positive signals), got {diagnosis['earned']}"
 
 
+def test_debug_consistency_reproduction_requires_the_positive_trace():
+    # Measured pre-fix (DC-3): a correct answer that quoted the report's
+    # claimed `[]` output lost the 4.0 reproduction criterion (16/20 total)
+    # because the blanket `empty|\[\]` negation matched the quoted claim.
+    # After the fix the criterion requires the positive trace (the actual
+    # output ['abc']) and ignores quoted claims.
+    response = """## Reproduction
+The report claims the output is []. Tracing the code, counts is {'abc': 2},
+so the function returns ['abc'].
+## Consistency Check
+The code is correct and the report is not reproducible.
+## Diagnosis
+There is no bug in the code.
+## Evidence Needed
+Collect logs, stack traces, and environment details.
+## Recommendation
+Verify the fix and patch the comparison.
+"""
+    result = DebugConsistencyPlugin().evaluate(response)
+    reproduction = next(item for item in result.rubric if item["name"] == "Reproduction trace")
+    assert reproduction["earned"] == 4.0, f"Expected 4.0 (positive trace present), got {reproduction['earned']}"
+
+
+def test_debug_consistency_empty_output_claim_earns_no_reproduction():
+    # A hallucinated trace that reports the (wrong) empty output must not
+    # earn the criterion: the positive trace ['abc'] is absent.
+    response = """## Reproduction
+Running the code with the input produces an empty list.
+## Consistency Check
+The code is incorrect and inconsistent with the specification.
+## Diagnosis
+There is a bug in the comparison logic.
+## Evidence Needed
+Collect logs, stack traces, and environment details.
+## Recommendation
+Verify the fix and patch the comparison.
+"""
+    result = DebugConsistencyPlugin().evaluate(response)
+    reproduction = next(item for item in result.rubric if item["name"] == "Reproduction trace")
+    assert reproduction["earned"] == 0.0, f"Expected 0.0 (no positive trace), got {reproduction['earned']}"
+
+
 def test_debug_traversal_requires_executable_threshold_fix():
     response = """## Root Cause
 The threshold should be at least two.

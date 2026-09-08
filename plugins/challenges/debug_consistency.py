@@ -67,11 +67,13 @@ class DebugConsistencyPlugin(BenchmarkTaskPlugin):
         diagnosis = first_section(text, ["Diagnosis"])
         evidence = first_section(text, ["Evidence Needed"])
         recommendation = first_section(text, ["Recommendation"])
+        # The positive trace must be present: the actual output ['abc'].
+        # The old blanket `empty|\[\]` negation zeroed a correct answer that
+        # quoted the report's claimed `[]` output (measured: 16/20).
         reproduction_ok = bool(
             reproduction
-            and re.search(r"abc", reproduction.body, re.IGNORECASE)
-            and re.search(r"(?:\[?['\"]?abc['\"]?\]?|list)", reproduction.body, re.IGNORECASE)
-            and not re.search(r"(?:empty|\[\])", reproduction.body, re.IGNORECASE)
+            and re.search(r"\babc\b", reproduction.body, re.IGNORECASE)
+            and re.search(r"\[\s*['\"]?abc['\"]?\s*\]", reproduction.body, re.IGNORECASE)
         )
         rubric.add_criterion("Reproduction trace", 4.0, 4.0 if reproduction_ok else 0.0,
                              negative_findings=[] if reproduction_ok else [{"finding": "trace the supplied input to ['abc']"}])
