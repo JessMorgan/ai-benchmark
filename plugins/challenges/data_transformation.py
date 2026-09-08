@@ -216,6 +216,39 @@ class DataTransformationPlugin(BenchmarkTaskPlugin):
             negative_findings=findings or [],
         )
 
+    @staticmethod
+    def _summary_consistency(summary: dict[str, Any], records: list[dict[str, Any]]) -> dict[str, bool]:
+        """Cross-check summary fields against the response's own records.
+
+        A summary that matches the expected answer but contradicts the
+        records the response actually emitted (a fabricated aggregate) must
+        not earn credit: ``count`` must equal the number of emitted records,
+        ``top_order_id`` must equal the first emitted record's order_id, and
+        ``total`` must equal the sum of the emitted records' totals within a
+        small tolerance.
+        """
+        numeric_totals: list[float] = []
+        for record in records:
+            if not isinstance(record, dict):
+                continue
+            total = record.get("total")
+            if isinstance(total, (int, float)) and not isinstance(total, bool):
+                numeric_totals.append(float(total))
+        first_order_id = next(
+            (str(record.get("order_id")) for record in records if isinstance(record, dict)),
+            None,
+        )
+        total = summary.get("total")
+        return {
+            "count": summary.get("count") == len(records),
+            "top_order_id": first_order_id is not None and summary.get("top_order_id") == first_order_id,
+            "total": (
+                isinstance(total, (int, float))
+                and not isinstance(total, bool)
+                and abs(total - sum(numeric_totals)) <= 0.01
+            ),
+        }
+
     def evaluate(self, response_text: str) -> EvaluationResult:
         text = response_text.strip()
         rubric = Rubric(self.max_score)
@@ -325,14 +358,24 @@ class DataTransformationPlugin(BenchmarkTaskPlugin):
         raw_summary = data.get("summary") if isinstance(data, dict) and isinstance(data.get("summary"), dict) else {}
         actual_summary: dict[str, Any] = dict(raw_summary)  # type: ignore[arg-type]
         summary_fields = ["count", "total", "top_order_id"]
-        summary_matches = [field for field in summary_fields if actual_summary.get(field) == expected_summary[field]]
+        summary_consistency = self._summary_consistency(actual_summary, actual_records)
+        summary_matches = [
+            field for field in summary_fields
+            if actual_summary.get(field) == expected_summary[field] and summary_consistency[field]
+        ]
+        summary_findings: list[dict[str, Any]] = []
+        if len(summary_matches) != len(summary_fields):
+            summary_findings.append({"finding": "summary does not match retained records"})
+            inconsistent = [field for field in summary_fields if not summary_consistency[field]]
+            if inconsistent:
+                summary_findings.append({"finding": "summary is inconsistent with the emitted records", "fields": inconsistent})
         self._criterion(
             rubric,
             "Derived summary",
             3.0,
             round(3.0 * len(summary_matches) / len(summary_fields), 1),
             evidence=[{"kind": "summary-field", "field": field} for field in summary_matches],
-            findings=[] if len(summary_matches) == len(summary_fields) else [{"finding": "summary does not match retained records"}],
+            findings=summary_findings,
         )
 
         strict = set(data) == {"records", "summary"}
