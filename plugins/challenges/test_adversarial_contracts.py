@@ -502,6 +502,16 @@ def test_debug_traversal_structure_is_linear_not_clamped():
     assert structure_earned(four) == 2.0
 
 
+def test_debug_traversal_defective_comparison_is_word_bounded():
+    # DT-7: the defective-comparison match is word-bounded, so "count > 20"
+    # does not satisfy it (the bare `>\s*2` matched "> 2" as a prefix of
+    # "> 20"), while "count > 2" and the correct comparison still do.
+    from plugins.challenges.debug_traversal import _DEFECTIVE_COMPARISON_RE
+    assert _DEFECTIVE_COMPARISON_RE.search("the comparison count > 2 is wrong")
+    assert not _DEFECTIVE_COMPARISON_RE.search("the comparison count > 20 is wrong")
+    assert _DEFECTIVE_COMPARISON_RE.search("it should be count >= 2")
+
+
 def test_instruction_following_wrong_tie_break_does_not_pass():
     response = """ORDER T-05 | CUSTOMER NOOR | TOTAL 120.00
 ORDER T-02 | CUSTOMER JULES | TOTAL 120.00

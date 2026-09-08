@@ -26,6 +26,13 @@ _CORRECTIVE_RE = re.compile(
     r".{0,80}?" + _CORRECT_COMPARISON,
     re.IGNORECASE | re.DOTALL,
 )
+# DT-7: the defective-comparison pattern. `>\s*2\b` is word-bounded so
+# "count > 20" does not satisfy it (the bare `>\s*2` matched "> 2" as a
+# prefix of "> 20").
+_DEFECTIVE_COMPARISON_RE = re.compile(
+    r"(?:>\s*2\b|greater\s+than\s+2|strict\s+inequality|>=\s*2|at\s+least\s+2)",
+    re.IGNORECASE,
+)
 
 
 class DebugTraversalPlugin(BenchmarkTaskPlugin):
@@ -137,7 +144,7 @@ assert find_duplicate_users([
             negative_findings=[{"finding": withheld}] if trace_hits and not exec_ok else [],
         )
 
-        correct_diagnosis = bool(re.search(r"(?:>\s*2|greater\s+than\s+2|strict\s+inequality|>=\s*2|at\s+least\s+2)", root_text, re.IGNORECASE))
+        correct_diagnosis = bool(_DEFECTIVE_COMPARISON_RE.search(root_text))
         corrective = bool(_CORRECTIVE_RE.search(root_text))
         depth_base = correct_diagnosis and corrective and bool(re.search(r"count|two|2", analysis_text, re.IGNORECASE))
         depth_findings = []
