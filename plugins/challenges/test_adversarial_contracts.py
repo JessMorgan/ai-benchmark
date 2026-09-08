@@ -333,6 +333,24 @@ def test_long_context_evidence_is_per_id_credit_for_correct_chain():
     assert evidence["earned"] == 0.0, f"Expected 0.0 (per-ID credit), got {evidence['earned']}"
 
 
+def test_long_context_p1_is_word_bounded_no_p12_leakage():
+    # Measured before the fix: P12 leakage (the bare `r"P1"` and
+    # `"p1" in reasoning` matched "P12" as a substring, so a response with
+    # "P12" in the reasoning earned the Exact answer p1 sub-check and the
+    # cross-ref P1 check). After the fix, both checks use word-bounded
+    # `\bP1\b` / `\bp1\b`, so "P12" does not satisfy "P1".
+    response = (
+        "INCIDENT: I-17\n"
+        "OWNER: Omar\n"
+        "ESCALATION CHANNEL: PagerDuty\n"
+        "EVIDENCE: F02 F05 F09 F13\n"
+        "REASONING: EU 14:30 P12 I-17 PagerDuty"
+    )
+    result = LongContextPlugin().evaluate(response)
+    cross = next(item for item in result.rubric if item["name"] == "Cross-reference reasoning")
+    assert cross["earned"] == 0.0, f"Expected 0.0 (word-bounded P1), got {cross['earned']}"
+
+
 def test_moe_document_keywords_without_local_sections_score_low():
     response = "MoE and dense models use top-k softmax gating, load balancing equations, training, inference, benchmarks, and references."
     assert MoEDensePlugin().score(response) < 10.0

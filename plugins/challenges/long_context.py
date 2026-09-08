@@ -124,13 +124,20 @@ class LongContextPlugin(BenchmarkTaskPlugin):
         )
         # Per-field gating: each sub-check is gated on its own field being
         # present (bool(values[label])), not all on REASONING non-empty
-        # (measured: one missing heading 20->7).
-        rubric.add_criterion("Exact answer", 4.0, float(sum(bool(values[label]) and expected in values[label].lower() for label, expected in (("OWNER", "omar"), ("ESCALATION CHANNEL", "pagerduty"), ("REASONING", "14:30"), ("REASONING", "p1")))))
+        # (measured: one missing heading 20->7). "p1" is word-bounded so
+        # "P12" does not satisfy "P1" (measured: P12 leakage).
+        exact_subchecks = (
+            bool(values["OWNER"]) and "omar" in values["OWNER"].lower(),
+            bool(values["ESCALATION CHANNEL"]) and "pagerduty" in values["ESCALATION CHANNEL"].lower(),
+            bool(values["REASONING"]) and "14:30" in values["REASONING"].lower(),
+            bool(values["REASONING"]) and re.search(r"\bp1\b", values["REASONING"], re.IGNORECASE) is not None,
+        )
+        rubric.add_criterion("Exact answer", 4.0, float(sum(exact_subchecks)))
         ids = set(re.findall(r"\bF\d{2}\b", values["EVIDENCE"] + " " + values["REASONING"]))
         # Per-ID credit: 1.0 for each correct-chain fact ID cited (max 4.0),
         # so four wrong IDs earn 0.0 (measured: four wrong IDs 4/4).
         rubric.add_criterion("Evidence retrieval", 4.0, min(4.0, float(len(ids & {"F02", "F05", "F09", "F13"}))) if incident_ok else 0.0, evidence=[{"kind": "fact-id", "id": value} for value in sorted(ids)])
-        cross = incident_ok and _positive_ref(values["REASONING"], "I-17") and all(re.search(pattern, values["REASONING"], re.IGNORECASE) for pattern in (r"EU", r"14:30", r"P1", r"PagerDuty"))
+        cross = incident_ok and _positive_ref(values["REASONING"], "I-17") and all(re.search(pattern, values["REASONING"], re.IGNORECASE) for pattern in (r"EU", r"14:30", r"\bP1\b", r"PagerDuty"))
         rubric.add_criterion("Cross-reference reasoning", 3.0, 3.0 if cross else 0.0)
         rubric.add_criterion("Owner/service consistency", 2.0, 2.0 if incident_ok and (_positive_ref(values["EVIDENCE"], "I-17") or _positive_ref(values["EVIDENCE"], "F02")) and re.search(r"Omar", values["EVIDENCE"] + " " + values["OWNER"], re.IGNORECASE) else 0.0)
         exact_headers = all(re.search(rf"(?im)^\s*{re.escape(label)}\s*:", text) for label in ("INCIDENT", "OWNER", "ESCALATION CHANNEL", "EVIDENCE", "REASONING"))
