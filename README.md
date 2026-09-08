@@ -271,7 +271,7 @@ Plugins are discovered automatically from `plugins/challenges/`. Each plugin is 
 | `event-processor` | Concurrent Event Processor | 0.5.0 | 20 | Yes |
 | `instruction-following` | Instruction Following | 1.0.0 | 20 | Yes |
 | `long-context` | Long-Context Retrieval | 0.1.0 | 20 | Yes |
-| `moe-dense` | MoE vs Dense | 1.0.1 | 17 | Yes |
+| `moe-dense` | MoE vs Dense | 1.1.0 | 17 | Yes |
 | `multi-step` | Multi-Step Instructions | 1.4.0 | 20 | Yes |
 | `multi-turn-conversation` | Multi-Turn Conversation | 1.0.0 | 20 | Yes |
 | `orchestration` | Orchestration & Workflow | 1.0.0 | 16 | Yes |

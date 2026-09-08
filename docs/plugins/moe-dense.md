@@ -3,8 +3,8 @@
 | Property | Value |
 |---|---|
 | ID | `moe-dense` |
-| Version | `1.0.1` |
+| Version | `1.1.0` |
 | Max Score | 17 |
 | Streaming | Yes |
 
-The response must use section-local Gating, Load Balancing, Training, Inference, Benchmarks, and References content. Scoring requires top-k/softmax routing and a real equation, a variable-bearing load-balancing formulation, two training issues, two concrete examples favoring each architecture, two identifiable references, and numeric side-by-side trade-offs.
+The response must use Gating, Load Balancing, Training, Inference, Benchmarks, and References sections. Most criteria score section-local content (routing equation in Gating, load-balancing formulation in Load Balancing, training issues, inference implications, benchmark pairs, references), while the quantitative trade-off criterion searches the full response for numeric values and side-by-side comparisons.
