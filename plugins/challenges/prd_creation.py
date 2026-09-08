@@ -81,8 +81,16 @@ class PRDCreationPlugin(BenchmarkTaskPlugin):
         measurable = [item for item in goal_items if re.search(r"\d+\s*%|\d+\s*(?:users?|days?|weeks?|months?|seconds?)|increase|reduce|improve", item, re.IGNORECASE)]
         rubric.add_criterion("Goals & Objectives", 2.0, 2.0 if len(measurable) >= 3 else (1.0 if len(measurable) >= 1 else 0.0))
         persona_items = numbered_or_bulleted_items(personas)
-        rubric.add_criterion("Target Users & Personas", 2.0, 2.0 if len(persona_items) >= 2 and len({item.split(":", 1)[0].strip().lower() for item in persona_items}) >= 2 else 0.0)
-        story_lines = [line.strip() for line in stories.splitlines() if re.match(r"(?:[-*]\s*)?As an?\s+.+?\s*,?\s+I want\s+.+?\s*,?\s+so that\s+.+", line, re.IGNORECASE)]
+        prose_persona_names = {
+            match.group(1).lower()
+            for match in re.finditer(r"\bpersona[s]?\b[^.\n]*?\b([A-Z][a-z]+)\b", personas)
+        }
+        persona_ok = (
+            len(persona_items) >= 2
+            and len({item.split(":", 1)[0].strip().lower() for item in persona_items}) >= 2
+        ) or len(prose_persona_names) >= 2
+        rubric.add_criterion("Target Users & Personas", 2.0, 2.0 if persona_ok else 0.0)
+        story_lines = [line.strip() for line in stories.splitlines() if re.match(r"(?:[-*]\s*)?(?:\d+[.)]\s*)?As an?\s+.+?\s*,?\s+I want\s+.+?\s*,?\s+so that\s+.+", line, re.IGNORECASE)]
         rubric.add_criterion("User Stories", 2.0, 2.0 if len(story_lines) >= 3 else (1.0 if story_lines else 0.0))
         req_items = numbered_or_bulleted_items(functional)
         req_items += re.findall(r"(?im)^\s*FR[- ]?\d+\s*:\s*(.+)$", functional)
@@ -94,7 +102,10 @@ class PRDCreationPlugin(BenchmarkTaskPlugin):
         rubric.add_criterion("Success Metrics / KPIs", 2.0, 2.0 if len(quantified) >= 3 else (1.0 if quantified else 0.0))
         names = set(re.findall(r"\b(?:Todoist|Notion|Trello|Asana|Forest|Rescue Time|Focusmate)\b", competitors, re.IGNORECASE))
         rubric.add_criterion("Competitive Analysis", 2.0, 2.0 if len(names) >= 2 and re.search(r"(?:lacks|strength|weakness|different|advantage|comparison)", competitors, re.IGNORECASE) else float(min(len(names), 2) / 2.0))
-        rubric.add_criterion("Timeline / Milestones", 2.0, 2.0 if len(numbered_or_bulleted_items(timeline)) >= 2 and re.search(r"MVP|beta|launch|Q[1-4]|phase", timeline, re.IGNORECASE) else 0.0)
+        timeline_items = numbered_or_bulleted_items(timeline)
+        timeline_phases = re.findall(r"\bphase\s*\d+", timeline, re.IGNORECASE)
+        milestone_ok = re.search(r"MVP|beta|launch|Q[1-4]|phase", timeline, re.IGNORECASE)
+        rubric.add_criterion("Timeline / Milestones", 2.0, 2.0 if milestone_ok and (len(timeline_items) >= 2 or len(timeline_phases) >= 2) else 0.0)
         rubric.add_criterion("Open Questions / Risks", 1.0, 1.0 if re.search(r"\?|risk|mitigation|assumption|dependency", risks, re.IGNORECASE) else 0.0)
         return rubric.results()
 

@@ -107,6 +107,42 @@ class TestPRDCreationScoring(unittest.TestCase):
         kpi = next(item for item in result.rubric if item["name"] == "Success Metrics / KPIs")
         self.assertEqual(kpi["earned"], 2.0)
 
+    def test_numbered_user_stories_earn_story_credit(self):
+        text = (
+            "## User Stories\n\n"
+            "1. As a developer, I want to block focus time, so that I can ship code.\n"
+            "2. As a designer, I want focus music, so that I can stay in flow.\n"
+            "3. As a manager, I want calendar integration, so that meetings don't interrupt deep work.\n"
+        )
+        result = self.plugin.evaluate(text)
+        stories = next(item for item in result.rubric if item["name"] == "User Stories")
+        self.assertEqual(stories["earned"], 2.0)
+        two_stories = text.replace("3. As a manager, I want calendar integration, so that meetings don't interrupt deep work.\n", "")
+        result = self.plugin.evaluate(two_stories)
+        stories = next(item for item in result.rubric if item["name"] == "User Stories")
+        self.assertEqual(stories["earned"], 1.0)
+
+    def test_prose_personas_earn_persona_credit(self):
+        text = (
+            "## Target Users & Personas\n\n"
+            "The primary persona, Alice, is a software engineer who needs uninterrupted focus blocks.\n"
+            "The secondary persona, Bob, is a product manager juggling meetings and deep work.\n"
+        )
+        result = self.plugin.evaluate(text)
+        personas = next(item for item in result.rubric if item["name"] == "Target Users & Personas")
+        self.assertEqual(personas["earned"], 2.0)
+
+    def test_phase_timeline_earn_milestone_credit(self):
+        text = (
+            "## Timeline / Milestones\n\n"
+            "Phase 1: MVP with calendar integration.\n"
+            "Phase 2: Beta with AI planning.\n"
+            "Phase 3: Public launch with focus music.\n"
+        )
+        result = self.plugin.evaluate(text)
+        timeline = next(item for item in result.rubric if item["name"] == "Timeline / Milestones")
+        self.assertEqual(timeline["earned"], 2.0)
+
     def test_repo_fixture_kpi_days_unit_earns_partial_credit(self):
         # The repo's own strong-PRD fixture listed "User retention at 30 days."
         # as its only quantified KPI and scored 0/2 because the KPI quantifier
