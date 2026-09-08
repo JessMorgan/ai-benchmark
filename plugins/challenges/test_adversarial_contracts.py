@@ -156,6 +156,26 @@ def test_code_review_accepts_unicode_bullets_and_top_level_json_array():
     assert CodeReviewPlugin().score(array_response) >= 13.0
 
 
+def test_code_review_top_level_array_has_no_spurious_not_an_object_error():
+    # Regression (CR-5): a top-level JSON array is an accepted issue-list
+    # form and scores, but parse_structured reports it as "structured
+    # candidate is not an object". That spurious error must not surface in
+    # the diagnostics of a response the plugin accepted and scored.
+    array_response = json.dumps([
+        {"description": "open(db_path) is never closed; use a context manager to avoid the leak"},
+        {"description": "user_id == None should be user_id is None"},
+        {"description": "the /tmp/data.txt path is hardcoded; parameterize db_path"},
+        {"description": "fetch_data may raise an exception; wrap it in try/except"},
+        {"description": "the os and time imports are unused; remove them"},
+    ])
+    result = CodeReviewPlugin().evaluate(array_response)
+    assert result.score >= 13.0
+    assert not any(
+        "structured candidate is not an object" in error
+        for error in result.diagnostics["errors"]
+    )
+
+
 def test_code_review_short_keywords_require_word_boundaries():
     # Measured pre-fix (CR-6): the boundary-less use/os/time keywords
     # matched inside longer words — "closed" satisfied the unused-imports

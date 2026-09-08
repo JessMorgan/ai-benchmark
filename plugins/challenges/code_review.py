@@ -132,6 +132,14 @@ class CodeReviewPlugin(BenchmarkTaskPlugin):
         validation = parse_structured(text, fmt="json")
         findings, json_dead_end = self._descriptions(text, validation)
         rubric.record_validation(validation)
+        spurious_error = "structured candidate is not an object"
+        if isinstance(validation.value, list) and spurious_error in validation.errors:
+            # A top-level JSON array is an accepted issue-list form (CR-5); the
+            # shared validator's "not an object" complaint is spurious here and
+            # must not surface as a diagnostic error on an accepted response.
+            rubric.errors = [
+                error for error in rubric.errors if error != spurious_error
+            ]
         if json_dead_end:
             # A recognized JSON object with no findings is a format-contract
             # violation; name it (or surface the shared multi-candidate
