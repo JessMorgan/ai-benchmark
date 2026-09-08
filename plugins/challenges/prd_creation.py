@@ -12,6 +12,10 @@ from plugins.challenges._analysis import (
 )
 from plugins.challenges._rubric import Rubric
 
+# Matches an "As a ... I want ... so that ..." user story line with an
+# optional bullet or list-number prefix; group(1) is the story content
+# without that prefix, which is what story dedupe must compare.
+_STORY_RE = re.compile(r"(?:[-*]\s*)?(?:\d+[.)]\s*)?(As an?\s+.+?\s*,?\s+I want\s+.+?\s*,?\s+so that\s+.+)", re.IGNORECASE)
 _KNOWN_COMPETITORS_RE = re.compile(r"\b(?:Todoist|Notion|Trello|Asana|Forest|Rescue Time|Focusmate)\b", re.IGNORECASE)
 # A single capitalized product-name token ("Pomofocus", "Rize.io"); the
 # optional dotted segment keeps "Rize.io" whole while a trailing sentence
@@ -264,8 +268,13 @@ class PRDCreationPlugin(BenchmarkTaskPlugin):
             and len({item.split(":", 1)[0].strip().lower() for item in persona_items}) >= 2
         ) or len(prose_persona_names) >= 2
         rubric.add_criterion("Target Users & Personas", 2.0, 2.0 if persona_ok else 0.0)
-        story_lines = [line.strip() for line in stories.splitlines() if re.match(r"(?:[-*]\s*)?(?:\d+[.)]\s*)?As an?\s+.+?\s*,?\s+I want\s+.+?\s*,?\s+so that\s+.+", line, re.IGNORECASE)]
-        rubric.add_criterion("User Stories", 2.0, 2.0 if len(story_lines) >= 3 else (1.0 if story_lines else 0.0))
+        story_lines = []
+        for line in stories.splitlines():
+            match = _STORY_RE.match(line)
+            if match:
+                story_lines.append(match.group(1).strip())
+        distinct_stories = {line.lower() for line in story_lines}
+        rubric.add_criterion("User Stories", 2.0, 2.0 if len(distinct_stories) >= 3 else (1.0 if story_lines else 0.0))
         req_items = numbered_or_bulleted_items(functional)
         req_items += re.findall(r"(?im)^\s*FR[- ]?\d+\s*:\s*(.+)$", functional)
         rubric.add_criterion("Functional Requirements", 3.0, 3.0 if len({item.lower() for item in req_items}) >= 5 else (1.5 if len(req_items) >= 3 else 0.0))
