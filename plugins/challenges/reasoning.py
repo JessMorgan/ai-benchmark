@@ -88,13 +88,13 @@ class ReasoningPlugin(BenchmarkTaskPlugin):
         ))
         rubric.add_criterion("Derived time assignments", 4.0, gated(min(4.0, assignments * 2.0 / 3.0), 2.0))
         ownership = sum(self._has(text, pattern) for pattern in (
-            r"Ben.{0,50}(?:owned|owner).{0,30}Search|Search.{0,50}(?:owned|owner).{0,30}Ben",
-            r"Eli.{0,60}(?:owned|owner).{0,30}Upload|Upload.{0,60}(?:owned|owner).{0,30}Eli",
-            r"Ana.{0,50}(?:owned|owner).{0,30}(?:Notifications|10:15)|(?:Notifications|10:15).{0,50}(?:owned|owner).{0,30}Ana",
+            r"Ben.{0,50}(?:owned|owner|owns).{0,30}Search|Search.{0,50}(?:owned|owner|owns).{0,30}Ben",
+            r"Eli.{0,60}(?:owned|owner|owns).{0,30}Upload|Upload.{0,60}(?:owned|owner|owns).{0,30}Eli",
+            r"Ana.{0,50}(?:owned|owner|owns).{0,30}(?:Notifications|10:15)|(?:Notifications|10:15).{0,50}(?:owned|owner|owns).{0,30}Ana",
         ))
         rubric.add_criterion("Ownership deductions", 2.0, gated(float(ownership) * 2.0 / 3.0, 1.0))
         priorities = sum(self._has(text, pattern) for pattern in (
-            r"Auth.{0,30}P1|P1.{0,30}Auth", r"Notifications.{0,30}P2|P2.{0,30}Notifications", r"Upload.{0,60}higher.{0,40}Search.{0,60}higher.{0,40}Billing",
+            r"Auth.{0,30}P1|P1.{0,30}Auth", r"Notifications.{0,30}P2|P2.{0,30}Notifications", r"Upload.{0,60}(?:higher|>).{0,40}Search.{0,60}(?:higher|>).{0,40}Billing",
         ))
         # Profile is pinned to P4 by the clue, leaving P5 for Search, P6 for
         # Upload, and P3 for Billing (B < S < U). The requested 09:30 service
