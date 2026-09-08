@@ -948,6 +948,18 @@ ORDER T-09 | CUSTOMER RAVI | TOTAL 65.00
     assert result.score < 17.0
 
 
+def test_instruction_following_summary_requires_at_least_one_order_line():
+    # IF-2: a zero-work response (no ORDER lines) must not earn the summary
+    # criterion. Pre-fix the bare [SUMMARY] line alone scored 5/20 (summary
+    # 4.0 + discipline 1.0). After the fix the summary points are gated on
+    # having at least one parsed ORDER line, so this scores 1/20.
+    response = "[SUMMARY] count=4; total=404.90; top_order=T-02"
+    result = InstructionFollowingPlugin().evaluate(response)
+    summary = next(item for item in result.rubric if item["name"] == "Summary arithmetic and format")
+    assert summary["earned"] == 0.0
+    assert result.score < 5.0
+
+
 def test_reasoning_rejects_the_old_p4_answer():
     response = """1. The time chain places Search at 09:30.
 2. Ben owns Search.

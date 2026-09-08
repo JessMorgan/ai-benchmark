@@ -87,7 +87,10 @@ class InstructionFollowingPlugin(BenchmarkTaskPlugin):
         transformed = sum(record in self._EXPECTED for record in parsed)
         rubric.add_criterion("Transformed order lines", 4.0, float(transformed),
                              evidence=[{"kind": "exact-record", "record": record} for record in parsed if record in self._EXPECTED])
-        rubric.add_criterion("Summary arithmetic and format", 4.0, 4.0 if lines and lines[-1] == self._SUMMARY else 0.0)
+        # The summary is only meaningful once at least one ORDER line is
+        # present; a bare [SUMMARY] with no orders earns no summary points.
+        summary_score = 4.0 if (lines and lines[-1] == self._SUMMARY and parsed) else 0.0
+        rubric.add_criterion("Summary arithmetic and format", 4.0, summary_score)
         exact = lines == [
             "ORDER T-02 | CUSTOMER JULES | TOTAL 120.00",
             "ORDER T-05 | CUSTOMER NOOR | TOTAL 120.00",
