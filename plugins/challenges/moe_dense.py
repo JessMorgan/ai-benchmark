@@ -79,18 +79,27 @@ class MoEDensePlugin(BenchmarkTaskPlugin):
         references = first_section(text, ["References", "Papers"])
         gating_text = gating.body if gating else ""
         load_text = load.body if load else ""
-        required_sections = {
-            "gating", "load balancing", "training", "inference", "benchmarks", "references",
+        section_aliases = {
+            "gating": ("gating", "routing"),
+            "load balancing": ("load balancing", "auxiliary loss"),
+            "training": ("training",),
+            "inference": ("inference",),
+            "benchmarks": ("benchmarks", "comparison"),
+            "references": ("references", "papers"),
         }
         present_sections = {section.normalized for section in sections}
         matched_sections = {
-            required: next((present for present in present_sections if required in present), None)
-            for required in required_sections
+            required: next(
+                (present for present in present_sections
+                 for alias in aliases if alias in present),
+                None,
+            )
+            for required, aliases in section_aliases.items()
         }
         section_hits = sum(value is not None for value in matched_sections.values())
         rubric.add_criterion(
             "Required comparison sections", 2.0,
-            2.0 * section_hits / len(required_sections),
+            2.0 * section_hits / len(section_aliases),
             evidence=[{"kind": "section", "name": name, "heading": heading}
                       for name, heading in matched_sections.items() if heading],
             negative_findings=[{"finding": f"missing section: {name}"}

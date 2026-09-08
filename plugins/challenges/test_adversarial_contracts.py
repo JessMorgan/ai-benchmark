@@ -365,6 +365,25 @@ def test_moe_load_balancing_requires_a_real_variable_not_significant():
     assert load2["earned"] == 3.0
 
 
+def test_moe_alias_sections_count_for_section_presence():
+    # Alias-matched sections ("## Routing" for gating, "## Papers" for
+    # references) must count toward section-presence points, not just the
+    # content criteria (measured: asymmetric leniency lost the presence point).
+    response = (
+        "## Routing\ntop-k softmax router g = softmax(Wx).\n"
+        "## Load Balancing\nauxiliary loss L = f_i p_i = 0.5.\n"
+        "## Training\nexpert collapse and token drop.\n"
+        "## Inference\nmemory bandwidth latency.\n"
+        "## Benchmarks\nMoE outperforms dense on MMLU.\n"
+        "## Papers\nShazeer 2017 and Mixtral 8x7B.\n"
+    )
+    sections = next(
+        item for item in MoEDensePlugin().evaluate(response).rubric
+        if item["name"] == "Required comparison sections"
+    )
+    assert sections["earned"] == 2.0
+
+
 def test_multi_step_requires_one_function_per_block():
     response = """```python
 def greet_user(name: str) -> str: return f'Hello, {name}! Welcome.'
