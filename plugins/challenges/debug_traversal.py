@@ -13,8 +13,9 @@ from plugins.challenges._execution import (
 )
 from plugins.challenges._rubric import Rubric
 
-# DT-2: the corrective statement — the response must state what SHOULD be done
-# (a corrective modal followed by the correct comparison). An inverted
+# DT-2: the corrective statement — the response must state the remedy, i.e. the
+# correct comparison, introduced by a corrective modal (should/must/change/...)
+# or a contrastive connector (instead of / rather than / not). An inverted
 # diagnosis (e.g. "should be > 2") names the buggy comparison, not the remedy,
 # and must not earn full depth credit (measured: inverted diagnosis 17/20).
 _CORRECT_COMPARISON = (
@@ -22,8 +23,11 @@ _CORRECT_COMPARISON = (
     r"|greater\s+than\s+or\s+equal\s+to\s+(?:2|two)|two\s+or\s+more)"
 )
 _CORRECTIVE_RE = re.compile(
-    r"\b(?:should|must|needs?\s+to|need\s+to|change|replace|use|fix|correct|set|make)\b"
-    r".{0,80}?" + _CORRECT_COMPARISON,
+    r"(?:"
+    r"\b(?:should|must|needs?\s+to|need\s+to|change|replace|use|fix|correct|set|make)\b.{0,80}?"
+    r"|"
+    r"(?:>\s*2\b|greater\s+than\s+2).{0,40}?(?:instead\s+of|rather\s+than|not)\b.{0,40}?"
+    r")" + _CORRECT_COMPARISON,
     re.IGNORECASE | re.DOTALL,
 )
 # DT-7: the defective-comparison pattern. `>\s*2\b` is word-bounded so
@@ -42,7 +46,7 @@ class DebugTraversalPlugin(BenchmarkTaskPlugin):
 
     @property
     def version(self) -> str:
-        return "1.2.0"
+        return "1.3.0"
 
     @property
     def name(self) -> str:
