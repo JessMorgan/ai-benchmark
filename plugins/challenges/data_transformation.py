@@ -110,7 +110,7 @@ class DataTransformationPlugin(BenchmarkTaskPlugin):
 
     @property
     def version(self) -> str:
-        return "1.1.0"
+        return "1.2.0"
 
     @property
     def name(self) -> str:
@@ -177,7 +177,6 @@ class DataTransformationPlugin(BenchmarkTaskPlugin):
         return True
 
     @staticmethod
-    @staticmethod
     def _evaluation_with_diagnostics(rubric: Rubric, schema_valid: bool, schema_errors: list[str]) -> EvaluationResult:
         result = rubric.results()
         diagnostics = dict(result.diagnostics or {})
@@ -190,12 +189,10 @@ class DataTransformationPlugin(BenchmarkTaskPlugin):
         return EvaluationResult(result.score, result.rubric, diagnostics)
 
     @staticmethod
-    @staticmethod
     def _records(data: dict[str, Any] | None) -> list[dict[str, Any]]:
         records = data.get("records") if isinstance(data, dict) else None
         return records if isinstance(records, list) else []
 
-    @staticmethod
     @staticmethod
     def _record_map(data: dict[str, Any] | None) -> dict[str, dict[str, Any]]:
         return {
@@ -204,7 +201,6 @@ class DataTransformationPlugin(BenchmarkTaskPlugin):
             if isinstance(record, dict) and isinstance(record.get("order_id"), str)
         }
 
-    @staticmethod
     @staticmethod
     def _criterion(rubric: Rubric, name: str, maximum: float, earned: float, evidence: list[dict[str, Any]] | None = None, findings: list[dict[str, Any]] | None = None) -> None:
         rubric.add_criterion(
@@ -307,6 +303,9 @@ class DataTransformationPlugin(BenchmarkTaskPlugin):
         )
 
         actual_map = self._record_map(data)
+        # Restated from the source packet: the current (latest-version) totals
+        # for the three orders that have superseded historical versions —
+        # O-201 v2 = 120.00, O-202 v2 = 150.00, O-208 v2 = 120.00.
         historical_expected = {"O-201": 120.0, "O-202": 150.0, "O-208": 120.0}
         historical_matches = [
             order_id for order_id, total in historical_expected.items()

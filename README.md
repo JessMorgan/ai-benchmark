@@ -279,7 +279,7 @@ Plugins are discovered automatically from `plugins/challenges/`. Each plugin is 
 | `rate-limiter` | Rate Limiter | 1.5.0 | 20 | Yes |
 | `reasoning` | Logical Reasoning | 1.2.0 | 20 | Yes |
 | `software-architecture` | Software Architecture | 1.1.0 | 20 | Yes |
-| `data-transformation` | Data Transformation | 1.1.0 | 22 | Yes |
+| `data-transformation` | Data Transformation | 1.2.0 | 22 | Yes |
 | `tool-calling` | Tool Calling Agent | 1.2.0 | 25 | Yes |
 | `wireframes` | Wireframes | 1.1.0 | 20 | Yes |
 
