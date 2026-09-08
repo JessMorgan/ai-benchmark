@@ -63,10 +63,16 @@ class OrchestrationPlugin(BenchmarkTaskPlugin):
             any(re.search(pattern, line, re.IGNORECASE) for pattern in (r"logs?", r"geo.?ip", r"anomal", r"pdf|report"))
             for line in task_lines
         )
+        # Scale credit by the lesser of ID coverage and operation coverage:
+        # declaring four IDs without naming the pipeline operations earns
+        # nothing, and naming operations without the required IDs does not
+        # reach full credit.
+        id_coverage = len(declared_ids & {"1", "2", "3", "4"}) / 4.0
+        op_coverage = min(1.0, operations / 4.0)
+        breakdown = 4.0 * min(id_coverage, op_coverage)
         rubric.add_criterion(
-            "Task breakdown presence", 4.0,
-            4.0 if declared_ids == {"1", "2", "3", "4"} and operations >= 4 else min(4.0, float(len(declared_ids))),
-            negative_findings=[] if declared_ids == {"1", "2", "3", "4"} and operations >= 4 else [{"finding": "declare exactly four task operations with IDs 1-4"}],
+            "Task breakdown presence", 4.0, breakdown,
+            negative_findings=[] if breakdown >= 4.0 else [{"finding": "declare exactly four task operations with IDs 1-4"}],
         )
         edges = graph.value.get("edges", []) if isinstance(graph.value, dict) else []
         rubric.add_criterion("Explicit dependency tagging", 4.0, 4.0 if graph.valid and len(edges) >= 3 else (2.0 if edges else 0.0), negative_findings=[] if graph.valid else [{"finding": "dependency graph is incomplete, cyclic, or references unknown tasks"}])

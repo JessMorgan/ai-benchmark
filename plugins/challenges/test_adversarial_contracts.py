@@ -1248,6 +1248,44 @@ Task 1 init running complete."""
     assert OrchestrationPlugin().score(response) < 10.0
 
 
+def test_orchestration_scales_breakdown_by_operation_coverage():
+    # Measured pre-fix: this zero-operation keyword response scored 16/16
+    # because the fallback credit min(4.0, len(declared_ids)) ignored the
+    # operation count entirely.
+    response = """Task 1 [PARALLEL]
+Task 2 [PARALLEL]
+Task 3 [SEQUENTIAL]
+Task 4 [SEQUENTIAL]
+Task 2 [DEPENDS_ON: task 1]
+Task 3 [DEPENDS_ON: task 2]
+Task 4 [DEPENDS_ON: task 3]
+Task 1 init running complete.
+Task 2 init running complete.
+Task 3 init running complete.
+Task 4 init running complete."""
+    result = OrchestrationPlugin().evaluate(response)
+    breakdown = next(item for item in result.rubric if item["name"] == "Task breakdown presence")
+    assert breakdown["earned"] == 0.0
+    assert result.score < 16.0
+
+
+def test_orchestration_partial_operation_coverage_earns_partial_breakdown():
+    response = """Task 1 [PARALLEL] process logs.
+Task 2 [PARALLEL] perform GeoIP lookup.
+Task 3 [SEQUENTIAL]
+Task 4 [SEQUENTIAL]
+Task 2 [DEPENDS_ON: task 1]
+Task 3 [DEPENDS_ON: task 2]
+Task 4 [DEPENDS_ON: task 3]
+Task 1 init running complete.
+Task 2 init running complete.
+Task 3 init running complete.
+Task 4 init running complete."""
+    result = OrchestrationPlugin().evaluate(response)
+    breakdown = next(item for item in result.rubric if item["name"] == "Task breakdown presence")
+    assert breakdown["earned"] == 2.0
+
+
 def test_prd_content_in_wrong_heading_does_not_earn_local_credit():
     response = """## Notes
 Executive Summary FlowState. Problem pain. Goals 25%. Persona 1 and Persona 2.
