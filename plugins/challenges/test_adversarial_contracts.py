@@ -512,6 +512,27 @@ def test_debug_traversal_defective_comparison_is_word_bounded():
     assert _DEFECTIVE_COMPARISON_RE.search("it should be count >= 2")
 
 
+def test_debug_traversal_fix_still_accepts_count_ge_two_after_dedup():
+    # DT-8: the `count >= 2` form (previously a separate, subsumed alternative)
+    # must still be accepted via the `>= 2` alternative after the dedup.
+    result = DebugTraversalPlugin().evaluate(
+        "## Root Cause\nThe comparison `count > 2` should be `count >= 2`.\n"
+        "## Analysis\nFor abc123, count is 2 and the function returns an empty list. def456 is present.\n"
+        "## Fix\n```python\ndef find_duplicate_users(log_entries):\n"
+        "    user_counts = {}\n    for entry in log_entries:\n"
+        "        user_id = entry.get('user_id')\n        if user_id:\n"
+        "            user_counts[user_id] = user_counts.get(user_id, 0) + 1\n"
+        "    result = []\n    for user_id, count in user_counts.items():\n"
+        "        if count >= 2:\n            result.append(user_id)\n"
+        "    return result\n```\n"
+        "## Test\n```python\ndef test_check():\n"
+        "    assert 'abc123' in find_duplicate_users(logs)\n```\n"
+        "## Side Effects\nOrdering and empty IDs are considered; duplicates are counted.\n"
+    )
+    fix = next(item for item in result.rubric if item["name"] == "Proposed fix / corrected code")
+    assert fix["earned"] == 3.0
+
+
 def test_instruction_following_wrong_tie_break_does_not_pass():
     response = """ORDER T-05 | CUSTOMER NOOR | TOTAL 120.00
 ORDER T-02 | CUSTOMER JULES | TOTAL 120.00
