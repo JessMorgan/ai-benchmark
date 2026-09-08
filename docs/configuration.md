@@ -735,7 +735,7 @@ You can set the temperature for each plugin using either of these config keys:
 {
   "rate-limiter_temperature": 0.2,
   "moe-dense_temperature": 0.7,
-  "code-review_temperature": 0.3,
+  "code_review_temperature": 0.3,
   "orchestration_temperature": 0.5,
   "decomposition_temperature": 0.5,
   "tool-calling_temperature": 0.2,

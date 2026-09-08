@@ -32,6 +32,171 @@ def test_code_review_cannot_reuse_one_finding_for_every_defect():
     assert sum(item["earned"] for item in result.rubric) < 8.0
 
 
+def test_code_review_denying_every_defect_scores_low():
+    # Measured pre-fix: this all-denial response scored 15/15 because keyword
+    # co-occurrence cannot see negation.
+    response = json.dumps({"issues": [
+        {"description": "open(db_path) is fine; the file handle is closed properly, no leak"},
+        {"description": "user_id == None is fine; the comparison works correctly"},
+        {"description": "the /tmp/data.txt path is fine and acceptable"},
+        {"description": "fetch_data never raises; no exception handling is needed"},
+        {"description": "the os and time imports are used; no unused imports"},
+    ]})
+    result = CodeReviewPlugin().evaluate(response)
+    defect_names = {
+        "File handle not closed / resource leak",
+        "== None instead of is None",
+        "Hardcoded /tmp path",
+        "Missing error handling / fetch_data may fail",
+        "Unused imports",
+    }
+    assert sum(item["earned"] for item in result.rubric if item["name"] in defect_names) == 0.0
+    assert result.score < 5.0
+
+
+def test_code_review_one_stuffed_line_cannot_score_full():
+    # Measured pre-fix: this single keyword-stuffed line scored 15/15 because
+    # every defect check reused the same finding and the citations floor
+    # degraded to 1. Now one finding satisfies at most one defect and the
+    # citations point needs >=3 distinct findings.
+    response = json.dumps({"issues": [{
+        "description": "open(db_path) is not closed so it leaks; user_id == None should use is None; "
+        "the /tmp/data.txt path should be a parameter; fetch_data may raise an exception so add "
+        "try/except; the os and time imports are unused, remove them",
+    }]})
+    result = CodeReviewPlugin().evaluate(response)
+    defect_names = {
+        "File handle not closed / resource leak",
+        "== None instead of is None",
+        "Hardcoded /tmp path",
+        "Missing error handling / fetch_data may fail",
+        "Unused imports",
+    }
+    defect_earned = [item for item in result.rubric if item["name"] in defect_names and item["earned"] > 0]
+    assert len(defect_earned) <= 1
+    citations = next(item for item in result.rubric if item["name"] == "Source citations")
+    assert citations["earned"] == 0.0
+    assert result.score < 8.0
+
+
+def test_code_review_json_with_unrecognized_keys_falls_back_to_bullets():
+    # Measured pre-fix (ornith-nas): valid JSON with unrecognized keys
+    # dead-ended at 0/15 while judges said ~90 — the bullet fallback never
+    # ran because the JSON branch returned an empty finding list.
+    response = (
+        "```json\n"
+        '{"problems": ["the open(db_path) handle is never closed; use a context manager"]}\n'
+        "```\n"
+        "- open(db_path) is never closed; use a context manager to avoid the leak\n"
+        "- user_id == None should be user_id is None\n"
+        "- the /tmp/data.txt path is hardcoded; parameterize db_path\n"
+        "- fetch_data may raise; wrap in try/except\n"
+        "- the os and time imports are unused; remove them\n"
+    )
+    result = CodeReviewPlugin().evaluate(response)
+    assert result.score >= 13.0
+    assert any("format contract" in error for error in result.diagnostics["errors"])
+
+
+def test_code_review_json_without_recognized_findings_names_the_contract():
+    result = CodeReviewPlugin().evaluate('{"problems": ["nothing to see here"]}')
+    assert result.score == 0.0
+    assert any("format contract" in error for error in result.diagnostics["errors"])
+
+
+def test_code_review_stray_brace_prose_with_fenced_json_scores():
+    # Measured pre-fix: a stray brace in the prose before the fenced JSON
+    # made the find("{")..rfind("}") slice span the brace to the JSON's last
+    # brace; the slice failed to parse and the response scored 0.
+    response = (
+        "Here is my review (note: the {brace} in the prompt is a red herring):\n\n"
+        "```json\n"
+        '{"issues": [\n'
+        '  {"description": "open(db_path) is never closed; use a context manager to avoid the leak"},\n'
+        '  {"description": "user_id == None should be user_id is None"},\n'
+        '  {"description": "the /tmp/data.txt path is hardcoded; parameterize db_path"},\n'
+        '  {"description": "fetch_data may raise an exception; wrap it in try/except"},\n'
+        '  {"description": "the os and time imports are unused; remove them"}\n'
+        "]}\n"
+        "```"
+    )
+    result = CodeReviewPlugin().evaluate(response)
+    assert result.score >= 13.0
+
+
+def test_code_review_non_dict_issue_items_do_not_crash():
+    # The candidate is parsed by parse_structured, so the old try/except no
+    # longer guards item access: non-dict issue entries must be skipped
+    # (dead-end + contract finding), not crash evaluate().
+    result = CodeReviewPlugin().evaluate('{"issues": ["a plain string finding", 42]}')
+    assert result.score == 0.0
+    assert any("format contract" in error for error in result.diagnostics["errors"])
+
+
+def test_code_review_accepts_unicode_bullets_and_top_level_json_array():
+    # Measured pre-fix (CR-5): a •-bulleted review and a top-level JSON
+    # array of issue objects both scored 0/15 — the bullet pattern only
+    # matched -/* and numbered markers, and only a JSON object was
+    # recognized as a structured candidate.
+    bullet_response = (
+        "• open(db_path) is never closed; use a context manager to avoid the leak\n"
+        "• user_id == None should be user_id is None\n"
+        "• the /tmp/data.txt path is hardcoded; parameterize db_path\n"
+        "• fetch_data may raise an exception; wrap it in try/except\n"
+        "• the os and time imports are unused; remove them\n"
+    )
+    assert CodeReviewPlugin().score(bullet_response) >= 13.0
+    array_response = json.dumps([
+        {"description": "open(db_path) is never closed; use a context manager to avoid the leak"},
+        {"description": "user_id == None should be user_id is None"},
+        {"description": "the /tmp/data.txt path is hardcoded; parameterize db_path"},
+        {"description": "fetch_data may raise an exception; wrap it in try/except"},
+        {"description": "the os and time imports are unused; remove them"},
+    ])
+    assert CodeReviewPlugin().score(array_response) >= 13.0
+
+
+def test_code_review_top_level_array_has_no_spurious_not_an_object_error():
+    # Regression (CR-5): a top-level JSON array is an accepted issue-list
+    # form and scores, but parse_structured reports it as "structured
+    # candidate is not an object". That spurious error must not surface in
+    # the diagnostics of a response the plugin accepted and scored.
+    array_response = json.dumps([
+        {"description": "open(db_path) is never closed; use a context manager to avoid the leak"},
+        {"description": "user_id == None should be user_id is None"},
+        {"description": "the /tmp/data.txt path is hardcoded; parameterize db_path"},
+        {"description": "fetch_data may raise an exception; wrap it in try/except"},
+        {"description": "the os and time imports are unused; remove them"},
+    ])
+    result = CodeReviewPlugin().evaluate(array_response)
+    assert result.score >= 13.0
+    assert not any(
+        "structured candidate is not an object" in error
+        for error in result.diagnostics["errors"]
+    )
+
+
+def test_code_review_short_keywords_require_word_boundaries():
+    # Measured pre-fix (CR-6): the boundary-less use/os/time keywords
+    # matched inside longer words — "closed" satisfied the unused-imports
+    # defect via "os" (2.0 pre-fix), and "user"/"uses" satisfied the "use"
+    # remediation term (1.0 pre-fix).
+    plugin = CodeReviewPlugin()
+    in_word_os = '{"issues": [{"description": "the unused variable is closed without cleanup"}]}'
+    result = plugin.evaluate(in_word_os)
+    unused = next(item for item in result.rubric if item["name"] == "Unused imports")
+    assert unused["earned"] == 0.0
+    in_word_use = '{"issues": [{"description": "the user_id check uses == None"}]}'
+    result = plugin.evaluate(in_word_use)
+    actionable = next(item for item in result.rubric if item["name"] == "Actionable / concrete fixes")
+    assert actionable["earned"] == 0.0
+    # Legitimate standalone keywords must still be credited.
+    legitimate = '{"issues": [{"description": "the os and time imports are unused; remove them"}]}'
+    result = plugin.evaluate(legitimate)
+    unused = next(item for item in result.rubric if item["name"] == "Unused imports")
+    assert unused["earned"] == 2.0
+
+
 def test_debug_consistency_rejects_a_patch_for_a_reproducible_report():
     response = """## Reproduction
 The output is ['abc'].
