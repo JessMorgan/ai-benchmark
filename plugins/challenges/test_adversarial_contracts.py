@@ -1286,6 +1286,21 @@ Task 4 init running complete."""
     assert breakdown["earned"] == 2.0
 
 
+def test_orchestration_accepts_numbered_list_task_declarations():
+    # Measured pre-fix: this numbered-list response scored 0.0/16 because
+    # only "task"/"step"-prefixed lines were recognized as task
+    # declarations, although the prompt never mandates that prefix.
+    response = """1. Process 1TB server logs (parallel)
+2. GeoIP lookup (sequential) [DEPENDS_ON: 1]
+3. Anomaly detection (sequential) [DEPENDS_ON: 2]
+4. Generate PDF report (sequential) [DEPENDS_ON: 3]
+1: init running complete
+2: init running complete
+3: init running complete
+4: init running complete"""
+    assert OrchestrationPlugin().score(response) == 16.0
+
+
 def test_prd_content_in_wrong_heading_does_not_earn_local_credit():
     response = """## Notes
 Executive Summary FlowState. Problem pain. Goals 25%. Persona 1 and Persona 2.
