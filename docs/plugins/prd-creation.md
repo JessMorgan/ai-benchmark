@@ -38,7 +38,7 @@ The PRD must include:
 | Functional Requirements | 3 | Distinct features and capabilities |
 | Non-Functional Requirements | 2 | Performance, security, reliability, scalability |
 | Success Metrics / KPIs | 2 | Quantitative metrics |
-| Competitive Analysis | 2 | At least 2 competitors |
+| Competitive Analysis | 2 | At least 2 distinct competitors with comparative context; known competitor names always count, other capitalized product names count only in a section with a comparative predicate (e.g. "lacks", "strength", "different", "compared", "better") — the same vocabulary that gates full credit; a comma-followed name still counts when it is the object of a comparative construction ("Compared to X,", "Unlike X,", "Versus X,", "its competitor, X,"), while bare discourse connectives ("However,", "First,") never count as names and comma enumerations without a per-token comparative marker ("Pomofocus, Rize.io, and Todoist all lack X") earn at most partial credit; case variants dedupe |
 | Timeline / Milestones | 2 | Phases or release milestones |
 | Open Questions / Risks | 1 | Risks and unresolved questions |
 
