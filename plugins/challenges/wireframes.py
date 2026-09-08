@@ -82,10 +82,9 @@ class WireframesPlugin(BenchmarkTaskPlugin):
             return rubric.results()
         sections = markdown_sections(text)
         screens = [(self._screen_name(section.heading), section) for section in sections]
-        screens = [(name, section) for name, section in screens if name]
+        named: list[tuple[str, Any]] = [(name, section) for name, section in screens if name]
         unique: dict[str, Any] = {}
-        for name, section in screens:
-            assert name is not None
+        for name, section in named:
             unique.setdefault(name, section)
         screen_count = len(unique)
         rubric.record_validation(type("Validation", (), {
