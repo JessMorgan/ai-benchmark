@@ -23,7 +23,7 @@ AI Benchmark uses a plugin architecture. Each plugin defines a benchmark task, a
 | `reasoning` | Logical Reasoning | 1.1.0 | 20 | Yes |
 | `software-architecture` | Software Architecture | 1.0.0 | 20 | Yes |
 | `data-transformation` | Data Transformation | 1.1.0 | 22 | Yes |
-| `tool-calling` | Tool Calling Agent | 1.1.1 | 25 | Yes |
+| `tool-calling` | Tool Calling Agent | 1.2.0 | 25 | Yes |
 | `wireframes` | Wireframes | 1.0.0 | 20 | Yes |
 
 ## Selecting Plugins

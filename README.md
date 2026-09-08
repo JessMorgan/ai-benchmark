@@ -280,7 +280,7 @@ Plugins are discovered automatically from `plugins/challenges/`. Each plugin is 
 | `reasoning` | Logical Reasoning | 1.1.0 | 20 | Yes |
 | `software-architecture` | Software Architecture | 1.0.0 | 20 | Yes |
 | `data-transformation` | Data Transformation | 1.1.0 | 22 | Yes |
-| `tool-calling` | Tool Calling Agent | 1.1.1 | 25 | Yes |
+| `tool-calling` | Tool Calling Agent | 1.2.0 | 25 | Yes |
 | `wireframes` | Wireframes | 1.0.0 | 20 | Yes |
 
 Each plugin exposes a `version` attribute so results can be correlated to a specific plugin release. Discovery validates required metadata and rejects duplicate IDs before a run starts.

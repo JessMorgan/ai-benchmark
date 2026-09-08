@@ -170,7 +170,7 @@ The runtime inventory below matches `uv run ai-benchmark --list-plugins`:
 | `reasoning` | 1.1.0 | 20 | Yes |
 | `software-architecture` | 1.0.0 | 20 | Yes |
 | `data-transformation` | 1.1.0 | 22 | Yes |
-| `tool-calling` | 1.1.1 | 25 | Yes |
+| `tool-calling` | 1.2.0 | 25 | Yes |
 | `wireframes` | 1.0.0 | 20 | Yes |
 
 All challenge plugins stream by default: the

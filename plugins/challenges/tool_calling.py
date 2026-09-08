@@ -19,7 +19,7 @@ class ToolCallingPlugin(BenchmarkTaskPlugin):
 
     @property
     def version(self) -> str:
-        return "1.1.1"
+        return "1.2.0"
 
     @property
     def name(self) -> str:
@@ -37,7 +37,7 @@ class ToolCallingPlugin(BenchmarkTaskPlugin):
         return (
             "Plan and call exactly these six tools in this order: get_weather(Tokyo,celsius), "
             "search_flights(JFK,Tokyo,2024-08-15), book_hotel(Tokyo,2024-08-16,2024-08-20,2), "
-            "get_stock_price(SONY), convert_currency(1000,USD,JPY), send_email(alice@example.com, "
+            "get_stock_price(SONY), convert_currency(amount 1000, from_curr USD, to_curr JPY), send_email(alice@example.com, "
             "subject Tokyo Trip Itinerary, body). Put the plan in `<plan>...</plan>`, each call in "
             "one valid `<tool_call>{...}</tool_call>`, and after the calls provide a final response "
             "covering weather, flight, hotel, stock, email, and a numeric converted JPY amount."
