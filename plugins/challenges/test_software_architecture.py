@@ -222,6 +222,16 @@ class TestSoftwareArchitectureScoring(unittest.TestCase):
             "availability target backed only by 'multi-region' must be penalized",
         )
 
+    def test_bare_arrow_without_component_does_not_count(self):
+        # A bare "->" with no component after it is not a component diagram; it
+        # must not satisfy the architecture pattern that a real diagram does.
+        text = (
+            "## Architecture Style\n\n"
+            "microservices with an api gateway. component ->\n"
+        )
+        rubric = {c["name"]: c for c in self.plugin.evaluate(text).rubric}
+        self.assertLess(rubric["Architecture & Patterns"]["earned"], 2.5)
+
     def test_partial_response_scores(self):
         text = (
             "## Executive Summary\n\n"

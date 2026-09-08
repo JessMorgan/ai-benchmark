@@ -92,7 +92,7 @@ class SoftwareArchitecturePlugin(BenchmarkTaskPlugin):
         resilience = body("Resiliency & Failure Modes")
         security = body("Security Considerations")
         observability = body("Observability & SLOs")
-        arch_hits = sum(bool(re.search(pattern, architecture, re.IGNORECASE)) for pattern in (r"microservices|modular monolith|event.?driven|serverless", r"api gateway|service|component", r"```(?:mermaid|plantuml)|graph TD|->|responsibilit",))
+        arch_hits = sum(bool(re.search(pattern, architecture, re.IGNORECASE)) for pattern in (r"microservices|modular monolith|event.?driven|serverless", r"api gateway|service|component", r"```(?:mermaid|plantuml)|graph TD|->\s*\[?\w|responsibilit",))
         rubric.add_criterion("Architecture & Patterns", 2.5, min(2.5, float(arch_hits)))
         data_hits = sum(bool(re.search(pattern, data, re.IGNORECASE)) for pattern in (r"postgres|sql|relational", r"nosql|document|columnar|mongodb|dynamodb|time.?series", r"entity|user|session|schedule", r"shard|replica|partition|cache|redis|ttl"))
         endpoint_count = len(re.findall(r"\b(?:GET|POST|PUT|PATCH|DELETE)\s*\|?\s*/\S+", api, re.IGNORECASE))
