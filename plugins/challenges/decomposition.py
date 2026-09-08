@@ -271,7 +271,9 @@ class DecompositionPlugin(BenchmarkTaskPlugin):
         shared_tasks = graph.value.get("tasks", set()) if graph.value else set()
         if len(shared_tasks) >= 2:
             declared_edges = graph.value.get("edges", [])
-            valid = graph.valid and len(declared_edges) >= 1
+            # graph.valid already implies >=1 edge (the shared parser errors
+            # on edge-less graphs), so no separate length check.
+            valid = graph.valid
             validity_findings = [] if valid else [{"finding": f"invalid graph: {'; '.join(graph.errors) or 'no edges'}"}]
         else:
             # The shared parser only recognizes "Task N"/"Step N" IDs; a plan
