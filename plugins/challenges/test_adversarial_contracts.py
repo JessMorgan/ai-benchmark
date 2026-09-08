@@ -315,6 +315,24 @@ def test_long_context_cross_ref_is_negation_aware_for_incident_id():
     assert cross["earned"] == 0.0, f"Expected 0.0 (negation-aware), got {cross['earned']}"
 
 
+def test_long_context_evidence_is_per_id_credit_for_correct_chain():
+    # Measured before the fix: four wrong IDs 4/4 (evidence earned 4.0 when
+    # the response cited 4 wrong IDs because the old logic gave partial credit
+    # for the number of IDs present). After the fix, per-ID credit is given
+    # only for correct-chain membership {F02, F05, F09, F13}, so four wrong
+    # IDs earn 0.0.
+    response = (
+        "INCIDENT: I-17\n"
+        "OWNER: Omar\n"
+        "ESCALATION CHANNEL: PagerDuty\n"
+        "EVIDENCE: F21 F22 F23 F24\n"
+        "REASONING: EU 14:30 P1 I-17 PagerDuty"
+    )
+    result = LongContextPlugin().evaluate(response)
+    evidence = next(item for item in result.rubric if item["name"] == "Evidence retrieval")
+    assert evidence["earned"] == 0.0, f"Expected 0.0 (per-ID credit), got {evidence['earned']}"
+
+
 def test_moe_document_keywords_without_local_sections_score_low():
     response = "MoE and dense models use top-k softmax gating, load balancing equations, training, inference, benchmarks, and references."
     assert MoEDensePlugin().score(response) < 10.0

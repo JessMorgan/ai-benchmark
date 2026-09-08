@@ -232,8 +232,8 @@ def test_long_context_retrieves_and_cross_references_facts():
     response = """INCIDENT: I-17
 OWNER: Omar
 ESCALATION CHANNEL: PagerDuty
-EVIDENCE: F02, F05, F09
-REASONING: F02 identifies I-17 in EU at 14:30 with P1; F05 links its runbook; F09 maps P1 to PagerDuty.
+EVIDENCE: F02, F05, F09, F13
+REASONING: F02 identifies I-17 in EU at 14:30 with P1; F05 links its runbook; F09 maps P1 to PagerDuty; F13 confirms the PagerDuty escalation for RB-7.
 """
     assert LongContextPlugin().score(response) == 20.0
 
