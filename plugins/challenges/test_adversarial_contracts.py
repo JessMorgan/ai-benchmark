@@ -298,6 +298,23 @@ def test_long_context_exact_answer_is_per_field_gated_not_all_on_reasoning():
     assert exact["earned"] == 2.0, f"Expected 2.0 (per-field gating), got {exact['earned']}"
 
 
+def test_long_context_cross_ref_is_negation_aware_for_incident_id():
+    # Measured before the fix: 5/5 on "NOT I-17" (cross-ref earned 3.0 when
+    # reasoning said "NOT I-17" because the bare `re.search(r"I-17", ...)`
+    # matched the substring). After the fix, `_positive_ref` is negation-aware,
+    # so the cross-ref earns 0.0 when the reasoning negates the incident ID.
+    response = (
+        "INCIDENT: I-17\n"
+        "OWNER: Omar\n"
+        "ESCALATION CHANNEL: PagerDuty\n"
+        "EVIDENCE: F02 F05 F09\n"
+        "REASONING: EU 14:30 P1 NOT I-17 PagerDuty"
+    )
+    result = LongContextPlugin().evaluate(response)
+    cross = next(item for item in result.rubric if item["name"] == "Cross-reference reasoning")
+    assert cross["earned"] == 0.0, f"Expected 0.0 (negation-aware), got {cross['earned']}"
+
+
 def test_moe_document_keywords_without_local_sections_score_low():
     response = "MoE and dense models use top-k softmax gating, load balancing equations, training, inference, benchmarks, and references."
     assert MoEDensePlugin().score(response) < 10.0
