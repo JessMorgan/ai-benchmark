@@ -75,7 +75,11 @@ class DebugConsistencyPlugin(BenchmarkTaskPlugin):
         )
         rubric.add_criterion("Reproduction trace", 4.0, 4.0 if reproduction_ok else 0.0,
                              negative_findings=[] if reproduction_ok else [{"finding": "trace the supplied input to ['abc']"}])
-        consistency_ok = bool(consistency and re.search(r"(?:returns?\s*\[?['\"]?abc|not\s+reproduc|correct|consistent|does\s+not\s+follow|no\s+bug)", consistency.body, re.IGNORECASE))
+        # Word-bounded, direction-aware: the positive forms must match as
+        # whole words so the negated forms (`incorrect`, `inconsistent`) do
+        # not earn the criterion (measured: a hallucinated-bug answer scored
+        # 20/20 because `correct|consistent` matched inside them).
+        consistency_ok = bool(consistency and re.search(r"(?:returns?\s*\[?\s*['\"]?abc\b|not\s+reproduc|\bcorrect\b|\bconsistent\b|does\s+not\s+follow|no\s+bug)", consistency.body, re.IGNORECASE))
         rubric.add_criterion("Consistency conclusion", 5.0, 5.0 if consistency_ok else 0.0,
                              negative_findings=[] if consistency_ok else [{"finding": "must conclude that the supplied code returns abc twice as a duplicate"}])
         diagnosis_ok = bool(diagnosis and re.search(r"(?:no\s+(?:code\s+)?bug|inconsistent|cannot\s+confirm|report|environment|input)", diagnosis.body, re.IGNORECASE))

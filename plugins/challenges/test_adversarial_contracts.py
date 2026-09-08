@@ -213,6 +213,45 @@ Patch the comparison.
     assert DebugConsistencyPlugin().score(response) < 15.0
 
 
+def test_debug_consistency_negated_forms_do_not_earn_consistency():
+    # Measured pre-fix (DC-1): the boundary-less `correct|consistent`
+    # alternatives matched `incorrect`/`inconsistent`, so a hallucinated-bug
+    # answer's consistency section earned the full 5.0 criterion (20/20 total).
+    response = """## Reproduction
+Running find_duplicate_users with the supplied input returns ['abc'].
+## Consistency Check
+The code is incorrect and inconsistent with the specification.
+## Diagnosis
+There is a bug in the comparison logic.
+## Evidence Needed
+Collect logs, stack traces, and environment details.
+## Recommendation
+Verify the fix and patch the comparison.
+"""
+    result = DebugConsistencyPlugin().evaluate(response)
+    consistency = next(item for item in result.rubric if item["name"] == "Consistency conclusion")
+    assert consistency["earned"] == 0.0, f"Expected 0.0 (negated forms), got {consistency['earned']}"
+
+
+def test_debug_consistency_correct_conclusion_earns_consistency():
+    # The positive direction must still be credited: a correct conclusion
+    # (code is correct / report not reproducible) earns the full criterion.
+    response = """## Reproduction
+Running find_duplicate_users with the supplied input returns ['abc'].
+## Consistency Check
+The code is correct and the report is not reproducible.
+## Diagnosis
+There is no bug in the code.
+## Evidence Needed
+Collect logs, stack traces, and environment details.
+## Recommendation
+Verify the fix and patch the comparison.
+"""
+    result = DebugConsistencyPlugin().evaluate(response)
+    consistency = next(item for item in result.rubric if item["name"] == "Consistency conclusion")
+    assert consistency["earned"] == 5.0, f"Expected 5.0 (positive signal), got {consistency['earned']}"
+
+
 def test_debug_traversal_requires_executable_threshold_fix():
     response = """## Root Cause
 The threshold should be at least two.
