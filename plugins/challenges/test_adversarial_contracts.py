@@ -260,6 +260,163 @@ def test_moe_document_keywords_without_local_sections_score_low():
     assert MoEDensePlugin().score(response) < 10.0
 
 
+def test_moe_empty_inference_section_earns_no_inference_points():
+    # The inference pattern tuple must be a real tuple. Without the trailing
+    # comma it iterates the pattern string per character, and the ``|``
+    # characters match the empty string, so an empty inference section body
+    # still earned the full 2.0 inference points (5 pipe hits).
+    response = (
+        "## Gating\ntop-k softmax router g = softmax(Wx).\n"
+        "## Load Balancing\nauxiliary loss L = f_i p_i = 0.5.\n"
+        "## Training\nexpert collapse and token drop.\n"
+        "## Inference\n\n"
+        "## Benchmarks\nMoE outperforms dense on MMLU.\n"
+        "## References\nShazeer 2017 and Mixtral 8x7B.\n"
+    )
+    result = MoEDensePlugin().evaluate(response)
+    inference = next(item for item in result.rubric if item["name"] == "Inference implications")
+    assert inference["earned"] == 0.0
+
+
+def test_moe_inference_section_with_multiple_concerns_earns_full_points():
+    # The inference criterion is worth 2.0 and must be reachable: the pattern
+    # is split into two sub-patterns (memory/bandwidth/throughput and
+    # parallel/latency/compute) so a response covering two distinct inference
+    # concerns earns 2.0, while a single concern earns only 1.0.
+    single = (
+        "## Gating\ntop-k softmax router g = softmax(Wx).\n"
+        "## Load Balancing\nauxiliary loss L = f_i p_i = 0.5.\n"
+        "## Training\nexpert collapse and token drop.\n"
+        "## Inference\nMoE inference is memory bound.\n"
+        "## Benchmarks\nMoE outperforms dense on MMLU.\n"
+        "## References\nShazeer 2017 and Mixtral 8x7B.\n"
+    )
+    single_inference = next(
+        item for item in MoEDensePlugin().evaluate(single).rubric
+        if item["name"] == "Inference implications"
+    )
+    assert single_inference["earned"] == 1.0
+    multiple = (
+        "## Gating\ntop-k softmax router g = softmax(Wx).\n"
+        "## Load Balancing\nauxiliary loss L = f_i p_i = 0.5.\n"
+        "## Training\nexpert collapse and token drop.\n"
+        "## Inference\nMoE inference is memory bound and parallelizes latency.\n"
+        "## Benchmarks\nMoE outperforms dense on MMLU.\n"
+        "## References\nShazeer 2017 and Mixtral 8x7B.\n"
+    )
+    multiple_inference = next(
+        item for item in MoEDensePlugin().evaluate(multiple).rubric
+        if item["name"] == "Inference implications"
+    )
+    assert multiple_inference["earned"] == 2.0
+
+
+def test_moe_references_count_distinct_casefolded_names_and_arxiv_ids():
+    # References must be counted as distinct casefolded names, so a
+    # case-duplicated name ("Mixtral mixtral") is one citation, and a bare
+    # "arXiv" keyword with no ID is not a citation. Only a real arXiv ID
+    # counts as citation evidence.
+    gaming = "## References\nMixtral mixtral arXiv\n"
+    result = MoEDensePlugin().evaluate(gaming)
+    refs = next(item for item in result.rubric if item["name"] == "Paper references")
+    assert refs["earned"] == 1.0
+    # A real arXiv ID is legitimate citation evidence and counts toward the two.
+    legit = "## References\nMixtral 8x7B (arXiv:2401.04088) and Shazeer et al. (arXiv:1701.03066).\n"
+    result2 = MoEDensePlugin().evaluate(legit)
+    refs2 = next(item for item in result2.rubric if item["name"] == "Paper references")
+    assert refs2["earned"] == 2.0
+
+
+def test_moe_benchmark_pairs_require_dense_and_dedupe():
+    # A MoE-advantage pair must name a dense model (the trailing alternative
+    # task/model alone no longer counts), and repeating an identical pair
+    # sentence must not inflate the pair count. Measured gaming hit 17/17.
+    filler = "x" * 160
+    no_dense_bench = (
+        "MoE is better for the task on MMLU. " + filler +
+        " MoE is better for the task on coding. " + filler +
+        " dense is better for the task. " + filler +
+        " dense is better for the model."
+    )
+    response = (
+        "## Gating\ntop-k softmax router g = softmax(Wx).\n"
+        "## Load Balancing\nauxiliary loss L = f_i p_i = 0.5.\n"
+        "## Training\nexpert collapse and token drop.\n"
+        "## Inference\nmemory bandwidth latency.\n"
+        "## Benchmarks\n" + no_dense_bench + "\n"
+        "## References\nShazeer 2017 and Mixtral 8x7B.\n"
+    )
+    bench = next(
+        item for item in MoEDensePlugin().evaluate(response).rubric
+        if item["name"] == "Benchmarks/comparison"
+    )
+    assert bench["earned"] < 2.0
+    # The same MoE-vs-dense sentence repeated (spaced) counts once, not twice,
+    # while two distinct pairs sharing the prefix up to "dense" still count twice.
+    from plugins.challenges.moe_dense import _distinct_pattern_hits
+    pair_pattern = r"(?:moe|mixture.of.experts).{0,150}(?:outperform|better|advantage|wins).{0,150}dense"
+    repeated = _distinct_pattern_hits(
+        "MoE outperforms dense on MMLU. " + filler + " MoE outperforms dense on MMLU.",
+        pair_pattern,
+    )
+    assert repeated == 1
+    distinct = _distinct_pattern_hits(
+        "MoE outperforms dense on MMLU. " + filler + " MoE outperforms dense on GSM8K.",
+        pair_pattern,
+    )
+    assert distinct == 2
+    # Newline-separated identical pairs must dedupe: the terminator char must
+    # not leak into the dedup key, or a "\n"-terminated occurrence keys with a
+    # trailing space and escapes dedup against the end-of-text occurrence.
+    newline_repeat = "MoE outperforms dense on MMLU\nMoE outperforms dense on MMLU"
+    assert _distinct_pattern_hits(newline_repeat, pair_pattern) == 1
+
+
+def test_moe_load_balancing_requires_a_real_variable_not_significant():
+    # The f_i variable pattern must be word-bounded: "significant" contains
+    # "fi" but is not the f_i load-balancing variable, so it must not satisfy
+    # the variable sub-check (measured: a wrong impl passed via "significant").
+    response = (
+        "## Gating\ntop-k softmax router g = softmax(Wx).\n"
+        "## Load Balancing\nThe load balancing term is significant = 0.5.\n"
+        "## Training\nexpert collapse and token drop.\n"
+        "## Inference\nmemory bandwidth latency.\n"
+        "## Benchmarks\nMoE outperforms dense on MMLU.\n"
+        "## References\nShazeer 2017 and Mixtral 8x7B.\n"
+    )
+    load = next(
+        item for item in MoEDensePlugin().evaluate(response).rubric
+        if item["name"] == "Load-balancing loss"
+    )
+    assert load["earned"] == 0.0
+    # A real f_i variable still satisfies the sub-check.
+    legit = "## Load Balancing\nThe auxiliary loss is L_aux = sum f_i * P_i.\n"
+    load2 = next(
+        item for item in MoEDensePlugin().evaluate(legit).rubric
+        if item["name"] == "Load-balancing loss"
+    )
+    assert load2["earned"] == 3.0
+
+
+def test_moe_alias_sections_count_for_section_presence():
+    # Alias-matched sections ("## Routing" for gating, "## Papers" for
+    # references) must count toward section-presence points, not just the
+    # content criteria (measured: asymmetric leniency lost the presence point).
+    response = (
+        "## Routing\ntop-k softmax router g = softmax(Wx).\n"
+        "## Load Balancing\nauxiliary loss L = f_i p_i = 0.5.\n"
+        "## Training\nexpert collapse and token drop.\n"
+        "## Inference\nmemory bandwidth latency.\n"
+        "## Benchmarks\nMoE outperforms dense on MMLU.\n"
+        "## Papers\nShazeer 2017 and Mixtral 8x7B.\n"
+    )
+    sections = next(
+        item for item in MoEDensePlugin().evaluate(response).rubric
+        if item["name"] == "Required comparison sections"
+    )
+    assert sections["earned"] == 2.0
+
+
 def test_multi_step_requires_one_function_per_block():
     response = """```python
 def greet_user(name: str) -> str: return f'Hello, {name}! Welcome.'

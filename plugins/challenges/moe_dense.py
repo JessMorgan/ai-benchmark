@@ -9,6 +9,23 @@ from plugins.challenges._analysis import first_section, markdown_sections
 from plugins.challenges._rubric import Rubric
 
 
+def _distinct_pattern_hits(text: str, pattern: str) -> int:
+    """Count distinct pair-sentence regex hits in ``text``.
+
+    A repeated identical pair sentence must not inflate the count, but two
+    distinct pairs that share the same prefix (both ending in the trailing
+    keyword) must still count separately. Each match is therefore scoped to
+    its own sentence (from the match start to the next period or newline)
+    before being deduplicated.
+    """
+    hits: set[str] = set()
+    for match in re.finditer(pattern, text, re.IGNORECASE):
+        terminator = re.search(r"[.\n]", text[match.start():])
+        end = match.start() + terminator.start() if terminator else len(text)
+        hits.add(re.sub(r"\s+", " ", text[match.start():end]).casefold())
+    return len(hits)
+
+
 class MoEDensePlugin(BenchmarkTaskPlugin):
     @property
     def id(self) -> str:
@@ -16,7 +33,7 @@ class MoEDensePlugin(BenchmarkTaskPlugin):
 
     @property
     def version(self) -> str:
-        return "1.0.1"
+        return "1.1.0"
 
     @property
     def name(self) -> str:
@@ -62,18 +79,27 @@ class MoEDensePlugin(BenchmarkTaskPlugin):
         references = first_section(text, ["References", "Papers"])
         gating_text = gating.body if gating else ""
         load_text = load.body if load else ""
-        required_sections = {
-            "gating", "load balancing", "training", "inference", "benchmarks", "references",
+        section_aliases = {
+            "gating": ("gating", "routing"),
+            "load balancing": ("load balancing", "auxiliary loss"),
+            "training": ("training",),
+            "inference": ("inference",),
+            "benchmarks": ("benchmarks", "comparison"),
+            "references": ("references", "papers"),
         }
         present_sections = {section.normalized for section in sections}
         matched_sections = {
-            required: next((present for present in present_sections if required in present), None)
-            for required in required_sections
+            required: next(
+                (present for present in present_sections
+                 for alias in aliases if alias in present),
+                None,
+            )
+            for required, aliases in section_aliases.items()
         }
         section_hits = sum(value is not None for value in matched_sections.values())
         rubric.add_criterion(
             "Required comparison sections", 2.0,
-            2.0 * section_hits / len(required_sections),
+            2.0 * section_hits / len(section_aliases),
             evidence=[{"kind": "section", "name": name, "heading": heading}
                       for name, heading in matched_sections.items() if heading],
             negative_findings=[{"finding": f"missing section: {name}"}
@@ -81,19 +107,21 @@ class MoEDensePlugin(BenchmarkTaskPlugin):
         )
         gate_ok = bool(re.search(r"top\s*-?\s*k", gating_text, re.IGNORECASE) and re.search(r"softmax", gating_text, re.IGNORECASE) and re.search(r"(?:router|gate|expert)", gating_text, re.IGNORECASE) and re.search(r"(?:=|equation|formula)", gating_text, re.IGNORECASE))
         rubric.add_criterion("Gating/routing mechanism", 3.0, 3.0 if gate_ok else 0.0, negative_findings=[] if gate_ok else [{"finding": "section must contain top-k, softmax, and an equation"}])
-        load_ok = bool(re.search(r"(?:load.?balanc|auxiliary)", load_text, re.IGNORECASE) and re.search(r"(?:f[_\s]?i|p[_\s]?i|importance|capacity)", load_text, re.IGNORECASE) and re.search(r"(?:=|equation|formula|L[_\s]?aux)", load_text, re.IGNORECASE))
+        load_ok = bool(re.search(r"(?:load.?balanc|auxiliary)", load_text, re.IGNORECASE) and re.search(r"(?:\bf[_\s]?i\b|p[_\s]?i|importance|capacity)", load_text, re.IGNORECASE) and re.search(r"(?:=|equation|formula|L[_\s]?aux)", load_text, re.IGNORECASE))
         rubric.add_criterion("Load-balancing loss", 3.0, 3.0 if load_ok else 0.0)
         training_hits = sum(bool(re.search(pattern, (training.body if training else ""), re.IGNORECASE)) for pattern in (r"token.?drop", r"expert.?collapse|instab|capacity"))
         rubric.add_criterion("Training challenges", 2.0, float(training_hits))
-        inference_hits = sum(bool(re.search(pattern, (inference.body if inference else ""), re.IGNORECASE)) for pattern in (r"memory|bandwidth|parallel|latency|throughput|compute"))
+        inference_hits = sum(bool(re.search(pattern, (inference.body if inference else ""), re.IGNORECASE)) for pattern in (r"memory|bandwidth|throughput", r"parallel|latency|compute"))
         rubric.add_criterion("Inference implications", 2.0, min(2.0, float(inference_hits)))
         benchmark_text = benchmarks.body if benchmarks else ""
-        advantage_pairs = len(re.findall(r"(?:moe|mixture.of.experts).{0,150}(?:outperform|better|advantage|wins).{0,150}(?:dense|task|model)", benchmark_text, re.IGNORECASE))
-        dense_pairs = len(re.findall(r"dense.{0,150}(?:outperform|better|advantage|wins).{0,150}(?:moe|mixture.of.experts|task|model)", benchmark_text, re.IGNORECASE))
+        advantage_pairs = _distinct_pattern_hits(benchmark_text, r"(?:moe|mixture.of.experts).{0,150}(?:outperform|better|advantage|wins).{0,150}dense")
+        dense_pairs = _distinct_pattern_hits(benchmark_text, r"dense.{0,150}(?:outperform|better|advantage|wins).{0,150}(?:moe|mixture.of.experts|task|model)")
         named_tasks = len(set(re.findall(r"\b(?:MMLU|GSM8K|HumanEval|MBPP|HellaSwag|ARC|coding|translation|classification)\b", benchmark_text, re.IGNORECASE)))
         rubric.add_criterion("Benchmarks/comparison", 2.0, 2.0 if advantage_pairs >= 2 and dense_pairs >= 2 and named_tasks >= 2 else min(2.0, float(advantage_pairs + dense_pairs) / 2.0))
         ref_text = references.body if references else ""
-        refs = set(re.findall(r"\b(?:Mixtral|Switch Transformer|Shazeer|GLaM|DeepSeekMoE|Fedus|Sparsely-Gated|arXiv|technical report)\b", ref_text, re.IGNORECASE))
+        named_refs = {m.casefold() for m in re.findall(r"\b(?:Mixtral|Switch Transformer|Shazeer|GLaM|DeepSeekMoE|Fedus|Sparsely-Gated|technical report)\b", ref_text, re.IGNORECASE)}
+        arxiv_ids = {m.group(1) for m in re.finditer(r"\b(?:arXiv:)?\s*(\d{4}\.\d{4,5})\b", ref_text, re.IGNORECASE)}
+        refs = named_refs | arxiv_ids
         rubric.add_criterion("Paper references", 2.0, 2.0 if len(refs) >= 2 else float(len(refs)))
         numeric = re.findall(r"\b\d+(?:\.\d+)?\s*(?:%|x|B|M|K|TFLOPs?|params?|tokens?/s)\b", text, re.IGNORECASE)
         side_by_side = bool(re.search(r"\b(?:moe|dense)\b.{0,120}\b(?:vs\.?|versus|compared|than)\b.{0,120}\b(?:moe|dense)\b", text, re.IGNORECASE))
