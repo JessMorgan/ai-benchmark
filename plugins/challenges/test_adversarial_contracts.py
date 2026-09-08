@@ -392,6 +392,47 @@ def test_debug_traversal_fix_accepts_equivalent_count_gt_one():
     assert result.score == 20.0
 
 
+def test_debug_traversal_test_in_requires_assertion_context():
+    # DT-4: the `in` membership check must sit in a test-assertion context
+    # (assert x in y), not any "in " fragment. A loose "abc123 in the list"
+    # (e.g. in a comment) must not satisfy the test criterion, while a proper
+    # `assert 'abc123' in result` must.
+    base_fix = (
+        "## Fix\n"
+        "```python\n"
+        "def find_duplicate_users(log_entries):\n"
+        "    user_counts = {}\n"
+        "    for entry in log_entries:\n"
+        "        user_id = entry.get('user_id')\n"
+        "        if user_id:\n"
+        "            user_counts[user_id] = user_counts.get(user_id, 0) + 1\n"
+        "    return [u for u, c in user_counts.items() if c >= 2]\n"
+        "```\n"
+    )
+    preamble = (
+        "## Root Cause\nThe comparison `count > 2` should be `count >= 2`.\n"
+        "## Analysis\nFor abc123, count is 2 and the function returns an empty list. def456 has count 1.\n"
+    )
+    suffix = "## Side Effects\nOrdering and empty IDs are considered; duplicates are counted.\n"
+    loose = preamble + base_fix + (
+        "## Test\ndef test_check():\n"
+        "    # abc123 in the list should be returned\n"
+        "    assert True\n"
+        + suffix
+    )
+    result = DebugTraversalPlugin().evaluate(loose)
+    test_item = next(item for item in result.rubric if item["name"] == "Test code provided")
+    assert test_item["earned"] == 0.0
+    proper = preamble + base_fix + (
+        "## Test\ndef test_check():\n"
+        "    assert 'abc123' in find_duplicate_users(logs)\n"
+        + suffix
+    )
+    result2 = DebugTraversalPlugin().evaluate(proper)
+    test_item2 = next(item for item in result2.rubric if item["name"] == "Test code provided")
+    assert test_item2["earned"] == 3.0
+
+
 def test_instruction_following_wrong_tie_break_does_not_pass():
     response = """ORDER T-05 | CUSTOMER NOOR | TOTAL 120.00
 ORDER T-02 | CUSTOMER JULES | TOTAL 120.00

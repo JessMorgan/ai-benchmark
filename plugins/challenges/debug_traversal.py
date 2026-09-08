@@ -156,7 +156,7 @@ assert find_duplicate_users([
         test_correct = bool(
             re.search(r"(?:pytest|def\s+test_|assert)", test_text, re.IGNORECASE)
             and re.search(r"abc123", test_text, re.IGNORECASE)
-            and re.search(r"(?:==\s*\[?['\"]?abc123|in\s+)", test_text, re.IGNORECASE)
+            and re.search(r"(?:==\s*\[?['\"]?abc123|assert\s+.{0,60}?\bin\s+)", test_text, re.IGNORECASE)
         )
         rubric.add_criterion("Test code provided", 3.0, 3.0 if test_correct else 0.0)
 
