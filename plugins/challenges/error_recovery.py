@@ -10,6 +10,50 @@ from plugins.challenges._execution import extract_python_source, run_python_chec
 from plugins.challenges._rubric import Rubric
 from plugins.challenges._validators import parse_python, stub_definitions
 
+# The four behavioral modes the harness exercises, paired with the rubric
+# criterion each one scores. One execution run reports one marker per mode,
+# so a response correct in three modes keeps 7.5 of the 10-pt behavioral
+# block instead of losing it all (event-processor split precedent).
+_BEHAVIORAL_MODES: tuple[tuple[str, str], ...] = (
+    ("all-success", "Behavioral all-success mode"),
+    ("partial", "Behavioral partial-failure mode"),
+    ("payload", "Behavioral error-payload mode"),
+    ("all-fail", "Behavioral all-failure mode"),
+)
+
+_MODE_RESULT_RE = re.compile(r"MODE_RESULT (?P<mode>[A-Za-z0-9-]+) (?P<result>PASS|FAIL)(?P<detail>.*)")
+
+# Lexical concept patterns for the "Recovery design" criterion. The
+# concurrent pattern accepts bare gather/ensure_future calls (from-asyncio
+# import style), not only the asyncio.-prefixed forms.
+_CONCEPT_PATTERNS: dict[str, str] = {
+    "concurrent provider calls": r"asyncio\.(?:gather|create_task|as_completed|ensure_future)|\b(?:gather|ensure_future)\s*\(|TaskGroup",
+    "fallback/error handling": r"try\s*:|except\s+|fallback|next provider",
+    "timeouts": r"wait_for|timeout",
+    "error payload validation": r"(?:error\s*['\"]?\s*:|error.*payload|malformed|schema)",
+    "logging": r"logging|logger\.(?:error|warning|exception)",
+}
+
+# The demo may run at module level (``if __name__ == "__main__"`` fires
+# inside the combined check script), and a response that makes live network
+# calls there would hang the local-restricted check until the 5s execution
+# timeout (Podman already runs with --network=none). Block the network-facing
+# socket entry points before the response source runs so demo side effects
+# fail fast with a clear marker and the harness still executes. Every stdlib
+# HTTP client (urllib / http.client) routes connects through
+# ``create_connection`` and DNS through ``getaddrinfo``; the event loop's
+# self-pipe uses the local ``socketpair`` (no network), so the
+# ``socket.socket`` class itself is left intact. A raw
+# ``socket.socket().connect(raw_ip)`` bypass is out of scope here: the
+# local-restricted path is not a security boundary (Podman's --network=none is).
+_SOCKET_BLOCK_PREAMBLE = (
+    "import socket as _benchmark_socket\n"
+    "def _benchmark_network_blocked(*_args, **_kwargs):\n"
+    "    raise RuntimeError('network access is disabled in the benchmark sandbox')\n"
+    "_benchmark_socket.create_connection = _benchmark_network_blocked\n"
+    "_benchmark_socket.getaddrinfo = _benchmark_network_blocked\n"
+)
+
 
 class ErrorRecoveryPlugin(BenchmarkTaskPlugin):
     @property
@@ -18,7 +62,7 @@ class ErrorRecoveryPlugin(BenchmarkTaskPlugin):
 
     @property
     def version(self) -> str:
-        return "1.4.0"
+        return "1.5.0"
 
     @property
     def name(self) -> str:
@@ -56,6 +100,28 @@ class ErrorRecoveryPlugin(BenchmarkTaskPlugin):
     def _classes(tree: ast.AST) -> set[str]:
         return {node.name for node in ast.walk(tree) if isinstance(node, ast.ClassDef)}
 
+    @staticmethod
+    def _annotation_name(node: ast.expr | None) -> str | None:
+        # String-literal forward references (``client: "WeatherClient"``) parse
+        # as a string Constant, not a Name; accept both so either form earns
+        # the signature credit.
+        if isinstance(node, ast.Name):
+            return node.id
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            return node.value
+        return None
+
+    @staticmethod
+    def _mode_results(output: str) -> dict[str, tuple[bool, str]]:
+        # The harness runs after the response source, so the LAST marker per
+        # mode is the harness's own verdict; markers a response prints at
+        # module level are overridden by the real result.
+        results: dict[str, tuple[bool, str]] = {}
+        for match in _MODE_RESULT_RE.finditer(output):
+            detail = match.group("detail").strip()
+            results[match.group("mode")] = (match.group("result") == "PASS", detail)
+        return results
+
     def evaluate(self, response_text: str) -> EvaluationResult:
         if not response_text or not response_text.strip():
             return EvaluationResult(0.0, [])
@@ -89,8 +155,7 @@ class ErrorRecoveryPlugin(BenchmarkTaskPlugin):
                 gr is not None
                 and [arg.arg for arg in gr.args.args] == ["city", "client"]
                 and all(
-                    isinstance(arg.annotation, ast.Name)
-                    and arg.annotation.id == expected
+                    self._annotation_name(arg.annotation) == expected
                     for arg, expected in zip(gr.args.args, ("str", "WeatherClient"), strict=False)
                 )
             )
@@ -102,13 +167,7 @@ class ErrorRecoveryPlugin(BenchmarkTaskPlugin):
             ])
         rubric.add_criterion("Typed injectable signatures", 2.0, 2.0 * signature_hits / 4.0)
 
-        concepts = {
-            "concurrent provider calls": r"asyncio\.(?:gather|create_task|as_completed)|TaskGroup",
-            "fallback/error handling": r"try\s*:|except\s+|fallback|next provider",
-            "timeouts": r"wait_for|timeout",
-            "error payload validation": r"(?:error\s*['\"]?\s*:|error.*payload|malformed|schema)",
-            "logging": r"logging|logger\.(?:error|warning|exception)",
-        }
+        concepts = _CONCEPT_PATTERNS
         concept_hits = sum(bool(re.search(pattern, text, re.IGNORECASE)) for pattern in concepts.values())
         rubric.add_criterion(
             "Recovery design", 2.0, 2.0 * concept_hits / len(concepts),
@@ -121,8 +180,13 @@ class ErrorRecoveryPlugin(BenchmarkTaskPlugin):
             negative_findings=[{"finding": f"stub definition: {name}"} for name in stubs],
         )
 
+        # The prompt labels the demo scenarios "all-success", "partial-failure",
+        # and "all-failure"; accept hyphen/underscore separators and the noun
+        # forms (success/failure) in addition to the verb forms (succeed/fail).
         demo_markers = sum(bool(re.search(pattern, text, re.IGNORECASE)) for pattern in (
-            r"all\s+(?:providers\s+)?succeed", r"one|partial|fallback", r"all\s+(?:providers\s+)?fail",
+            r"all[\s\-_]+(?:providers[\s\-_]+)?(?:succeed|success)",
+            r"one|partial|fallback",
+            r"all[\s\-_]+(?:providers[\s\-_]+)?fail(?:ure|s|ed)?",
         ))
         rubric.add_criterion(
             "Demo scenarios", 1.0, 1.0 * demo_markers / 3.0)
@@ -162,33 +226,54 @@ def assert_all_providers_were_attempted(client):
     assert set(client.calls) == client.providers
     assert set(client.started) == client.providers
 
-async def run_checks():
-    for mode in ("all-success", "partial", "payload"):
-        client = FakeClient(mode)
+async def run_mode(mode):
+    client = FakeClient(mode)
+    if mode == "all-fail":
+        try:
+            await asyncio.wait_for(get_weather_resilient("Paris", client), 1)
+        except AllProvidersFailedError as exc:
+            assert all(provider in str(exc) for provider in client.providers)
+        else:
+            raise AssertionError("all failures must raise AllProvidersFailedError")
+    else:
         value = await asyncio.wait_for(get_weather_resilient("Paris", client), 1)
         assert value == {"city": "Paris", "temperature": 21}
-        assert_all_providers_were_attempted(client)
+    assert_all_providers_were_attempted(client)
 
-    client = FakeClient("all-fail")
-    try:
-        await asyncio.wait_for(get_weather_resilient("Paris", client), 1)
-    except AllProvidersFailedError as exc:
-        assert all(provider in str(exc) for provider in client.providers)
-        assert_all_providers_were_attempted(client)
-    else:
-        raise AssertionError("all failures must raise AllProvidersFailedError")
+async def run_checks():
+    for mode in ("all-success", "partial", "payload", "all-fail"):
+        try:
+            await run_mode(mode)
+        except Exception as exc:
+            print("MODE_RESULT " + mode + " FAIL " + type(exc).__name__ + ": " + str(exc))
+        else:
+            print("MODE_RESULT " + mode + " PASS")
 
 asyncio.run(run_checks())
 '''
-            execution = run_python_check(source, harness)
-            behavior_points = 10.0 if execution.status == "passed" else 0.0
-            rubric.add_criterion(
-                "Behavioral provider tests", 10.0, behavior_points,
-                evidence=[{"kind": "execution", "status": execution.status, "isolation": execution.isolation}],
-                negative_findings=[] if execution.status == "passed" else [{"finding": execution.error or execution.status}],
-            )
+            execution = run_python_check(_SOCKET_BLOCK_PREAMBLE + "\n" + source, harness)
+            # A response can print fake MODE_RESULT markers at module level and
+            # then exit early (sys.exit / os._exit) so the harness never runs;
+            # gate the behavioral credit on the harness actually completing
+            # (the completion sentinel is printed only after the harness ends).
+            harness_completed = execution.harness_ok
+            mode_results = self._mode_results(execution.output) if harness_completed else {}
+            for mode, criterion_name in _BEHAVIORAL_MODES:
+                if harness_completed:
+                    passed, detail = mode_results.get(
+                        mode, (False, f"mode was not reported by the harness ({execution.status})")
+                    )
+                else:
+                    passed = False
+                    detail = execution.error or "harness did not complete (missing completion sentinel)"
+                rubric.add_criterion(
+                    criterion_name, 2.5, 2.5 if passed else 0.0,
+                    evidence=[execution.as_evidence()],
+                    negative_findings=[] if passed else [{"finding": f"{mode}: {detail}"}],
+                )
         else:
-            rubric.add_criterion("Behavioral provider tests", 10.0, 0.0, negative_findings=[{"finding": "no executable source"}])
+            for _mode, criterion_name in _BEHAVIORAL_MODES:
+                rubric.add_criterion(criterion_name, 2.5, 0.0, negative_findings=[{"finding": "no executable source"}])
 
         return rubric.results()
 

@@ -12,7 +12,7 @@ from plugins.challenges.data_transformation import (
 from plugins.challenges.debug_consistency import DebugConsistencyPlugin
 from plugins.challenges.debug_traversal import DebugTraversalPlugin
 from plugins.challenges.decomposition import DecompositionPlugin
-from plugins.challenges.error_recovery import ErrorRecoveryPlugin
+from plugins.challenges.error_recovery import _CONCEPT_PATTERNS, ErrorRecoveryPlugin
 from plugins.challenges.event_processor import EventProcessorPlugin
 from plugins.challenges.instruction_following import InstructionFollowingPlugin
 from plugins.challenges.long_context import LongContextPlugin
@@ -1420,6 +1420,293 @@ def test_wireframes_require_distinct_canonical_screens():
     result = WireframesPlugin().evaluate(response)
     screens = next(item for item in result.rubric if item["name"] == "Multiple screens present")
     assert screens["earned"] < screens["max"]
+
+
+# A fully correct error-recovery response: concurrent provider attempts,
+# error-payload/timeout/malformed handling, per-provider failure logging, and
+# an AllProvidersFailedError carrying every provider's details.
+ER_CORRECT_RESPONSE = '''```python
+import asyncio
+import logging
+
+logger = logging.getLogger("weather")
+
+
+class AllProvidersFailedError(Exception):
+    """Raised when every weather provider fails."""
+
+
+class WeatherClient:
+    """Fetches weather from a single provider."""
+
+    async def fetch(self, provider: str, city: str) -> dict:
+        """Fetch one provider's weather payload."""
+        raise NotImplementedError
+
+
+async def get_weather_resilient(city: str, client: WeatherClient) -> dict:
+    """Try every provider concurrently and return the first success.
+
+    Treats an exception, a timeout, a malformed response, or a 200 response
+    containing an error field as failure, logs every failure with the
+    provider and reason, and raises AllProvidersFailedError with per-provider
+    details when all providers fail.
+    """
+    providers = ("WeatherAPI", "OpenMeteo", "VisualCrossing")
+    failures: dict[str, str] = {}
+
+    async def attempt(provider: str) -> dict | None:
+        try:
+            value = await asyncio.wait_for(client.fetch(provider, city), timeout=5)
+            if not isinstance(value, dict) or "error" in value:
+                raise ValueError("malformed response or error payload")
+            return value
+        except Exception as exc:
+            logger.error("provider %s failed: %s", provider, exc)
+            failures[provider] = str(exc)
+            return None
+
+    results = await asyncio.gather(*(attempt(provider) for provider in providers))
+    for provider, value in zip(providers, results, strict=False):
+        if value is not None:
+            return value
+    raise AllProvidersFailedError("; ".join(f"{provider}: {failures[provider]}" for provider in providers))
+
+
+async def demo() -> None:
+    """Show all providers succeed, one provider fails, and all providers fail."""
+
+    class DemoClient(WeatherClient):
+        def __init__(self, mode: str) -> None:
+            self.mode = mode
+
+        async def fetch(self, provider: str, city: str) -> dict:
+            if self.mode == "all-fail" or (self.mode == "partial" and provider == "WeatherAPI"):
+                raise RuntimeError(provider + " is down")
+            if self.mode == "payload" and provider == "WeatherAPI":
+                return {"error": "rate limited"}
+            return {"city": city, "temperature": 20}
+
+    for mode in ("all-success", "partial", "all-fail"):
+        try:
+            print(mode, await get_weather_resilient("Paris", DemoClient(mode)))
+        except AllProvidersFailedError as exc:
+            print(mode, "failed:", exc)
+```'''
+
+
+def test_error_recovery_correct_response_scores_full():
+    # Positive control for the split behavioral block (ER-1): a fully correct
+    # response must still earn 20/20 — four 2.5-pt mode sub-criteria plus the
+    # lexical criteria.
+    assert ErrorRecoveryPlugin().score(ER_CORRECT_RESPONSE) == 20.0
+
+
+def test_error_recovery_missing_one_mode_earns_partial_behavioral_credit():
+    # Measured pre-fix (ER-1): the 10-pt behavioral block was all-or-nothing,
+    # so a response correct in every mode except the all-failure exception
+    # details (provider names missing from the message) lost all 10 points.
+    # After the split only the all-failure sub-criterion is 0.0 and the other
+    # three modes keep their 2.5 each (17.5 total, not ~10).
+    response = ER_CORRECT_RESPONSE.replace(
+        'raise AllProvidersFailedError("; ".join(f"{provider}: {failures[provider]}" for provider in providers))',
+        'raise AllProvidersFailedError("all providers failed")',
+    )
+    result = ErrorRecoveryPlugin().evaluate(response)
+    all_fail = next(item for item in result.rubric if item["name"] == "Behavioral all-failure mode")
+    assert all_fail["earned"] == 0.0
+    assert all_fail["negative_findings"]
+    for name in ("Behavioral all-success mode", "Behavioral partial-failure mode", "Behavioral error-payload mode"):
+        item = next(item for item in result.rubric if item["name"] == name)
+        assert item["earned"] == 2.5, f"{name} should keep full credit, got {item['earned']}"
+    assert result.score == 17.5
+
+
+def test_error_recovery_no_executable_source_records_four_zero_mode_criteria():
+    # The no-source branch must record the four split sub-criteria (not the
+    # old single 10-pt "Behavioral provider tests" criterion), each 0.0 with
+    # the "no executable source" finding.
+    result = ErrorRecoveryPlugin().evaluate("```python\n```")
+    behavioral = [item for item in result.rubric if item["name"].startswith("Behavioral ")]
+    assert len(behavioral) == 4
+    for item in behavioral:
+        assert item["max"] == 2.5
+        assert item["earned"] == 0.0
+        assert any("no executable source" in finding["finding"] for finding in item["negative_findings"])
+    assert result.score == 0.0
+
+
+def test_error_recovery_concept_regex_covers_ensure_future_and_bare_gather():
+    # Measured pre-fix (ER-2): concurrent implementations using ensure_future
+    # or a bare gather (``from asyncio import gather``) were lexically
+    # penalized — the concept regex only matched asyncio.-prefixed forms.
+    pattern = _CONCEPT_PATTERNS["concurrent provider calls"]
+    assert re.search(pattern, "from asyncio import gather\nawait gather(*tasks)", re.IGNORECASE)
+    assert re.search(pattern, "from asyncio import ensure_future\nensure_future(attempt())", re.IGNORECASE)
+    # The old asyncio.-prefixed forms must still match.
+    assert re.search(pattern, "asyncio.gather(*tasks)", re.IGNORECASE)
+    assert re.search(pattern, "asyncio.ensure_future(attempt())", re.IGNORECASE)
+    # A non-concurrent mention of the word must not match.
+    assert not re.search(pattern, "the providers gather their data sequentially", re.IGNORECASE)
+
+
+def test_error_recovery_gather_only_concurrency_earns_full_recovery_design():
+    # A response that imports gather bare (from asyncio import gather) must
+    # earn the full Recovery design criterion (5/5 concepts), not 4 of 5.
+    response = (
+        "from asyncio import gather\n"
+        "import logging\n"
+        "logger = logging.getLogger()\n"
+        "class AllProvidersFailedError(Exception):\n    pass\n"
+        "class WeatherClient:\n    async def fetch(self, provider: str, city: str) -> dict:\n        ...\n"
+        "async def get_weather_resilient(city: str, client: WeatherClient) -> dict:\n"
+        '    """Try providers with a timeout; treat a malformed error payload as failure."""\n'
+        "    try:\n"
+        '        return await gather(client.fetch("WeatherAPI", city))\n'
+        "    except Exception:\n"
+        '        raise AllProvidersFailedError("fallback exhausted")\n'
+        "async def demo() -> None:\n    ...\n"
+    )
+    result = ErrorRecoveryPlugin().evaluate(response)
+    design = next(item for item in result.rubric if item["name"] == "Recovery design")
+    assert design["earned"] == 2.0
+
+
+def test_error_recovery_module_level_demo_network_call_is_blocked_not_hanging():
+    # Measured pre-fix (ER-3): a module-level demo that makes a live network
+    # call (``if __name__ == "__main__"`` fires inside the check script) hung
+    # the local-restricted check until the 5s execution timeout — a 10-pt
+    # swing for an otherwise correct implementation. The exec preamble now
+    # blocks real sockets before the response source runs, so the call fails
+    # fast with the sandbox marker and the harness still executes.
+    guard = (
+        'if __name__ == "__main__":\n'
+        "    import urllib.request\n"
+        "    try:\n"
+        '        urllib.request.urlopen("http://weather.example.invalid/", timeout=1)\n'
+        "    except Exception as exc:\n"
+        '        print("demo probe failed:", exc)\n'
+    )
+    response = ER_CORRECT_RESPONSE.removesuffix("```") + guard + "```\n"
+    result = ErrorRecoveryPlugin().evaluate(response)
+    behavioral = [item for item in result.rubric if item["name"].startswith("Behavioral ")]
+    assert sum(item["earned"] for item in behavioral) == 10.0
+    # The sandbox socket block fired (not a real network failure): the
+    # harness evidence carries the block's error marker.
+    evidence = behavioral[0]["evidence"][0]
+    assert "network access is disabled in the benchmark sandbox" in evidence["output"]
+    # Positive control: a response without network side effects is unaffected
+    # by the preamble (full behavioral credit, no block marker in evidence).
+    base = ErrorRecoveryPlugin().evaluate(ER_CORRECT_RESPONSE)
+    base_behavioral = [item for item in base.rubric if item["name"].startswith("Behavioral ")]
+    assert sum(item["earned"] for item in base_behavioral) == 10.0
+    assert "network access is disabled in the benchmark sandbox" not in base_behavioral[0]["evidence"][0]["output"]
+
+
+def _demo_scenario_response(labels: str) -> str:
+    # A minimal response whose demo() docstring carries the given scenario
+    # labels; the "Demo scenarios" criterion is text-based, so this isolates
+    # the marker regex from the execution/behavioral criteria.
+    return (
+        "class AllProvidersFailedError(Exception):\n    pass\n"
+        "class WeatherClient:\n    async def fetch(self, provider, city):\n        return {}\n"
+        "async def get_weather_resilient(city: str, client: WeatherClient) -> dict:\n    return {}\n"
+        # No ``-> None`` hint: the pre-existing partial marker ``one`` would
+        # otherwise match the "one" inside "None" and mask the negative case.
+        f"async def demo():\n    \"\"\"Demo: {labels}.\"\"\"\n"
+    )
+
+
+def test_error_recovery_hyphenated_demo_labels_earn_full_demo_credit():
+    # Measured pre-fix (ER-4): the prompt tells responses to show
+    # "all-success, partial-failure, and all-failure" scenarios, but the
+    # success/failure marker regexes required whitespace + verb forms
+    # (succeed/fail), so a response using the prompt's own hyphenated noun
+    # labels earned only the partial marker (1/3, stored as 0.3 after the
+    # rubric's 1-decimal rounding) instead of 1.0.
+    result = ErrorRecoveryPlugin().evaluate(_demo_scenario_response("all-success, partial-failure, all-failure"))
+    demo = next(item for item in result.rubric if item["name"] == "Demo scenarios")
+    assert demo["earned"] == 1.0
+
+
+def test_error_recovery_whitespace_demo_labels_still_earn_full_demo_credit():
+    # Positive control: the original whitespace + verb-form labels must keep
+    # earning full credit (no regression from the hyphenated extension).
+    result = ErrorRecoveryPlugin().evaluate(_demo_scenario_response("all succeed, partial, all fail"))
+    demo = next(item for item in result.rubric if item["name"] == "Demo scenarios")
+    assert demo["earned"] == 1.0
+
+
+def test_error_recovery_no_demo_labels_earn_no_demo_credit():
+    # Negative control: a demo with none of the scenario labels earns 0.
+    result = ErrorRecoveryPlugin().evaluate(_demo_scenario_response("happy path only"))
+    demo = next(item for item in result.rubric if item["name"] == "Demo scenarios")
+    assert demo["earned"] == 0.0
+
+
+def _signature_response(client_annotation: str) -> str:
+    # A minimal response with all four signature hits; only the client
+    # annotation form varies.
+    return (
+        "class AllProvidersFailedError(Exception):\n    pass\n"
+        "class WeatherClient:\n    async def fetch(self, provider, city):\n        return {}\n"
+        f"async def get_weather_resilient(city: str, client: {client_annotation}) -> dict:\n    return {{}}\n"
+        "async def demo():\n    ...\n"
+    )
+
+
+def test_error_recovery_string_literal_forward_ref_earns_full_signature_credit():
+    # Measured pre-fix (ER-5): a string-literal forward reference
+    # (``client: "WeatherClient"``) parsed as a string Constant, not a Name,
+    # so the signature check (isinstance(annotation, ast.Name)) failed and the
+    # response lost the gr_sig hit (3/4 = 1.5 instead of 2.0).
+    result = ErrorRecoveryPlugin().evaluate(_signature_response('"WeatherClient"'))
+    sig = next(item for item in result.rubric if item["name"] == "Typed injectable signatures")
+    assert sig["earned"] == 2.0
+
+
+def test_error_recovery_name_annotation_still_earns_full_signature_credit():
+    # Positive control: a plain Name annotation must keep earning full credit.
+    result = ErrorRecoveryPlugin().evaluate(_signature_response("WeatherClient"))
+    sig = next(item for item in result.rubric if item["name"] == "Typed injectable signatures")
+    assert sig["earned"] == 2.0
+
+
+@pytest.mark.parametrize("annotation", ["int", '"int"'])
+def test_error_recovery_wrong_annotation_loses_signature_credit(annotation):
+    # Negative control: a wrong annotation type must not earn the gr_sig hit.
+    # The string form (``"int"``) exercises the new string-Constant branch.
+    result = ErrorRecoveryPlugin().evaluate(_signature_response(annotation))
+    sig = next(item for item in result.rubric if item["name"] == "Typed injectable signatures")
+    assert sig["earned"] == 1.5
+
+
+def test_error_recovery_fake_mode_markers_without_harness_earn_no_behavioral_credit():
+    # Measured pre-fix (ER-6): a response that prints fake MODE_RESULT PASS
+    # markers at module level and then exits early (sys.exit) was scored on its
+    # own markers -- the harness never ran, but _mode_results parsed the fake
+    # markers and awarded the full 10-pt behavioral block. The behavioral
+    # criteria are now gated on execution.harness_ok (the completion sentinel),
+    # so an early exit that skips the harness earns no behavioral credit.
+    response = (
+        "import sys\n"
+        'print("MODE_RESULT all-success PASS")\n'
+        'print("MODE_RESULT partial PASS")\n'
+        'print("MODE_RESULT payload PASS")\n'
+        'print("MODE_RESULT all-fail PASS")\n'
+        "sys.exit(0)\n"
+    )
+    result = ErrorRecoveryPlugin().evaluate(response)
+    behavioral = [item for item in result.rubric if item["name"].startswith("Behavioral ")]
+    assert len(behavioral) == 4
+    assert sum(item["earned"] for item in behavioral) == 0.0
+    # Every criterion names the missing completion sentinel (not a per-mode
+    # failure); ``all`` is the stronger pin since each 0.0 criterion carries one.
+    assert all(
+        "harness did not complete" in finding["finding"]
+        for item in behavioral
+        for finding in item["negative_findings"]
+    )
 
 
 @pytest.mark.parametrize("plugin", [ErrorRecoveryPlugin, EventProcessorPlugin])
