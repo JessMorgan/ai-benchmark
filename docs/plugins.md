@@ -7,7 +7,7 @@ AI Benchmark uses a plugin architecture. Each plugin defines a benchmark task, a
 | ID | Name | Version | Internal Max Score | Streaming |
 |---|---|---:|---:|---|
 | `code-review` | Code Review | 1.2.0 | 15 | Yes |
-| `debug-consistency` | Debug Report Consistency | 0.1.0 | 20 | Yes |
+| `debug-consistency` | Debug Report Consistency | 0.2.0 | 20 | Yes |
 | `debug-traversal` | Debug Traversal | 1.3.0 | 20 | Yes |
 | `decomposition` | Design-Doc Decomposition | 0.2.0 | 20 | Yes |
 | `error-recovery` | Error Recovery | 1.5.0 | 20 | Yes |
@@ -24,7 +24,7 @@ AI Benchmark uses a plugin architecture. Each plugin defines a benchmark task, a
 | `software-architecture` | Software Architecture | 1.1.0 | 20 | Yes |
 | `data-transformation` | Data Transformation | 1.1.0 | 22 | Yes |
 | `tool-calling` | Tool Calling Agent | 1.2.0 | 25 | Yes |
-| `wireframes` | Wireframes | 1.0.0 | 20 | Yes |
+| `wireframes` | Wireframes | 1.1.0 | 20 | Yes |
 
 ## Selecting Plugins
 
