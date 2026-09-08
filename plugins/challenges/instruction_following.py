@@ -96,6 +96,10 @@ class InstructionFollowingPlugin(BenchmarkTaskPlugin):
             self._SUMMARY,
         ]
         forbidden = [line for line in lines if line != self._SUMMARY and not self._ORDER_RE.fullmatch(line)]
+        # A repeated [SUMMARY] line is duplicate output (the summary may appear
+        # at most once), so count it as forbidden like any other duplicate line.
+        if sum(1 for line in lines if line == self._SUMMARY) > 1:
+            forbidden.append(self._SUMMARY)
         rubric.add_criterion(
             "Exact response discipline", 4.0, 4.0 if exact else (1.0 if not forbidden else 0.0),
             negative_findings=[] if exact else [{"finding": "extra, malformed, duplicate, or unordered output"}],

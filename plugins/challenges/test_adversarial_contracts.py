@@ -931,6 +931,23 @@ ORDER T-09 | CUSTOMER RAVI | TOTAL 65.00
     assert InstructionFollowingPlugin().score(response) < InstructionFollowingPlugin().max_score
 
 
+def test_instruction_following_duplicate_summary_line_is_forbidden():
+    # IF-1: a repeated [SUMMARY] line is duplicate output and must count as
+    # forbidden (the discipline criterion's own finding text names duplicates),
+    # consistent with the duplicate-ORDER penalty. Pre-fix the duplicate summary
+    # was excluded from `forbidden`, so this scored 17/20 (discipline 1.0).
+    response = """ORDER T-02 | CUSTOMER JULES | TOTAL 120.00
+ORDER T-05 | CUSTOMER NOOR | TOTAL 120.00
+ORDER T-08 | CUSTOMER ZARA | TOTAL 99.90
+ORDER T-09 | CUSTOMER RAVI | TOTAL 65.00
+[SUMMARY] count=4; total=404.90; top_order=T-02
+[SUMMARY] count=4; total=404.90; top_order=T-02"""
+    result = InstructionFollowingPlugin().evaluate(response)
+    discipline = next(item for item in result.rubric if item["name"] == "Exact response discipline")
+    assert discipline["earned"] == 0.0
+    assert result.score < 17.0
+
+
 def test_reasoning_rejects_the_old_p4_answer():
     response = """1. The time chain places Search at 09:30.
 2. Ben owns Search.
