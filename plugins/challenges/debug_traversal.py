@@ -177,8 +177,12 @@ assert find_duplicate_users([
         ))
         rubric.add_criterion("Side effects analysis", 3.0, side_hits)
 
+        # DT-6: linear section scale — each of the 5 sections earns 0.4, and
+        # full credit (2.0) requires >=4 of 5. The old float(hits) clamped at
+        # 2.0, so any 2+ sections earned full credit.
         structure_hits = sum(section is not None for section in (root, analysis, fix, test, side))
-        rubric.add_criterion("Structured RCA sections", 2.0, float(structure_hits))
+        structure_earned = 2.0 if structure_hits >= 4 else 0.4 * structure_hits
+        rubric.add_criterion("Structured RCA sections", 2.0, structure_earned)
 
         if execution is not None:
             rubric.add_criterion(

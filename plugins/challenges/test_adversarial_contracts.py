@@ -471,6 +471,37 @@ def test_debug_traversal_trace_return_requires_count_two_coref():
     assert trace_earned(coref) == 3.0
 
 
+def test_debug_traversal_structure_is_linear_not_clamped():
+    # DT-6: the structure criterion is linear (0.4 per section) with full
+    # credit (2.0) requiring >=4 of 5 sections. The old float(hits) clamped at
+    # 2.0, so any 2+ sections earned full credit.
+    def structure_earned(response: str) -> float:
+        result = DebugTraversalPlugin().evaluate(response)
+        return next(
+            item for item in result.rubric
+            if item["name"] == "Structured RCA sections"
+        )["earned"]
+
+    fix_block = (
+        "## Fix\n```python\ndef find_duplicate_users(log_entries):\n"
+        "    user_counts = {}\n    for entry in log_entries:\n"
+        "        user_id = entry.get('user_id')\n        if user_id:\n"
+        "            user_counts[user_id] = user_counts.get(user_id, 0) + 1\n"
+        "    return [u for u, c in user_counts.items() if c >= 2]\n```\n"
+    )
+    three = (
+        "## Root Cause\nThe comparison `count > 2` should be `count >= 2`.\n"
+        "## Analysis\nabc123 has count is 2 and the function returns an empty list. def456 is present.\n"
+        + fix_block
+    )
+    assert structure_earned(three) == 1.2
+    four = three + (
+        "## Test\n```python\ndef test_check():\n"
+        "    assert 'abc123' in find_duplicate_users(logs)\n```\n"
+    )
+    assert structure_earned(four) == 2.0
+
+
 def test_instruction_following_wrong_tie_break_does_not_pass():
     response = """ORDER T-05 | CUSTOMER NOOR | TOTAL 120.00
 ORDER T-02 | CUSTOMER JULES | TOTAL 120.00
