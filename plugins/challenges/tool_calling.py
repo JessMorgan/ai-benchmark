@@ -94,7 +94,7 @@ class ToolCallingPlugin(BenchmarkTaskPlugin):
         rubric.add_criterion("Output format compliance", 3.0, 3.0 if exact_format else (1.0 if blocks else 0.0), negative_findings=[] if exact_format else [{"finding": "all tool calls must be valid typed JSON blocks"}])
         plan_end = text.lower().find("<tool_call>")
         plan = text[:plan_end] if plan_end >= 0 else ""
-        plan_match = re.fullmatch(r"\s*<plan>\s*([\s\S]*?)\s*</plan>\s*", plan, re.IGNORECASE)
+        plan_match = re.search(r"<plan>\s*([\s\S]*?)\s*</plan>", plan, re.IGNORECASE)
         plan_body = plan_match.group(1).lower() if plan_match else ""
         plan_ok = bool(plan_match) and all(name in plan_body for name in expected)
         rubric.add_criterion("Planning / reasoning", 2.0, 2.0 if plan_ok else 0.0)
