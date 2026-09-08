@@ -278,6 +278,39 @@ def test_moe_empty_inference_section_earns_no_inference_points():
     assert inference["earned"] == 0.0
 
 
+def test_moe_inference_section_with_multiple_concerns_earns_full_points():
+    # The inference criterion is worth 2.0 and must be reachable: the pattern
+    # is split into two sub-patterns (memory/bandwidth/throughput and
+    # parallel/latency/compute) so a response covering two distinct inference
+    # concerns earns 2.0, while a single concern earns only 1.0.
+    single = (
+        "## Gating\ntop-k softmax router g = softmax(Wx).\n"
+        "## Load Balancing\nauxiliary loss L = f_i p_i = 0.5.\n"
+        "## Training\nexpert collapse and token drop.\n"
+        "## Inference\nMoE inference is memory bound.\n"
+        "## Benchmarks\nMoE outperforms dense on MMLU.\n"
+        "## References\nShazeer 2017 and Mixtral 8x7B.\n"
+    )
+    single_inference = next(
+        item for item in MoEDensePlugin().evaluate(single).rubric
+        if item["name"] == "Inference implications"
+    )
+    assert single_inference["earned"] == 1.0
+    multiple = (
+        "## Gating\ntop-k softmax router g = softmax(Wx).\n"
+        "## Load Balancing\nauxiliary loss L = f_i p_i = 0.5.\n"
+        "## Training\nexpert collapse and token drop.\n"
+        "## Inference\nMoE inference is memory bound and parallelizes latency.\n"
+        "## Benchmarks\nMoE outperforms dense on MMLU.\n"
+        "## References\nShazeer 2017 and Mixtral 8x7B.\n"
+    )
+    multiple_inference = next(
+        item for item in MoEDensePlugin().evaluate(multiple).rubric
+        if item["name"] == "Inference implications"
+    )
+    assert multiple_inference["earned"] == 2.0
+
+
 def test_moe_references_count_distinct_casefolded_names_and_arxiv_ids():
     # References must be counted as distinct casefolded names, so a
     # case-duplicated name ("Mixtral mixtral") is one citation, and a bare
