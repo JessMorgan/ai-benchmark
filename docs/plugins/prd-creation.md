@@ -4,7 +4,7 @@
 |---|---|
 | ID | `prd-creation` |
 | Name | PRD Creation |
-| Version | `1.0.0` |
+| Version | `1.1.0` |
 | Max Score | 22 |
 | Streaming | Yes |
 
@@ -33,13 +33,13 @@ The PRD must include:
 | Executive Summary | 2 | Overview of the product |
 | Problem Statement | 2 | Pain points and challenges |
 | Goals & Objectives | 2 | Specific, measurable goals |
-| Target Users & Personas | 2 | Two distinct personas |
-| User Stories | 2 | At least 3 properly formatted stories |
+| Target Users & Personas | 2 | Two distinct personas as list items or prose with named roles (e.g. "The primary persona, Alice, is a ...") |
+| User Stories | 2 | At least 3 distinct `As a <persona>, I want <goal>, so that <benefit>` stories; bare, bulleted, and numbered lines all count, and duplicates (case-insensitive) do not |
 | Functional Requirements | 3 | Distinct features and capabilities |
 | Non-Functional Requirements | 2 | Performance, security, reliability, scalability |
-| Success Metrics / KPIs | 2 | Quantitative metrics |
-| Competitive Analysis | 2 | At least 2 competitors |
-| Timeline / Milestones | 2 | Phases or release milestones |
+| Success Metrics / KPIs | 2 | At least 3 quantified KPIs; percentages, comma-formatted counts (e.g. `1,000`), and users/minutes/seconds/hours/days/weeks/months units all count |
+| Competitive Analysis | 2 | At least 2 distinct competitors with comparative context; known competitor names always count, other capitalized product names count only in a section with a comparative predicate (e.g. "lacks", "strength", "different", "compared", "better") — the same vocabulary that gates full credit; a comma-followed name still counts when it is the object of a comparative construction ("Compared to X,", "Unlike X,", "Versus X,", "its competitor, X,"), while bare discourse connectives ("However,", "First,") never count as names and comma enumerations without a per-token comparative marker ("Pomofocus, Rize.io, and Todoist all lack X") earn at most partial credit; case variants dedupe |
+| Timeline / Milestones | 2 | Phases or release milestones as list items or `Phase N` prose |
 | Open Questions / Risks | 1 | Risks and unresolved questions |
 
 ## Temperature
@@ -47,12 +47,12 @@ The PRD must include:
 Default temperature can be set with:
 
 ```json
-"prd-creation_temperature": 0.5
+"prd_creation_temperature": 0.5
 ```
 
 ## Tips for Models
 
 - Use clear headings for each section.
 - Make goals specific and measurable (percentages, timeframes).
-- Format user stories as `As a <persona>, I want <goal>, so that <benefit>`.
+- Format user stories as `As a <persona>, I want <goal>, so that <benefit>` (numbered or bulleted lists are fine).
 - Compare against real competitors with specific differentiators.

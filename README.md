@@ -275,7 +275,7 @@ Plugins are discovered automatically from `plugins/challenges/`. Each plugin is 
 | `multi-step` | Multi-Step Instructions | 1.4.0 | 20 | Yes |
 | `multi-turn-conversation` | Multi-Turn Conversation | 1.1.0 | 20 | Yes |
 | `orchestration` | Orchestration & Workflow | 1.3.0 | 16 | Yes |
-| `prd-creation` | PRD Creation | 1.0.0 | 22 | Yes |
+| `prd-creation` | PRD Creation | 1.1.0 | 22 | Yes |
 | `rate-limiter` | Rate Limiter | 1.5.0 | 20 | Yes |
 | `reasoning` | Logical Reasoning | 1.2.0 | 20 | Yes |
 | `software-architecture` | Software Architecture | 1.1.0 | 20 | Yes |
