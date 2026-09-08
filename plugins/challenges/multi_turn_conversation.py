@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 from benchmark.plugin import BenchmarkTaskPlugin, EvaluationResult
@@ -17,7 +18,7 @@ class MultiTurnConversationPlugin(BenchmarkTaskPlugin):
 
     @property
     def version(self) -> str:
-        return "1.0.0"
+        return "1.1.0"
 
     @property
     def name(self) -> str:
@@ -62,6 +63,26 @@ class MultiTurnConversationPlugin(BenchmarkTaskPlugin):
         except json.JSONDecodeError:
             return None
         return value if isinstance(value, dict) else None
+
+    @staticmethod
+    def _canonical_match(value: Any, expected: Any) -> bool:
+        # `1 == True` in Python, so equality alone would credit untyped
+        # values; the type must match the canonical expected type too.
+        return type(value) is type(expected) and value == expected
+
+    @staticmethod
+    def _labels(state: dict[str, Any]) -> list[str] | None:
+        labels = state.get("labels")
+        if isinstance(labels, list) and all(isinstance(label, str) for label in labels):
+            return labels
+        return None
+
+    @staticmethod
+    def _negated_before(text: str, start: int) -> bool:
+        # A negation token within ~20 chars before the claim makes it a
+        # true statement ("did not enable music"), not a false claim.
+        window = text[max(0, start - 20):start]
+        return bool(re.search(r"\b(?:not|no|never|without)\b|n't", window))
 
     def evaluate(self, response_text: str) -> EvaluationResult:
         text = response_text.strip()
@@ -111,31 +132,90 @@ class MultiTurnConversationPlugin(BenchmarkTaskPlugin):
             {"start": "09:00", "duration_minutes": 25, "music": False, "calendar_event": True, "notification_minutes": None},
             {"start": "09:00", "duration_minutes": 50, "music": False, "calendar_event": True, "notification_minutes": 5},
         ]
-        state_values: list[dict[str, Any]] = []
-        for state in states:
-            if isinstance(state, dict):
-                state_values.append(state)
+        # Per-turn label expectation: Turn 1 must not carry the deep-work
+        # label yet; Turns 2 and 3 must carry it.
+        label_required = [False, True, True]
+        # Grade by turn index: a broken intermediate turn must not shift a
+        # later turn against the wrong expected state.
         transition_hits = 0
-        for state, target in zip(state_values, expected, strict=False):
-            transition_hits += sum(state.get(key) == value for key, value in target.items())
-        rubric.add_criterion("Requested state values", 5.0, 5.0 * transition_hits / 15.0)
+        for index, state in enumerate(states):
+            if not isinstance(state, dict):
+                continue
+            target = expected[index]
+            hits = sum(self._canonical_match(state.get(key), value) for key, value in target.items())
+            labels = self._labels(state)
+            if labels is not None and ("deep-work" in labels) is label_required[index]:
+                hits += 1
+            transition_hits += hits
+        rubric.add_criterion(
+            "Requested state values", 5.0, 5.0 * transition_hits / 18.0,
+            negative_findings=[] if transition_hits == 18 else [
+                {"finding": "each turn must carry its own expected state, not the final state"}
+            ],
+        )
+        first, second, third = states
+        first_labels = self._labels(first) if isinstance(first, dict) else None
+        second_labels = self._labels(second) if isinstance(second, dict) else None
+        third_labels = self._labels(third) if isinstance(third, dict) else None
         preserved = (
-            len(state_values) == 3
-            and state_values[0].get("start") == state_values[1].get("start") == state_values[2].get("start") == "09:00"
-            and state_values[0].get("calendar_event") is state_values[1].get("calendar_event") is state_values[2].get("calendar_event") is True
-            and state_values[1].get("music") is False
-            and state_values[2].get("music") is False
-            and "deep-work" in state_values[1].get("labels", [])
-            and "deep-work" in state_values[2].get("labels", [])
+            isinstance(first, dict)
+            and isinstance(second, dict)
+            and isinstance(third, dict)
+            and first.get("start") == second.get("start") == third.get("start") == "09:00"
+            and first.get("calendar_event") is second.get("calendar_event") is third.get("calendar_event") is True
+            and first.get("music") is True
+            and second.get("music") is False
+            and third.get("music") is False
+            and first_labels is not None and "deep-work" not in first_labels
+            and second_labels is not None and "deep-work" in second_labels
+            and third_labels is not None and "deep-work" in third_labels
         )
         rubric.add_criterion("State preservation and updates", 5.0, 5.0 if preserved else 0.0,
                              negative_findings=[] if preserved else [{"finding": "later turns must preserve prior state while applying only requested changes"}])
-        summary_text = summary.body if summary else ""
-        summary_ok = all(
-            marker in summary_text.lower()
-            for marker in ("turn 1", "turn 2", "disable", "music", "turn 3", "50", "5 minutes")
+        summary_text = (summary.body if summary else "").lower()
+        # "5 minutes" also accepts the 5-minute / 5 minute paraphrase.
+        summary_patterns = (
+            r"turn\s*1", r"turn\s*2", r"disabl\w*", r"music", r"turn\s*3", r"50", r"5[\s-]minutes?",
         )
-        rubric.add_criterion("State-change summary", 2.0, 2.0 if summary_ok else 0.0)
+        summary_ok = all(re.search(pattern, summary_text) for pattern in summary_patterns)
+        # The summary must match the transitions that actually happened:
+        # music was disabled (Turn 1 -> 2) and the duration was lengthened
+        # from 25 to 50 minutes (Turn 2 -> 3). A negated or inverted claim
+        # voids the summary credit even when every marker is present.
+        # The guards are negation-aware (a true negated statement such as
+        # "did not enable music" is not a false claim) and the negation
+        # guard is object-aware (the disabl word must be about the music).
+        false_claims: list[str] = []
+        for match in re.finditer(
+            r"\b(?:not|no|never|without|didn'?t|don'?t|doesn'?t|wasn'?t|isn'?t|cannot|can'?t)\b[^.\n]{0,15}\b(?P<disabl>disabl\w*)",
+            summary_text,
+        ):
+            # Object-aware: "music" must sit within ~20 chars of the disabl
+            # word, so "did not disable the calendar event" is not counted.
+            start = match.start("disabl")
+            around = summary_text[max(0, start - 20):start + 20]
+            if re.search(r"\bmusic\b", around):
+                false_claims.append("the music-disable transition is negated")
+                break
+        for match in re.finditer(
+            r"\benabl\w*\s+(?:the\s+)?music\b|\bmusic\s+(?:was\s+|is\s+|were\s+)?enabl\w*",
+            summary_text,
+        ):
+            if not self._negated_before(summary_text, match.start()):
+                false_claims.append("music was enabled, not disabled")
+                break
+        for match in re.finditer(
+            r"\b(?:shorten\w*|reduc\w*|decreas\w*|cut\w*)\b[^.\n]{0,40}\b(?:duration|length|minute\w*)",
+            summary_text,
+        ):
+            if not self._negated_before(summary_text, match.start()):
+                false_claims.append("the duration was lengthened, not shortened")
+                break
+        summary_ok = summary_ok and not false_claims
+        rubric.add_criterion(
+            "State-change summary", 2.0, 2.0 if summary_ok else 0.0,
+            negative_findings=[{"finding": claim} for claim in false_claims],
+        )
         structure_ok = (
             len(sections) == 4
             and all(section is not None and len(fenced_blocks(section.body, "json")) == 1 for section in turns)
