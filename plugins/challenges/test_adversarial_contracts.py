@@ -991,6 +991,38 @@ TIME: 09:30"""
     assert ReasoningPlugin().score(response) < ReasoningPlugin().max_score
 
 
+def test_reasoning_clue_restatement_with_wrong_answer_scores_low():
+    # RE-1: a response that restates the clue wording measured 14.0 while a
+    # naturally-phrased correct answer measured 13.3 (6 of 8 reasoning points
+    # were earnable by copying the clues). The four reasoning-point criteria
+    # are now capped at half their max when the final answer lines are wrong
+    # or absent.
+    response = """1. Auth is immediately before Search, Profile is before Auth, Upload is after Search, and Billing is after Upload but before Notifications.
+2. Therefore Profile is at 09:00, Auth is at 09:15, Search is at 09:30, Upload is at 09:45, Billing is at 10:00, and Notifications is at 10:15.
+3. Ben owned Search, Eli owned Upload, and Ana owned Notifications at 10:15.
+4. Auth is P1, Notifications is P2, and Upload has higher priority than Search, which has higher priority than Billing; therefore Search is P5.
+FAILED_SERVICE: Profile
+OWNER: Ana
+PRIORITY: P4
+TIME: 09:00"""
+    result = ReasoningPlugin().evaluate(response)
+    assert result.score < 8.0
+    for name in (
+        "Time-chain deductions",
+        "Derived time assignments",
+        "Ownership deductions",
+        "Priority-chain deductions",
+    ):
+        item = next(item for item in result.rubric if item["name"] == name)
+        assert item["earned"] <= item["max"] / 2.0
+    # The restatement no longer beats a naturally-phrased correct answer.
+    correct = response.replace(
+        "FAILED_SERVICE: Profile\nOWNER: Ana\nPRIORITY: P4\nTIME: 09:00",
+        "FAILED_SERVICE: Search\nOWNER: Ben\nPRIORITY: P5\nTIME: 09:30",
+    )
+    assert result.score < ReasoningPlugin().score(correct)
+
+
 def test_long_context_requires_the_joined_evidence_chain():
     response = "INCIDENT: I-17\nOWNER: Omar\nESCALATION CHANNEL: PagerDuty\nEVIDENCE: F02\nREASONING: I guessed this."
     assert LongContextPlugin().score(response) < 15.0

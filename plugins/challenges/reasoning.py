@@ -65,6 +65,15 @@ class ReasoningPlugin(BenchmarkTaskPlugin):
                 evidence.append({"kind": "final-answer", "field": label, "value": expected})
         rubric.add_criterion("Final answer", 8.0, earned, evidence=evidence)
 
+        # The reasoning-point criteria are gated on a correct final answer:
+        # when the final lines are wrong or absent, each is capped at half
+        # its max, so restating the clue wording cannot outscore a correct
+        # answer.
+        final_complete = earned >= 8.0
+
+        def gated(value: float, half_max: float) -> float:
+            return value if final_complete else min(value, half_max)
+
         time_hits = sum(self._has(text, pattern) for pattern in (
             r"Auth.{0,80}immediately before.{0,80}Search",
             r"Profile.{0,80}before.{0,80}Auth",
@@ -73,17 +82,17 @@ class ReasoningPlugin(BenchmarkTaskPlugin):
         ))
         if not re.search(r"(?m)^\s*\d+[.)]\s+", text):
             time_hits = max(0, time_hits - 1)
-        rubric.add_criterion("Time-chain deductions", 4.0, float(time_hits))
+        rubric.add_criterion("Time-chain deductions", 4.0, gated(float(time_hits), 2.0))
         assignments = sum(self._has(text, pattern) for pattern in (
             r"Profile.{0,60}09:00", r"Auth.{0,60}09:15", r"Search.{0,60}09:30", r"Upload.{0,60}09:45", r"Billing.{0,60}10:00", r"Notifications.{0,60}10:15",
         ))
-        rubric.add_criterion("Derived time assignments", 4.0, min(4.0, assignments * 2.0 / 3.0))
+        rubric.add_criterion("Derived time assignments", 4.0, gated(min(4.0, assignments * 2.0 / 3.0), 2.0))
         ownership = sum(self._has(text, pattern) for pattern in (
             r"Ben.{0,50}(?:owned|owner).{0,30}Search|Search.{0,50}(?:owned|owner).{0,30}Ben",
             r"Eli.{0,60}(?:owned|owner).{0,30}Upload|Upload.{0,60}(?:owned|owner).{0,30}Eli",
             r"Ana.{0,50}(?:owned|owner).{0,30}(?:Notifications|10:15)|(?:Notifications|10:15).{0,50}(?:owned|owner).{0,30}Ana",
         ))
-        rubric.add_criterion("Ownership deductions", 2.0, float(ownership) * 2.0 / 3.0)
+        rubric.add_criterion("Ownership deductions", 2.0, gated(float(ownership) * 2.0 / 3.0, 1.0))
         priorities = sum(self._has(text, pattern) for pattern in (
             r"Auth.{0,30}P1|P1.{0,30}Auth", r"Notifications.{0,30}P2|P2.{0,30}Notifications", r"Upload.{0,60}higher.{0,40}Search.{0,60}higher.{0,40}Billing",
         ))
@@ -93,7 +102,7 @@ class ReasoningPlugin(BenchmarkTaskPlugin):
         # plausible-looking but wrong answer.
         if not self._has(text, r"(?:Search|09:30).{0,40}P5|P5.{0,40}(?:Search|09:30)"):
             priorities = max(0, priorities - 1)
-        rubric.add_criterion("Priority-chain deductions", 2.0, float(priorities) * 2.0 / 3.0)
+        rubric.add_criterion("Priority-chain deductions", 2.0, gated(float(priorities) * 2.0 / 3.0, 1.0))
         search_times = re.findall(r"(?i)\bSearch\s+is\s+at\s+(\d{2}:\d{2})", text)
         final_service = re.search(r"(?im)^\s*FAILED_SERVICE:\s*(\S+)", text)
         wrong = any(value != "09:30" for value in search_times) or bool(final_service and final_service.group(1).lower() != "search")
