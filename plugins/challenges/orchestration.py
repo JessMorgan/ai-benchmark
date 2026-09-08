@@ -11,7 +11,7 @@ from plugins.challenges._validators import parse_workflow_graph
 _REQUIRED_TASK_IDS = ("1", "2", "3", "4")
 _TASK_DECL_RE = re.compile(r"\b(?:task|step)[ _-]?(\d+)\b", re.IGNORECASE)
 # The prompt does not mandate a ``task``/``step`` prefix, so top-level
-# numbered-list lines ("1. ...", "2) ...", "3: ...", "4 - ...") count as
+# numbered-list lines ("1. ...", "2) ...", "3: ...", "4- ...") count as
 # task declarations too.
 _NUMBERED_DECL_RE = re.compile(r"^\s{0,3}(\d{1,2})[.):\-]\s+\S", re.MULTILINE)
 _DEPENDS_ON_RE = re.compile(r"\[DEPENDS_ON\s*:\s*(?:task|step)?[ _-]?(\d+)\]", re.IGNORECASE)
@@ -47,7 +47,7 @@ class OrchestrationPlugin(BenchmarkTaskPlugin):
 
     @property
     def version(self) -> str:
-        return "1.1.0"
+        return "1.2.0"
 
     @property
     def name(self) -> str:
