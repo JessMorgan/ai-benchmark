@@ -1523,6 +1523,37 @@ def test_error_recovery_gather_only_concurrency_earns_full_recovery_design():
     assert design["earned"] == 2.0
 
 
+def test_error_recovery_module_level_demo_network_call_is_blocked_not_hanging():
+    # Measured pre-fix (ER-3): a module-level demo that makes a live network
+    # call (``if __name__ == "__main__"`` fires inside the check script) hung
+    # the local-restricted check until the 5s execution timeout — a 10-pt
+    # swing for an otherwise correct implementation. The exec preamble now
+    # blocks real sockets before the response source runs, so the call fails
+    # fast with the sandbox marker and the harness still executes.
+    guard = (
+        'if __name__ == "__main__":\n'
+        "    import urllib.request\n"
+        "    try:\n"
+        '        urllib.request.urlopen("http://weather.example.invalid/", timeout=1)\n'
+        "    except Exception as exc:\n"
+        '        print("demo probe failed:", exc)\n'
+    )
+    response = ER_CORRECT_RESPONSE.removesuffix("```") + guard + "```\n"
+    result = ErrorRecoveryPlugin().evaluate(response)
+    behavioral = [item for item in result.rubric if item["name"].startswith("Behavioral ")]
+    assert sum(item["earned"] for item in behavioral) == 10.0
+    # The sandbox socket block fired (not a real network failure): the
+    # harness evidence carries the block's error marker.
+    evidence = behavioral[0]["evidence"][0]
+    assert "network access is disabled in the benchmark sandbox" in evidence["output"]
+    # Positive control: a response without network side effects is unaffected
+    # by the preamble (full behavioral credit, no block marker in evidence).
+    base = ErrorRecoveryPlugin().evaluate(ER_CORRECT_RESPONSE)
+    base_behavioral = [item for item in base.rubric if item["name"].startswith("Behavioral ")]
+    assert sum(item["earned"] for item in base_behavioral) == 10.0
+    assert "network access is disabled in the benchmark sandbox" not in base_behavioral[0]["evidence"][0]["output"]
+
+
 @pytest.mark.parametrize("plugin", [ErrorRecoveryPlugin, EventProcessorPlugin])
 def test_executable_plugins_do_not_credit_stub_sources(plugin):
     assert plugin().score("class Placeholder:\n    pass") < 12.0

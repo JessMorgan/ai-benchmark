@@ -34,6 +34,26 @@ _CONCEPT_PATTERNS: dict[str, str] = {
     "logging": r"logging|logger\.(?:error|warning|exception)",
 }
 
+# The demo may run at module level (``if __name__ == "__main__"`` fires
+# inside the combined check script), and a response that makes live network
+# calls there would hang the local-restricted check until the 5s execution
+# timeout (Podman already runs with --network=none). Block the network-facing
+# socket entry points before the response source runs so demo side effects
+# fail fast with a clear marker and the harness still executes. Every stdlib
+# HTTP client (urllib / http.client) routes connects through
+# ``create_connection`` and DNS through ``getaddrinfo``; the event loop's
+# self-pipe uses the local ``socketpair`` (no network), so the
+# ``socket.socket`` class itself is left intact. A raw
+# ``socket.socket().connect(raw_ip)`` bypass is out of scope here: the
+# local-restricted path is not a security boundary (Podman's --network=none is).
+_SOCKET_BLOCK_PREAMBLE = (
+    "import socket as _benchmark_socket\n"
+    "def _benchmark_network_blocked(*_args, **_kwargs):\n"
+    "    raise RuntimeError('network access is disabled in the benchmark sandbox')\n"
+    "_benchmark_socket.create_connection = _benchmark_network_blocked\n"
+    "_benchmark_socket.getaddrinfo = _benchmark_network_blocked\n"
+)
+
 
 class ErrorRecoveryPlugin(BenchmarkTaskPlugin):
     @property
@@ -216,7 +236,7 @@ async def run_checks():
 
 asyncio.run(run_checks())
 '''
-            execution = run_python_check(source, harness)
+            execution = run_python_check(_SOCKET_BLOCK_PREAMBLE + "\n" + source, harness)
             mode_results = self._mode_results(execution.output)
             for mode, criterion_name in _BEHAVIORAL_MODES:
                 passed, detail = mode_results.get(
