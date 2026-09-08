@@ -38,7 +38,7 @@ class LongContextPlugin(BenchmarkTaskPlugin):
 
     @property
     def version(self) -> str:
-        return "0.1.0"
+        return "0.2.0"
 
     @property
     def name(self) -> str:
@@ -46,7 +46,7 @@ class LongContextPlugin(BenchmarkTaskPlugin):
 
     @property
     def max_score(self) -> int:
-        return int(20.0)
+        return 20
 
     @property
     def supports_streaming(self) -> bool:

@@ -160,7 +160,7 @@ The runtime inventory below matches `uv run ai-benchmark --list-plugins`:
 | `error-recovery` | 1.4.0 | 20 | Yes |
 | `event-processor` | 0.5.0 | 20 | Yes |
 | `instruction-following` | 1.0.0 | 20 | Yes |
-| `long-context` | 0.1.0 | 20 | Yes |
+| `long-context` | 0.2.0 | 20 | Yes |
 | `moe-dense` | 1.0.1 | 17 | Yes |
 | `multi-step` | 1.4.0 | 20 | Yes |
 | `multi-turn-conversation` | 1.0.0 | 20 | Yes |
