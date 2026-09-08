@@ -7,6 +7,29 @@ from benchmark.plugin import BenchmarkTaskPlugin, EvaluationResult
 from benchmark.types import ConfigMap
 from plugins.challenges._rubric import Rubric
 
+_NEGATION = re.compile(
+    r"\b(?:not|no|never|without|isn'?t|aren'?t|wasn'?t|weren'?t|can'?t|cannot|"
+    r"don'?t|doesn'?t|didn'?t)\s*$",
+    re.IGNORECASE,
+)
+
+
+def _positive_ref(text: str, token: str) -> bool:
+    """Return True if ``token`` appears in ``text`` as a bounded, non-negated reference.
+
+    A reference immediately preceded by a negation word (``NOT I-17``,
+    ``is not I-17``) does not count: the incident criteria must credit a
+    positive association with the incident, not bare token presence
+    (measured: 5/5 on "NOT I-17"). Matching is word-bounded so ``I-170``
+    does not satisfy ``I-17`` and ``P12`` does not satisfy ``P1``.
+    """
+    pattern = re.compile(rf"\b{re.escape(token)}\b", re.IGNORECASE)
+    for match in pattern.finditer(text):
+        prefix = text[max(0, match.start() - 24):match.start()]
+        if not _NEGATION.search(prefix):
+            return True
+    return False
+
 
 class LongContextPlugin(BenchmarkTaskPlugin):
     @property
@@ -85,14 +108,23 @@ class LongContextPlugin(BenchmarkTaskPlugin):
         for label in ("INCIDENT", "OWNER", "ESCALATION CHANNEL", "EVIDENCE", "REASONING"):
             match = re.search(rf"(?im)^\s*{re.escape(label)}\s*:\s*(.+)$", text)
             values[label] = match.group(1).strip() if match else ""
-        rubric.add_criterion("Exact answer", 5.0, float(sum(bool(values[label]) and expected in values[label].lower() for label, expected in (("INCIDENT", "i-17"), ("OWNER", "omar"), ("ESCALATION CHANNEL", "pagerduty"), ("REASONING", "14:30"), ("REASONING", "p1")))) if values["REASONING"] else 0.0)
+        # The correct incident (I-17) is the primary criterion. The supporting
+        # evidence/cross-ref/owner criteria are gated on it so a wrong incident
+        # cannot earn them (measured: wrong-incident + magic tokens 19/20).
+        incident_ok = _positive_ref(values["INCIDENT"], "I-17")
+        rubric.add_criterion(
+            "Incident correctness", 6.0,
+            6.0 if incident_ok else 0.0,
+            negative_findings=[] if incident_ok else [{"finding": "INCIDENT field does not reference I-17"}],
+        )
+        rubric.add_criterion("Exact answer", 4.0, float(sum(bool(values[label]) and expected in values[label].lower() for label, expected in (("OWNER", "omar"), ("ESCALATION CHANNEL", "pagerduty"), ("REASONING", "14:30"), ("REASONING", "p1")))) if values["REASONING"] else 0.0)
         ids = set(re.findall(r"\bF\d{2}\b", values["EVIDENCE"] + " " + values["REASONING"]))
-        rubric.add_criterion("Evidence retrieval", 4.0, 4.0 if len(ids) >= 3 and {"F02", "F05", "F09"} <= ids else min(4.0, len(ids)), evidence=[{"kind": "fact-id", "id": value} for value in sorted(ids)])
-        cross = all(re.search(pattern, values["REASONING"], re.IGNORECASE) for pattern in (r"EU", r"14:30", r"P1", r"I-17", r"PagerDuty"))
-        rubric.add_criterion("Cross-reference reasoning", 5.0, 5.0 if cross else 0.0)
-        rubric.add_criterion("Owner/service consistency", 3.0, 3.0 if re.search(r"(?:I-17|F02)", values["EVIDENCE"], re.IGNORECASE) and re.search(r"Omar", values["EVIDENCE"] + " " + values["OWNER"], re.IGNORECASE) else 0.0)
+        rubric.add_criterion("Evidence retrieval", 4.0, (4.0 if len(ids) >= 3 and {"F02", "F05", "F09"} <= ids else min(4.0, len(ids))) if incident_ok else 0.0, evidence=[{"kind": "fact-id", "id": value} for value in sorted(ids)])
+        cross = incident_ok and all(re.search(pattern, values["REASONING"], re.IGNORECASE) for pattern in (r"EU", r"14:30", r"P1", r"I-17", r"PagerDuty"))
+        rubric.add_criterion("Cross-reference reasoning", 3.0, 3.0 if cross else 0.0)
+        rubric.add_criterion("Owner/service consistency", 2.0, 2.0 if incident_ok and re.search(r"(?:I-17|F02)", values["EVIDENCE"], re.IGNORECASE) and re.search(r"Omar", values["EVIDENCE"] + " " + values["OWNER"], re.IGNORECASE) else 0.0)
         exact_headers = all(re.search(rf"(?im)^\s*{re.escape(label)}\s*:", text) for label in ("INCIDENT", "OWNER", "ESCALATION CHANNEL", "EVIDENCE", "REASONING"))
-        rubric.add_criterion("Response contract", 3.0, 3.0 if exact_headers else 0.0)
+        rubric.add_criterion("Response contract", 1.0, 1.0 if exact_headers else 0.0)
         return rubric.results()
 
     def score(self, response_text: str) -> float:

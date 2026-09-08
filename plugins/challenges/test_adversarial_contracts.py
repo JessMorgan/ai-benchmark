@@ -255,6 +255,20 @@ def test_long_context_requires_the_joined_evidence_chain():
     assert LongContextPlugin().score(response) < 15.0
 
 
+def test_long_context_wrong_incident_cannot_earn_the_primary_criterion():
+    # Measured before the fix: wrong incident (I-23) + magic tokens scored 19/20.
+    # After the fix the incident is the primary 6.0 criterion and the
+    # evidence/cross-ref/owner criteria are gated on it, so this scores far lower.
+    response = (
+        "INCIDENT: I-23\nOWNER: Omar\nESCALATION CHANNEL: PagerDuty\n"
+        "EVIDENCE: F02 F05 F09\nREASONING: EU 14:30 P1 I-17 PagerDuty"
+    )
+    result = LongContextPlugin().evaluate(response)
+    assert result.score < 10.0
+    incident = next(item for item in result.rubric if item["name"] == "Incident correctness")
+    assert incident["earned"] == 0.0
+
+
 def test_moe_document_keywords_without_local_sections_score_low():
     response = "MoE and dense models use top-k softmax gating, load balancing equations, training, inference, benchmarks, and references."
     assert MoEDensePlugin().score(response) < 10.0
