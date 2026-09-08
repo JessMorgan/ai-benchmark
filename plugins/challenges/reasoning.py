@@ -108,7 +108,9 @@ class ReasoningPlugin(BenchmarkTaskPlugin):
         # Upload, and P3 for Billing (B < S < U). The requested 09:30 service
         # is therefore Search/P5; accepting P4 here would reward a
         # plausible-looking but wrong answer.
-        if not self._has(text, r"(?:Search|09:30).{0,40}P5|P5.{0,40}(?:Search|09:30)"):
+        # [\s\S] instead of . so the association is found across newlines
+        # (a sparse final block like "Search\n09:30\nP5" must match).
+        if not self._has(text, r"(?:Search|09:30)[\s\S]{0,40}P5|P5[\s\S]{0,40}(?:Search|09:30)"):
             priorities = max(0, priorities - 1)
         rubric.add_criterion("Priority-chain deductions", 2.0, gated(float(priorities) * 2.0 / 3.0, 1.0))
         # The puzzle has a unique solution, so any service/time pair that

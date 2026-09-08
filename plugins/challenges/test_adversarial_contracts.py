@@ -1124,6 +1124,28 @@ TIME: 09:45"""
     assert any("contradictory" in finding["finding"] for finding in assignments["negative_findings"])
 
 
+def test_reasoning_p5_association_spans_newlines_in_final_block():
+    # RE-5: the P5 pin used `.` (which does not match newlines), so a
+    # sparse final block like "Search\n09:30\nP5" failed the association
+    # check and a correct answer measured 16/20. The check now spans
+    # newlines.
+    response = """1. Auth is immediately before Search, Profile is before Auth, Upload is after Search, and Billing is after Upload but before Notifications.
+2. Profile 09:00, Auth 09:15, Search 09:30, Upload 09:45, Billing 10:00, Notifications 10:15.
+3. Ben owns Search, Eli owns Upload, and Ana owns Notifications at 10:15.
+4. Auth is P1, Notifications is P2, and Upload > Search > Billing.
+FAILED_SERVICE: Search
+OWNER: Ben
+PRIORITY: P5
+TIME: 09:30
+Search
+09:30
+P5"""
+    result = ReasoningPlugin().evaluate(response)
+    priorities = next(item for item in result.rubric if item["name"] == "Priority-chain deductions")
+    assert priorities["earned"] == priorities["max"]
+    assert result.score == ReasoningPlugin().max_score
+
+
 def test_long_context_requires_the_joined_evidence_chain():
     response = "INCIDENT: I-17\nOWNER: Omar\nESCALATION CHANNEL: PagerDuty\nEVIDENCE: F02\nREASONING: I guessed this."
     assert LongContextPlugin().score(response) < 15.0
