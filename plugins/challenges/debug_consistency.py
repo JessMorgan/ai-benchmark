@@ -88,7 +88,7 @@ class DebugConsistencyPlugin(BenchmarkTaskPlugin):
         # `environment`, `input`) earned the criterion for a hallucinated
         # diagnosis (measured: full 4/4 for a hallucination).
         diagnosis_ok = bool(diagnosis and re.search(
-            r"(?:no\s+(?:code\s+)?bug|no\s+(?:defect|issue|problem|fault)|not\s+a\s+bug|"
+            r"(?:no\s+(?:\w+\s+){0,2}bug|no\s+(?:\w+\s+){0,2}(?:defect|issue|problem|fault)|not\s+a\s+bug|"
             r"not\s+(?:be\s+)?reproduc|cannot\s+(?:be\s+)?reproduc|could\s+not\s+(?:be\s+)?reproduc|"
             r"does\s+not\s+(?:be\s+)?reproduc|unreproducible|cannot\s+(?:be\s+)?confirm|"
             r"could\s+not\s+(?:be\s+)?confirm|behaves?\s+as\s+(?:specif|document|intend|expect)|"

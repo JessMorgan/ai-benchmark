@@ -291,6 +291,26 @@ Verify the fix and patch the comparison.
     assert diagnosis["earned"] == 4.0, f"Expected 4.0 (positive signals), got {diagnosis['earned']}"
 
 
+def test_debug_consistency_modified_no_bug_phrasing_earns_diagnosis():
+    # A no-bug signal with modifier words ("no demonstrated code bug") is a
+    # legitimate positive signal and must be credited, not just the bare
+    # "no bug" form.
+    response = """## Reproduction
+Running find_duplicate_users with the supplied input returns ['abc'].
+## Consistency Check
+The code is correct and the report is not reproducible.
+## Diagnosis
+There is no demonstrated code bug; the report and supplied behavior are inconsistent.
+## Evidence Needed
+If the report persists, collect the actual output (expected ['abc']) and the exact input.
+## Recommendation
+Verify the fix and patch the comparison.
+"""
+    result = DebugConsistencyPlugin().evaluate(response)
+    diagnosis = next(item for item in result.rubric if item["name"] == "Non-hallucinated diagnosis")
+    assert diagnosis["earned"] == 4.0, f"Expected 4.0 (modified no-bug phrasing), got {diagnosis['earned']}"
+
+
 def test_debug_consistency_reproduction_requires_the_positive_trace():
     # Measured pre-fix (DC-3): a correct answer that quoted the report's
     # claimed `[]` output lost the 4.0 reproduction criterion (16/20 total)
