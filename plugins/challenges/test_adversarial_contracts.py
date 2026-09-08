@@ -1,5 +1,6 @@
 """Adversarial scoring regressions for every challenge family."""
 import json
+import re
 
 import pytest
 
@@ -267,6 +268,14 @@ def test_long_context_wrong_incident_cannot_earn_the_primary_criterion():
     assert result.score < 10.0
     incident = next(item for item in result.rubric if item["name"] == "Incident correctness")
     assert incident["earned"] == 0.0
+
+
+def test_long_context_prompt_shows_the_label_colon_output_shape():
+    # Measured before the fix: a correct answer with headings-on-own-lines
+    # scored 0/20 (harness parses `LABEL: value` lines the prompt never showed).
+    prompt = LongContextPlugin().get_prompt()
+    for label in ("INCIDENT", "OWNER", "ESCALATION CHANNEL", "EVIDENCE", "REASONING"):
+        assert re.search(rf"^{re.escape(label)}: ", prompt, re.MULTILINE), label
 
 
 def test_moe_document_keywords_without_local_sections_score_low():

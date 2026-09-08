@@ -91,8 +91,13 @@ class LongContextPlugin(BenchmarkTaskPlugin):
         return (
             "Read all records before answering. Distractors are intentional.\n\n"
             + "\n".join(facts)
-            + "\n\nQuestion: Identify the EU incident at 14:30 with P1 priority. Return exactly these headings:\n"
-            "INCIDENT, OWNER, ESCALATION CHANNEL, EVIDENCE, REASONING. Cite at least three fact IDs."
+            + "\n\nQuestion: Identify the EU incident at 14:30 with P1 priority.\n"
+            "Respond with exactly these five lines, one per line, in LABEL: value form:\n"
+            "INCIDENT: <incident id>\n"
+            "OWNER: <owner name>\n"
+            "ESCALATION CHANNEL: <escalation channel>\n"
+            "EVIDENCE: <fact ids, e.g. F02 F05 F09>\n"
+            "REASONING: <why these facts answer the question; cite at least three fact IDs>"
         )
 
     def get_temperature(self, global_config: ConfigMap) -> float | None:
