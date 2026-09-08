@@ -58,9 +58,11 @@ class ReasoningPlugin(BenchmarkTaskPlugin):
         answers = {"FAILED_SERVICE": "Search", "OWNER": "Ben", "PRIORITY": "P5", "TIME": "09:30"}
         earned = 0.0
         evidence = []
+        # The LAST occurrence of each label wins: a tentative mid-text line
+        # must not shadow the final answer lines.
         for label, expected in answers.items():
-            match = re.search(rf"(?m)^\s*{label}:\s*([^\n]+)\s*$", text)
-            if match and match.group(1).strip().lower() == expected.lower():
+            values = re.findall(rf"(?m)^\s*{label}:\s*([^\n]+)\s*$", text)
+            if values and values[-1].strip().lower() == expected.lower():
                 earned += 2.0
                 evidence.append({"kind": "final-answer", "field": label, "value": expected})
         rubric.add_criterion("Final answer", 8.0, earned, evidence=evidence)
@@ -80,7 +82,13 @@ class ReasoningPlugin(BenchmarkTaskPlugin):
             r"Upload.{0,80}after.{0,80}Search",
             r"Billing.{0,80}after.{0,80}Upload.{0,80}before.{0,80}Notifications",
         ))
-        if not re.search(r"(?m)^\s*\d+[.)]\s+", text):
+        # The finals contract (exactly four final lines) is enforced against
+        # the tail after the last FAILED_SERVICE line: numbered prose there
+        # breaks the contract, while mid-text "Step 1:" style deductions do
+        # not trigger the penalty.
+        service_lines = list(re.finditer(r"(?im)^\s*FAILED_SERVICE:\s*[^\n]*", text))
+        tail = text[service_lines[-1].end():] if service_lines else text
+        if re.search(r"(?m)^\s*\d+[.)]\s+", tail):
             time_hits = max(0, time_hits - 1)
         rubric.add_criterion("Time-chain deductions", 4.0, gated(float(time_hits), 2.0))
         assignments = sum(self._has(text, pattern) for pattern in (

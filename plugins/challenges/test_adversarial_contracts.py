@@ -1045,6 +1045,51 @@ TIME: 09:30"""
     assert result.score == ReasoningPlugin().max_score
 
 
+def test_reasoning_takes_the_last_label_occurrence_for_final_answer():
+    # RE-3: the first `LABEL:` match used to win, so a tentative mid-text
+    # line plus correct finals still earned the wrong value, and the
+    # no-numbering penalty scanned the whole text so "Step 1:" style
+    # deductions tripped it. The final answer now reads the LAST occurrence
+    # of each label, and the numbering penalty is scoped to the tail after
+    # the last FAILED_SERVICE line.
+    response = """Step 1: Auth is immediately before Search, Profile is before Auth, Upload is after Search, and Billing is after Upload but before Notifications.
+Step 2: Therefore Profile is at 09:00, Auth is at 09:15, Search is at 09:30, Upload is at 09:45, Billing is at 10:00, and Notifications is at 10:15.
+Step 3: Ben owned Search, Eli owned Upload, and Ana owned Notifications at 10:15.
+Step 4: Auth is P1, Notifications is P2, and Upload has higher priority than Search, which has higher priority than Billing; therefore Search is P5.
+FAILED_SERVICE: Upload
+OWNER: Ben
+PRIORITY: P5
+TIME: 09:30
+FAILED_SERVICE: Search
+OWNER: Ben
+PRIORITY: P5
+TIME: 09:30"""
+    result = ReasoningPlugin().evaluate(response)
+    final = next(item for item in result.rubric if item["name"] == "Final answer")
+    assert final["earned"] == 8.0
+    time_item = next(item for item in result.rubric if item["name"] == "Time-chain deductions")
+    assert time_item["earned"] == 4.0
+
+
+def test_reasoning_numbered_trailing_prose_after_final_lines_is_penalized():
+    # RE-3: the finals contract ("exactly four final lines") was unenforced
+    # against trailing prose. Numbered lines after the last FAILED_SERVICE
+    # line now trigger the numbering penalty.
+    response = """1. Auth is immediately before Search, Profile is before Auth, Upload is after Search, and Billing is after Upload but before Notifications.
+2. Therefore Profile is at 09:00, Auth is at 09:15, Search is at 09:30, Upload is at 09:45, Billing is at 10:00, and Notifications is at 10:15.
+3. Ben owned Search, Eli owned Upload, and Ana owned Notifications at 10:15.
+4. Auth is P1, Notifications is P2, and Upload has higher priority than Search, which has higher priority than Billing; therefore Search is P5.
+FAILED_SERVICE: Search
+OWNER: Ben
+PRIORITY: P5
+TIME: 09:30
+1. Profile at 09:00
+2. Auth at 09:15"""
+    result = ReasoningPlugin().evaluate(response)
+    time_item = next(item for item in result.rubric if item["name"] == "Time-chain deductions")
+    assert time_item["earned"] == 3.0
+
+
 def test_long_context_requires_the_joined_evidence_chain():
     response = "INCIDENT: I-17\nOWNER: Omar\nESCALATION CHANNEL: PagerDuty\nEVIDENCE: F02\nREASONING: I guessed this."
     assert LongContextPlugin().score(response) < 15.0
