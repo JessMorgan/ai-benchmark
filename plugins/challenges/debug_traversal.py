@@ -116,9 +116,21 @@ assert find_duplicate_users([
         lexical_scale = 1.0 if exec_ok else 0.0
         withheld = "lexical credit withheld: corrected code did not pass isolated execution"
 
-        trace_hits = sum(bool(re.search(pattern, analysis_text, re.IGNORECASE)) for pattern in (
-            r"abc123", r"count\s*(?:=|is)\s*2", r"def456", r"empty|return",
-        ))
+        # DT-5: the empty/return hit must co-reference the specific count=2
+        # value (within ~80 chars), so a bare "returns an empty list" with no
+        # count=2 walkthrough does not earn it (measured: "returns anywhere"
+        # 2.25/3).
+        trace_patterns = (
+            r"abc123",
+            r"count\s*(?:=|is)\s*2",
+            r"def456",
+            r"(?:empty|return).{0,80}?count\s*(?:=|is)\s*2"
+            r"|count\s*(?:=|is)\s*2.{0,80}?(?:empty|return)",
+        )
+        trace_hits = sum(
+            bool(re.search(pattern, analysis_text, re.IGNORECASE | re.DOTALL))
+            for pattern in trace_patterns
+        )
         rubric.add_criterion(
             "Systematic trace / code walkthrough", 3.0,
             (3.0 * trace_hits / 4.0) * lexical_scale,

@@ -433,6 +433,44 @@ def test_debug_traversal_test_in_requires_assertion_context():
     assert test_item2["earned"] == 3.0
 
 
+def test_debug_traversal_trace_return_requires_count_two_coref():
+    # DT-5: the trace's empty/return hit must co-reference the specific count=2
+    # value, not any "returns" mention. A "returns" far from "count is 2"
+    # earns only 3 of 4 trace hits (2.2 after 1-decimal rounding); a
+    # co-referenced one earns 4 of 4 (3.0).
+    def make(analysis: str) -> str:
+        return (
+            "## Root Cause\nThe comparison `count > 2` should be `count >= 2`.\n"
+            f"## Analysis\n{analysis}\n"
+            "## Fix\n```python\ndef find_duplicate_users(log_entries):\n"
+            "    user_counts = {}\n    for entry in log_entries:\n"
+            "        user_id = entry.get('user_id')\n        if user_id:\n"
+            "            user_counts[user_id] = user_counts.get(user_id, 0) + 1\n"
+            "    return [u for u, c in user_counts.items() if c >= 2]\n```\n"
+            "## Test\n```python\ndef test_check():\n"
+            "    assert 'abc123' in find_duplicate_users(logs)\n```\n"
+            "## Side Effects\nOrdering and empty IDs are considered; duplicates are counted.\n"
+        )
+
+    def trace_earned(response: str) -> float:
+        result = DebugTraversalPlugin().evaluate(response)
+        return next(
+            item for item in result.rubric
+            if item["name"] == "Systematic trace / code walkthrough"
+        )["earned"]
+
+    no_coref = make(
+        "abc123 has count is 2. def456 is present. "
+        + "x" * 90
+        + " The function returns an empty list."
+    )
+    assert trace_earned(no_coref) == 2.2
+    coref = make(
+        "abc123 has count is 2 and the function returns an empty list. def456 is present."
+    )
+    assert trace_earned(coref) == 3.0
+
+
 def test_instruction_following_wrong_tie_break_does_not_pass():
     response = """ORDER T-05 | CUSTOMER NOOR | TOTAL 120.00
 ORDER T-02 | CUSTOMER JULES | TOTAL 120.00
