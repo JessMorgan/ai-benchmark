@@ -63,7 +63,7 @@ class OrchestrationPlugin(BenchmarkTaskPlugin):
 
     @property
     def version(self) -> str:
-        return "1.2.1"
+        return "1.3.0"
 
     @property
     def name(self) -> str:
