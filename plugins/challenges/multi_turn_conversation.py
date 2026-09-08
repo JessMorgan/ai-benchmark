@@ -154,8 +154,9 @@ class MultiTurnConversationPlugin(BenchmarkTaskPlugin):
         rubric.add_criterion("State preservation and updates", 5.0, 5.0 if preserved else 0.0,
                              negative_findings=[] if preserved else [{"finding": "later turns must preserve prior state while applying only requested changes"}])
         summary_text = (summary.body if summary else "").lower()
+        # "5 minutes" also accepts the 5-minute / 5 minute paraphrase.
         summary_patterns = (
-            r"turn\s*1", r"turn\s*2", r"disabl\w*", r"music", r"turn\s*3", r"50", r"5 minutes",
+            r"turn\s*1", r"turn\s*2", r"disabl\w*", r"music", r"turn\s*3", r"50", r"5[\s-]minutes?",
         )
         summary_ok = all(re.search(pattern, summary_text) for pattern in summary_patterns)
         # The summary must match the transitions that actually happened:

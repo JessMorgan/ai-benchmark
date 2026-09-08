@@ -104,3 +104,16 @@ def test_multi_turn_negation_guard_is_object_aware():
     )
     assert summary_criterion["earned"] == 2.0
     assert result.score == 20.0
+
+
+def test_multi_turn_accepts_five_minute_paraphrase():
+    # Measured: a correct response that writes the notification as
+    # "5-minute" in the summary lost the 2.0 summary credit because the
+    # marker was the literal string "5 minutes". The 5[\s-]minutes?
+    # paraphrase must be accepted as equivalent.
+    paraphrase_summary = (
+        "Turn 1 to Turn 2 disabled music and added the deep-work label. "
+        "Turn 2 to Turn 3 changed duration to 50 and added a 5-minute notification."
+    )
+    response = build_response(TURN_1, TURN_2, TURN_3, paraphrase_summary)
+    assert MultiTurnConversationPlugin().score(response) == 20.0
