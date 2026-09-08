@@ -170,14 +170,22 @@ class DecompositionPlugin(BenchmarkTaskPlugin):
         )
 
         declared_edges = graph.value.get("edges", []) if graph.value else []
+        # Bind each task's domain to its own description line: the FIRST line
+        # that mentions the task ID wins, so an appended "Domain mapping"
+        # section cannot re-declare the tasks' domains (the old last-line-wins
+        # binding let a degenerate plan score full marks by mapping the
+        # domains itself).
         domain_by_task: dict[str, str] = {}
+        seen_tasks: set[str] = set()
         for line in text.splitlines():
-            m = re.search(r"task[ _-]?(\d+)", line, re.IGNORECASE)
-            if not m:
-                continue
-            domain = self._domain_of(line)
-            if domain:
-                domain_by_task[m.group(1)] = domain
+            for m in re.finditer(r"task[ _-]?(\d+)", line, re.IGNORECASE):
+                task_id = m.group(1)
+                if task_id in seen_tasks:
+                    continue
+                seen_tasks.add(task_id)
+                domain = self._domain_of(line)
+                if domain:
+                    domain_by_task[task_id] = domain
         domain_edges = set()
         for src, dst in declared_edges:
             ds, dd = domain_by_task.get(src), domain_by_task.get(dst)

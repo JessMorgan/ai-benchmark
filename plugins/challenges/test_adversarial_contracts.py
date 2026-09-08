@@ -11,6 +11,7 @@ from plugins.challenges.data_transformation import (
 )
 from plugins.challenges.debug_consistency import DebugConsistencyPlugin
 from plugins.challenges.debug_traversal import DebugTraversalPlugin
+from plugins.challenges.decomposition import DecompositionPlugin
 from plugins.challenges.error_recovery import ErrorRecoveryPlugin
 from plugins.challenges.event_processor import EventProcessorPlugin
 from plugins.challenges.instruction_following import InstructionFollowingPlugin
@@ -229,6 +230,33 @@ pytest assert abc123
 Ordering and empty IDs should be considered.
 """
     assert DebugTraversalPlugin().score(response) < 15.0
+
+
+def test_decomposition_appended_domain_mapping_cannot_override_task_domains():
+    # Measured pre-fix: this degenerate plan scored 20/20 because the appended
+    # "Domain mapping" section re-declared every task ID and the last-line-wins
+    # domain_by_task binding let it override the tasks' own descriptions.
+    response = """Task 1: set up the project and define the data schema
+Task 2 [DEPENDS_ON: 1]: implement the core processing loop
+Task 3 [DEPENDS_ON: 2]: add the detection logic
+Task 4 [DEPENDS_ON: 3]: wire up the user-facing output
+Task 5 [DEPENDS_ON: 2]: produce the final output
+Task 6: add dashboards
+Domain mapping:
+Task 1: ingestion
+Task 2: enrich
+Task 3: anomaly
+Task 4: alert
+Task 5: report
+Task 6: observe
+Parallel stages: 4, 5 and 6 in parallel.
+Sequential stages: 1 then 2 then 3.
+Ordering rationale: data flow and prerequisite order.
+"""
+    result = DecompositionPlugin().evaluate(response)
+    direction = next(c for c in result.rubric if c["name"] == "Semantic dependency direction")
+    assert direction["earned"] == 0.0
+    assert result.score < 16.0
 
 
 def test_instruction_following_wrong_tie_break_does_not_pass():
