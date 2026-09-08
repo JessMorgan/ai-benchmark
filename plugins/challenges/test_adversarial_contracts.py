@@ -278,6 +278,26 @@ def test_long_context_prompt_shows_the_label_colon_output_shape():
         assert re.search(rf"^{re.escape(label)}: ", prompt, re.MULTILINE), label
 
 
+def test_long_context_exact_answer_is_per_field_gated_not_all_on_reasoning():
+    # Measured before the fix: one missing heading 20->7 (the outer
+    # `if values["REASONING"] else 0.0` gate zeroed the entire Exact answer
+    # criterion when REASONING was empty). After the fix, each sub-check is
+    # gated on its own field, so a response with REASONING missing but
+    # OWNER/ESCALATION present still earns the OWNER and ESCALATION
+    # sub-checks (2.0 of 4.0).
+    response = (
+        "INCIDENT: I-17\n"
+        "OWNER: Omar\n"
+        "ESCALATION CHANNEL: PagerDuty\n"
+        "EVIDENCE: F02 F05 F09\n"
+    )
+    result = LongContextPlugin().evaluate(response)
+    exact = next(item for item in result.rubric if item["name"] == "Exact answer")
+    # OWNER "omar" + ESCALATION "pagerduty" = 2.0 (REASONING sub-checks are
+    # 0.0 because REASONING is empty, but they do not zero the other checks).
+    assert exact["earned"] == 2.0, f"Expected 2.0 (per-field gating), got {exact['earned']}"
+
+
 def test_moe_document_keywords_without_local_sections_score_low():
     response = "MoE and dense models use top-k softmax gating, load balancing equations, training, inference, benchmarks, and references."
     assert MoEDensePlugin().score(response) < 10.0

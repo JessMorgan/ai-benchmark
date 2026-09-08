@@ -122,7 +122,10 @@ class LongContextPlugin(BenchmarkTaskPlugin):
             6.0 if incident_ok else 0.0,
             negative_findings=[] if incident_ok else [{"finding": "INCIDENT field does not reference I-17"}],
         )
-        rubric.add_criterion("Exact answer", 4.0, float(sum(bool(values[label]) and expected in values[label].lower() for label, expected in (("OWNER", "omar"), ("ESCALATION CHANNEL", "pagerduty"), ("REASONING", "14:30"), ("REASONING", "p1")))) if values["REASONING"] else 0.0)
+        # Per-field gating: each sub-check is gated on its own field being
+        # present (bool(values[label])), not all on REASONING non-empty
+        # (measured: one missing heading 20->7).
+        rubric.add_criterion("Exact answer", 4.0, float(sum(bool(values[label]) and expected in values[label].lower() for label, expected in (("OWNER", "omar"), ("ESCALATION CHANNEL", "pagerduty"), ("REASONING", "14:30"), ("REASONING", "p1")))))
         ids = set(re.findall(r"\bF\d{2}\b", values["EVIDENCE"] + " " + values["REASONING"]))
         rubric.add_criterion("Evidence retrieval", 4.0, (4.0 if len(ids) >= 3 and {"F02", "F05", "F09"} <= ids else min(4.0, len(ids))) if incident_ok else 0.0, evidence=[{"kind": "fact-id", "id": value} for value in sorted(ids)])
         cross = incident_ok and all(re.search(pattern, values["REASONING"], re.IGNORECASE) for pattern in (r"EU", r"14:30", r"P1", r"I-17", r"PagerDuty"))
