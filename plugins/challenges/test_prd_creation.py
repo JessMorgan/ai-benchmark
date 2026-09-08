@@ -96,6 +96,31 @@ class TestPRDCreationScoring(unittest.TestCase):
         score = self.plugin.score(text)
         self.assertGreater(score, 10.0)
 
+    def test_quantified_kpis_with_days_and_comma_counts_earn_full_credit(self):
+        text = (
+            "## Success Metrics / KPIs\n\n"
+            "1. User retention at 30 days.\n"
+            "2. Grow weekly active users to 2,500 users.\n"
+            "3. Cut onboarding time to 5 minutes.\n"
+        )
+        result = self.plugin.evaluate(text)
+        kpi = next(item for item in result.rubric if item["name"] == "Success Metrics / KPIs")
+        self.assertEqual(kpi["earned"], 2.0)
+
+    def test_repo_fixture_kpi_days_unit_earns_partial_credit(self):
+        # The repo's own strong-PRD fixture listed "User retention at 30 days."
+        # as its only quantified KPI and scored 0/2 because the KPI quantifier
+        # omitted the days/weeks/months units the Goals criterion accepts.
+        text = (
+            "## Success Metrics / KPIs\n\n"
+            "1. Daily active users (DAU).\n"
+            "2. Average focus session length.\n"
+            "3. User retention at 30 days.\n"
+        )
+        result = self.plugin.evaluate(text)
+        kpi = next(item for item in result.rubric if item["name"] == "Success Metrics / KPIs")
+        self.assertEqual(kpi["earned"], 1.0)
+
 
 if __name__ == "__main__":
     unittest.main()

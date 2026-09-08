@@ -90,7 +90,7 @@ class PRDCreationPlugin(BenchmarkTaskPlugin):
         nfr_hits = sum(bool(re.search(rf"\b{topic}\b", nfr, re.IGNORECASE)) for topic in ("performance", "security", "reliability", "scalability"))
         rubric.add_criterion("Non-Functional Requirements", 2.0, 2.0 if nfr_hits == 4 else nfr_hits / 2.0)
         metric_items = numbered_or_bulleted_items(metrics)
-        quantified = [item for item in metric_items if re.search(r"\d+\s*%|\d+\s*(?:users?|minutes?|seconds?|hours?)", item, re.IGNORECASE)]
+        quantified = [item for item in metric_items if re.search(r"\d+(?:,\d{3})*\s*%|\d+(?:,\d{3})*\s*(?:users?|minutes?|seconds?|hours?|days?|weeks?|months?)", item, re.IGNORECASE)]
         rubric.add_criterion("Success Metrics / KPIs", 2.0, 2.0 if len(quantified) >= 3 else (1.0 if quantified else 0.0))
         names = set(re.findall(r"\b(?:Todoist|Notion|Trello|Asana|Forest|Rescue Time|Focusmate)\b", competitors, re.IGNORECASE))
         rubric.add_criterion("Competitive Analysis", 2.0, 2.0 if len(names) >= 2 and re.search(r"(?:lacks|strength|weakness|different|advantage|comparison)", competitors, re.IGNORECASE) else float(min(len(names), 2) / 2.0))
