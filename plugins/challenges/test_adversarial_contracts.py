@@ -1687,6 +1687,40 @@ def test_tool_calling_plan_with_intro_prose_earns_planning_credit():
     assert result.score == 25.0
 
 
+def test_tool_calling_no_negative_finding_when_full_required_tools_credit():
+    # TC-3: when all six required tools are called exactly once (here in the
+    # wrong order), the Required-tools criterion earns the full 5.0, so the
+    # "exactly one call" negative finding must not appear alongside full
+    # credit (contradictory rubric evidence).
+    wrong_order = [
+        '<tool_call>{"name":"search_flights","args":{"origin":"JFK","destination":"Tokyo","date":"2024-08-15"}}</tool_call>',
+        '<tool_call>{"name":"get_weather","args":{"location":"Tokyo","unit":"celsius"}}</tool_call>',
+        '<tool_call>{"name":"book_hotel","args":{"city":"Tokyo","check_in":"2024-08-16","check_out":"2024-08-20","guests":2}}</tool_call>',
+        '<tool_call>{"name":"get_stock_price","args":{"ticker":"SONY"}}</tool_call>',
+        '<tool_call>{"name":"convert_currency","args":{"amount":1000,"from_curr":"USD","to_curr":"JPY"}}</tool_call>',
+        '<tool_call>{"name":"send_email","args":{"to":"alice@example.com","subject":"Tokyo Trip Itinerary","body":"All set"}}</tool_call>',
+    ]
+    response = (
+        "<plan>get_weather search_flights book_hotel get_stock_price convert_currency send_email</plan>\n"
+        + "\n".join(wrong_order)
+    )
+    result = ToolCallingPlugin().evaluate(response)
+    required = next(item for item in result.rubric if item["name"] == "Required tools present")
+    assert required["earned"] == 5.0
+    assert required["negative_findings"] == []
+
+    # Negative control: dropping a required tool reduces credit and the
+    # finding is emitted again.
+    missing = wrong_order[:5]
+    result_missing = ToolCallingPlugin().evaluate(
+        "<plan>get_weather search_flights book_hotel get_stock_price convert_currency send_email</plan>\n"
+        + "\n".join(missing)
+    )
+    required_missing = next(item for item in result_missing.rubric if item["name"] == "Required tools present")
+    assert required_missing["earned"] < 5.0
+    assert any("exactly one call" in finding["finding"] for finding in required_missing["negative_findings"])
+
+
 def test_wireframes_require_distinct_canonical_screens():
     response = "## Focus\nPurpose: timer.\n[Button] Start\n## Focus Session\nPurpose: timer.\n[Button] Start\n## Calendar\nPurpose: events.\n[Button] Sync\n## Calendar Integration\nPurpose: events.\n[Button] Sync\n"
     result = WireframesPlugin().evaluate(response)

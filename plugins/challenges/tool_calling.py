@@ -100,7 +100,8 @@ class ToolCallingPlugin(BenchmarkTaskPlugin):
         rubric.add_criterion("Planning / reasoning", 2.0, 2.0 if plan_ok else 0.0)
         counts_ok = names == expected and len(names) == len(set(names))
         distinct = len(set(names) & set(expected))
-        rubric.add_criterion("Required tools present", 5.0, 5.0 if counts_ok else 5.0 * distinct / len(expected), negative_findings=[] if counts_ok else [{"finding": "exactly one call for each required tool is required"}])
+        tools_credit = 5.0 if counts_ok else 5.0 * distinct / len(expected)
+        rubric.add_criterion("Required tools present", 5.0, tools_credit, negative_findings=[] if tools_credit >= 5.0 else [{"finding": "exactly one call for each required tool is required"}])
         args = [call.get("args", {}) for call in calls if isinstance(call, dict)]
         checks: list[tuple[str, Callable[[dict[str, Any]], bool], float]] = [
             ("get_weather", lambda a: str(a.get("location", "")).lower() == "tokyo" and str(a.get("unit", "")).lower() in {"celsius", "c"}, 1.0),
