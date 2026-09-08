@@ -164,7 +164,7 @@ The runtime inventory below matches `uv run ai-benchmark --list-plugins`:
 | `moe-dense` | 1.1.0 | 17 | Yes |
 | `multi-step` | 1.4.0 | 20 | Yes |
 | `multi-turn-conversation` | 1.0.0 | 20 | Yes |
-| `orchestration` | 1.0.0 | 16 | Yes |
+| `orchestration` | 1.1.0 | 16 | Yes |
 | `prd-creation` | 1.0.0 | 22 | Yes |
 | `rate-limiter` | 1.5.0 | 20 | Yes |
 | `reasoning` | 1.1.0 | 20 | Yes |
