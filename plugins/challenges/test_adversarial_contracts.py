@@ -231,6 +231,333 @@ Ordering and empty IDs should be considered.
     assert DebugTraversalPlugin().score(response) < 15.0
 
 
+def test_debug_traversal_prose_only_cannot_earn_lexical_criteria():
+    # Measured pre-fix (DT-1): a response with fully correct prose but a
+    # corrected code block that fails the harness scored 17/20 because the
+    # lexical fix/diagnosis/trace criteria were earned from prose alone. After
+    # the fix, the execution gate scales those three criteria to 0 and emits a
+    # negative finding, so prose-only scores far lower.
+    response = (
+        "## Root Cause\n"
+        "The comparison `count > 2` is a strict inequality; it should be `count >= 2`.\n"
+        "## Analysis\n"
+        "For abc123, count is 2. Since 2 > 2 is False, abc123 is not added and the "
+        "function returns an empty list. def456 has count 1.\n"
+        "## Fix\n"
+        "Change the comparison to `count >= 2`:\n"
+        "```python\n"
+        "def find_duplicate_users(log_entries):\n"
+        "    user_counts = {}\n"
+        "    for entry in log_entries:\n"
+        "        user_id = entry.get('user_id')\n"
+        "        if user_id:\n"
+        "            user_counts[user_id] = user_counts.get(user_id, 0) + 1\n"
+        "    result = []\n"
+        "    for user_id, count in user_counts.items():\n"
+        "        if count > 2:\n"
+        "            result.append(user_id)\n"
+        "    return result\n"
+        "```\n"
+        "## Test\n"
+        "```python\n"
+        "def test_find_duplicate_users():\n"
+        "    assert find_duplicate_users([{'user_id': 'abc123'}, {'user_id': 'abc123'}, {'user_id': 'def456'}]) == ['abc123']\n"
+        "```\n"
+        "## Side Effects\n"
+        "Ordering is preserved; empty IDs are skipped; duplicates are counted.\n"
+    )
+    result = DebugTraversalPlugin().evaluate(response)
+    assert result.score < 17.0
+    for name in (
+        "Systematic trace / code walkthrough",
+        "Depth of analysis",
+        "Proposed fix / corrected code",
+    ):
+        item = next(item for item in result.rubric if item["name"] == name)
+        assert item["earned"] == 0.0, f"{name} should be scaled to 0, got {item['earned']}"
+        assert item["negative_findings"], f"{name} should carry a negative finding"
+
+
+def test_debug_traversal_correct_executable_fix_scores_full():
+    # Positive control: a response with correct prose AND a corrected code
+    # block that passes the harness must still earn the full 20/20 (the
+    # execution gate must not penalize a valid fix).
+    response = (
+        "## Root Cause\n"
+        "The comparison `count > 2` is a strict inequality; it should be `count >= 2`.\n"
+        "## Analysis\n"
+        "For abc123, count is 2. Since 2 > 2 is False, abc123 is not added and the "
+        "function returns an empty list. def456 has count 1.\n"
+        "## Fix\n"
+        "Change the comparison to `count >= 2`:\n"
+        "```python\n"
+        "def find_duplicate_users(log_entries):\n"
+        "    user_counts = {}\n"
+        "    for entry in log_entries:\n"
+        "        user_id = entry.get('user_id')\n"
+        "        if user_id:\n"
+        "            user_counts[user_id] = user_counts.get(user_id, 0) + 1\n"
+        "    result = []\n"
+        "    for user_id, count in user_counts.items():\n"
+        "        if count >= 2:\n"
+        "            result.append(user_id)\n"
+        "    return result\n"
+        "```\n"
+        "## Test\n"
+        "```python\n"
+        "def test_find_duplicate_users():\n"
+        "    assert find_duplicate_users([{'user_id': 'abc123'}, {'user_id': 'abc123'}, {'user_id': 'def456'}]) == ['abc123']\n"
+        "```\n"
+        "## Side Effects\n"
+        "Ordering is preserved; empty IDs are skipped; duplicates are counted.\n"
+    )
+    assert DebugTraversalPlugin().score(response) == 20.0
+
+
+def test_debug_traversal_inverted_diagnosis_cannot_earn_depth():
+    # Measured pre-fix (DT-2): an inverted diagnosis that identifies the buggy
+    # comparison (`count > 2`) but never states the corrective remedy earned
+    # full depth credit (17/20). After the fix, full depth credit requires a
+    # corrective statement (should/must + the correct comparison), so the
+    # depth criterion is 0.0 here even though the fix code passes the harness.
+    response = (
+        "## Root Cause\n"
+        "The comparison `count > 2` is the problem; it filters out users with two entries.\n"
+        "## Analysis\n"
+        "For abc123, count is 2. Since 2 > 2 is False, abc123 is not added and the "
+        "function returns an empty list. def456 has count 1.\n"
+        "## Fix\n"
+        "```python\n"
+        "def find_duplicate_users(log_entries):\n"
+        "    user_counts = {}\n"
+        "    for entry in log_entries:\n"
+        "        user_id = entry.get('user_id')\n"
+        "        if user_id:\n"
+        "            user_counts[user_id] = user_counts.get(user_id, 0) + 1\n"
+        "    result = []\n"
+        "    for user_id, count in user_counts.items():\n"
+        "        if count >= 2:\n"
+        "            result.append(user_id)\n"
+        "    return result\n"
+        "```\n"
+        "## Test\n"
+        "```python\n"
+        "def test_find_duplicate_users():\n"
+        "    assert find_duplicate_users([{'user_id': 'abc123'}, {'user_id': 'abc123'}, {'user_id': 'def456'}]) == ['abc123']\n"
+        "```\n"
+        "## Side Effects\n"
+        "Ordering is preserved; empty IDs are skipped; duplicates are counted.\n"
+    )
+    result = DebugTraversalPlugin().evaluate(response)
+    depth = next(item for item in result.rubric if item["name"] == "Depth of analysis")
+    assert depth["earned"] == 0.0
+    assert result.score < 20.0
+
+
+def test_debug_traversal_fix_accepts_equivalent_count_gt_one():
+    # DT-3: `count > 1` is the equivalent corrected form (for integer counts it
+    # admits exactly count >= 2) and the execution harness already credits it;
+    # the lexical fix criterion must accept it too, not only `>= 2`.
+    response = (
+        "## Root Cause\n"
+        "The comparison `count > 2` is too strict; it should be `count > 1`.\n"
+        "## Analysis\n"
+        "For abc123, count is 2. Since 2 > 2 is False, abc123 is not added and the "
+        "function returns an empty list. def456 has count 1.\n"
+        "## Fix\n"
+        "```python\n"
+        "def find_duplicate_users(log_entries):\n"
+        "    user_counts = {}\n"
+        "    for entry in log_entries:\n"
+        "        user_id = entry.get('user_id')\n"
+        "        if user_id:\n"
+        "            user_counts[user_id] = user_counts.get(user_id, 0) + 1\n"
+        "    result = []\n"
+        "    for user_id, count in user_counts.items():\n"
+        "        if count > 1:\n"
+        "            result.append(user_id)\n"
+        "    return result\n"
+        "```\n"
+        "## Test\n"
+        "```python\n"
+        "def test_find_duplicate_users():\n"
+        "    assert find_duplicate_users([{'user_id': 'abc123'}, {'user_id': 'abc123'}, {'user_id': 'def456'}]) == ['abc123']\n"
+        "```\n"
+        "## Side Effects\n"
+        "Ordering is preserved; empty IDs are skipped; duplicates are counted.\n"
+    )
+    result = DebugTraversalPlugin().evaluate(response)
+    fix = next(item for item in result.rubric if item["name"] == "Proposed fix / corrected code")
+    assert fix["earned"] == 3.0
+    assert result.score == 20.0
+
+
+def test_debug_traversal_test_in_requires_assertion_context():
+    # DT-4: the `in` membership check must sit in a test-assertion context
+    # (assert x in y), not any "in " fragment. A loose "abc123 in the list"
+    # (e.g. in a comment) must not satisfy the test criterion, while a proper
+    # `assert 'abc123' in result` must.
+    base_fix = (
+        "## Fix\n"
+        "```python\n"
+        "def find_duplicate_users(log_entries):\n"
+        "    user_counts = {}\n"
+        "    for entry in log_entries:\n"
+        "        user_id = entry.get('user_id')\n"
+        "        if user_id:\n"
+        "            user_counts[user_id] = user_counts.get(user_id, 0) + 1\n"
+        "    return [u for u, c in user_counts.items() if c >= 2]\n"
+        "```\n"
+    )
+    preamble = (
+        "## Root Cause\nThe comparison `count > 2` should be `count >= 2`.\n"
+        "## Analysis\nFor abc123, count is 2 and the function returns an empty list. def456 has count 1.\n"
+    )
+    suffix = "## Side Effects\nOrdering and empty IDs are considered; duplicates are counted.\n"
+    loose = preamble + base_fix + (
+        "## Test\ndef test_check():\n"
+        "    # abc123 in the list should be returned\n"
+        "    assert True\n"
+        + suffix
+    )
+    result = DebugTraversalPlugin().evaluate(loose)
+    test_item = next(item for item in result.rubric if item["name"] == "Test code provided")
+    assert test_item["earned"] == 0.0
+    proper = preamble + base_fix + (
+        "## Test\ndef test_check():\n"
+        "    assert 'abc123' in find_duplicate_users(logs)\n"
+        + suffix
+    )
+    result2 = DebugTraversalPlugin().evaluate(proper)
+    test_item2 = next(item for item in result2.rubric if item["name"] == "Test code provided")
+    assert test_item2["earned"] == 3.0
+
+
+def test_debug_traversal_trace_return_requires_count_two_coref():
+    # DT-5: the trace's empty/return hit must co-reference the specific count=2
+    # value, not any "returns" mention. A "returns" far from "count is 2"
+    # earns only 3 of 4 trace hits (2.2 after 1-decimal rounding); a
+    # co-referenced one earns 4 of 4 (3.0).
+    def make(analysis: str) -> str:
+        return (
+            "## Root Cause\nThe comparison `count > 2` should be `count >= 2`.\n"
+            f"## Analysis\n{analysis}\n"
+            "## Fix\n```python\ndef find_duplicate_users(log_entries):\n"
+            "    user_counts = {}\n    for entry in log_entries:\n"
+            "        user_id = entry.get('user_id')\n        if user_id:\n"
+            "            user_counts[user_id] = user_counts.get(user_id, 0) + 1\n"
+            "    return [u for u, c in user_counts.items() if c >= 2]\n```\n"
+            "## Test\n```python\ndef test_check():\n"
+            "    assert 'abc123' in find_duplicate_users(logs)\n```\n"
+            "## Side Effects\nOrdering and empty IDs are considered; duplicates are counted.\n"
+        )
+
+    def trace_earned(response: str) -> float:
+        result = DebugTraversalPlugin().evaluate(response)
+        return next(
+            item for item in result.rubric
+            if item["name"] == "Systematic trace / code walkthrough"
+        )["earned"]
+
+    no_coref = make(
+        "abc123 has count is 2. def456 is present. "
+        + "x" * 90
+        + " The function returns an empty list."
+    )
+    assert trace_earned(no_coref) == 2.2
+    coref = make(
+        "abc123 has count is 2 and the function returns an empty list. def456 is present."
+    )
+    assert trace_earned(coref) == 3.0
+
+
+def test_debug_traversal_structure_is_linear_not_clamped():
+    # DT-6: the structure criterion is linear (0.4 per section) with full
+    # credit (2.0) requiring >=4 of 5 sections. The old float(hits) clamped at
+    # 2.0, so any 2+ sections earned full credit.
+    def structure_earned(response: str) -> float:
+        result = DebugTraversalPlugin().evaluate(response)
+        return next(
+            item for item in result.rubric
+            if item["name"] == "Structured RCA sections"
+        )["earned"]
+
+    fix_block = (
+        "## Fix\n```python\ndef find_duplicate_users(log_entries):\n"
+        "    user_counts = {}\n    for entry in log_entries:\n"
+        "        user_id = entry.get('user_id')\n        if user_id:\n"
+        "            user_counts[user_id] = user_counts.get(user_id, 0) + 1\n"
+        "    return [u for u, c in user_counts.items() if c >= 2]\n```\n"
+    )
+    three = (
+        "## Root Cause\nThe comparison `count > 2` should be `count >= 2`.\n"
+        "## Analysis\nabc123 has count is 2 and the function returns an empty list. def456 is present.\n"
+        + fix_block
+    )
+    assert structure_earned(three) == 1.2
+    four = three + (
+        "## Test\n```python\ndef test_check():\n"
+        "    assert 'abc123' in find_duplicate_users(logs)\n```\n"
+    )
+    assert structure_earned(four) == 2.0
+
+
+def test_debug_traversal_defective_comparison_is_word_bounded():
+    # DT-7: the defective-comparison match is word-bounded, so "count > 20"
+    # does not satisfy it (the bare `>\s*2` matched "> 2" as a prefix of
+    # "> 20"), while "count > 2" and the correct comparison still do.
+    from plugins.challenges.debug_traversal import _DEFECTIVE_COMPARISON_RE
+    assert _DEFECTIVE_COMPARISON_RE.search("the comparison count > 2 is wrong")
+    assert not _DEFECTIVE_COMPARISON_RE.search("the comparison count > 20 is wrong")
+    assert _DEFECTIVE_COMPARISON_RE.search("it should be count >= 2")
+
+
+def test_debug_traversal_fix_still_accepts_count_ge_two_after_dedup():
+    # DT-8: the `count >= 2` form (previously a separate, subsumed alternative)
+    # must still be accepted via the `>= 2` alternative after the dedup.
+    result = DebugTraversalPlugin().evaluate(
+        "## Root Cause\nThe comparison `count > 2` should be `count >= 2`.\n"
+        "## Analysis\nFor abc123, count is 2 and the function returns an empty list. def456 is present.\n"
+        "## Fix\n```python\ndef find_duplicate_users(log_entries):\n"
+        "    user_counts = {}\n    for entry in log_entries:\n"
+        "        user_id = entry.get('user_id')\n        if user_id:\n"
+        "            user_counts[user_id] = user_counts.get(user_id, 0) + 1\n"
+        "    result = []\n    for user_id, count in user_counts.items():\n"
+        "        if count >= 2:\n            result.append(user_id)\n"
+        "    return result\n```\n"
+        "## Test\n```python\ndef test_check():\n"
+        "    assert 'abc123' in find_duplicate_users(logs)\n```\n"
+        "## Side Effects\nOrdering and empty IDs are considered; duplicates are counted.\n"
+    )
+    fix = next(item for item in result.rubric if item["name"] == "Proposed fix / corrected code")
+    assert fix["earned"] == 3.0
+
+
+def test_debug_traversal_early_exit_does_not_pass_execution_gate():
+    # DT-9 (SH-1 wiring): a response that exits 0 before the harness (sys.exit)
+    # reports status "passed" but harness_ok False; it must not pass the
+    # execution gate, and the lexical criteria must be scaled down.
+    response = (
+        "## Root Cause\nThe comparison `count > 2` should be `count >= 2`.\n"
+        "## Analysis\nFor abc123, count is 2 and the function returns an empty list. def456 is present.\n"
+        "## Fix\nChange the comparison to `count >= 2`:\n"
+        "```python\nimport sys\ndef find_duplicate_users(log_entries):\n"
+        "    sys.exit(0)\n```\n"
+        "## Test\n```python\ndef test_check():\n"
+        "    assert 'abc123' in find_duplicate_users(logs)\n```\n"
+        "## Side Effects\nOrdering and empty IDs are considered; duplicates are counted.\n"
+    )
+    result = DebugTraversalPlugin().evaluate(response)
+    exec_item = next(item for item in result.rubric if item["name"] == "Executable fix verification")
+    assert exec_item["earned"] == 0.0
+    assert any("early exit" in finding["finding"] for finding in exec_item["negative_findings"])
+    # The lexical fix criterion is scaled down even though the prose names the
+    # correct comparison (the harness never ran to completion).
+    fix = next(item for item in result.rubric if item["name"] == "Proposed fix / corrected code")
+    assert fix["earned"] == 0.0
+    assert any("withheld" in finding["finding"] for finding in fix["negative_findings"])
+
+
 def test_instruction_following_wrong_tie_break_does_not_pass():
     response = """ORDER T-05 | CUSTOMER NOOR | TOTAL 120.00
 ORDER T-02 | CUSTOMER JULES | TOTAL 120.00

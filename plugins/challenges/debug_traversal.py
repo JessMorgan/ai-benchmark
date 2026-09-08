@@ -6,8 +6,37 @@ import re
 from benchmark.plugin import BenchmarkTaskPlugin, EvaluationResult
 from benchmark.types import ConfigMap
 from plugins.challenges._analysis import first_section, markdown_sections
-from plugins.challenges._execution import extract_python_source, run_python_check
+from plugins.challenges._execution import (
+    ExecutionResult,
+    extract_python_source,
+    run_python_check,
+)
 from plugins.challenges._rubric import Rubric
+
+# DT-2: the corrective statement — the response must state the remedy, i.e. the
+# correct comparison, introduced by a corrective modal (should/must/change/...)
+# or a contrastive connector (instead of / rather than / not). An inverted
+# diagnosis (e.g. "should be > 2") names the buggy comparison, not the remedy,
+# and must not earn full depth credit (measured: inverted diagnosis 17/20).
+_CORRECT_COMPARISON = (
+    r"(?:>=\s*2|at\s+least\s+(?:2|two)|count\s*>\s*1"
+    r"|greater\s+than\s+or\s+equal\s+to\s+(?:2|two)|two\s+or\s+more)"
+)
+_CORRECTIVE_RE = re.compile(
+    r"(?:"
+    r"\b(?:should|must|needs?\s+to|need\s+to|change|replace|use|fix|correct|set|make)\b.{0,80}?"
+    r"|"
+    r"(?:>\s*2\b|greater\s+than\s+2).{0,40}?(?:instead\s+of|rather\s+than|not)\b.{0,40}?"
+    r")" + _CORRECT_COMPARISON,
+    re.IGNORECASE | re.DOTALL,
+)
+# DT-7: the defective-comparison pattern. `>\s*2\b` is word-bounded so
+# "count > 20" does not satisfy it (the bare `>\s*2` matched "> 2" as a
+# prefix of "> 20").
+_DEFECTIVE_COMPARISON_RE = re.compile(
+    r"(?:>\s*2\b|greater\s+than\s+2|strict\s+inequality|>=\s*2|at\s+least\s+2)",
+    re.IGNORECASE,
+)
 
 
 class DebugTraversalPlugin(BenchmarkTaskPlugin):
@@ -17,7 +46,7 @@ class DebugTraversalPlugin(BenchmarkTaskPlugin):
 
     @property
     def version(self) -> str:
-        return "1.2.0"
+        return "1.3.0"
 
     @property
     def name(self) -> str:
@@ -82,29 +111,81 @@ class DebugTraversalPlugin(BenchmarkTaskPlugin):
         test_text = test.body if test else ""
         side_text = side.body if side else ""
 
-        trace_hits = sum(bool(re.search(pattern, analysis_text, re.IGNORECASE)) for pattern in (
-            r"abc123", r"count\s*(?:=|is)\s*2", r"def456", r"empty|return",
-        ))
-        rubric.add_criterion("Systematic trace / code walkthrough", 3.0, 3.0 * trace_hits / 4.0)
+        # Execution gate (DT-1): the corrected code is run in the restricted
+        # harness. When it fails or is absent, the lexical fix/diagnosis/trace
+        # criteria are scaled down proportionally and a negative finding is
+        # emitted, so prose alone cannot earn them (measured: prose-only 17/20).
+        source = extract_python_source(fix_text)
+        execution: ExecutionResult | None = None
+        if source:
+            execution = run_python_check(source, """
+assert find_duplicate_users([
+    {"user_id": "abc123"}, {"user_id": "abc123"}, {"user_id": "def456"}
+]) == ["abc123"]
+""")
+        # DT-9 (SH-1 wiring): gate on harness_ok (passed AND the completion
+        # sentinel printed), not status == "passed". A response that exits 0
+        # before the harness (sys.exit / os._exit / SystemExit) reports status
+        # "passed" but harness_ok False, and must not credit the gate.
+        exec_ok = execution is not None and execution.harness_ok
+        lexical_scale = 1.0 if exec_ok else 0.0
+        withheld = "lexical credit withheld: corrected code did not pass isolated execution"
 
-        correct_diagnosis = bool(re.search(r"(?:>\s*2|greater\s+than\s+2|strict\s+inequality|>=\s*2|at\s+least\s+2)", root_text, re.IGNORECASE))
+        # DT-5: the empty/return hit must co-reference the specific count=2
+        # value (within ~80 chars), so a bare "returns an empty list" with no
+        # count=2 walkthrough does not earn it (measured: "returns anywhere"
+        # 2.25/3).
+        trace_patterns = (
+            r"abc123",
+            r"count\s*(?:=|is)\s*2",
+            r"def456",
+            r"(?:empty|return).{0,80}?count\s*(?:=|is)\s*2"
+            r"|count\s*(?:=|is)\s*2.{0,80}?(?:empty|return)",
+        )
+        trace_hits = sum(
+            bool(re.search(pattern, analysis_text, re.IGNORECASE | re.DOTALL))
+            for pattern in trace_patterns
+        )
         rubric.add_criterion(
-            "Depth of analysis", 3.0,
-            3.0 if correct_diagnosis and re.search(r"count|two|2", analysis_text, re.IGNORECASE) else 0.0,
-            negative_findings=[] if correct_diagnosis else [{"finding": "root cause must identify > 2 instead of >= 2"}],
+            "Systematic trace / code walkthrough", 3.0,
+            (3.0 * trace_hits / 4.0) * lexical_scale,
+            negative_findings=[{"finding": withheld}] if trace_hits and not exec_ok else [],
         )
 
-        fix_correct = bool(re.search(r"(?:>=\s*2|count\s*\)\s*>=\s*2|count\s*>=\s*2)", fix_text))
+        correct_diagnosis = bool(_DEFECTIVE_COMPARISON_RE.search(root_text))
+        corrective = bool(_CORRECTIVE_RE.search(root_text))
+        depth_base = correct_diagnosis and corrective and bool(re.search(r"count|two|2", analysis_text, re.IGNORECASE))
+        depth_findings = []
+        if not correct_diagnosis:
+            depth_findings.append({"finding": "root cause must identify > 2 instead of >= 2"})
+        if not corrective:
+            depth_findings.append({"finding": "root cause must state the corrective comparison (e.g. 'should be >= 2')"})
+        if depth_base and not exec_ok:
+            depth_findings.append({"finding": withheld})
+        rubric.add_criterion(
+            "Depth of analysis", 3.0,
+            (3.0 if depth_base else 0.0) * lexical_scale,
+            negative_findings=depth_findings,
+        )
+
+        # DT-8: `>=\s*2` subsumes the `count >= 2` / `count) >= 2` alternatives
+        # (both contain `>= 2`), so only the two distinct forms are kept.
+        fix_correct = bool(re.search(r"(?:>=\s*2|count\s*>\s*1)", fix_text))
+        fix_findings = []
+        if not fix_correct:
+            fix_findings.append({"finding": "corrected code must accept exactly two occurrences"})
+        if fix_correct and not exec_ok:
+            fix_findings.append({"finding": withheld})
         rubric.add_criterion(
             "Proposed fix / corrected code", 3.0,
-            3.0 if fix_correct else 0.0,
-            negative_findings=[] if fix_correct else [{"finding": "corrected code must accept exactly two occurrences"}],
+            (3.0 if fix_correct else 0.0) * lexical_scale,
+            negative_findings=fix_findings,
         )
 
         test_correct = bool(
             re.search(r"(?:pytest|def\s+test_|assert)", test_text, re.IGNORECASE)
             and re.search(r"abc123", test_text, re.IGNORECASE)
-            and re.search(r"(?:==\s*\[?['\"]?abc123|in\s+)", test_text, re.IGNORECASE)
+            and re.search(r"(?:==\s*\[?['\"]?abc123|assert\s+.{0,60}?\bin\s+)", test_text, re.IGNORECASE)
         )
         rubric.add_criterion("Test code provided", 3.0, 3.0 if test_correct else 0.0)
 
@@ -113,21 +194,27 @@ class DebugTraversalPlugin(BenchmarkTaskPlugin):
         ))
         rubric.add_criterion("Side effects analysis", 3.0, side_hits)
 
+        # DT-6: linear section scale — each of the 5 sections earns 0.4, and
+        # full credit (2.0) requires >=4 of 5. The old float(hits) clamped at
+        # 2.0, so any 2+ sections earned full credit.
         structure_hits = sum(section is not None for section in (root, analysis, fix, test, side))
-        rubric.add_criterion("Structured RCA sections", 2.0, float(structure_hits))
+        structure_earned = 2.0 if structure_hits >= 4 else 0.4 * structure_hits
+        rubric.add_criterion("Structured RCA sections", 2.0, structure_earned)
 
-        source = extract_python_source(fix_text)
-        if source:
-            execution = run_python_check(source, """
-assert find_duplicate_users([
-    {"user_id": "abc123"}, {"user_id": "abc123"}, {"user_id": "def456"}
-]) == ["abc123"]
-""")
+        if execution is not None:
+            # DT-9: credit only when the harness ran to completion. A response
+            # that exits 0 before the harness (status "passed" but no sentinel)
+            # gets a distinct early-exit finding rather than a clean pass.
+            exec_finding = (
+                "harness did not run to completion (early exit before the completion sentinel)"
+                if execution.status == "passed"
+                else execution.error or execution.status
+            )
             rubric.add_criterion(
                 "Executable fix verification", 3.0,
-                3.0 if execution.status == "passed" else 0.0,
-                evidence=[{"kind": "execution", "status": execution.status, "isolation": execution.isolation}],
-                negative_findings=[] if execution.status == "passed" else [{"finding": execution.error or execution.status}],
+                3.0 if exec_ok else 0.0,
+                evidence=[execution.as_evidence()],
+                negative_findings=[] if exec_ok else [{"finding": exec_finding}],
             )
         else:
             rubric.add_criterion("Executable fix verification", 3.0, 0.0, negative_findings=[{"finding": "no corrected Python block"}])
