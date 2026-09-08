@@ -252,6 +252,45 @@ Verify the fix and patch the comparison.
     assert consistency["earned"] == 5.0, f"Expected 5.0 (positive signal), got {consistency['earned']}"
 
 
+def test_debug_consistency_generic_words_do_not_earn_diagnosis():
+    # Measured pre-fix (DC-2): the diagnosis criterion matched generic words
+    # (`report`, `environment`, `input`), so a hallucinated diagnosis that
+    # merely mentioned "the report" and "the input" earned the full 4.0.
+    response = """## Reproduction
+Running find_duplicate_users with the supplied input returns ['abc'].
+## Consistency Check
+The code is correct and the report is not reproducible.
+## Diagnosis
+There is a bug; the report describes the input and environment.
+## Evidence Needed
+Collect logs, stack traces, and environment details.
+## Recommendation
+Verify the fix and patch the comparison.
+"""
+    result = DebugConsistencyPlugin().evaluate(response)
+    diagnosis = next(item for item in result.rubric if item["name"] == "Non-hallucinated diagnosis")
+    assert diagnosis["earned"] == 0.0, f"Expected 0.0 (generic words), got {diagnosis['earned']}"
+
+
+def test_debug_consistency_positive_no_bug_signals_earn_diagnosis():
+    # Specific positive signals that the code works correctly must still be
+    # credited: no bug / cannot reproduce / behaves as specified.
+    response = """## Reproduction
+Running find_duplicate_users with the supplied input returns ['abc'].
+## Consistency Check
+The code is correct and the report is not reproducible.
+## Diagnosis
+There is no bug; the failure cannot be reproduced and the code behaves as specified.
+## Evidence Needed
+Collect logs, stack traces, and environment details.
+## Recommendation
+Verify the fix and patch the comparison.
+"""
+    result = DebugConsistencyPlugin().evaluate(response)
+    diagnosis = next(item for item in result.rubric if item["name"] == "Non-hallucinated diagnosis")
+    assert diagnosis["earned"] == 4.0, f"Expected 4.0 (positive signals), got {diagnosis['earned']}"
+
+
 def test_debug_traversal_requires_executable_threshold_fix():
     response = """## Root Cause
 The threshold should be at least two.
