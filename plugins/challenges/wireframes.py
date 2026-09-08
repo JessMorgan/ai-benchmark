@@ -98,7 +98,7 @@ class WireframesPlugin(BenchmarkTaskPlugin):
         rubric.add_criterion("Screen names and purposes", 3.0, 3.0 if screen_count >= 4 and purpose_count == screen_count else min(3.0, purpose_count * 0.75))
         visual_count = sum(self._has_visual_evidence(section.body) for section in unique.values())
         rubric.add_criterion("Visual/structural wireframe", 4.0, 4.0 if screen_count and visual_count == screen_count else min(4.0, visual_count))
-        component_count = sum(bool(re.search(r"button|card|list|nav|menu|tab|modal|input|icon|timer|slider|toggle", section.body, re.IGNORECASE)) for section in unique.values())
+        component_count = sum(bool(re.search(r"\b(?:button|card|list|nav|menu|tab|modal|input|icon|timer|slider|toggle)\b", section.body, re.IGNORECASE)) for section in unique.values())
         rubric.add_criterion("Key UI components", 4.0, 4.0 if screen_count >= 4 and component_count >= 4 else min(4.0, component_count))
         raw_edges = re.findall(r"([A-Za-z][A-Za-z ]{1,30})\s*(?:->|→|=>)\s*([A-Za-z][A-Za-z ]{1,30})", text)
         known = set(unique)

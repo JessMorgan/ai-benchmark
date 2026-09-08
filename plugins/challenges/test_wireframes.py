@@ -162,3 +162,15 @@ def test_duplicate_edges_count_once():
     result = WireframesPlugin().evaluate(response)
     navigation = next(item for item in result.rubric if item["name"] == "Navigation flows")
     assert navigation["earned"] == 2.0
+
+
+def test_navigation_and_tabletop_do_not_match_component_keywords():
+    response = (
+        "## Dashboard\nPurpose: the navigation panel.\n"
+        "## Focus Session\nPurpose: a tabletop surface.\n"
+        "## Calendar Integration\nPurpose: navigation again.\n"
+        "## AI Planning\nPurpose: tabletop again.\n"
+    )
+    result = WireframesPlugin().evaluate(response)
+    components = next(item for item in result.rubric if item["name"] == "Key UI components")
+    assert components["earned"] == 0.0
