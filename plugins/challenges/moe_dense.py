@@ -93,7 +93,9 @@ class MoEDensePlugin(BenchmarkTaskPlugin):
         named_tasks = len(set(re.findall(r"\b(?:MMLU|GSM8K|HumanEval|MBPP|HellaSwag|ARC|coding|translation|classification)\b", benchmark_text, re.IGNORECASE)))
         rubric.add_criterion("Benchmarks/comparison", 2.0, 2.0 if advantage_pairs >= 2 and dense_pairs >= 2 and named_tasks >= 2 else min(2.0, float(advantage_pairs + dense_pairs) / 2.0))
         ref_text = references.body if references else ""
-        refs = set(re.findall(r"\b(?:Mixtral|Switch Transformer|Shazeer|GLaM|DeepSeekMoE|Fedus|Sparsely-Gated|arXiv|technical report)\b", ref_text, re.IGNORECASE))
+        named_refs = {m.casefold() for m in re.findall(r"\b(?:Mixtral|Switch Transformer|Shazeer|GLaM|DeepSeekMoE|Fedus|Sparsely-Gated|technical report)\b", ref_text, re.IGNORECASE)}
+        arxiv_ids = {m.group(1) for m in re.finditer(r"\b(?:arXiv:)?\s*(\d{4}\.\d{4,5})\b", ref_text, re.IGNORECASE)}
+        refs = named_refs | arxiv_ids
         rubric.add_criterion("Paper references", 2.0, 2.0 if len(refs) >= 2 else float(len(refs)))
         numeric = re.findall(r"\b\d+(?:\.\d+)?\s*(?:%|x|B|M|K|TFLOPs?|params?|tokens?/s)\b", text, re.IGNORECASE)
         side_by_side = bool(re.search(r"\b(?:moe|dense)\b.{0,120}\b(?:vs\.?|versus|compared|than)\b.{0,120}\b(?:moe|dense)\b", text, re.IGNORECASE))

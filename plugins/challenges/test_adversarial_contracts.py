@@ -278,6 +278,22 @@ def test_moe_empty_inference_section_earns_no_inference_points():
     assert inference["earned"] == 0.0
 
 
+def test_moe_references_count_distinct_casefolded_names_and_arxiv_ids():
+    # References must be counted as distinct casefolded names, so a
+    # case-duplicated name ("Mixtral mixtral") is one citation, and a bare
+    # "arXiv" keyword with no ID is not a citation. Only a real arXiv ID
+    # counts as citation evidence.
+    gaming = "## References\nMixtral mixtral arXiv\n"
+    result = MoEDensePlugin().evaluate(gaming)
+    refs = next(item for item in result.rubric if item["name"] == "Paper references")
+    assert refs["earned"] == 1.0
+    # A real arXiv ID is legitimate citation evidence and counts toward the two.
+    legit = "## References\nMixtral 8x7B (arXiv:2401.04088) and Shazeer et al. (arXiv:1701.03066).\n"
+    result2 = MoEDensePlugin().evaluate(legit)
+    refs2 = next(item for item in result2.rubric if item["name"] == "Paper references")
+    assert refs2["earned"] == 2.0
+
+
 def test_multi_step_requires_one_function_per_block():
     response = """```python
 def greet_user(name: str) -> str: return f'Hello, {name}! Welcome.'
