@@ -3,7 +3,7 @@
 | Property | Value |
 |---|---|
 | ID | `data-transformation` |
-| Version | `1.1.0` |
+| Version | `1.2.0` |
 | Max Score | 22 |
 | Streaming | Yes |
 
@@ -40,6 +40,16 @@ therefore still score poorly.
 | Derived summary | 3 |
 | Strict format and no decoys | 1 |
 | **Total** | **22** |
+
+The derived summary is cross-checked against the response's own records, not
+just the expected answer: `count` must equal the number of emitted records,
+`top_order_id` must equal the first emitted record's order_id, and `total`
+must equal the sum of the emitted records' totals (within a small
+tolerance). A summary that matches the expected answer but contradicts the
+emitted records earns no credit for the inconsistent fields. Rank credit is
+per-record: a record earns it only when the rank it emitted matches that
+record's own expected position, so a set of records carrying ranks 1–5 in
+the wrong order does not earn the full rank sub-credit.
 
 The evaluator independently validates JSON and the request schema. Per-cell
 metadata records `schema_requested`, `schema_request_status`,

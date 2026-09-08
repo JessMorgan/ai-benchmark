@@ -169,7 +169,7 @@ The runtime inventory below matches `uv run ai-benchmark --list-plugins`:
 | `rate-limiter` | 1.5.0 | 20 | Yes |
 | `reasoning` | 1.2.0 | 20 | Yes |
 | `software-architecture` | 1.1.0 | 20 | Yes |
-| `data-transformation` | 1.1.0 | 22 | Yes |
+| `data-transformation` | 1.2.0 | 22 | Yes |
 | `tool-calling` | 1.2.0 | 25 | Yes |
 | `wireframes` | 1.1.0 | 20 | Yes |
 

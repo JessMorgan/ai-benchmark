@@ -110,7 +110,7 @@ class DataTransformationPlugin(BenchmarkTaskPlugin):
 
     @property
     def version(self) -> str:
-        return "1.1.0"
+        return "1.2.0"
 
     @property
     def name(self) -> str:
@@ -177,7 +177,6 @@ class DataTransformationPlugin(BenchmarkTaskPlugin):
         return True
 
     @staticmethod
-    @staticmethod
     def _evaluation_with_diagnostics(rubric: Rubric, schema_valid: bool, schema_errors: list[str]) -> EvaluationResult:
         result = rubric.results()
         diagnostics = dict(result.diagnostics or {})
@@ -190,12 +189,10 @@ class DataTransformationPlugin(BenchmarkTaskPlugin):
         return EvaluationResult(result.score, result.rubric, diagnostics)
 
     @staticmethod
-    @staticmethod
     def _records(data: dict[str, Any] | None) -> list[dict[str, Any]]:
         records = data.get("records") if isinstance(data, dict) else None
         return records if isinstance(records, list) else []
 
-    @staticmethod
     @staticmethod
     def _record_map(data: dict[str, Any] | None) -> dict[str, dict[str, Any]]:
         return {
@@ -204,7 +201,6 @@ class DataTransformationPlugin(BenchmarkTaskPlugin):
             if isinstance(record, dict) and isinstance(record.get("order_id"), str)
         }
 
-    @staticmethod
     @staticmethod
     def _criterion(rubric: Rubric, name: str, maximum: float, earned: float, evidence: list[dict[str, Any]] | None = None, findings: list[dict[str, Any]] | None = None) -> None:
         rubric.add_criterion(
@@ -215,6 +211,39 @@ class DataTransformationPlugin(BenchmarkTaskPlugin):
             matched=earned > 0,
             negative_findings=findings or [],
         )
+
+    @staticmethod
+    def _summary_consistency(summary: dict[str, Any], records: list[dict[str, Any]]) -> dict[str, bool]:
+        """Cross-check summary fields against the response's own records.
+
+        A summary that matches the expected answer but contradicts the
+        records the response actually emitted (a fabricated aggregate) must
+        not earn credit: ``count`` must equal the number of emitted records,
+        ``top_order_id`` must equal the first emitted record's order_id, and
+        ``total`` must equal the sum of the emitted records' totals within a
+        small tolerance.
+        """
+        numeric_totals: list[float] = []
+        for record in records:
+            if not isinstance(record, dict):
+                continue
+            total = record.get("total")
+            if isinstance(total, (int, float)) and not isinstance(total, bool):
+                numeric_totals.append(float(total))
+        first_order_id = next(
+            (str(record.get("order_id")) for record in records if isinstance(record, dict)),
+            None,
+        )
+        total = summary.get("total")
+        return {
+            "count": summary.get("count") == len(records),
+            "top_order_id": first_order_id is not None and summary.get("top_order_id") == first_order_id,
+            "total": (
+                isinstance(total, (int, float))
+                and not isinstance(total, bool)
+                and abs(total - sum(numeric_totals)) <= 0.01
+            ),
+        }
 
     def evaluate(self, response_text: str) -> EvaluationResult:
         text = response_text.strip()
@@ -274,6 +303,9 @@ class DataTransformationPlugin(BenchmarkTaskPlugin):
         )
 
         actual_map = self._record_map(data)
+        # Restated from the source packet: the current (latest-version) totals
+        # for the three orders that have superseded historical versions —
+        # O-201 v2 = 120.00, O-202 v2 = 150.00, O-208 v2 = 120.00.
         historical_expected = {"O-201": 120.0, "O-202": 150.0, "O-208": 120.0}
         historical_matches = [
             order_id for order_id, total in historical_expected.items()
@@ -310,7 +342,21 @@ class DataTransformationPlugin(BenchmarkTaskPlugin):
         actual_ranks: list[Any] = [record.get("rank") for record in actual_records if isinstance(record, dict)]
         expected_order = [record["order_id"] for record in expected_records]  # type: ignore[index]
         order_matches = sum(left == right for left, right in zip(actual_order, expected_order, strict=False))
-        rank_matches = sum(rank == index for index, rank in enumerate(actual_ranks, 1))
+        # Rank credit is per-record: a record earns it only when the rank it
+        # emitted matches that record's own expected position, so a
+        # schema-valid set of records carrying ranks 1-5 in the wrong order
+        # no longer earns the full rank sub-credit. Each expected position is
+        # claimed at most once so duplicate order_ids cannot double-credit.
+        expected_positions = {order_id: index for index, order_id in enumerate(expected_order, 1)}
+        claimed_positions: set[int] = set()
+        rank_matches = 0
+        for record in actual_records:
+            if not isinstance(record, dict):
+                continue
+            position = expected_positions.get(str(record.get("order_id")))
+            if position is not None and position not in claimed_positions and record.get("rank") == position:
+                rank_matches += 1
+                claimed_positions.add(position)
         sorting_earned = 1.5 * order_matches / len(expected_order) + 1.5 * rank_matches / len(expected_order)
         self._criterion(
             rubric,
@@ -325,14 +371,24 @@ class DataTransformationPlugin(BenchmarkTaskPlugin):
         raw_summary = data.get("summary") if isinstance(data, dict) and isinstance(data.get("summary"), dict) else {}
         actual_summary: dict[str, Any] = dict(raw_summary)  # type: ignore[arg-type]
         summary_fields = ["count", "total", "top_order_id"]
-        summary_matches = [field for field in summary_fields if actual_summary.get(field) == expected_summary[field]]
+        summary_consistency = self._summary_consistency(actual_summary, actual_records)
+        summary_matches = [
+            field for field in summary_fields
+            if actual_summary.get(field) == expected_summary[field] and summary_consistency[field]
+        ]
+        summary_findings: list[dict[str, Any]] = []
+        if len(summary_matches) != len(summary_fields):
+            summary_findings.append({"finding": "summary does not match retained records"})
+            inconsistent = [field for field in summary_fields if not summary_consistency[field]]
+            if inconsistent:
+                summary_findings.append({"finding": "summary is inconsistent with the emitted records", "fields": inconsistent})
         self._criterion(
             rubric,
             "Derived summary",
             3.0,
             round(3.0 * len(summary_matches) / len(summary_fields), 1),
             evidence=[{"kind": "summary-field", "field": field} for field in summary_matches],
-            findings=[] if len(summary_matches) == len(summary_fields) else [{"finding": "summary does not match retained records"}],
+            findings=summary_findings,
         )
 
         strict = set(data) == {"records", "summary"}
