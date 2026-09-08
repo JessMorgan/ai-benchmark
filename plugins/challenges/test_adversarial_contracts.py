@@ -1640,6 +1640,87 @@ def test_tool_calling_rejects_unknown_extra_tool():
     assert ToolCallingPlugin().score(response) < 18.0
 
 
+def test_tool_calling_synthesis_window_is_case_insensitive():
+    # TC-1: the blocks regex counts closing tags case-insensitively, but the
+    # synthesis window used a case-sensitive rfind for the lowercase closing
+    # tag, so a response whose closing tags are all uppercase (a
+    # </TOOL_CALL>-only response) lost all 4.0 Synthesis points.
+    calls = [
+        '<TOOL_CALL>{"name":"get_weather","args":{"location":"Tokyo","unit":"celsius"}}</TOOL_CALL>',
+        '<TOOL_CALL>{"name":"search_flights","args":{"origin":"JFK","destination":"Tokyo","date":"2024-08-15"}}</TOOL_CALL>',
+        '<TOOL_CALL>{"name":"book_hotel","args":{"city":"Tokyo","check_in":"2024-08-16","check_out":"2024-08-20","guests":2}}</TOOL_CALL>',
+        '<TOOL_CALL>{"name":"get_stock_price","args":{"ticker":"SONY"}}</TOOL_CALL>',
+        '<TOOL_CALL>{"name":"convert_currency","args":{"amount":1000,"from_curr":"USD","to_curr":"JPY"}}</TOOL_CALL>',
+        '<TOOL_CALL>{"name":"send_email","args":{"to":"alice@example.com","subject":"Tokyo Trip Itinerary","body":"All set"}}</TOOL_CALL>',
+    ]
+    response = (
+        "<plan>get_weather search_flights book_hotel get_stock_price convert_currency send_email</plan>\n"
+        + "\n".join(calls)
+        + "\nFinal: 22 celsius weather in Tokyo, flight from JFK, hotel reservation for 2 guests, "
+        "SONY stock price 120.50, email sent to alice@example.com, converted 155000 JPY."
+    )
+    result = ToolCallingPlugin().evaluate(response)
+    synthesis = next(item for item in result.rubric if item["name"] == "Synthesis / final response")
+    assert synthesis["earned"] == 4.0
+    assert result.score == 25.0
+def test_tool_calling_plan_with_intro_prose_earns_planning_credit():
+    # TC-2: intro prose before <plan> broke the fullmatch, so the 2.0
+    # Planning credit was lost even when the plan named all six tools.
+    calls = [
+        '<tool_call>{"name":"get_weather","args":{"location":"Tokyo","unit":"celsius"}}</tool_call>',
+        '<tool_call>{"name":"search_flights","args":{"origin":"JFK","destination":"Tokyo","date":"2024-08-15"}}</tool_call>',
+        '<tool_call>{"name":"book_hotel","args":{"city":"Tokyo","check_in":"2024-08-16","check_out":"2024-08-20","guests":2}}</tool_call>',
+        '<tool_call>{"name":"get_stock_price","args":{"ticker":"SONY"}}</tool_call>',
+        '<tool_call>{"name":"convert_currency","args":{"amount":1000,"from_curr":"USD","to_curr":"JPY"}}</tool_call>',
+        '<tool_call>{"name":"send_email","args":{"to":"alice@example.com","subject":"Tokyo Trip Itinerary","body":"All set"}}</tool_call>',
+    ]
+    response = (
+        "I will plan first, then execute the six calls.\n"
+        "<plan>get_weather search_flights book_hotel get_stock_price convert_currency send_email</plan>\n"
+        + "\n".join(calls)
+        + "\nFinal: 22 celsius weather in Tokyo, flight from JFK, hotel reservation for 2 guests, "
+        "SONY stock price 120.50, email sent to alice@example.com, converted 155000 JPY."
+    )
+    result = ToolCallingPlugin().evaluate(response)
+    planning = next(item for item in result.rubric if item["name"] == "Planning / reasoning")
+    assert planning["earned"] == 2.0
+    assert result.score == 25.0
+
+
+def test_tool_calling_no_negative_finding_when_full_required_tools_credit():
+    # TC-3: when all six required tools are called exactly once (here in the
+    # wrong order), the Required-tools criterion earns the full 5.0, so the
+    # "exactly one call" negative finding must not appear alongside full
+    # credit (contradictory rubric evidence).
+    wrong_order = [
+        '<tool_call>{"name":"search_flights","args":{"origin":"JFK","destination":"Tokyo","date":"2024-08-15"}}</tool_call>',
+        '<tool_call>{"name":"get_weather","args":{"location":"Tokyo","unit":"celsius"}}</tool_call>',
+        '<tool_call>{"name":"book_hotel","args":{"city":"Tokyo","check_in":"2024-08-16","check_out":"2024-08-20","guests":2}}</tool_call>',
+        '<tool_call>{"name":"get_stock_price","args":{"ticker":"SONY"}}</tool_call>',
+        '<tool_call>{"name":"convert_currency","args":{"amount":1000,"from_curr":"USD","to_curr":"JPY"}}</tool_call>',
+        '<tool_call>{"name":"send_email","args":{"to":"alice@example.com","subject":"Tokyo Trip Itinerary","body":"All set"}}</tool_call>',
+    ]
+    response = (
+        "<plan>get_weather search_flights book_hotel get_stock_price convert_currency send_email</plan>\n"
+        + "\n".join(wrong_order)
+    )
+    result = ToolCallingPlugin().evaluate(response)
+    required = next(item for item in result.rubric if item["name"] == "Required tools present")
+    assert required["earned"] == 5.0
+    assert required["negative_findings"] == []
+
+    # Negative control: dropping a required tool reduces credit and the
+    # finding is emitted again.
+    missing = wrong_order[:5]
+    result_missing = ToolCallingPlugin().evaluate(
+        "<plan>get_weather search_flights book_hotel get_stock_price convert_currency send_email</plan>\n"
+        + "\n".join(missing)
+    )
+    required_missing = next(item for item in result_missing.rubric if item["name"] == "Required tools present")
+    assert required_missing["earned"] < 5.0
+    assert any("exactly one call" in finding["finding"] for finding in required_missing["negative_findings"])
+
+
 def test_wireframes_require_distinct_canonical_screens():
     response = "## Focus\nPurpose: timer.\n[Button] Start\n## Focus Session\nPurpose: timer.\n[Button] Start\n## Calendar\nPurpose: events.\n[Button] Sync\n## Calendar Integration\nPurpose: events.\n[Button] Sync\n"
     result = WireframesPlugin().evaluate(response)

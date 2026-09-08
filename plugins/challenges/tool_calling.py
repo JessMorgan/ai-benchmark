@@ -19,7 +19,7 @@ class ToolCallingPlugin(BenchmarkTaskPlugin):
 
     @property
     def version(self) -> str:
-        return "1.1.1"
+        return "1.2.0"
 
     @property
     def name(self) -> str:
@@ -37,7 +37,7 @@ class ToolCallingPlugin(BenchmarkTaskPlugin):
         return (
             "Plan and call exactly these six tools in this order: get_weather(Tokyo,celsius), "
             "search_flights(JFK,Tokyo,2024-08-15), book_hotel(Tokyo,2024-08-16,2024-08-20,2), "
-            "get_stock_price(SONY), convert_currency(1000,USD,JPY), send_email(alice@example.com, "
+            "get_stock_price(SONY), convert_currency(amount 1000, from_curr USD, to_curr JPY), send_email(alice@example.com, "
             "subject Tokyo Trip Itinerary, body). Put the plan in `<plan>...</plan>`, each call in "
             "one valid `<tool_call>{...}</tool_call>`, and after the calls provide a final response "
             "covering weather, flight, hotel, stock, email, and a numeric converted JPY amount."
@@ -94,13 +94,14 @@ class ToolCallingPlugin(BenchmarkTaskPlugin):
         rubric.add_criterion("Output format compliance", 3.0, 3.0 if exact_format else (1.0 if blocks else 0.0), negative_findings=[] if exact_format else [{"finding": "all tool calls must be valid typed JSON blocks"}])
         plan_end = text.lower().find("<tool_call>")
         plan = text[:plan_end] if plan_end >= 0 else ""
-        plan_match = re.fullmatch(r"\s*<plan>\s*([\s\S]*?)\s*</plan>\s*", plan, re.IGNORECASE)
+        plan_match = re.search(r"<plan>\s*([\s\S]*?)\s*</plan>", plan, re.IGNORECASE)
         plan_body = plan_match.group(1).lower() if plan_match else ""
         plan_ok = bool(plan_match) and all(name in plan_body for name in expected)
         rubric.add_criterion("Planning / reasoning", 2.0, 2.0 if plan_ok else 0.0)
         counts_ok = names == expected and len(names) == len(set(names))
         distinct = len(set(names) & set(expected))
-        rubric.add_criterion("Required tools present", 5.0, 5.0 if counts_ok else 5.0 * distinct / len(expected), negative_findings=[] if counts_ok else [{"finding": "exactly one call for each required tool is required"}])
+        tools_credit = 5.0 if counts_ok else 5.0 * distinct / len(expected)
+        rubric.add_criterion("Required tools present", 5.0, tools_credit, negative_findings=[] if tools_credit >= 5.0 else [{"finding": "exactly one call for each required tool is required"}])
         args = [call.get("args", {}) for call in calls if isinstance(call, dict)]
         checks: list[tuple[str, Callable[[dict[str, Any]], bool], float]] = [
             ("get_weather", lambda a: str(a.get("location", "")).lower() == "tokyo" and str(a.get("unit", "")).lower() in {"celsius", "c"}, 1.0),
@@ -113,7 +114,8 @@ class ToolCallingPlugin(BenchmarkTaskPlugin):
         arg_score = sum(float(weight) for name, predicate, weight in checks for call_name, call_args in zip(names, args, strict=False) if call_name == name and isinstance(call_args, dict) and predicate(call_args))
         rubric.add_criterion("Correct arguments", 8.0, arg_score)
         rubric.add_criterion("Correct ordering / dependencies", 3.0, 3.0 if names == expected else 0.0)
-        final = text[text.rfind("</tool_call>") + len("</tool_call>"):] if "</tool_call>" in text else ""
+        closings = list(re.finditer(r"</tool_call>", text, re.IGNORECASE))
+        final = text[closings[-1].end():] if closings else ""
         synthesis_hits = sum(bool(re.search(pattern, final, re.IGNORECASE)) for pattern in (r"weather|celsius|degree", r"flight|JFK|Tokyo", r"hotel|reservation|guest", r"stock|SONY|price", r"\b\d+(?:\.\d+)?\s*JPY\b", r"email|itinerary|alice@example\.com"))
         rubric.add_criterion("Synthesis / final response", 4.0, 4.0 if synthesis_hits == 6 else synthesis_hits * 2.0 / 3.0, negative_findings=[] if synthesis_hits == 6 else [{"finding": "final response must include all results and a numeric JPY amount"}])
         return rubric.results()
