@@ -339,6 +339,32 @@ def test_moe_benchmark_pairs_require_dense_and_dedupe():
     assert _distinct_pattern_hits(newline_repeat, pair_pattern) == 1
 
 
+def test_moe_load_balancing_requires_a_real_variable_not_significant():
+    # The f_i variable pattern must be word-bounded: "significant" contains
+    # "fi" but is not the f_i load-balancing variable, so it must not satisfy
+    # the variable sub-check (measured: a wrong impl passed via "significant").
+    response = (
+        "## Gating\ntop-k softmax router g = softmax(Wx).\n"
+        "## Load Balancing\nThe load balancing term is significant = 0.5.\n"
+        "## Training\nexpert collapse and token drop.\n"
+        "## Inference\nmemory bandwidth latency.\n"
+        "## Benchmarks\nMoE outperforms dense on MMLU.\n"
+        "## References\nShazeer 2017 and Mixtral 8x7B.\n"
+    )
+    load = next(
+        item for item in MoEDensePlugin().evaluate(response).rubric
+        if item["name"] == "Load-balancing loss"
+    )
+    assert load["earned"] == 0.0
+    # A real f_i variable still satisfies the sub-check.
+    legit = "## Load Balancing\nThe auxiliary loss is L_aux = sum f_i * P_i.\n"
+    load2 = next(
+        item for item in MoEDensePlugin().evaluate(legit).rubric
+        if item["name"] == "Load-balancing loss"
+    )
+    assert load2["earned"] == 3.0
+
+
 def test_multi_step_requires_one_function_per_block():
     response = """```python
 def greet_user(name: str) -> str: return f'Hello, {name}! Welcome.'

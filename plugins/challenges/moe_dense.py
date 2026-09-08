@@ -98,7 +98,7 @@ class MoEDensePlugin(BenchmarkTaskPlugin):
         )
         gate_ok = bool(re.search(r"top\s*-?\s*k", gating_text, re.IGNORECASE) and re.search(r"softmax", gating_text, re.IGNORECASE) and re.search(r"(?:router|gate|expert)", gating_text, re.IGNORECASE) and re.search(r"(?:=|equation|formula)", gating_text, re.IGNORECASE))
         rubric.add_criterion("Gating/routing mechanism", 3.0, 3.0 if gate_ok else 0.0, negative_findings=[] if gate_ok else [{"finding": "section must contain top-k, softmax, and an equation"}])
-        load_ok = bool(re.search(r"(?:load.?balanc|auxiliary)", load_text, re.IGNORECASE) and re.search(r"(?:f[_\s]?i|p[_\s]?i|importance|capacity)", load_text, re.IGNORECASE) and re.search(r"(?:=|equation|formula|L[_\s]?aux)", load_text, re.IGNORECASE))
+        load_ok = bool(re.search(r"(?:load.?balanc|auxiliary)", load_text, re.IGNORECASE) and re.search(r"(?:\bf[_\s]?i\b|p[_\s]?i|importance|capacity)", load_text, re.IGNORECASE) and re.search(r"(?:=|equation|formula|L[_\s]?aux)", load_text, re.IGNORECASE))
         rubric.add_criterion("Load-balancing loss", 3.0, 3.0 if load_ok else 0.0)
         training_hits = sum(bool(re.search(pattern, (training.body if training else ""), re.IGNORECASE)) for pattern in (r"token.?drop", r"expert.?collapse|instab|capacity"))
         rubric.add_criterion("Training challenges", 2.0, float(training_hits))
