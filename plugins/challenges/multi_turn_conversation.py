@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 from benchmark.plugin import BenchmarkTaskPlugin, EvaluationResult
@@ -62,6 +63,13 @@ class MultiTurnConversationPlugin(BenchmarkTaskPlugin):
         except json.JSONDecodeError:
             return None
         return value if isinstance(value, dict) else None
+
+    @staticmethod
+    def _negated_before(text: str, start: int) -> bool:
+        # A negation token within ~20 chars before the claim makes it a
+        # true statement ("did not enable music"), not a false claim.
+        window = text[max(0, start - 20):start]
+        return bool(re.search(r"\b(?:not|no|never|without)\b|n't", window))
 
     def evaluate(self, response_text: str) -> EvaluationResult:
         text = response_text.strip()
@@ -145,12 +153,49 @@ class MultiTurnConversationPlugin(BenchmarkTaskPlugin):
         )
         rubric.add_criterion("State preservation and updates", 5.0, 5.0 if preserved else 0.0,
                              negative_findings=[] if preserved else [{"finding": "later turns must preserve prior state while applying only requested changes"}])
-        summary_text = summary.body if summary else ""
-        summary_ok = all(
-            marker in summary_text.lower()
-            for marker in ("turn 1", "turn 2", "disable", "music", "turn 3", "50", "5 minutes")
+        summary_text = (summary.body if summary else "").lower()
+        summary_patterns = (
+            r"turn\s*1", r"turn\s*2", r"disabl\w*", r"music", r"turn\s*3", r"50", r"5 minutes",
         )
-        rubric.add_criterion("State-change summary", 2.0, 2.0 if summary_ok else 0.0)
+        summary_ok = all(re.search(pattern, summary_text) for pattern in summary_patterns)
+        # The summary must match the transitions that actually happened:
+        # music was disabled (Turn 1 -> 2) and the duration was lengthened
+        # from 25 to 50 minutes (Turn 2 -> 3). A negated or inverted claim
+        # voids the summary credit even when every marker is present.
+        # The guards are negation-aware (a true negated statement such as
+        # "did not enable music" is not a false claim) and the negation
+        # guard is object-aware (the disabl word must be about the music).
+        false_claims: list[str] = []
+        for match in re.finditer(
+            r"\b(?:not|no|never|without|didn'?t|don'?t|doesn'?t|wasn'?t|isn'?t|cannot|can'?t)\b[^.\n]{0,15}\b(?P<disabl>disabl\w*)",
+            summary_text,
+        ):
+            # Object-aware: "music" must sit within ~20 chars of the disabl
+            # word, so "did not disable the calendar event" is not counted.
+            start = match.start("disabl")
+            around = summary_text[max(0, start - 20):start + 20]
+            if re.search(r"\bmusic\b", around):
+                false_claims.append("the music-disable transition is negated")
+                break
+        for match in re.finditer(
+            r"\benabl\w*\s+(?:the\s+)?music\b|\bmusic\s+(?:was\s+|is\s+|were\s+)?enabl\w*",
+            summary_text,
+        ):
+            if not self._negated_before(summary_text, match.start()):
+                false_claims.append("music was enabled, not disabled")
+                break
+        for match in re.finditer(
+            r"\b(?:shorten\w*|reduc\w*|decreas\w*|cut\w*)\b[^.\n]{0,40}\b(?:duration|length|minute\w*)",
+            summary_text,
+        ):
+            if not self._negated_before(summary_text, match.start()):
+                false_claims.append("the duration was lengthened, not shortened")
+                break
+        summary_ok = summary_ok and not false_claims
+        rubric.add_criterion(
+            "State-change summary", 2.0, 2.0 if summary_ok else 0.0,
+            negative_findings=[{"finding": claim} for claim in false_claims],
+        )
         structure_ok = (
             len(sections) == 4
             and all(section is not None and len(fenced_blocks(section.body, "json")) == 1 for section in turns)

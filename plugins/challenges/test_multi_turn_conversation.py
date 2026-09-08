@@ -48,3 +48,59 @@ def test_multi_turn_verbatim_final_state_scores_low():
     # has music on, 25 minutes, and no labels).
     response = build_response(TURN_3, TURN_3, TURN_3, CORRECT_SUMMARY)
     assert MultiTurnConversationPlugin().score(response) < 15.0
+
+
+def test_multi_turn_false_summary_earns_no_summary_credit():
+    # Measured gaming case: a summary that negates the actual transitions
+    # ("did not disable music", "music was enabled", "shortened the
+    # duration") still contained every required marker and scored 20/20.
+    false_summary = (
+        "Turn 1 to Turn 2 did not disable music; music was enabled instead. "
+        "Turn 2 to Turn 3 shortened the duration to 50 and added a 5 minutes notification."
+    )
+    response = build_response(TURN_1, TURN_2, TURN_3, false_summary)
+    result = MultiTurnConversationPlugin().evaluate(response)
+    summary_criterion = next(
+        item for item in result.rubric if item["name"] == "State-change summary"
+    )
+    assert summary_criterion["earned"] == 0.0
+    assert result.score < 20.0
+
+
+def test_multi_turn_true_negated_statements_not_flagged():
+    # Regression (MC-2 review, [major]): the enable/shortened guards were
+    # negation-blind and flagged TRUE statements — "did not enable music"
+    # (the music was disabled) and "did not shorten the duration" (the
+    # duration was lengthened) each cost the 2.0 summary credit, so a
+    # correct response scored 18.0 instead of 20.0.
+    true_negated_summary = (
+        "Turn 1 to Turn 2 did not enable music; the music was disabled and "
+        "the deep-work label was added. Turn 2 to Turn 3 did not shorten the "
+        "duration; it changed to 50 and added a 5 minutes notification."
+    )
+    response = build_response(TURN_1, TURN_2, TURN_3, true_negated_summary)
+    result = MultiTurnConversationPlugin().evaluate(response)
+    summary_criterion = next(
+        item for item in result.rubric if item["name"] == "State-change summary"
+    )
+    assert summary_criterion["earned"] == 2.0
+    assert result.score == 20.0
+
+
+def test_multi_turn_negation_guard_is_object_aware():
+    # Regression (MC-2 review, [major]): the negation guard flagged any
+    # negated disabl word, so a true "did not disable the calendar event"
+    # (the event was kept) was flagged as a music-disable negation. The
+    # guard must require "music" near the disabl word.
+    object_aware_summary = (
+        "Turn 1 to Turn 2 disabled music and added the deep-work label; "
+        "it did not disable the calendar event. Turn 2 to Turn 3 changed "
+        "duration to 50 and added a 5 minutes notification."
+    )
+    response = build_response(TURN_1, TURN_2, TURN_3, object_aware_summary)
+    result = MultiTurnConversationPlugin().evaluate(response)
+    summary_criterion = next(
+        item for item in result.rubric if item["name"] == "State-change summary"
+    )
+    assert summary_criterion["earned"] == 2.0
+    assert result.score == 20.0
