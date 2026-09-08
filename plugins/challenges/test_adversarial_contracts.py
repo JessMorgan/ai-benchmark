@@ -333,6 +333,46 @@ Verify the fix and patch the comparison.
     assert reproduction["earned"] == 0.0, f"Expected 0.0 (no positive trace), got {reproduction['earned']}"
 
 
+def test_debug_consistency_evidence_requires_a_trace_reference():
+    # Measured pre-fix (DC-4): the evidence criterion credited generic
+    # keywords (`log`, `stack`, `environment`) with no reference to the
+    # actual trace/output. After the fix the evidence section must also
+    # reference the actual output (abc / ['abc']).
+    response = """## Reproduction
+Running find_duplicate_users with the supplied input returns ['abc'].
+## Consistency Check
+The code is correct and the report is not reproducible.
+## Diagnosis
+There is no bug in the code.
+## Evidence Needed
+Collect logs, stack traces, and environment details.
+## Recommendation
+Verify the fix and patch the comparison.
+"""
+    result = DebugConsistencyPlugin().evaluate(response)
+    evidence = next(item for item in result.rubric if item["name"] == "Evidence request")
+    assert evidence["earned"] == 0.0, f"Expected 0.0 (no trace reference), got {evidence['earned']}"
+
+
+def test_debug_consistency_evidence_with_trace_reference_earns_full():
+    # An evidence request that references the actual output must still be
+    # credited in full.
+    response = """## Reproduction
+Running find_duplicate_users with the supplied input returns ['abc'].
+## Consistency Check
+The code is correct and the report is not reproducible.
+## Diagnosis
+There is no bug in the code.
+## Evidence Needed
+If the report persists, collect the actual output (expected ['abc']) and the exact input.
+## Recommendation
+Verify the fix and patch the comparison.
+"""
+    result = DebugConsistencyPlugin().evaluate(response)
+    evidence = next(item for item in result.rubric if item["name"] == "Evidence request")
+    assert evidence["earned"] == 3.0, f"Expected 3.0 (trace reference), got {evidence['earned']}"
+
+
 def test_debug_traversal_requires_executable_threshold_fix():
     response = """## Root Cause
 The threshold should be at least two.

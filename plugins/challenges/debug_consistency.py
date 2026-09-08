@@ -100,7 +100,14 @@ class DebugConsistencyPlugin(BenchmarkTaskPlugin):
             diagnosis.body, re.IGNORECASE,
         ))
         rubric.add_criterion("Non-hallucinated diagnosis", 4.0, 4.0 if diagnosis_ok else 0.0)
-        evidence_ok = bool(evidence and re.search(r"(?:stack|version|actual|input|log|repro|environment|trace)", evidence.body, re.IGNORECASE))
+        # The evidence request must reference the actual trace/output
+        # (abc / ['abc']), not just generic evidence keywords (measured:
+        # bare `log`/`stack`/`environment` keywords earned the full 3/3).
+        evidence_ok = bool(
+            evidence
+            and re.search(r"(?:stack|version|actual|input|log|repro|environment|trace)", evidence.body, re.IGNORECASE)
+            and re.search(r"\babc\b|\[\s*['\"]?abc['\"]?\s*\]", evidence.body, re.IGNORECASE)
+        )
         rubric.add_criterion("Evidence request", 3.0, 3.0 if evidence_ok else 0.0)
         recommendation_ok = bool(recommendation and re.search(r"(?:do not|not enough|collect|reproduce|instrument|verify)", recommendation.body, re.IGNORECASE))
         rubric.add_criterion("Actionable recommendation", 2.0, 2.0 if recommendation_ok else 0.0)
