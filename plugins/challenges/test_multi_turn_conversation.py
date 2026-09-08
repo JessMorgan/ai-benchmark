@@ -136,3 +136,17 @@ def test_multi_turn_broken_turn2_keeps_index_alignment():
         item for item in result.rubric if item["name"] == "Requested state values"
     )
     assert values_criterion["earned"] == 3.3
+
+
+def test_multi_turn_untyped_values_checked_against_canonical_types():
+    # Measured: `music: 1` (int) matched the expected `music: true` via
+    # Python's `1 == True`, so an untyped Turn 1 still earned full
+    # "Requested state values" credit (5.0/5). Untyped values must be
+    # checked against the canonical types.
+    untyped_turn1 = dict(TURN_1, music=1)
+    response = build_response(untyped_turn1, TURN_2, TURN_3, CORRECT_SUMMARY)
+    result = MultiTurnConversationPlugin().evaluate(response)
+    values_criterion = next(
+        item for item in result.rubric if item["name"] == "Requested state values"
+    )
+    assert values_criterion["earned"] == 4.7

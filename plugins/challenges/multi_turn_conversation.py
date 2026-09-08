@@ -65,6 +65,19 @@ class MultiTurnConversationPlugin(BenchmarkTaskPlugin):
         return value if isinstance(value, dict) else None
 
     @staticmethod
+    def _canonical_match(value: Any, expected: Any) -> bool:
+        # `1 == True` in Python, so equality alone would credit untyped
+        # values; the type must match the canonical expected type too.
+        return type(value) is type(expected) and value == expected
+
+    @staticmethod
+    def _labels(state: dict[str, Any]) -> list[str] | None:
+        labels = state.get("labels")
+        if isinstance(labels, list) and all(isinstance(label, str) for label in labels):
+            return labels
+        return None
+
+    @staticmethod
     def _negated_before(text: str, start: int) -> bool:
         # A negation token within ~20 chars before the claim makes it a
         # true statement ("did not enable music"), not a false claim.
@@ -129,9 +142,9 @@ class MultiTurnConversationPlugin(BenchmarkTaskPlugin):
             if not isinstance(state, dict):
                 continue
             target = expected[index]
-            hits = sum(state.get(key) == value for key, value in target.items())
-            labels = state.get("labels")
-            if isinstance(labels, list) and ("deep-work" in labels) is label_required[index]:
+            hits = sum(self._canonical_match(state.get(key), value) for key, value in target.items())
+            labels = self._labels(state)
+            if labels is not None and ("deep-work" in labels) is label_required[index]:
                 hits += 1
             transition_hits += hits
         rubric.add_criterion(
@@ -141,6 +154,9 @@ class MultiTurnConversationPlugin(BenchmarkTaskPlugin):
             ],
         )
         first, second, third = states
+        first_labels = self._labels(first) if isinstance(first, dict) else None
+        second_labels = self._labels(second) if isinstance(second, dict) else None
+        third_labels = self._labels(third) if isinstance(third, dict) else None
         preserved = (
             isinstance(first, dict)
             and isinstance(second, dict)
@@ -150,10 +166,9 @@ class MultiTurnConversationPlugin(BenchmarkTaskPlugin):
             and first.get("music") is True
             and second.get("music") is False
             and third.get("music") is False
-            and isinstance(first.get("labels"), list)
-            and "deep-work" not in first.get("labels", [])
-            and "deep-work" in second.get("labels", [])
-            and "deep-work" in third.get("labels", [])
+            and first_labels is not None and "deep-work" not in first_labels
+            and second_labels is not None and "deep-work" in second_labels
+            and third_labels is not None and "deep-work" in third_labels
         )
         rubric.add_criterion("State preservation and updates", 5.0, 5.0 if preserved else 0.0,
                              negative_findings=[] if preserved else [{"finding": "later turns must preserve prior state while applying only requested changes"}])
