@@ -16,7 +16,7 @@ AI Benchmark uses a plugin architecture. Each plugin defines a benchmark task, a
 | `long-context` | Long-Context Retrieval | 0.2.0 | 20 | Yes |
 | `moe-dense` | MoE vs Dense | 1.1.0 | 17 | Yes |
 | `multi-step` | Multi-Step Instructions | 1.4.0 | 20 | Yes |
-| `multi-turn-conversation` | Multi-Turn Conversation | 1.0.0 | 20 | Yes |
+| `multi-turn-conversation` | Multi-Turn Conversation | 1.1.0 | 20 | Yes |
 | `orchestration` | Orchestration & Workflow | 1.3.0 | 16 | Yes |
 | `prd-creation` | PRD Creation | 1.0.0 | 22 | Yes |
 | `rate-limiter` | Rate Limiter | 1.5.0 | 20 | Yes |
