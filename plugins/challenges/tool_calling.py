@@ -113,7 +113,8 @@ class ToolCallingPlugin(BenchmarkTaskPlugin):
         arg_score = sum(float(weight) for name, predicate, weight in checks for call_name, call_args in zip(names, args, strict=False) if call_name == name and isinstance(call_args, dict) and predicate(call_args))
         rubric.add_criterion("Correct arguments", 8.0, arg_score)
         rubric.add_criterion("Correct ordering / dependencies", 3.0, 3.0 if names == expected else 0.0)
-        final = text[text.rfind("</tool_call>") + len("</tool_call>"):] if "</tool_call>" in text else ""
+        closings = list(re.finditer(r"</tool_call>", text, re.IGNORECASE))
+        final = text[closings[-1].end():] if closings else ""
         synthesis_hits = sum(bool(re.search(pattern, final, re.IGNORECASE)) for pattern in (r"weather|celsius|degree", r"flight|JFK|Tokyo", r"hotel|reservation|guest", r"stock|SONY|price", r"\b\d+(?:\.\d+)?\s*JPY\b", r"email|itinerary|alice@example\.com"))
         rubric.add_criterion("Synthesis / final response", 4.0, 4.0 if synthesis_hits == 6 else synthesis_hits * 2.0 / 3.0, negative_findings=[] if synthesis_hits == 6 else [{"finding": "final response must include all results and a numeric JPY amount"}])
         return rubric.results()
