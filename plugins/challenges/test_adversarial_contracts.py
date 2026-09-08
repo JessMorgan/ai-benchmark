@@ -231,6 +231,89 @@ Ordering and empty IDs should be considered.
     assert DebugTraversalPlugin().score(response) < 15.0
 
 
+def test_debug_traversal_prose_only_cannot_earn_lexical_criteria():
+    # Measured pre-fix (DT-1): a response with fully correct prose but a
+    # corrected code block that fails the harness scored 17/20 because the
+    # lexical fix/diagnosis/trace criteria were earned from prose alone. After
+    # the fix, the execution gate scales those three criteria to 0 and emits a
+    # negative finding, so prose-only scores far lower.
+    response = (
+        "## Root Cause\n"
+        "The comparison `count > 2` is a strict inequality; it should be `count >= 2`.\n"
+        "## Analysis\n"
+        "For abc123, count is 2. Since 2 > 2 is False, abc123 is not added and the "
+        "function returns an empty list. def456 has count 1.\n"
+        "## Fix\n"
+        "Change the comparison to `count >= 2`:\n"
+        "```python\n"
+        "def find_duplicate_users(log_entries):\n"
+        "    user_counts = {}\n"
+        "    for entry in log_entries:\n"
+        "        user_id = entry.get('user_id')\n"
+        "        if user_id:\n"
+        "            user_counts[user_id] = user_counts.get(user_id, 0) + 1\n"
+        "    result = []\n"
+        "    for user_id, count in user_counts.items():\n"
+        "        if count > 2:\n"
+        "            result.append(user_id)\n"
+        "    return result\n"
+        "```\n"
+        "## Test\n"
+        "```python\n"
+        "def test_find_duplicate_users():\n"
+        "    assert find_duplicate_users([{'user_id': 'abc123'}, {'user_id': 'abc123'}, {'user_id': 'def456'}]) == ['abc123']\n"
+        "```\n"
+        "## Side Effects\n"
+        "Ordering is preserved; empty IDs are skipped; duplicates are counted.\n"
+    )
+    result = DebugTraversalPlugin().evaluate(response)
+    assert result.score < 17.0
+    for name in (
+        "Systematic trace / code walkthrough",
+        "Depth of analysis",
+        "Proposed fix / corrected code",
+    ):
+        item = next(item for item in result.rubric if item["name"] == name)
+        assert item["earned"] == 0.0, f"{name} should be scaled to 0, got {item['earned']}"
+        assert item["negative_findings"], f"{name} should carry a negative finding"
+
+
+def test_debug_traversal_correct_executable_fix_scores_full():
+    # Positive control: a response with correct prose AND a corrected code
+    # block that passes the harness must still earn the full 20/20 (the
+    # execution gate must not penalize a valid fix).
+    response = (
+        "## Root Cause\n"
+        "The comparison `count > 2` is a strict inequality; it should be `count >= 2`.\n"
+        "## Analysis\n"
+        "For abc123, count is 2. Since 2 > 2 is False, abc123 is not added and the "
+        "function returns an empty list. def456 has count 1.\n"
+        "## Fix\n"
+        "Change the comparison to `count >= 2`:\n"
+        "```python\n"
+        "def find_duplicate_users(log_entries):\n"
+        "    user_counts = {}\n"
+        "    for entry in log_entries:\n"
+        "        user_id = entry.get('user_id')\n"
+        "        if user_id:\n"
+        "            user_counts[user_id] = user_counts.get(user_id, 0) + 1\n"
+        "    result = []\n"
+        "    for user_id, count in user_counts.items():\n"
+        "        if count >= 2:\n"
+        "            result.append(user_id)\n"
+        "    return result\n"
+        "```\n"
+        "## Test\n"
+        "```python\n"
+        "def test_find_duplicate_users():\n"
+        "    assert find_duplicate_users([{'user_id': 'abc123'}, {'user_id': 'abc123'}, {'user_id': 'def456'}]) == ['abc123']\n"
+        "```\n"
+        "## Side Effects\n"
+        "Ordering is preserved; empty IDs are skipped; duplicates are counted.\n"
+    )
+    assert DebugTraversalPlugin().score(response) == 20.0
+
+
 def test_instruction_following_wrong_tie_break_does_not_pass():
     response = """ORDER T-05 | CUSTOMER NOOR | TOTAL 120.00
 ORDER T-02 | CUSTOMER JULES | TOTAL 120.00

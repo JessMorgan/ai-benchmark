@@ -6,7 +6,11 @@ import re
 from benchmark.plugin import BenchmarkTaskPlugin, EvaluationResult
 from benchmark.types import ConfigMap
 from plugins.challenges._analysis import first_section, markdown_sections
-from plugins.challenges._execution import extract_python_source, run_python_check
+from plugins.challenges._execution import (
+    ExecutionResult,
+    extract_python_source,
+    run_python_check,
+)
 from plugins.challenges._rubric import Rubric
 
 
@@ -82,23 +86,54 @@ class DebugTraversalPlugin(BenchmarkTaskPlugin):
         test_text = test.body if test else ""
         side_text = side.body if side else ""
 
+        # Execution gate (DT-1): the corrected code is run in the restricted
+        # harness. When it fails or is absent, the lexical fix/diagnosis/trace
+        # criteria are scaled down proportionally and a negative finding is
+        # emitted, so prose alone cannot earn them (measured: prose-only 17/20).
+        source = extract_python_source(fix_text)
+        execution: ExecutionResult | None = None
+        if source:
+            execution = run_python_check(source, """
+assert find_duplicate_users([
+    {"user_id": "abc123"}, {"user_id": "abc123"}, {"user_id": "def456"}
+]) == ["abc123"]
+""")
+        exec_ok = execution is not None and execution.status == "passed"
+        lexical_scale = 1.0 if exec_ok else 0.0
+        withheld = "lexical credit withheld: corrected code did not pass isolated execution"
+
         trace_hits = sum(bool(re.search(pattern, analysis_text, re.IGNORECASE)) for pattern in (
             r"abc123", r"count\s*(?:=|is)\s*2", r"def456", r"empty|return",
         ))
-        rubric.add_criterion("Systematic trace / code walkthrough", 3.0, 3.0 * trace_hits / 4.0)
+        rubric.add_criterion(
+            "Systematic trace / code walkthrough", 3.0,
+            (3.0 * trace_hits / 4.0) * lexical_scale,
+            negative_findings=[{"finding": withheld}] if trace_hits and not exec_ok else [],
+        )
 
         correct_diagnosis = bool(re.search(r"(?:>\s*2|greater\s+than\s+2|strict\s+inequality|>=\s*2|at\s+least\s+2)", root_text, re.IGNORECASE))
+        depth_base = correct_diagnosis and bool(re.search(r"count|two|2", analysis_text, re.IGNORECASE))
+        depth_findings = []
+        if not correct_diagnosis:
+            depth_findings.append({"finding": "root cause must identify > 2 instead of >= 2"})
+        if depth_base and not exec_ok:
+            depth_findings.append({"finding": withheld})
         rubric.add_criterion(
             "Depth of analysis", 3.0,
-            3.0 if correct_diagnosis and re.search(r"count|two|2", analysis_text, re.IGNORECASE) else 0.0,
-            negative_findings=[] if correct_diagnosis else [{"finding": "root cause must identify > 2 instead of >= 2"}],
+            (3.0 if depth_base else 0.0) * lexical_scale,
+            negative_findings=depth_findings,
         )
 
         fix_correct = bool(re.search(r"(?:>=\s*2|count\s*\)\s*>=\s*2|count\s*>=\s*2)", fix_text))
+        fix_findings = []
+        if not fix_correct:
+            fix_findings.append({"finding": "corrected code must accept exactly two occurrences"})
+        if fix_correct and not exec_ok:
+            fix_findings.append({"finding": withheld})
         rubric.add_criterion(
             "Proposed fix / corrected code", 3.0,
-            3.0 if fix_correct else 0.0,
-            negative_findings=[] if fix_correct else [{"finding": "corrected code must accept exactly two occurrences"}],
+            (3.0 if fix_correct else 0.0) * lexical_scale,
+            negative_findings=fix_findings,
         )
 
         test_correct = bool(
@@ -116,18 +151,12 @@ class DebugTraversalPlugin(BenchmarkTaskPlugin):
         structure_hits = sum(section is not None for section in (root, analysis, fix, test, side))
         rubric.add_criterion("Structured RCA sections", 2.0, float(structure_hits))
 
-        source = extract_python_source(fix_text)
-        if source:
-            execution = run_python_check(source, """
-assert find_duplicate_users([
-    {"user_id": "abc123"}, {"user_id": "abc123"}, {"user_id": "def456"}
-]) == ["abc123"]
-""")
+        if execution is not None:
             rubric.add_criterion(
                 "Executable fix verification", 3.0,
-                3.0 if execution.status == "passed" else 0.0,
+                3.0 if exec_ok else 0.0,
                 evidence=[{"kind": "execution", "status": execution.status, "isolation": execution.isolation}],
-                negative_findings=[] if execution.status == "passed" else [{"finding": execution.error or execution.status}],
+                negative_findings=[] if exec_ok else [{"finding": execution.error or execution.status}],
             )
         else:
             rubric.add_criterion("Executable fix verification", 3.0, 0.0, negative_findings=[{"finding": "no corrected Python block"}])
