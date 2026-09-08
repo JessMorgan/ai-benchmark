@@ -533,6 +533,31 @@ def test_debug_traversal_fix_still_accepts_count_ge_two_after_dedup():
     assert fix["earned"] == 3.0
 
 
+def test_debug_traversal_early_exit_does_not_pass_execution_gate():
+    # DT-9 (SH-1 wiring): a response that exits 0 before the harness (sys.exit)
+    # reports status "passed" but harness_ok False; it must not pass the
+    # execution gate, and the lexical criteria must be scaled down.
+    response = (
+        "## Root Cause\nThe comparison `count > 2` should be `count >= 2`.\n"
+        "## Analysis\nFor abc123, count is 2 and the function returns an empty list. def456 is present.\n"
+        "## Fix\nChange the comparison to `count >= 2`:\n"
+        "```python\nimport sys\ndef find_duplicate_users(log_entries):\n"
+        "    sys.exit(0)\n```\n"
+        "## Test\n```python\ndef test_check():\n"
+        "    assert 'abc123' in find_duplicate_users(logs)\n```\n"
+        "## Side Effects\nOrdering and empty IDs are considered; duplicates are counted.\n"
+    )
+    result = DebugTraversalPlugin().evaluate(response)
+    exec_item = next(item for item in result.rubric if item["name"] == "Executable fix verification")
+    assert exec_item["earned"] == 0.0
+    assert any("early exit" in finding["finding"] for finding in exec_item["negative_findings"])
+    # The lexical fix criterion is scaled down even though the prose names the
+    # correct comparison (the harness never ran to completion).
+    fix = next(item for item in result.rubric if item["name"] == "Proposed fix / corrected code")
+    assert fix["earned"] == 0.0
+    assert any("withheld" in finding["finding"] for finding in fix["negative_findings"])
+
+
 def test_instruction_following_wrong_tie_break_does_not_pass():
     response = """ORDER T-05 | CUSTOMER NOOR | TOTAL 120.00
 ORDER T-02 | CUSTOMER JULES | TOTAL 120.00

@@ -119,7 +119,11 @@ assert find_duplicate_users([
     {"user_id": "abc123"}, {"user_id": "abc123"}, {"user_id": "def456"}
 ]) == ["abc123"]
 """)
-        exec_ok = execution is not None and execution.status == "passed"
+        # DT-9 (SH-1 wiring): gate on harness_ok (passed AND the completion
+        # sentinel printed), not status == "passed". A response that exits 0
+        # before the harness (sys.exit / os._exit / SystemExit) reports status
+        # "passed" but harness_ok False, and must not credit the gate.
+        exec_ok = execution is not None and execution.harness_ok
         lexical_scale = 1.0 if exec_ok else 0.0
         withheld = "lexical credit withheld: corrected code did not pass isolated execution"
 
@@ -194,11 +198,19 @@ assert find_duplicate_users([
         rubric.add_criterion("Structured RCA sections", 2.0, structure_earned)
 
         if execution is not None:
+            # DT-9: credit only when the harness ran to completion. A response
+            # that exits 0 before the harness (status "passed" but no sentinel)
+            # gets a distinct early-exit finding rather than a clean pass.
+            exec_finding = (
+                "harness did not run to completion (early exit before the completion sentinel)"
+                if execution.status == "passed"
+                else execution.error or execution.status
+            )
             rubric.add_criterion(
                 "Executable fix verification", 3.0,
                 3.0 if exec_ok else 0.0,
-                evidence=[{"kind": "execution", "status": execution.status, "isolation": execution.isolation}],
-                negative_findings=[] if exec_ok else [{"finding": execution.error or execution.status}],
+                evidence=[execution.as_evidence()],
+                negative_findings=[] if exec_ok else [{"finding": exec_finding}],
             )
         else:
             rubric.add_criterion("Executable fix verification", 3.0, 0.0, negative_findings=[{"finding": "no corrected Python block"}])
