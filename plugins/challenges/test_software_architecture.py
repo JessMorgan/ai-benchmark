@@ -206,6 +206,22 @@ class TestSoftwareArchitectureScoring(unittest.TestCase):
         rubric = {c["name"]: c for c in self.plugin.evaluate(text).rubric}
         self.assertGreaterEqual(rubric["Data Modeling & API Design"]["earned"], 1.0)
 
+    def test_multi_region_alone_triggers_availability_penalty(self):
+        # "multi-region" alone is not failure handling; an availability target
+        # backed only by it must take the bounded deduction.
+        text = (
+            "## Resiliency & Failure Modes\n\n"
+            "multi-region deployment for availability.\n\n"
+            "## Observability & SLOs\n\n"
+            "SLO: 99.9% availability with an error budget.\n"
+        )
+        rubric = {c["name"]: c for c in self.plugin.evaluate(text).rubric}
+        obs = rubric["Observability & SLOs"]
+        self.assertTrue(
+            any("failure handling" in n["finding"] for n in obs["negative_findings"]),
+            "availability target backed only by 'multi-region' must be penalized",
+        )
+
     def test_partial_response_scores(self):
         text = (
             "## Executive Summary\n\n"

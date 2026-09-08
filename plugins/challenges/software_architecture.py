@@ -110,7 +110,7 @@ class SoftwareArchitecturePlugin(BenchmarkTaskPlugin):
         rubric.add_criterion("Observability & SLOs", 1.5, min(1.5, float(obs_hits)))
         if re.search(r"1\s*(?:million|000\s*000)|1M", scale, re.IGNORECASE) and not re.search(r"(?:rps|qps|capacity|throughput)", scale, re.IGNORECASE):
             rubric.penalize_criterion("Scalability & Capacity Planning", 0.5, "capacity claim lacks a workload estimate")
-        if re.search(r"99\.\d%|SLO|SLA", observability, re.IGNORECASE) and not re.search(r"circuit|failover|retry|backoff|multi.?region", resilience, re.IGNORECASE):
+        if re.search(r"99\.\d%|SLO|SLA", observability, re.IGNORECASE) and not re.search(r"circuit|failover|retry|backoff", resilience, re.IGNORECASE):
             rubric.penalize_criterion("Observability & SLOs", 0.5, "availability target lacks supporting failure handling")
         return rubric.results()
 
