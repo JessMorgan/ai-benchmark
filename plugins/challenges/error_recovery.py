@@ -252,11 +252,20 @@ async def run_checks():
 asyncio.run(run_checks())
 '''
             execution = run_python_check(_SOCKET_BLOCK_PREAMBLE + "\n" + source, harness)
-            mode_results = self._mode_results(execution.output)
+            # A response can print fake MODE_RESULT markers at module level and
+            # then exit early (sys.exit / os._exit) so the harness never runs;
+            # gate the behavioral credit on the harness actually completing
+            # (the completion sentinel is printed only after the harness ends).
+            harness_completed = execution.harness_ok
+            mode_results = self._mode_results(execution.output) if harness_completed else {}
             for mode, criterion_name in _BEHAVIORAL_MODES:
-                passed, detail = mode_results.get(
-                    mode, (False, f"mode was not reported by the harness ({execution.status})")
-                )
+                if harness_completed:
+                    passed, detail = mode_results.get(
+                        mode, (False, f"mode was not reported by the harness ({execution.status})")
+                    )
+                else:
+                    passed = False
+                    detail = execution.error or "harness did not complete (missing completion sentinel)"
                 rubric.add_criterion(
                     criterion_name, 2.5, 2.5 if passed else 0.0,
                     evidence=[execution.as_evidence()],

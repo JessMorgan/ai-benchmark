@@ -1632,6 +1632,34 @@ def test_error_recovery_wrong_annotation_loses_signature_credit(annotation):
     assert sig["earned"] == 1.5
 
 
+def test_error_recovery_fake_mode_markers_without_harness_earn_no_behavioral_credit():
+    # Measured pre-fix (ER-6): a response that prints fake MODE_RESULT PASS
+    # markers at module level and then exits early (sys.exit) was scored on its
+    # own markers -- the harness never ran, but _mode_results parsed the fake
+    # markers and awarded the full 10-pt behavioral block. The behavioral
+    # criteria are now gated on execution.harness_ok (the completion sentinel),
+    # so an early exit that skips the harness earns no behavioral credit.
+    response = (
+        "import sys\n"
+        'print("MODE_RESULT all-success PASS")\n'
+        'print("MODE_RESULT partial PASS")\n'
+        'print("MODE_RESULT payload PASS")\n'
+        'print("MODE_RESULT all-fail PASS")\n'
+        "sys.exit(0)\n"
+    )
+    result = ErrorRecoveryPlugin().evaluate(response)
+    behavioral = [item for item in result.rubric if item["name"].startswith("Behavioral ")]
+    assert len(behavioral) == 4
+    assert sum(item["earned"] for item in behavioral) == 0.0
+    # Every criterion names the missing completion sentinel (not a per-mode
+    # failure); ``all`` is the stronger pin since each 0.0 criterion carries one.
+    assert all(
+        "harness did not complete" in finding["finding"]
+        for item in behavioral
+        for finding in item["negative_findings"]
+    )
+
+
 @pytest.mark.parametrize("plugin", [ErrorRecoveryPlugin, EventProcessorPlugin])
 def test_executable_plugins_do_not_credit_stub_sources(plugin):
     assert plugin().score("class Placeholder:\n    pass") < 12.0
