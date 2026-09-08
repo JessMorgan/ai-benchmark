@@ -49,9 +49,9 @@ stored normalized logs, not from the live stream.
 # though "anomaly" appears first.
 _REFERENCE_DOMAINS = {
     "ingestion": (("ingest", "buffer", "collect", "receive", "http"), "accept/buffer log batches durably"),
-    "enrich": (("geoip", "enrich", "normaliz", "geo"), "normalize + GeoIP enrich each line"),
+    "enrich": (("geoip", "enrich", "normaliz", r"geo(?=ip|\b)"), "normalize + GeoIP enrich each line"),
     "anomaly": (("anomal",), "anomaly detection on normalized stream"),
-    "alert": (("alert", "notif", "feed", "realtime"), "real-time alert feed for anomalies"),
+    "alert": (("alert", "notif", r"\bfeed\b", "realtime"), "real-time alert feed for anomalies"),
     "report": (("report", "aggregate", "summary", "nightly"), "nightly aggregate report"),
     "observe": (("metric", "observ", "monitor", "health", "export"), "observability / metrics export"),
 }

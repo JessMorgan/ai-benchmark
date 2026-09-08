@@ -352,6 +352,17 @@ Ordering rationale: T1 before T2 because data flows from ingestion to enrichment
     assert result.score == 20.0
 
 
+def test_decomposition_geo_and_feed_keywords_are_word_bounded():
+    # The boundary-less "geo"/"feed" keywords matched inside longer words
+    # ("geography", "feedback"), crediting the wrong domains.
+    plugin = DecompositionPlugin()
+    assert plugin._domain_of("Task 4: track user geography and location") is None
+    assert plugin._domain_of("Task 5: gather operator feedback") is None
+    # Legitimate uses still resolve.
+    assert plugin._domain_of("Task 2: GeoIP enrich each line") == "enrich"
+    assert plugin._domain_of("Task 4: real-time alert feed for anomalies") == "alert"
+
+
 def test_instruction_following_wrong_tie_break_does_not_pass():
     response = """ORDER T-05 | CUSTOMER NOOR | TOTAL 120.00
 ORDER T-02 | CUSTOMER JULES | TOTAL 120.00
