@@ -158,10 +158,15 @@ class OrchestrationPlugin(BenchmarkTaskPlugin):
         graph = parse_workflow_graph(text)
         rubric.record_validation(graph)
         shared_tasks = graph.value.get("tasks", set()) if isinstance(graph.value, dict) else set()
-        if len(shared_tasks) >= 2:
+        shared_edges = graph.value.get("edges", []) if isinstance(graph.value, dict) else []
+        # The shared parser is authoritative when it actually finds
+        # dependencies. When it sees task IDs but no edges — e.g. a numbered
+        # plan whose trace lines happen to use "Task N" — its "no edges"
+        # verdict reflects a blind spot, so the local numbered pass decides.
+        if len(shared_tasks) >= 2 and shared_edges:
             valid = graph.valid
-            edges = graph.value.get("edges", [])
-            validity_findings = [] if valid else [{"finding": "dependency graph is incomplete, cyclic, or references unknown tasks"}]
+            edges = shared_edges
+            validity_findings = [] if valid else [{"finding": f"invalid graph: {'; '.join(graph.errors) or 'no edges'}"}]
         else:
             # The shared parser only recognizes "Task N"/"Step N" IDs; a plan
             # that numbers its tasks ("1. ...", "2) ...") needs a local pass.
