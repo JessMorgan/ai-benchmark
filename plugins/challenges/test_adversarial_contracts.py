@@ -1418,6 +1418,61 @@ Task 4 init running complete"""
     assert OrchestrationPlugin().score(response) == 16.0
 
 
+def test_orchestration_numbered_plan_with_task_prefixed_brackets():
+    # The prompt's canonical bracket format is "[DEPENDS_ON: task_id]", and
+    # models routinely write the ID with its "task" prefix. Pre-fix,
+    # _task_blocks bound each numbered declaration line to the task ID
+    # inside its own bracket (the first "task N" mention on the line), so
+    # this fully valid plan scored 11.0/16: breakdown 3.0 (task 2's
+    # operation counted under block 1) and labels 0.0 (block 1 held both
+    # "parallel" and "sequential" -> false contradiction).
+    response = """1. Process 1TB server logs (parallel)
+2. GeoIP lookup (sequential) [DEPENDS_ON: task 1]
+3. Anomaly detection (sequential) [DEPENDS_ON: task 2]
+4. Generate PDF report (sequential) [DEPENDS_ON: task 3]
+1: init running complete
+2: init running complete
+3: init running complete
+4: init running complete"""
+    assert OrchestrationPlugin().score(response) == 16.0
+
+
+def test_orchestration_label_contradiction_costs_the_same_in_both_formats():
+    # A task labeled both parallel and sequential must cost the same in
+    # numbered format as in task/step format: the local graph pass applies
+    # the same label check as parse_workflow_graph, so both formats lose
+    # the tagging and label criteria (8.0/16 each) instead of the numbered
+    # format escaping with 12.0/16.
+    task_step = """Task 1 [PARALLEL] process 1TB server logs.
+Task 2 [PARALLEL] perform GeoIP lookup.
+Task 3 [SEQUENTIAL] run anomaly detection.
+Task 4 [SEQUENTIAL] generate the PDF report.
+Task 4 actually runs in parallel with task 3.
+Task 2 [DEPENDS_ON: task 1]
+Task 3 [DEPENDS_ON: task 2]
+Task 4 [DEPENDS_ON: task 3]
+Task 1 init running complete.
+Task 2 init running complete.
+Task 3 init running complete.
+Task 4 init running complete."""
+    numbered = """1. Process 1TB server logs (parallel)
+2. GeoIP lookup (parallel) [DEPENDS_ON: task 1]
+3. Anomaly detection (sequential) [DEPENDS_ON: task 2]
+4. Generate PDF report (sequential) [DEPENDS_ON: task 3]
+4 actually runs in parallel with 3.
+1: init running complete
+2: init running complete
+3: init running complete
+4: init running complete"""
+    for response in (task_step, numbered):
+        result = OrchestrationPlugin().evaluate(response)
+        tagging = next(item for item in result.rubric if item["name"] == "Explicit dependency tagging")
+        labels = next(item for item in result.rubric if item["name"] == "Parallel vs sequential logic")
+        assert tagging["earned"] == 0.0
+        assert labels["earned"] == 0.0
+    assert OrchestrationPlugin().score(task_step) == OrchestrationPlugin().score(numbered)
+
+
 def test_prd_content_in_wrong_heading_does_not_earn_local_credit():
     response = """## Notes
 Executive Summary FlowState. Problem pain. Goals 25%. Persona 1 and Persona 2.

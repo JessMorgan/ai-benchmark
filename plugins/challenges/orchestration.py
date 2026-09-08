@@ -19,22 +19,38 @@ _OPERATION_PATTERNS = (r"logs?", r"geo.?ip", r"anomal", r"pdf|report")
 _TRACE_PATTERNS = (r"init|initialize|pending", r"running|start", r"complete|done|finish")
 
 
+def _declared_task_id(line: str) -> str | None:
+    """Return the task ID a line declares, or None.
+
+    Task/step mentions inside DEPENDS_ON brackets are dependency references,
+    not declarations (mirroring the ``referenced_positions`` exclusion in the
+    edge-binding code), so they are skipped in favor of the line's own
+    declaration.
+    """
+    bracket_spans = [(m.start(), m.end()) for m in _DEPENDS_ON_RE.finditer(line)]
+    for match in _TASK_DECL_RE.finditer(line):
+        if not any(start <= match.start() < end for start, end in bracket_spans):
+            return match.group(1)
+    numbered = _NUMBERED_DECL_RE.match(line)
+    return numbered.group(1) if numbered is not None else None
+
+
 def _task_blocks(text: str) -> dict[str, list[str]]:
     """Group response lines into per-task blocks.
 
     A block starts at a task declaration — an explicit ``task N``/``step N``
-    mention or a numbered-list marker such as ``1.`` — and runs through the
-    following lines until the next declaration. This mirrors how
-    ``parse_workflow_graph`` binds each line to its nearest declared task, so
-    labels and trace states on continuation lines belong to the task they
-    follow.
+    mention outside a DEPENDS_ON bracket, or a numbered-list marker such as
+    ``1.`` — and runs through the following lines until the next
+    declaration. This mirrors how ``parse_workflow_graph`` binds each line to
+    its nearest declared task, so labels and trace states on continuation
+    lines belong to the task they follow.
     """
     blocks: dict[str, list[str]] = {}
     current: str | None = None
     for line in text.splitlines():
-        match = _TASK_DECL_RE.search(line) or _NUMBERED_DECL_RE.match(line)
-        if match is not None:
-            current = match.group(1)
+        declared = _declared_task_id(line)
+        if declared is not None:
+            current = declared
         if current is not None:
             blocks.setdefault(current, []).append(line)
     return blocks
@@ -159,6 +175,7 @@ class OrchestrationPlugin(BenchmarkTaskPlugin):
         rubric.record_validation(graph)
         shared_tasks = graph.value.get("tasks", set()) if isinstance(graph.value, dict) else set()
         shared_edges = graph.value.get("edges", []) if isinstance(graph.value, dict) else []
+        blocks = _task_blocks(text)
         # The shared parser is authoritative when it actually finds
         # dependencies. When it sees task IDs but no edges — e.g. a numbered
         # plan whose trace lines happen to use "Task N" — its "no edges"
@@ -181,9 +198,17 @@ class OrchestrationPlugin(BenchmarkTaskPlugin):
                 # blind spot, not the response's content — the real problem
                 # is the missing dependencies.
                 problems = ["no dependency edges found"]
+            if not problems and any(
+                re.search(r"parallel", " ".join(lines), re.IGNORECASE)
+                and re.search(r"sequential", " ".join(lines), re.IGNORECASE)
+                for lines in blocks.values()
+            ):
+                # parse_workflow_graph also rejects a task labeled both
+                # parallel and sequential; without this the same semantic
+                # error would cost 4 fewer points in numbered format.
+                problems = ["a task is labeled both parallel and sequential"]
             valid = not problems
             validity_findings = [] if valid else [{"finding": f"invalid graph: {'; '.join(problems) or 'no edges'}"}]
-        blocks = _task_blocks(text)
         declared_ids = set(blocks)
         covered_ids = declared_ids & set(_REQUIRED_TASK_IDS)
         operations = sum(
