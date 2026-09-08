@@ -10,6 +10,19 @@ from plugins.challenges._execution import extract_python_source, run_python_chec
 from plugins.challenges._rubric import Rubric
 from plugins.challenges._validators import parse_python, stub_definitions
 
+# The four behavioral modes the harness exercises, paired with the rubric
+# criterion each one scores. One execution run reports one marker per mode,
+# so a response correct in three modes keeps 7.5 of the 10-pt behavioral
+# block instead of losing it all (event-processor split precedent).
+_BEHAVIORAL_MODES: tuple[tuple[str, str], ...] = (
+    ("all-success", "Behavioral all-success mode"),
+    ("partial", "Behavioral partial-failure mode"),
+    ("payload", "Behavioral error-payload mode"),
+    ("all-fail", "Behavioral all-failure mode"),
+)
+
+_MODE_RESULT_RE = re.compile(r"MODE_RESULT (?P<mode>[A-Za-z0-9-]+) (?P<result>PASS|FAIL)(?P<detail>.*)")
+
 
 class ErrorRecoveryPlugin(BenchmarkTaskPlugin):
     @property
@@ -55,6 +68,17 @@ class ErrorRecoveryPlugin(BenchmarkTaskPlugin):
     @staticmethod
     def _classes(tree: ast.AST) -> set[str]:
         return {node.name for node in ast.walk(tree) if isinstance(node, ast.ClassDef)}
+
+    @staticmethod
+    def _mode_results(output: str) -> dict[str, tuple[bool, str]]:
+        # The harness runs after the response source, so the LAST marker per
+        # mode is the harness's own verdict; markers a response prints at
+        # module level are overridden by the real result.
+        results: dict[str, tuple[bool, str]] = {}
+        for match in _MODE_RESULT_RE.finditer(output):
+            detail = match.group("detail").strip()
+            results[match.group("mode")] = (match.group("result") == "PASS", detail)
+        return results
 
     def evaluate(self, response_text: str) -> EvaluationResult:
         if not response_text or not response_text.strip():
@@ -162,33 +186,45 @@ def assert_all_providers_were_attempted(client):
     assert set(client.calls) == client.providers
     assert set(client.started) == client.providers
 
-async def run_checks():
-    for mode in ("all-success", "partial", "payload"):
-        client = FakeClient(mode)
+async def run_mode(mode):
+    client = FakeClient(mode)
+    if mode == "all-fail":
+        try:
+            await asyncio.wait_for(get_weather_resilient("Paris", client), 1)
+        except AllProvidersFailedError as exc:
+            assert all(provider in str(exc) for provider in client.providers)
+        else:
+            raise AssertionError("all failures must raise AllProvidersFailedError")
+    else:
         value = await asyncio.wait_for(get_weather_resilient("Paris", client), 1)
         assert value == {"city": "Paris", "temperature": 21}
-        assert_all_providers_were_attempted(client)
+    assert_all_providers_were_attempted(client)
 
-    client = FakeClient("all-fail")
-    try:
-        await asyncio.wait_for(get_weather_resilient("Paris", client), 1)
-    except AllProvidersFailedError as exc:
-        assert all(provider in str(exc) for provider in client.providers)
-        assert_all_providers_were_attempted(client)
-    else:
-        raise AssertionError("all failures must raise AllProvidersFailedError")
+async def run_checks():
+    for mode in ("all-success", "partial", "payload", "all-fail"):
+        try:
+            await run_mode(mode)
+        except Exception as exc:
+            print("MODE_RESULT " + mode + " FAIL " + type(exc).__name__ + ": " + str(exc))
+        else:
+            print("MODE_RESULT " + mode + " PASS")
 
 asyncio.run(run_checks())
 '''
             execution = run_python_check(source, harness)
-            behavior_points = 10.0 if execution.status == "passed" else 0.0
-            rubric.add_criterion(
-                "Behavioral provider tests", 10.0, behavior_points,
-                evidence=[{"kind": "execution", "status": execution.status, "isolation": execution.isolation}],
-                negative_findings=[] if execution.status == "passed" else [{"finding": execution.error or execution.status}],
-            )
+            mode_results = self._mode_results(execution.output)
+            for mode, criterion_name in _BEHAVIORAL_MODES:
+                passed, detail = mode_results.get(
+                    mode, (False, f"mode was not reported by the harness ({execution.status})")
+                )
+                rubric.add_criterion(
+                    criterion_name, 2.5, 2.5 if passed else 0.0,
+                    evidence=[execution.as_evidence()],
+                    negative_findings=[] if passed else [{"finding": f"{mode}: {detail}"}],
+                )
         else:
-            rubric.add_criterion("Behavioral provider tests", 10.0, 0.0, negative_findings=[{"finding": "no executable source"}])
+            for _mode, criterion_name in _BEHAVIORAL_MODES:
+                rubric.add_criterion(criterion_name, 2.5, 0.0, negative_findings=[{"finding": "no executable source"}])
 
         return rubric.results()
 

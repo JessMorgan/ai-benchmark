@@ -1373,6 +1373,120 @@ def test_wireframes_require_distinct_canonical_screens():
     assert screens["earned"] < screens["max"]
 
 
+# A fully correct error-recovery response: concurrent provider attempts,
+# error-payload/timeout/malformed handling, per-provider failure logging, and
+# an AllProvidersFailedError carrying every provider's details.
+ER_CORRECT_RESPONSE = '''```python
+import asyncio
+import logging
+
+logger = logging.getLogger("weather")
+
+
+class AllProvidersFailedError(Exception):
+    """Raised when every weather provider fails."""
+
+
+class WeatherClient:
+    """Fetches weather from a single provider."""
+
+    async def fetch(self, provider: str, city: str) -> dict:
+        """Fetch one provider's weather payload."""
+        raise NotImplementedError
+
+
+async def get_weather_resilient(city: str, client: WeatherClient) -> dict:
+    """Try every provider concurrently and return the first success.
+
+    Treats an exception, a timeout, a malformed response, or a 200 response
+    containing an error field as failure, logs every failure with the
+    provider and reason, and raises AllProvidersFailedError with per-provider
+    details when all providers fail.
+    """
+    providers = ("WeatherAPI", "OpenMeteo", "VisualCrossing")
+    failures: dict[str, str] = {}
+
+    async def attempt(provider: str) -> dict | None:
+        try:
+            value = await asyncio.wait_for(client.fetch(provider, city), timeout=5)
+            if not isinstance(value, dict) or "error" in value:
+                raise ValueError("malformed response or error payload")
+            return value
+        except Exception as exc:
+            logger.error("provider %s failed: %s", provider, exc)
+            failures[provider] = str(exc)
+            return None
+
+    results = await asyncio.gather(*(attempt(provider) for provider in providers))
+    for provider, value in zip(providers, results, strict=False):
+        if value is not None:
+            return value
+    raise AllProvidersFailedError("; ".join(f"{provider}: {failures[provider]}" for provider in providers))
+
+
+async def demo() -> None:
+    """Show all providers succeed, one provider fails, and all providers fail."""
+
+    class DemoClient(WeatherClient):
+        def __init__(self, mode: str) -> None:
+            self.mode = mode
+
+        async def fetch(self, provider: str, city: str) -> dict:
+            if self.mode == "all-fail" or (self.mode == "partial" and provider == "WeatherAPI"):
+                raise RuntimeError(provider + " is down")
+            if self.mode == "payload" and provider == "WeatherAPI":
+                return {"error": "rate limited"}
+            return {"city": city, "temperature": 20}
+
+    for mode in ("all-success", "partial", "all-fail"):
+        try:
+            print(mode, await get_weather_resilient("Paris", DemoClient(mode)))
+        except AllProvidersFailedError as exc:
+            print(mode, "failed:", exc)
+```'''
+
+
+def test_error_recovery_correct_response_scores_full():
+    # Positive control for the split behavioral block (ER-1): a fully correct
+    # response must still earn 20/20 — four 2.5-pt mode sub-criteria plus the
+    # lexical criteria.
+    assert ErrorRecoveryPlugin().score(ER_CORRECT_RESPONSE) == 20.0
+
+
+def test_error_recovery_missing_one_mode_earns_partial_behavioral_credit():
+    # Measured pre-fix (ER-1): the 10-pt behavioral block was all-or-nothing,
+    # so a response correct in every mode except the all-failure exception
+    # details (provider names missing from the message) lost all 10 points.
+    # After the split only the all-failure sub-criterion is 0.0 and the other
+    # three modes keep their 2.5 each (17.5 total, not ~10).
+    response = ER_CORRECT_RESPONSE.replace(
+        'raise AllProvidersFailedError("; ".join(f"{provider}: {failures[provider]}" for provider in providers))',
+        'raise AllProvidersFailedError("all providers failed")',
+    )
+    result = ErrorRecoveryPlugin().evaluate(response)
+    all_fail = next(item for item in result.rubric if item["name"] == "Behavioral all-failure mode")
+    assert all_fail["earned"] == 0.0
+    assert all_fail["negative_findings"]
+    for name in ("Behavioral all-success mode", "Behavioral partial-failure mode", "Behavioral error-payload mode"):
+        item = next(item for item in result.rubric if item["name"] == name)
+        assert item["earned"] == 2.5, f"{name} should keep full credit, got {item['earned']}"
+    assert result.score == 17.5
+
+
+def test_error_recovery_no_executable_source_records_four_zero_mode_criteria():
+    # The no-source branch must record the four split sub-criteria (not the
+    # old single 10-pt "Behavioral provider tests" criterion), each 0.0 with
+    # the "no executable source" finding.
+    result = ErrorRecoveryPlugin().evaluate("```python\n```")
+    behavioral = [item for item in result.rubric if item["name"].startswith("Behavioral ")]
+    assert len(behavioral) == 4
+    for item in behavioral:
+        assert item["max"] == 2.5
+        assert item["earned"] == 0.0
+        assert any("no executable source" in finding["finding"] for finding in item["negative_findings"])
+    assert result.score == 0.0
+
+
 @pytest.mark.parametrize("plugin", [ErrorRecoveryPlugin, EventProcessorPlugin])
 def test_executable_plugins_do_not_credit_stub_sources(plugin):
     assert plugin().score("class Placeholder:\n    pass") < 12.0
