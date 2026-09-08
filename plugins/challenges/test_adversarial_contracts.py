@@ -1146,6 +1146,23 @@ P5"""
     assert result.score == ReasoningPlugin().max_score
 
 
+def test_reasoning_negated_time_chain_earns_no_deduction():
+    # RE-6: the time-chain patterns were negation-blind, so "Auth is NOT
+    # immediately before Search" still earned the deduction. A negation
+    # word in the gap now blocks the match.
+    response = """1. Auth is NOT immediately before Search.
+2. Profile is before Auth.
+3. Upload is after Search.
+4. Billing is after Upload and before Notifications.
+FAILED_SERVICE: Search
+OWNER: Ben
+PRIORITY: P5
+TIME: 09:30"""
+    result = ReasoningPlugin().evaluate(response)
+    time_item = next(item for item in result.rubric if item["name"] == "Time-chain deductions")
+    assert time_item["earned"] == 3.0
+
+
 def test_long_context_requires_the_joined_evidence_chain():
     response = "INCIDENT: I-17\nOWNER: Omar\nESCALATION CHANNEL: PagerDuty\nEVIDENCE: F02\nREASONING: I guessed this."
     assert LongContextPlugin().score(response) < 15.0

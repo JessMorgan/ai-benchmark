@@ -76,11 +76,14 @@ class ReasoningPlugin(BenchmarkTaskPlugin):
         def gated(value: float, half_max: float) -> float:
             return value if final_complete else min(value, half_max)
 
+        # A gap that stops at a whole-word negation, so "Auth is NOT
+        # immediately before Search" does not earn the deduction.
+        negated_gap = r"((?!\b(?:not|no|never|nor|cannot|can't|isn't|wasn't|aren't|doesn't|didn't)\b).){0,80}"
         time_hits = sum(self._has(text, pattern) for pattern in (
-            r"Auth.{0,80}immediately before.{0,80}Search",
-            r"Profile.{0,80}before.{0,80}Auth",
-            r"Upload.{0,80}after.{0,80}Search",
-            r"Billing.{0,80}after.{0,80}Upload.{0,80}before.{0,80}Notifications",
+            rf"Auth{negated_gap}immediately before.{{0,80}}Search",
+            rf"Profile{negated_gap}before.{{0,80}}Auth",
+            rf"Upload{negated_gap}after.{{0,80}}Search",
+            rf"Billing{negated_gap}after.{{0,80}}Upload.{{0,80}}before.{{0,80}}Notifications",
         ))
         # The finals contract (exactly four final lines) is enforced against
         # the tail after the last FAILED_SERVICE line: numbered prose there
