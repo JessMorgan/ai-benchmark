@@ -13,6 +13,20 @@ from plugins.challenges._execution import (
 )
 from plugins.challenges._rubric import Rubric
 
+# DT-2: the corrective statement — the response must state what SHOULD be done
+# (a corrective modal followed by the correct comparison). An inverted
+# diagnosis (e.g. "should be > 2") names the buggy comparison, not the remedy,
+# and must not earn full depth credit (measured: inverted diagnosis 17/20).
+_CORRECT_COMPARISON = (
+    r"(?:>=\s*2|at\s+least\s+(?:2|two)|count\s*>\s*1"
+    r"|greater\s+than\s+or\s+equal\s+to\s+(?:2|two)|two\s+or\s+more)"
+)
+_CORRECTIVE_RE = re.compile(
+    r"\b(?:should|must|needs?\s+to|need\s+to|change|replace|use|fix|correct|set|make)\b"
+    r".{0,80}?" + _CORRECT_COMPARISON,
+    re.IGNORECASE | re.DOTALL,
+)
+
 
 class DebugTraversalPlugin(BenchmarkTaskPlugin):
     @property
@@ -112,10 +126,13 @@ assert find_duplicate_users([
         )
 
         correct_diagnosis = bool(re.search(r"(?:>\s*2|greater\s+than\s+2|strict\s+inequality|>=\s*2|at\s+least\s+2)", root_text, re.IGNORECASE))
-        depth_base = correct_diagnosis and bool(re.search(r"count|two|2", analysis_text, re.IGNORECASE))
+        corrective = bool(_CORRECTIVE_RE.search(root_text))
+        depth_base = correct_diagnosis and corrective and bool(re.search(r"count|two|2", analysis_text, re.IGNORECASE))
         depth_findings = []
         if not correct_diagnosis:
             depth_findings.append({"finding": "root cause must identify > 2 instead of >= 2"})
+        if not corrective:
+            depth_findings.append({"finding": "root cause must state the corrective comparison (e.g. 'should be >= 2')"})
         if depth_base and not exec_ok:
             depth_findings.append({"finding": withheld})
         rubric.add_criterion(
