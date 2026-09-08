@@ -63,6 +63,17 @@ _REQUIRED_EDGES = {("enrich", "ingestion"), ("anomaly", "enrich"), ("alert", "an
 # edges that, if declared, would indicate a reversed or wrong dependency.
 _FORBIDDEN_EDGES = {("ingestion", "enrich"), ("enrich", "anomaly"), ("anomaly", "alert")}
 
+# Independence language that justifies running stages in parallel; the bare
+# word "parallel" (which the prompt itself elicits) is not enough.
+_INDEPENDENCE_RE = (
+    r"independent|no dependenc|does not depend|without dependenc"
+    r"|run (?:in parallel|concurrently|simultaneously|together|at the same time)"
+)
+
+# Named deliverable domains an ordering rationale may reference instead of
+# task IDs (each names one task of the reference decomposition).
+_RATIONALE_DOMAIN_RE = r"ingest|enrich|normaliz|anomal|alert|report|metric|observ"
+
 
 class DecompositionPlugin(BenchmarkTaskPlugin):
     @property
@@ -223,20 +234,61 @@ class DecompositionPlugin(BenchmarkTaskPlugin):
         )
 
         has_parallel = bool(re.search(r"parallel", text, re.IGNORECASE))
+        has_independence = bool(re.search(_INDEPENDENCE_RE, text, re.IGNORECASE))
         has_sequential = bool(re.search(r"sequential|must run (one )?after", text, re.IGNORECASE))
+        parallel_ok = has_parallel and has_independence
+        parallel_points = (
+            2.0 if (parallel_ok and has_sequential)
+            else 1.0 if (parallel_ok or has_sequential)
+            else 0.0
+        )
+        parallel_findings = []
+        if not has_parallel:
+            parallel_findings.append("parallel stages not identified")
+        elif not has_independence:
+            parallel_findings.append(
+                "parallel stages named but not justified by independence "
+                "(e.g. 'independent', 'no dependency')"
+            )
+        if not has_sequential:
+            parallel_findings.append("sequential stages not identified")
         rubric.add_criterion(
-            "Parallelization reasoning", 2.0, 2.0 if has_parallel and has_sequential else 1.0 if has_parallel or has_sequential else 0.0,
-            negative_findings=[] if has_parallel and has_sequential else [{"finding": "parallel vs sequential stages not both identified"}],
+            "Parallelization reasoning", 2.0, parallel_points,
+            negative_findings=[{"finding": f} for f in parallel_findings] if parallel_findings else [],
         )
 
         rationale_hits = sum(bool(re.search(p, text, re.IGNORECASE)) for p in (
             r"data flows?|data flow", r"prerequisite|pre-requisite", r"depends on|dependency",
             r"order|before|after|first|then",
         ))
-        rationale_points = 2.0 if rationale_hits >= 2 else (1.0 if rationale_hits == 1 else 0.0)
+        # The rationale must reference the plan's specific tasks — by task ID
+        # ("Task 1 before Task 3") or by named deliverable ("ingestion",
+        # "enrichment") — so ordering vocabulary alone cannot earn it.
+        rationale_lines = [
+            line for line in text.splitlines()
+            if re.search(r"rationale", line, re.IGNORECASE)
+        ]
+        rationale_scope = "\n".join(rationale_lines) if rationale_lines else text
+        rationale_specific = bool(
+            re.search(r"task[ _-]?(\d+)", rationale_scope, re.IGNORECASE)
+            or re.search(_RATIONALE_DOMAIN_RE, rationale_scope, re.IGNORECASE)
+        )
+        rationale_points = (
+            2.0 if (rationale_specific and rationale_hits >= 2)
+            else 1.0 if (rationale_specific and rationale_hits == 1)
+            else 0.0
+        )
+        if rationale_points:
+            rationale_findings = []
+        elif not rationale_specific:
+            rationale_findings = [
+                {"finding": "ordering rationale does not reference specific tasks (IDs or named deliverables)"}
+            ]
+        else:
+            rationale_findings = [{"finding": "no explicit ordering rationale"}]
         rubric.add_criterion(
             "Ordering rationale", 2.0, rationale_points,
-            negative_findings=[] if rationale_points else [{"finding": "no explicit ordering rationale"}],
+            negative_findings=rationale_findings,
         )
 
         return rubric.results()

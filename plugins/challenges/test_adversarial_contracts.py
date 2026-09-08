@@ -289,6 +289,51 @@ Ordering rationale: Task 1 before Task 2, data flows from ingestion to enrichmen
     assert direction["earned"] == 2.0
 
 
+def test_decomposition_parallelization_requires_independence_language():
+    # Bare "parallel" presence (which the prompt itself elicits) no longer
+    # earns the full criterion: the plan must justify the parallel stages
+    # with independence language.
+    bare = """Task 1: Accept and buffer log batches over HTTP ingestion
+Task 2 [DEPENDS_ON: 1]: GeoIP enrich and normalize each line
+Task 3 [DEPENDS_ON: 2]: anomaly detection over the normalized stream
+Task 4 [DEPENDS_ON: 3]: real-time alert feed for anomalies
+Task 5 [DEPENDS_ON: 2]: nightly aggregate report
+Task 6: export metrics for observability
+Parallel stages: 4, 5 and 6.
+Sequential stages: 1 then 2 then 3.
+Ordering rationale: Task 1 before Task 2, data flows from ingestion to enrichment.
+"""
+    result = DecompositionPlugin().evaluate(bare)
+    parallel = next(c for c in result.rubric if c["name"] == "Parallelization reasoning")
+    assert parallel["earned"] == 1.0
+    justified = bare.replace(
+        "Parallel stages: 4, 5 and 6.",
+        "Parallel stages: 4, 5 and 6 are independent and can run in parallel.",
+    )
+    result = DecompositionPlugin().evaluate(justified)
+    parallel = next(c for c in result.rubric if c["name"] == "Parallelization reasoning")
+    assert parallel["earned"] == 2.0
+
+
+def test_decomposition_rationale_requires_task_references():
+    # Ordering vocabulary alone (data flow, prerequisite, order, before...)
+    # with no reference to the plan's specific tasks earns no rationale
+    # points.
+    response = """Task 1: Accept and buffer log batches over HTTP ingestion
+Task 2 [DEPENDS_ON: 1]: GeoIP enrich and normalize each line
+Task 3 [DEPENDS_ON: 2]: anomaly detection over the normalized stream
+Task 4 [DEPENDS_ON: 3]: real-time alert feed for anomalies
+Task 5 [DEPENDS_ON: 2]: nightly aggregate report
+Task 6: export metrics for observability
+Parallel stages: 4, 5 and 6 are independent and can run in parallel.
+Sequential stages: 1 then 2 then 3.
+Ordering rationale: data flow, prerequisite, depends on, order, before, after, first, then.
+"""
+    result = DecompositionPlugin().evaluate(response)
+    rationale = next(c for c in result.rubric if c["name"] == "Ordering rationale")
+    assert rationale["earned"] == 0.0
+
+
 def test_instruction_following_wrong_tie_break_does_not_pass():
     response = """ORDER T-05 | CUSTOMER NOOR | TOTAL 120.00
 ORDER T-02 | CUSTOMER JULES | TOTAL 120.00
