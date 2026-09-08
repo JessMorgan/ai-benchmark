@@ -133,6 +133,29 @@ def test_code_review_non_dict_issue_items_do_not_crash():
     assert any("format contract" in error for error in result.diagnostics["errors"])
 
 
+def test_code_review_accepts_unicode_bullets_and_top_level_json_array():
+    # Measured pre-fix (CR-5): a •-bulleted review and a top-level JSON
+    # array of issue objects both scored 0/15 — the bullet pattern only
+    # matched -/* and numbered markers, and only a JSON object was
+    # recognized as a structured candidate.
+    bullet_response = (
+        "• open(db_path) is never closed; use a context manager to avoid the leak\n"
+        "• user_id == None should be user_id is None\n"
+        "• the /tmp/data.txt path is hardcoded; parameterize db_path\n"
+        "• fetch_data may raise an exception; wrap it in try/except\n"
+        "• the os and time imports are unused; remove them\n"
+    )
+    assert CodeReviewPlugin().score(bullet_response) >= 13.0
+    array_response = json.dumps([
+        {"description": "open(db_path) is never closed; use a context manager to avoid the leak"},
+        {"description": "user_id == None should be user_id is None"},
+        {"description": "the /tmp/data.txt path is hardcoded; parameterize db_path"},
+        {"description": "fetch_data may raise an exception; wrap it in try/except"},
+        {"description": "the os and time imports are unused; remove them"},
+    ])
+    assert CodeReviewPlugin().score(array_response) >= 13.0
+
+
 def test_debug_consistency_rejects_a_patch_for_a_reproducible_report():
     response = """## Reproduction
 The output is ['abc'].

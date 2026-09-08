@@ -64,33 +64,40 @@ class CodeReviewPlugin(BenchmarkTaskPlugin):
 
         Uses the shared structured-extraction candidate (the single fenced
         JSON block, or the whole response, as parsed by parse_structured)
-        before falling back to bullet extraction. Returns the findings plus
-        a flag for the JSON dead-end: a JSON object was recognized but
-        yielded no recognized findings.
+        before falling back to bullet extraction. The issue list is the
+        ``issues`` array of a JSON object or a top-level JSON array.
+        Returns the findings plus a flag for the JSON dead-end: a JSON
+        object or top-level array was recognized but yielded no recognized
+        findings.
         """
         json_dead_end = False
         value = validation.value
+        issues = None
         if isinstance(value, dict):
-            issues = value.get("issues", [])
-            if isinstance(issues, list):
-                descriptions = [
-                    str(
-                        item.get("description")
-                        or item.get("finding")
-                        or item.get("issue")
-                        or ""
-                    ).strip().lower()
-                    for item in issues
-                    if isinstance(item, dict)
-                ]
-                descriptions = [description for description in descriptions if description]
-                if descriptions:
-                    return descriptions, False
-                json_dead_end = True
+            candidate = value.get("issues", [])
+            if isinstance(candidate, list):
+                issues = candidate
+        elif isinstance(value, list):
+            issues = value
+        if issues is not None:
+            descriptions = [
+                str(
+                    item.get("description")
+                    or item.get("finding")
+                    or item.get("issue")
+                    or ""
+                ).strip().lower()
+                for item in issues
+                if isinstance(item, dict)
+            ]
+            descriptions = [description for description in descriptions if description]
+            if descriptions:
+                return descriptions, False
+            json_dead_end = True
         return [
             match.group(1).strip().lower()
             for match in re.finditer(
-                r"(?m)^\s*(?:[-*]|\d+[.)])\s+(.+?)\s*$", text
+                r"(?m)^\s*(?:[-*•]|\d+[.)])\s+(.+?)\s*$", text
             )
         ], json_dead_end
 
@@ -136,9 +143,9 @@ class CodeReviewPlugin(BenchmarkTaskPlugin):
                     if "exactly one structured candidate is required" in error
                 ),
                 (
-                    "no findings recognized from the JSON object; expected the format "
-                    'contract: a JSON object with an "issues" array of issue objects, '
-                    "or bullet findings"
+                    "no findings recognized from the JSON candidate; expected the format "
+                    'contract: a JSON object with an "issues" array of issue objects, a '
+                    "top-level JSON array of issue objects, or bullet findings"
                 ),
             )
             rubric.record_validation(Validation(False, errors=[contract]))
