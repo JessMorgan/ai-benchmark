@@ -5,39 +5,75 @@ from plugins.challenges.wireframes import WireframesPlugin
 def full_response():
     return """## Dashboard
 Purpose: show today's schedule.
-```text
-[Header] FlowState [Card] Focus [Button] Start [Nav] Focus
-```
++--------------------------+
+| [Header] FlowState       |
+| [Card] Focus [Button]    |
++--------------------------+
 Note: tapping Start opens Focus Session.
 ## Focus Session
 Purpose: run the focus timer.
-```text
-[Timer] 25:00 [Button] Pause [Slider] Music
-```
++--------------------------+
+| [Timer] 25:00            |
+| [Button] Pause           |
++--------------------------+
 Note: tapping Pause stops the session.
 ## Calendar Integration
 Purpose: manage calendar events.
-```text
-[List] Events [Toggle] Sync [Button] Import
-```
++--------------------------+
+| [List] Events            |
+| [Toggle] Sync            |
++--------------------------+
 Note: tapping Import loads events.
 ## AI Planning
 Purpose: generate tomorrow's schedule.
-```text
-[Card] Plan [Button] Apply [List] Blocks
-```
++--------------------------+
+| [Card] Plan              |
+| [Button] Apply           |
++--------------------------+
 Note: tapping Apply writes the schedule.
 ## Settings
 Purpose: configure music and notifications.
-```text
-[Toggle] Notifications [Button] Connect [Nav] Calendar
-```
++--------------------------+
+| [Toggle] Notifications   |
+| [Button] Connect         |
++--------------------------+
 Note: tapping Connect opens Calendar Integration.
 ## Navigation
 Dashboard -> Focus Session
 Dashboard -> Calendar Integration
 Dashboard -> AI Planning
 Settings -> Calendar Integration
+"""
+
+
+def soup_response():
+    """Keyword-soup gaming response: stuffed component/feature keywords,
+    no real wireframe structure, and position "matches" that only exist as
+    substrings ("s**top**s")."""
+    return """## Dashboard
+Purpose: overview of the app.
+[Button] Start [Card] Summary [List] Items [Nav] Menu
+Note: tapping Start stops the flow.
+## Focus Session
+Purpose: run a focus session.
+[Timer] 25:00 [Slider] Level [Icon] Dot
+Note: tapping Pause stops the timer.
+## Calendar Integration
+Purpose: sync the calendar.
+[Toggle] Sync [Input] Date [Modal] Picker
+Note: tapping Sync stops the refresh.
+## AI Planning
+Purpose: plan the schedule.
+planning blocks and schedule items with a timer session.
+Note: when user taps apply.
+## Settings
+Purpose: tune settings.
+options for notifications and preferences.
+Note: on tap to save.
+## Navigation
+Dashboard -> Focus Session
+Dashboard -> Calendar Integration
+Settings -> AI Planning
 """
 
 
@@ -49,6 +85,39 @@ def test_empty_and_whitespace_score_zero():
 
 def test_complete_distinct_wireframes_score_high():
     assert WireframesPlugin().score(full_response()) >= 18.0
+
+
+def test_correct_wireframe_scores_higher_than_keyword_soup():
+    plugin = WireframesPlugin()
+    correct = plugin.score(full_response())
+    soup = plugin.score(soup_response())
+    assert correct > soup
+
+
+def test_box_drawing_lines_count_as_wireframe_evidence():
+    response = (
+        "## Dashboard\n"
+        "Purpose: overview.\n"
+        "+------------------+\n"
+        "| FlowState Dashboard |\n"
+        "+------------------+\n"
+        "## Focus Session\n"
+        "Purpose: timer.\n"
+        "┌──────────────────┐\n"
+        "│ [Timer] 25:00    │\n"
+        "└──────────────────┘\n"
+    )
+    result = WireframesPlugin().evaluate(response)
+    visual = next(item for item in result.rubric if item["name"] == "Visual/structural wireframe")
+    assert visual["earned"] >= 2.0
+
+
+def test_stops_substring_does_not_match_top_position():
+    result = WireframesPlugin().evaluate(
+        "## Dashboard\nPurpose: home.\n[Button] Start\nNote: tapping Pause stops the session.\n"
+    )
+    visual = next(item for item in result.rubric if item["name"] == "Visual/structural wireframe")
+    assert visual["earned"] == 0.0
 
 
 def test_four_empty_or_duplicate_screens_do_not_get_full_screen_credit():

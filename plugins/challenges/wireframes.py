@@ -45,6 +45,21 @@ class WireframesPlugin(BenchmarkTaskPlugin):
         return float(val) if isinstance(val, (int, float)) else None
 
     @staticmethod
+    def _has_visual_evidence(body: str) -> bool:
+        """Whether a screen body shows a wireframe diagram.
+
+        Position words (word-bounded, so "stops" is not "top") count only
+        alongside structural content; box-drawing or structural lines
+        (``+---+``, ``|  |``, ``─``, ``│``, ``┌``, ``└``) count as diagram
+        evidence on their own.
+        """
+        if re.search(r"\+[-=]{2,}\+|\|[^|\n]+\||[─│┌└┐┘├┤┬┴]", body):
+            return True
+        structure = re.search(r"```|[┌┐└┘├┤┬┴│─]|\[[^\]]+\]", body)
+        position = re.search(r"\b(?:top|bottom|header|footer|left|right|middle|position)\b", body, re.IGNORECASE)
+        return bool(structure and position)
+
+    @staticmethod
     def _screen_name(heading: str) -> str | None:
         normalized = normalize_heading(heading)
         for name in ("dashboard", "focus session", "calendar integration", "ai planning", "settings"):
@@ -81,7 +96,7 @@ class WireframesPlugin(BenchmarkTaskPlugin):
         rubric.add_criterion("Multiple screens present", 3.0, 3.0 if screen_count >= 4 else screen_count * 0.75)
         purpose_count = sum(bool(re.search(r"purpose|goal|shows|used to", section.body, re.IGNORECASE)) for section in unique.values())
         rubric.add_criterion("Screen names and purposes", 3.0, 3.0 if screen_count >= 4 and purpose_count == screen_count else min(3.0, purpose_count * 0.75))
-        visual_count = sum(bool(re.search(r"```|[┌┐└┘├┤┬┴│─]|\[[^\]]+\]", section.body)) and bool(re.search(r"top|bottom|header|footer|left|right|middle|position", section.body, re.IGNORECASE)) for section in unique.values())
+        visual_count = sum(self._has_visual_evidence(section.body) for section in unique.values())
         rubric.add_criterion("Visual/structural wireframe", 4.0, 4.0 if screen_count and visual_count == screen_count else min(4.0, visual_count))
         component_count = sum(bool(re.search(r"button|card|list|nav|menu|tab|modal|input|icon|timer|slider|toggle", section.body, re.IGNORECASE)) for section in unique.values())
         rubric.add_criterion("Key UI components", 4.0, 4.0 if screen_count >= 4 and component_count >= 4 else min(4.0, component_count))
