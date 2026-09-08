@@ -4,7 +4,7 @@
 |---|---|
 | ID | `software-architecture` |
 | Name | Software Architecture |
-| Version | `1.0.0` |
+| Version | `1.1.0` |
 | Max Score | 20 |
 | Streaming | Yes |
 
@@ -28,11 +28,13 @@ The response is sectioned and should include:
 
 The evaluator first awards up to 3 points for the required section set. The
 remaining points are section-local: architecture and components (2.5), data
-and API design (2.5), real-time communication (2.5), scalability/capacity
-(2.5), resiliency (2.5), security (2.5), and observability/SLOs (1.5). Capacity
-claims without a workload estimate and availability claims without supporting
-failure handling receive bounded deductions. Global mentions do not satisfy a
-section's criterion.
+and API design (3.0), real-time communication (2.5), scalability/capacity
+(2.5), resiliency (2.5), security (2.5), and observability/SLOs (1.5), so the
+criterion maxima sum to a reachable 20. Capacity claims without a workload
+estimate and availability claims without supporting failure handling (a circuit
+breaker, failover, retry, or backoff — a multi-region claim alone does not
+count) receive bounded deductions. Global mentions do not satisfy a section's
+criterion.
 
 ## Temperature
 

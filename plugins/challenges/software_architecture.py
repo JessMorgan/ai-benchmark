@@ -16,7 +16,7 @@ class SoftwareArchitecturePlugin(BenchmarkTaskPlugin):
 
     @property
     def version(self) -> str:
-        return "1.0.0"
+        return "1.1.0"
 
     @property
     def name(self) -> str:
@@ -33,8 +33,9 @@ class SoftwareArchitecturePlugin(BenchmarkTaskPlugin):
     def get_prompt(self) -> str:
         return (
             "Produce a FlowState architecture document with headings Executive Summary, Requirements Summary, "
-            "Architecture Style, Component Diagram / Description, Data Model, API Design, Technology Stack, "
-            "Deployment Architecture, Security Considerations, Scalability & Performance, Trade-offs & Decisions. "
+            "Architecture Style, Component Diagram / Description, Real-Time Sync & Communication, Data Model, "
+            "API Design, Technology Stack, Deployment Architecture, Resiliency & Failure Modes, "
+            "Security Considerations, Scalability & Performance, Trade-offs & Decisions, Observability & SLOs. "
             "The design supports web/iOS/Android, calendar OAuth, realtime sync, AI planning, music, notifications, "
             "analytics, and 1M DAU. Include concrete entities/endpoints, capacity numbers, failure handling, and rationale."
         )
@@ -91,12 +92,12 @@ class SoftwareArchitecturePlugin(BenchmarkTaskPlugin):
         resilience = body("Resiliency & Failure Modes")
         security = body("Security Considerations")
         observability = body("Observability & SLOs")
-        arch_hits = sum(bool(re.search(pattern, architecture, re.IGNORECASE)) for pattern in (r"microservices|modular monolith|event.?driven|serverless", r"api gateway|service|component", r"```(?:mermaid|plantuml)|graph TD|->|responsibilit",))
+        arch_hits = sum(bool(re.search(pattern, architecture, re.IGNORECASE)) for pattern in (r"microservices|modular monolith|event.?driven|serverless", r"api gateway|service|component", r"```(?:mermaid|plantuml)|graph TD|->\s*\[?\w|responsibilit",))
         rubric.add_criterion("Architecture & Patterns", 2.5, min(2.5, float(arch_hits)))
         data_hits = sum(bool(re.search(pattern, data, re.IGNORECASE)) for pattern in (r"postgres|sql|relational", r"nosql|document|columnar|mongodb|dynamodb|time.?series", r"entity|user|session|schedule", r"shard|replica|partition|cache|redis|ttl"))
-        endpoint_count = len(re.findall(r"\b(?:GET|POST|PUT|PATCH|DELETE)\s+/\S+", api, re.IGNORECASE))
-        data_score = min(1.5, data_hits * 0.375) + min(1.0, endpoint_count / 3.0)
-        rubric.add_criterion("Data Modeling & API Design", 2.5, data_score)
+        endpoint_count = len(re.findall(r"\b(?:GET|POST|PUT|PATCH|DELETE)\s*\|?\s*/\S+", api, re.IGNORECASE))
+        data_score = min(1.5, data_hits * 0.375) + min(1.5, endpoint_count / 3.0)
+        rubric.add_criterion("Data Modeling & API Design", 3.0, data_score)
         realtime_hits = sum(bool(re.search(pattern, realtime, re.IGNORECASE)) for pattern in (r"websocket|sse|grpc|polling|sync", r"crdt|conflict|offline|eventual|last.?write", r"kafka|queue|broker|pub.?sub|event bus"))
         rubric.add_criterion("Real-Time Sync & Communication", 2.5, min(2.5, float(realtime_hits)))
         scale_hits = sum(bool(re.search(pattern, scale, re.IGNORECASE)) for pattern in (r"rps|qps|requests per second|million|1[\s,]*000[\s,]*000", r"auto.?scal|kubernetes|horizontal|hpa", r"cdn|edge|multi.?region|load balanc"))
@@ -109,7 +110,7 @@ class SoftwareArchitecturePlugin(BenchmarkTaskPlugin):
         rubric.add_criterion("Observability & SLOs", 1.5, min(1.5, float(obs_hits)))
         if re.search(r"1\s*(?:million|000\s*000)|1M", scale, re.IGNORECASE) and not re.search(r"(?:rps|qps|capacity|throughput)", scale, re.IGNORECASE):
             rubric.penalize_criterion("Scalability & Capacity Planning", 0.5, "capacity claim lacks a workload estimate")
-        if re.search(r"99\.\d%|SLO|SLA", observability, re.IGNORECASE) and not re.search(r"circuit|failover|retry|backoff|multi.?region", resilience, re.IGNORECASE):
+        if re.search(r"99\.\d%|SLO|SLA", observability, re.IGNORECASE) and not re.search(r"circuit|failover|retry|backoff", resilience, re.IGNORECASE):
             rubric.penalize_criterion("Observability & SLOs", 0.5, "availability target lacks supporting failure handling")
         return rubric.results()
 

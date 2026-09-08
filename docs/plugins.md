@@ -21,7 +21,7 @@ AI Benchmark uses a plugin architecture. Each plugin defines a benchmark task, a
 | `prd-creation` | PRD Creation | 1.0.0 | 22 | Yes |
 | `rate-limiter` | Rate Limiter | 1.5.0 | 20 | Yes |
 | `reasoning` | Logical Reasoning | 1.2.0 | 20 | Yes |
-| `software-architecture` | Software Architecture | 1.0.0 | 20 | Yes |
+| `software-architecture` | Software Architecture | 1.1.0 | 20 | Yes |
 | `data-transformation` | Data Transformation | 1.1.0 | 22 | Yes |
 | `tool-calling` | Tool Calling Agent | 1.2.0 | 25 | Yes |
 | `wireframes` | Wireframes | 1.0.0 | 20 | Yes |
@@ -192,12 +192,15 @@ Tests a model's capability as a backend/coding architect by producing a software
 - Requirements Summary
 - Architecture Style
 - Component Diagram / Description
+- Real-Time Sync & Communication
 - Data Model
 - API Design
 - Technology Stack
 - Deployment Architecture
+- Resiliency & Failure Modes
 - Security Considerations
 - Scalability & Performance
 - Trade-offs & Decisions
+- Observability & SLOs
 
 **Scoring:** Up to 20 native points: 3 for the required section set and the remainder for section-local architecture/components, data/API, real-time communication, scale/capacity, resiliency, security, and observability checks. Capacity and SLO claims are cross-checked against supporting mechanisms; global keyword mentions do not substitute for the relevant section.
