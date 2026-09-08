@@ -269,7 +269,7 @@ Plugins are discovered automatically from `plugins/challenges/`. Each plugin is 
 | `decomposition` | Design-Doc Decomposition | 0.2.0 | 20 | Yes |
 | `error-recovery` | Error Recovery | 1.4.0 | 20 | Yes |
 | `event-processor` | Concurrent Event Processor | 0.5.0 | 20 | Yes |
-| `instruction-following` | Instruction Following | 1.0.0 | 20 | Yes |
+| `instruction-following` | Instruction Following | 1.1.0 | 20 | Yes |
 | `long-context` | Long-Context Retrieval | 0.2.0 | 20 | Yes |
 | `moe-dense` | MoE vs Dense | 1.1.0 | 17 | Yes |
 | `multi-step` | Multi-Step Instructions | 1.4.0 | 20 | Yes |

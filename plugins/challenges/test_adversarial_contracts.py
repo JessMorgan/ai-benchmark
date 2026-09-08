@@ -931,6 +931,55 @@ ORDER T-09 | CUSTOMER RAVI | TOTAL 65.00
     assert InstructionFollowingPlugin().score(response) < InstructionFollowingPlugin().max_score
 
 
+def test_instruction_following_duplicate_summary_line_is_forbidden():
+    # IF-1: a repeated [SUMMARY] line is duplicate output and must count as
+    # forbidden (the discipline criterion's own finding text names duplicates),
+    # consistent with the duplicate-ORDER penalty. Pre-fix the duplicate summary
+    # was excluded from `forbidden`, so this scored 17/20 (discipline 1.0).
+    response = """ORDER T-02 | CUSTOMER JULES | TOTAL 120.00
+ORDER T-05 | CUSTOMER NOOR | TOTAL 120.00
+ORDER T-08 | CUSTOMER ZARA | TOTAL 99.90
+ORDER T-09 | CUSTOMER RAVI | TOTAL 65.00
+[SUMMARY] count=4; total=404.90; top_order=T-02
+[SUMMARY] count=4; total=404.90; top_order=T-02"""
+    result = InstructionFollowingPlugin().evaluate(response)
+    discipline = next(item for item in result.rubric if item["name"] == "Exact response discipline")
+    assert discipline["earned"] == 0.0
+    assert result.score < 17.0
+
+
+def test_instruction_following_summary_requires_at_least_one_order_line():
+    # IF-2: a zero-work response (no ORDER lines) must not earn the summary
+    # criterion. Pre-fix the bare [SUMMARY] line alone scored 5/20 (summary
+    # 4.0 + discipline 1.0). After the fix the summary points are gated on
+    # having at least one parsed ORDER line, so this scores 1/20.
+    response = "[SUMMARY] count=4; total=404.90; top_order=T-02"
+    result = InstructionFollowingPlugin().evaluate(response)
+    summary = next(item for item in result.rubric if item["name"] == "Summary arithmetic and format")
+    assert summary["earned"] == 0.0
+    assert result.score < 5.0
+
+
+def test_instruction_following_case_error_in_id_does_not_double_penalty_filter():
+    # IF-3: a case error in a task ID (t-05 vs T-05) must not cascade into a
+    # double-penalty in the "All filters applied" criterion. The filter
+    # criterion case-normalizes ID membership, so all four IDs are recognized;
+    # the order/transformed criteria keep the raw IDs and still penalize the
+    # case error. Pre-fix the lowercase line failed the ORDER regex entirely,
+    # dropping the filter to 2.0 and marking the line forbidden (discipline 0).
+    response = """ORDER T-02 | CUSTOMER JULES | TOTAL 120.00
+ORDER t-05 | CUSTOMER NOOR | TOTAL 120.00
+ORDER T-08 | CUSTOMER ZARA | TOTAL 99.90
+ORDER T-09 | CUSTOMER RAVI | TOTAL 65.00
+[SUMMARY] count=4; total=404.90; top_order=T-02"""
+    result = InstructionFollowingPlugin().evaluate(response)
+    filter_item = next(item for item in result.rubric if item["name"] == "All filters applied")
+    assert filter_item["earned"] == 4.0
+    # The case error is still penalized in the order criterion (raw IDs).
+    order_item = next(item for item in result.rubric if item["name"] == "Sort and tie-break order")
+    assert order_item["earned"] == 0.0
+
+
 def test_reasoning_rejects_the_old_p4_answer():
     response = """1. The time chain places Search at 09:30.
 2. Ben owns Search.

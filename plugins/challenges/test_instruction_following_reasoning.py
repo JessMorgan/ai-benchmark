@@ -8,7 +8,7 @@ class TestInstructionFollowingPlugin:
         self.plugin = InstructionFollowingPlugin()
 
     def test_metadata_and_temperature(self):
-        assert self.plugin.version == "1.0.0"
+        assert self.plugin.version == "1.1.0"
         assert "ORDER" in self.plugin.get_prompt()
         assert self.plugin.get_temperature({"instruction_following_temperature": 0.2}) == 0.2
 

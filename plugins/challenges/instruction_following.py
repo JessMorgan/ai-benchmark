@@ -15,7 +15,7 @@ class InstructionFollowingPlugin(BenchmarkTaskPlugin):
 
     @property
     def version(self) -> str:
-        return "1.0.0"
+        return "1.1.0"
 
     @property
     def name(self) -> str:
@@ -48,7 +48,7 @@ class InstructionFollowingPlugin(BenchmarkTaskPlugin):
         val = global_config.get("instruction_following_temperature")
         return float(val) if isinstance(val, (int, float)) else None
 
-    _ORDER_RE = re.compile(r"^ORDER (T-\d{2}) \| CUSTOMER ([A-Z]+) \| TOTAL (\d+\.\d{2})$")
+    _ORDER_RE = re.compile(r"^ORDER ([Tt]-\d{2}) \| CUSTOMER ([A-Z]+) \| TOTAL (\d+\.\d{2})$")
     _EXPECTED = (
         ("T-02", "JULES", "120.00"),
         ("T-05", "NOOR", "120.00"),
@@ -67,10 +67,16 @@ class InstructionFollowingPlugin(BenchmarkTaskPlugin):
         parsed = [match.groups() for match in records if match]
         expected_ids = {record[0] for record in self._EXPECTED}
         parsed_ids = {record[0] for record in parsed}
+        # IF-3: case-normalize ID membership for the filter criterion only, so a
+        # case error in a task ID (e.g. t-05) is still recognized as the right
+        # order here; the order and transformed criteria keep the raw IDs and
+        # still penalize the case error.
+        filter_expected_ids = {order_id.upper() for order_id in expected_ids}
+        filter_parsed_ids = {order_id.upper() for order_id in parsed_ids}
         filter_score = 0.0
-        if parsed_ids == expected_ids and len(parsed) == 4:
+        if filter_parsed_ids == filter_expected_ids and len(parsed) == 4:
             filter_score = 4.0
-        elif parsed_ids <= expected_ids and parsed_ids:
+        elif filter_parsed_ids <= filter_expected_ids and filter_parsed_ids:
             filter_score = 2.0
         rubric = Rubric(self.max_score)
         rubric.add_criterion(
@@ -87,7 +93,10 @@ class InstructionFollowingPlugin(BenchmarkTaskPlugin):
         transformed = sum(record in self._EXPECTED for record in parsed)
         rubric.add_criterion("Transformed order lines", 4.0, float(transformed),
                              evidence=[{"kind": "exact-record", "record": record} for record in parsed if record in self._EXPECTED])
-        rubric.add_criterion("Summary arithmetic and format", 4.0, 4.0 if lines and lines[-1] == self._SUMMARY else 0.0)
+        # The summary is only meaningful once at least one ORDER line is
+        # present; a bare [SUMMARY] with no orders earns no summary points.
+        summary_score = 4.0 if (lines and lines[-1] == self._SUMMARY and parsed) else 0.0
+        rubric.add_criterion("Summary arithmetic and format", 4.0, summary_score)
         exact = lines == [
             "ORDER T-02 | CUSTOMER JULES | TOTAL 120.00",
             "ORDER T-05 | CUSTOMER NOOR | TOTAL 120.00",
@@ -96,6 +105,10 @@ class InstructionFollowingPlugin(BenchmarkTaskPlugin):
             self._SUMMARY,
         ]
         forbidden = [line for line in lines if line != self._SUMMARY and not self._ORDER_RE.fullmatch(line)]
+        # A repeated [SUMMARY] line is duplicate output (the summary may appear
+        # at most once), so count it as forbidden like any other duplicate line.
+        if sum(1 for line in lines if line == self._SUMMARY) > 1:
+            forbidden.append(self._SUMMARY)
         rubric.add_criterion(
             "Exact response discipline", 4.0, 4.0 if exact else (1.0 if not forbidden else 0.0),
             negative_findings=[] if exact else [{"finding": "extra, malformed, duplicate, or unordered output"}],
