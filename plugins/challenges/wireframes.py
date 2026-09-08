@@ -100,10 +100,18 @@ class WireframesPlugin(BenchmarkTaskPlugin):
         rubric.add_criterion("Visual/structural wireframe", 4.0, 4.0 if screen_count and visual_count == screen_count else min(4.0, visual_count))
         component_count = sum(bool(re.search(r"button|card|list|nav|menu|tab|modal|input|icon|timer|slider|toggle", section.body, re.IGNORECASE)) for section in unique.values())
         rubric.add_criterion("Key UI components", 4.0, 4.0 if screen_count >= 4 and component_count >= 4 else min(4.0, component_count))
-        edges = re.findall(r"([A-Za-z][A-Za-z ]{1,30})\s*(?:->|→|=>)\s*([A-Za-z][A-Za-z ]{1,30})", text)
+        raw_edges = re.findall(r"([A-Za-z][A-Za-z ]{1,30})\s*(?:->|→|=>)\s*([A-Za-z][A-Za-z ]{1,30})", text)
         known = set(unique)
-        valid_edges = [(left.strip().lower(), right.strip().lower()) for left, right in edges if any(name in left.lower() for name in known) and any(name in right.lower() for name in known)]
-        rubric.add_criterion("Navigation flows", 3.0, 3.0 if len(valid_edges) >= 3 else float(len(valid_edges)))
+        distinct_edges: set[tuple[str, str]] = set()
+        for left, right in raw_edges:
+            norm_left = left.strip().lower()
+            norm_right = right.strip().lower()
+            if norm_left == norm_right:
+                continue  # self-loop: an edge from a component to itself earns nothing
+            if any(name in norm_left for name in known) and any(name in norm_right for name in known):
+                distinct_edges.add((norm_left, norm_right))
+        edge_count = len(distinct_edges)
+        rubric.add_criterion("Navigation flows", 3.0, 3.0 if edge_count >= 3 else float(edge_count))
         notes = sum(bool(re.search(r"annotation|note:|interaction|on tap|on click|when user|behavior", section.body, re.IGNORECASE)) for section in unique.values())
         rubric.add_criterion("Annotations and interaction notes", 2.0, 2.0 if notes >= 2 else float(notes))
         screen_text = " ".join(section.body for section in unique.values())

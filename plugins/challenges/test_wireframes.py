@@ -131,3 +131,34 @@ def test_navigation_requires_known_screen_edges():
     result = WireframesPlugin().evaluate("## Dashboard\nPurpose: home.\n```text\n[Button] Start\n```")
     navigation = next(item for item in result.rubric if item["name"] == "Navigation flows")
     assert navigation["earned"] == 0.0
+
+
+def test_self_loop_edges_earn_nothing():
+    response = (
+        "## Dashboard\nPurpose: home.\n"
+        "## Focus Session\nPurpose: timer.\n"
+        "## Calendar Integration\nPurpose: events.\n"
+        "## AI Planning\nPurpose: plan.\n"
+        "Dashboard -> Dashboard\n"
+        "Dashboard -> Dashboard\n"
+        "Dashboard -> Dashboard\n"
+    )
+    result = WireframesPlugin().evaluate(response)
+    navigation = next(item for item in result.rubric if item["name"] == "Navigation flows")
+    assert navigation["earned"] == 0.0
+
+
+def test_duplicate_edges_count_once():
+    response = (
+        "## Dashboard\nPurpose: home.\n"
+        "## Focus Session\nPurpose: timer.\n"
+        "## Calendar Integration\nPurpose: events.\n"
+        "## AI Planning\nPurpose: plan.\n"
+        "Dashboard -> Focus Session\n"
+        "Dashboard -> Focus Session\n"
+        "Dashboard -> Focus Session\n"
+        "Dashboard -> Calendar Integration\n"
+    )
+    result = WireframesPlugin().evaluate(response)
+    navigation = next(item for item in result.rubric if item["name"] == "Navigation flows")
+    assert navigation["earned"] == 2.0
