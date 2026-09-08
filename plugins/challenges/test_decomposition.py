@@ -18,7 +18,7 @@ Ordering rationale: the pipeline order follows data flow, because data flows fro
 def test_metadata():
     plugin = DecompositionPlugin()
     assert plugin.id == "decomposition"
-    assert plugin.version == "0.1.0"
+    assert plugin.version == "0.2.0"
     assert plugin.name == "Design-Doc Decomposition"
     assert plugin.max_score == 20.0
     assert plugin.supports_streaming is True

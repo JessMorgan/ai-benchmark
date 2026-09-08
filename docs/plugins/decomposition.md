@@ -4,7 +4,7 @@
 |---|---|
 | ID | `decomposition` |
 | Name | Design-Doc Decomposition |
-| Version | `0.1.0` |
+| Version | `0.2.0` |
 | Max Score | 20 |
 | Streaming | Yes |
 
@@ -17,7 +17,8 @@ enrichment + normalization, anomaly detection on the normalized stream,
 real-time alert feed, nightly aggregate report, and observability/metrics
 export), declare the dependency edges between tasks with `[DEPENDS_ON: N]`
 tags, and justify the ordering and which stages run in parallel versus
-sequentially.
+sequentially. Task IDs may use any stable naming (`Task 1`, `T1`, ...); the
+scorer does not require a specific scheme.
 
 The rubric is deliberately **format-then-semantics**: emitting a well-formed
 plan without reasoning about the document's actual deliverables or the
@@ -30,11 +31,11 @@ structural scorer.
 
 | Criterion | Max | Description |
 |---|---|---|
-| Dependency graph validity | 4 | The plan parses as a well-formed task graph with at least one declared dependency edge |
+| Dependency graph validity | 4 | The plan parses as a well-formed task graph with at least one declared dependency edge; task IDs may be named `Task N` or `T<N>` |
 | Coverage of design-doc deliverables | 6 | Every deliverable domain in the design document appears in the plan |
-| Semantic dependency direction | 6 | Required dependencies appear in the semantically correct direction; reversed (forbidden) edges are penalized and cap the criterion at half marks |
-| Parallelization reasoning | 2 | The plan identifies which stages run in parallel versus sequentially |
-| Ordering rationale | 2 | The plan explains its ordering in terms of data flow or prerequisites |
+| Semantic dependency direction | 6 | Each required dependency earns one third of the criterion in the semantically correct direction; every declared reversed (forbidden) edge is penalized individually at the same weight, capped by the criterion maximum. Each task's domain is bound to the first line that mentions its ID, so an appended mapping section cannot override the plan |
+| Parallelization reasoning | 2 | The plan identifies which stages run in parallel versus sequentially, and justifies the parallel stages with independence language (e.g. "independent", "no dependency") |
+| Ordering rationale | 2 | The plan explains its ordering in terms of data flow or prerequisites and references the plan's specific tasks (by task ID or named deliverable) |
 
 ## Temperature
 
