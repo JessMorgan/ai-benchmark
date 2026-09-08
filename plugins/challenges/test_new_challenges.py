@@ -13,7 +13,7 @@ def test_debug_traversal_prompt_contains_real_threshold_bug():
 
 def test_debug_consistency_prompt_requires_evidence_not_a_patch():
     plugin = DebugConsistencyPlugin()
-    assert plugin.version == "0.1.0"
+    assert plugin.version == "0.2.0"
     assert "do not invent" in plugin.get_prompt().lower()
 
 
@@ -25,7 +25,8 @@ The report is not reproducible: the code correctly returns abc as a duplicate.
 ## Diagnosis
 There is no demonstrated code bug; the report and supplied behavior are inconsistent.
 ## Evidence Needed
-Collect the exact input, runtime version, logs, and a reproduction trace.
+Collect the exact input, runtime version, logs, and a reproduction trace
+of the actual output (expected ['abc']).
 ## Recommendation
 Do not patch code until the observed input and environment are verified.
 """
