@@ -1,5 +1,6 @@
 """Adversarial scoring regressions for every challenge family."""
 import json
+import re
 
 import pytest
 
@@ -253,6 +254,101 @@ TIME: 09:30"""
 def test_long_context_requires_the_joined_evidence_chain():
     response = "INCIDENT: I-17\nOWNER: Omar\nESCALATION CHANNEL: PagerDuty\nEVIDENCE: F02\nREASONING: I guessed this."
     assert LongContextPlugin().score(response) < 15.0
+
+
+def test_long_context_wrong_incident_cannot_earn_the_primary_criterion():
+    # Measured before the fix: wrong incident (I-23) + magic tokens scored 19/20.
+    # After the fix the incident is the primary 6.0 criterion and the
+    # evidence/cross-ref/owner criteria are gated on it, so this scores far lower.
+    response = (
+        "INCIDENT: I-23\nOWNER: Omar\nESCALATION CHANNEL: PagerDuty\n"
+        "EVIDENCE: F02 F05 F09\nREASONING: EU 14:30 P1 I-17 PagerDuty"
+    )
+    result = LongContextPlugin().evaluate(response)
+    assert result.score < 10.0
+    incident = next(item for item in result.rubric if item["name"] == "Incident correctness")
+    assert incident["earned"] == 0.0
+
+
+def test_long_context_prompt_shows_the_label_colon_output_shape():
+    # Measured before the fix: a correct answer with headings-on-own-lines
+    # scored 0/20 (harness parses `LABEL: value` lines the prompt never showed).
+    prompt = LongContextPlugin().get_prompt()
+    for label in ("INCIDENT", "OWNER", "ESCALATION CHANNEL", "EVIDENCE", "REASONING"):
+        assert re.search(rf"^{re.escape(label)}: ", prompt, re.MULTILINE), label
+
+
+def test_long_context_exact_answer_is_per_field_gated_not_all_on_reasoning():
+    # Measured before the fix: one missing heading 20->7 (the outer
+    # `if values["REASONING"] else 0.0` gate zeroed the entire Exact answer
+    # criterion when REASONING was empty). After the fix, each sub-check is
+    # gated on its own field, so a response with REASONING missing but
+    # OWNER/ESCALATION present still earns the OWNER and ESCALATION
+    # sub-checks (2.0 of 4.0).
+    response = (
+        "INCIDENT: I-17\n"
+        "OWNER: Omar\n"
+        "ESCALATION CHANNEL: PagerDuty\n"
+        "EVIDENCE: F02 F05 F09\n"
+    )
+    result = LongContextPlugin().evaluate(response)
+    exact = next(item for item in result.rubric if item["name"] == "Exact answer")
+    # OWNER "omar" + ESCALATION "pagerduty" = 2.0 (REASONING sub-checks are
+    # 0.0 because REASONING is empty, but they do not zero the other checks).
+    assert exact["earned"] == 2.0, f"Expected 2.0 (per-field gating), got {exact['earned']}"
+
+
+def test_long_context_cross_ref_is_negation_aware_for_incident_id():
+    # Measured before the fix: 5/5 on "NOT I-17" (cross-ref earned 3.0 when
+    # reasoning said "NOT I-17" because the bare `re.search(r"I-17", ...)`
+    # matched the substring). After the fix, `_positive_ref` is negation-aware,
+    # so the cross-ref earns 0.0 when the reasoning negates the incident ID.
+    response = (
+        "INCIDENT: I-17\n"
+        "OWNER: Omar\n"
+        "ESCALATION CHANNEL: PagerDuty\n"
+        "EVIDENCE: F02 F05 F09\n"
+        "REASONING: EU 14:30 P1 NOT I-17 PagerDuty"
+    )
+    result = LongContextPlugin().evaluate(response)
+    cross = next(item for item in result.rubric if item["name"] == "Cross-reference reasoning")
+    assert cross["earned"] == 0.0, f"Expected 0.0 (negation-aware), got {cross['earned']}"
+
+
+def test_long_context_evidence_is_per_id_credit_for_correct_chain():
+    # Measured before the fix: four wrong IDs 4/4 (evidence earned 4.0 when
+    # the response cited 4 wrong IDs because the old logic gave partial credit
+    # for the number of IDs present). After the fix, per-ID credit is given
+    # only for correct-chain membership {F02, F05, F09, F13}, so four wrong
+    # IDs earn 0.0.
+    response = (
+        "INCIDENT: I-17\n"
+        "OWNER: Omar\n"
+        "ESCALATION CHANNEL: PagerDuty\n"
+        "EVIDENCE: F21 F22 F23 F24\n"
+        "REASONING: EU 14:30 P1 I-17 PagerDuty"
+    )
+    result = LongContextPlugin().evaluate(response)
+    evidence = next(item for item in result.rubric if item["name"] == "Evidence retrieval")
+    assert evidence["earned"] == 0.0, f"Expected 0.0 (per-ID credit), got {evidence['earned']}"
+
+
+def test_long_context_p1_is_word_bounded_no_p12_leakage():
+    # Measured before the fix: P12 leakage (the bare `r"P1"` and
+    # `"p1" in reasoning` matched "P12" as a substring, so a response with
+    # "P12" in the reasoning earned the Exact answer p1 sub-check and the
+    # cross-ref P1 check). After the fix, both checks use word-bounded
+    # `\bP1\b` / `\bp1\b`, so "P12" does not satisfy "P1".
+    response = (
+        "INCIDENT: I-17\n"
+        "OWNER: Omar\n"
+        "ESCALATION CHANNEL: PagerDuty\n"
+        "EVIDENCE: F02 F05 F09 F13\n"
+        "REASONING: EU 14:30 P12 I-17 PagerDuty"
+    )
+    result = LongContextPlugin().evaluate(response)
+    cross = next(item for item in result.rubric if item["name"] == "Cross-reference reasoning")
+    assert cross["earned"] == 0.0, f"Expected 0.0 (word-bounded P1), got {cross['earned']}"
 
 
 def test_moe_document_keywords_without_local_sections_score_low():

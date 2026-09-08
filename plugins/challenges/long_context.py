@@ -7,6 +7,29 @@ from benchmark.plugin import BenchmarkTaskPlugin, EvaluationResult
 from benchmark.types import ConfigMap
 from plugins.challenges._rubric import Rubric
 
+_NEGATION = re.compile(
+    r"\b(?:not|no|never|without|isn'?t|aren'?t|wasn'?t|weren'?t|can'?t|cannot|"
+    r"don'?t|doesn'?t|didn'?t)\s*$",
+    re.IGNORECASE,
+)
+
+
+def _positive_ref(text: str, token: str) -> bool:
+    """Return True if ``token`` appears in ``text`` as a bounded, non-negated reference.
+
+    A reference immediately preceded by a negation word (``NOT I-17``,
+    ``is not I-17``) does not count: the incident criteria must credit a
+    positive association with the incident, not bare token presence
+    (measured: 5/5 on "NOT I-17"). Matching is word-bounded so ``I-170``
+    does not satisfy ``I-17`` and ``P12`` does not satisfy ``P1``.
+    """
+    pattern = re.compile(rf"\b{re.escape(token)}\b", re.IGNORECASE)
+    for match in pattern.finditer(text):
+        prefix = text[max(0, match.start() - 24):match.start()]
+        if not _NEGATION.search(prefix):
+            return True
+    return False
+
 
 class LongContextPlugin(BenchmarkTaskPlugin):
     @property
@@ -15,7 +38,7 @@ class LongContextPlugin(BenchmarkTaskPlugin):
 
     @property
     def version(self) -> str:
-        return "0.1.0"
+        return "0.2.0"
 
     @property
     def name(self) -> str:
@@ -23,7 +46,7 @@ class LongContextPlugin(BenchmarkTaskPlugin):
 
     @property
     def max_score(self) -> int:
-        return int(20.0)
+        return 20
 
     @property
     def supports_streaming(self) -> bool:
@@ -68,8 +91,13 @@ class LongContextPlugin(BenchmarkTaskPlugin):
         return (
             "Read all records before answering. Distractors are intentional.\n\n"
             + "\n".join(facts)
-            + "\n\nQuestion: Identify the EU incident at 14:30 with P1 priority. Return exactly these headings:\n"
-            "INCIDENT, OWNER, ESCALATION CHANNEL, EVIDENCE, REASONING. Cite at least three fact IDs."
+            + "\n\nQuestion: Identify the EU incident at 14:30 with P1 priority.\n"
+            "Respond with exactly these five lines, one per line, in LABEL: value form:\n"
+            "INCIDENT: <incident id>\n"
+            "OWNER: <owner name>\n"
+            "ESCALATION CHANNEL: <escalation channel>\n"
+            "EVIDENCE: <fact ids, e.g. F02 F05 F09>\n"
+            "REASONING: <why these facts answer the question; cite at least three fact IDs>"
         )
 
     def get_temperature(self, global_config: ConfigMap) -> float | None:
@@ -85,14 +113,35 @@ class LongContextPlugin(BenchmarkTaskPlugin):
         for label in ("INCIDENT", "OWNER", "ESCALATION CHANNEL", "EVIDENCE", "REASONING"):
             match = re.search(rf"(?im)^\s*{re.escape(label)}\s*:\s*(.+)$", text)
             values[label] = match.group(1).strip() if match else ""
-        rubric.add_criterion("Exact answer", 5.0, float(sum(bool(values[label]) and expected in values[label].lower() for label, expected in (("INCIDENT", "i-17"), ("OWNER", "omar"), ("ESCALATION CHANNEL", "pagerduty"), ("REASONING", "14:30"), ("REASONING", "p1")))) if values["REASONING"] else 0.0)
+        # The correct incident (I-17) is the primary criterion. The supporting
+        # evidence/cross-ref/owner criteria are gated on it so a wrong incident
+        # cannot earn them (measured: wrong-incident + magic tokens 19/20).
+        incident_ok = _positive_ref(values["INCIDENT"], "I-17")
+        rubric.add_criterion(
+            "Incident correctness", 6.0,
+            6.0 if incident_ok else 0.0,
+            negative_findings=[] if incident_ok else [{"finding": "INCIDENT field does not reference I-17"}],
+        )
+        # Per-field gating: each sub-check is gated on its own field being
+        # present (bool(values[label])), not all on REASONING non-empty
+        # (measured: one missing heading 20->7). "p1" is word-bounded so
+        # "P12" does not satisfy "P1" (measured: P12 leakage).
+        exact_subchecks = (
+            bool(values["OWNER"]) and "omar" in values["OWNER"].lower(),
+            bool(values["ESCALATION CHANNEL"]) and "pagerduty" in values["ESCALATION CHANNEL"].lower(),
+            bool(values["REASONING"]) and "14:30" in values["REASONING"].lower(),
+            bool(values["REASONING"]) and re.search(r"\bp1\b", values["REASONING"], re.IGNORECASE) is not None,
+        )
+        rubric.add_criterion("Exact answer", 4.0, float(sum(exact_subchecks)))
         ids = set(re.findall(r"\bF\d{2}\b", values["EVIDENCE"] + " " + values["REASONING"]))
-        rubric.add_criterion("Evidence retrieval", 4.0, 4.0 if len(ids) >= 3 and {"F02", "F05", "F09"} <= ids else min(4.0, len(ids)), evidence=[{"kind": "fact-id", "id": value} for value in sorted(ids)])
-        cross = all(re.search(pattern, values["REASONING"], re.IGNORECASE) for pattern in (r"EU", r"14:30", r"P1", r"I-17", r"PagerDuty"))
-        rubric.add_criterion("Cross-reference reasoning", 5.0, 5.0 if cross else 0.0)
-        rubric.add_criterion("Owner/service consistency", 3.0, 3.0 if re.search(r"(?:I-17|F02)", values["EVIDENCE"], re.IGNORECASE) and re.search(r"Omar", values["EVIDENCE"] + " " + values["OWNER"], re.IGNORECASE) else 0.0)
+        # Per-ID credit: 1.0 for each correct-chain fact ID cited (max 4.0),
+        # so four wrong IDs earn 0.0 (measured: four wrong IDs 4/4).
+        rubric.add_criterion("Evidence retrieval", 4.0, min(4.0, float(len(ids & {"F02", "F05", "F09", "F13"}))) if incident_ok else 0.0, evidence=[{"kind": "fact-id", "id": value} for value in sorted(ids)])
+        cross = incident_ok and _positive_ref(values["REASONING"], "I-17") and all(re.search(pattern, values["REASONING"], re.IGNORECASE) for pattern in (r"EU", r"14:30", r"\bP1\b", r"PagerDuty"))
+        rubric.add_criterion("Cross-reference reasoning", 3.0, 3.0 if cross else 0.0)
+        rubric.add_criterion("Owner/service consistency", 2.0, 2.0 if incident_ok and (_positive_ref(values["EVIDENCE"], "I-17") or _positive_ref(values["EVIDENCE"], "F02")) and re.search(r"Omar", values["EVIDENCE"] + " " + values["OWNER"], re.IGNORECASE) else 0.0)
         exact_headers = all(re.search(rf"(?im)^\s*{re.escape(label)}\s*:", text) for label in ("INCIDENT", "OWNER", "ESCALATION CHANNEL", "EVIDENCE", "REASONING"))
-        rubric.add_criterion("Response contract", 3.0, 3.0 if exact_headers else 0.0)
+        rubric.add_criterion("Response contract", 1.0, 1.0 if exact_headers else 0.0)
         return rubric.results()
 
     def score(self, response_text: str) -> float:
