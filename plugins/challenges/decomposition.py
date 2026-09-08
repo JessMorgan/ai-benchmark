@@ -43,14 +43,15 @@ ever sees enriched, normalized data; the nightly report is computed from the
 stored normalized logs, not from the live stream.
 """
 
-# Reference: which deliverable domains the plan should cover. Keywords are
-# ordered most-specific-first so a line like "anomaly detection over normalized
-# stream" resolves to the anomaly domain rather than the enrichment domain.
+# Reference: which deliverable domains the plan should cover. A line resolves
+# to the domain with the most distinct keyword hits (ties: earliest first hit),
+# so "anomaly alerts and real-time feed" resolves to the alert domain even
+# though "anomaly" appears first.
 _REFERENCE_DOMAINS = {
     "ingestion": (("ingest", "buffer", "collect", "receive", "http"), "accept/buffer log batches durably"),
-    "enrich": (("geoip", "enrich", "normaliz", "geo"), "normalize + GeoIP enrich each line"),
+    "enrich": (("geoip", "enrich", "normaliz", r"geo(?=ip|\b)"), "normalize + GeoIP enrich each line"),
     "anomaly": (("anomal",), "anomaly detection on normalized stream"),
-    "alert": (("alert", "notif", "feed", "realtime"), "real-time alert feed for anomalies"),
+    "alert": (("alert", "notif", r"\bfeed\b", "realtime"), "real-time alert feed for anomalies"),
     "report": (("report", "aggregate", "summary", "nightly"), "nightly aggregate report"),
     "observe": (("metric", "observ", "monitor", "health", "export"), "observability / metrics export"),
 }
@@ -62,6 +63,21 @@ _REQUIRED_EDGES = {("enrich", "ingestion"), ("anomaly", "enrich"), ("alert", "an
 # edges that, if declared, would indicate a reversed or wrong dependency.
 _FORBIDDEN_EDGES = {("ingestion", "enrich"), ("enrich", "anomaly"), ("anomaly", "alert")}
 
+# Independence language that justifies running stages in parallel; the bare
+# word "parallel" (which the prompt itself elicits) is not enough.
+_INDEPENDENCE_RE = (
+    r"independent|no dependenc|does not depend|without dependenc"
+    r"|run (?:in parallel|concurrently|simultaneously|together|at the same time)"
+)
+
+# Named deliverable domains an ordering rationale may reference instead of
+# task IDs (each names one task of the reference decomposition).
+_RATIONALE_DOMAIN_RE = r"ingest|enrich|normaliz|anomal|alert|report|metric|observ"
+
+# Task IDs in the candidate's own naming: "Task 1" / "task-1" as well as the
+# compact "T1" form. The judge must not require a specific naming scheme.
+_TASK_ID_RE = r"\b(?:task[ _-]?|t[ _-]?)(\d+)\b"
+
 
 class DecompositionPlugin(BenchmarkTaskPlugin):
     @property
@@ -70,7 +86,7 @@ class DecompositionPlugin(BenchmarkTaskPlugin):
 
     @property
     def version(self) -> str:
-        return "0.1.0"
+        return "0.2.0"
 
     @property
     def name(self) -> str:
@@ -130,13 +146,25 @@ class DecompositionPlugin(BenchmarkTaskPlugin):
         )
 
     def _domain_of(self, line: str) -> str | None:
-        best: tuple[str | None, int] = (None, len(line) + 1)
+        """Return the deliverable domain a line describes.
+
+        The domain with the most distinct keyword hits wins; ties fall to the
+        domain whose first hit appears earliest in the line.
+        """
+        best_domain: str | None = None
+        best_hits = 0
+        best_pos = len(line) + 1
         for domain, (keywords, _label) in _REFERENCE_DOMAINS.items():
+            hits = 0
+            first_pos = len(line) + 1
             for keyword in keywords:
                 pos = re.search(keyword, line, re.IGNORECASE)
-                if pos and pos.start() < best[1]:
-                    best = (domain, pos.start())
-        return best[0]
+                if pos:
+                    hits += 1
+                    first_pos = min(first_pos, pos.start())
+            if hits > best_hits or (hits == best_hits and hits and first_pos < best_pos):
+                best_domain, best_hits, best_pos = domain, hits, first_pos
+        return best_domain
 
     def _score_coverage(self, text: str) -> tuple[float, list[str]]:
         found = {self._domain_of(line) for line in text.splitlines()}
@@ -145,6 +173,91 @@ class DecompositionPlugin(BenchmarkTaskPlugin):
         total = len(_REFERENCE_DOMAINS)
         missing = [f"{d} ({_REFERENCE_DOMAINS[d][1]})" for d in _REFERENCE_DOMAINS if d not in found]
         return covered / total, missing
+
+    def _task_ids_and_edges(self, text: str) -> tuple[set[str], list[tuple[str, str]]]:
+        """Task IDs and dependency edges, accepting both ``Task N`` and ``T<N>``.
+
+        The shared ``parse_workflow_graph`` only recognizes ``task``/``step``
+        IDs; this local pass is the fallback for plans that name their tasks
+        ``T1``, ``T2``, ... (the judge must not require a specific naming
+        scheme).
+        """
+        id_matches = list(re.finditer(_TASK_ID_RE, text, re.IGNORECASE))
+        bracket_matches = list(
+            re.finditer(r"\[DEPENDS_ON\s*:\s*(?:task|t)?[ _-]?(\d+)\]", text, re.IGNORECASE)
+        )
+        edges: list[tuple[str, str]] = []
+        referenced_positions: set[int] = set()
+        for dependency in bracket_matches:
+            current = [
+                item.group(1)
+                for item in id_matches
+                if item.start() < dependency.start()
+                and not any(
+                    reference.start() <= item.start() < reference.end()
+                    for reference in bracket_matches
+                )
+            ]
+            if current:
+                edges.append((current[-1], dependency.group(1)))
+            referenced_positions.update(
+                item.start()
+                for item in id_matches
+                if dependency.start() <= item.start() < dependency.end()
+            )
+        for match in re.finditer(
+            rf"{_TASK_ID_RE}\s+(?:depends on|requires|after)\s+(?:task|t)[ _-]?(\d+)",
+            text,
+            re.IGNORECASE,
+        ):
+            edges.append((match.group(1), match.group(2)))
+        for match in re.finditer(
+            rf"{_TASK_ID_RE}\s*-->?\s*(?:task|t)[ _-]?(\d+)",
+            text,
+            re.IGNORECASE,
+        ):
+            edges.append((match.group(1), match.group(2)))
+        task_ids = {
+            match.group(1)
+            for match in id_matches
+            if match.start() not in referenced_positions
+        }
+        return task_ids, list(dict.fromkeys(edges))
+
+    @staticmethod
+    def _graph_problems(task_ids: set[str], edges: list[tuple[str, str]]) -> list[str]:
+        """Structural problems of a task graph (empty list = valid)."""
+        problems: list[str] = []
+        if len(task_ids) < 2:
+            problems.append("fewer than two task IDs found")
+        if not edges:
+            problems.append("no dependency edges found")
+        for source, target in edges:
+            if source not in task_ids or target not in task_ids:
+                problems.append(f"dependency references unknown task {target}")
+        if problems:
+            return problems
+        adjacency: dict[str, set[str]] = {task_id: set() for task_id in task_ids}
+        for source, target in edges:
+            adjacency[source].add(target)
+        visiting: set[str] = set()
+        visited: set[str] = set()
+
+        def visit(node: str) -> None:
+            if node in visiting:
+                problems.append("dependency graph contains a cycle")
+                return
+            if node in visited:
+                return
+            visiting.add(node)
+            for child in adjacency.get(node, ()):
+                visit(child)
+            visiting.remove(node)
+            visited.add(node)
+
+        for task_id in adjacency:
+            visit(task_id)
+        return problems
 
     def evaluate(self, response_text: str) -> EvaluationResult:
         rubric = Rubric(self.max_score)
@@ -155,11 +268,24 @@ class DecompositionPlugin(BenchmarkTaskPlugin):
         # 1. Structural graph validity (parse; reject cycles/unknown refs).
         graph = parse_workflow_graph(text)
         rubric.record_validation(graph)
-        valid = graph.valid and len(graph.value.get("edges", [])) >= 1
+        shared_tasks = graph.value.get("tasks", set()) if graph.value else set()
+        if len(shared_tasks) >= 2:
+            declared_edges = graph.value.get("edges", [])
+            # graph.valid already implies >=1 edge (the shared parser errors
+            # on edge-less graphs), so no separate length check.
+            valid = graph.valid
+            validity_findings = [] if valid else [{"finding": f"invalid graph: {'; '.join(graph.errors) or 'no edges'}"}]
+        else:
+            # The shared parser only recognizes "Task N"/"Step N" IDs; a plan
+            # that names its tasks "T1", "T2", ... needs a local T-aware parse.
+            local_tasks, declared_edges = self._task_ids_and_edges(text)
+            problems = self._graph_problems(local_tasks, declared_edges)
+            valid = not problems
+            validity_findings = [] if valid else [{"finding": f"invalid graph: {'; '.join(problems)}"}]
         rubric.add_criterion(
             "Dependency graph validity", 4.0,
             4.0 if valid else 0.0,
-            negative_findings=[] if valid else [{"finding": f"invalid graph: {'; '.join(graph.errors) or 'no edges'}"}],
+            negative_findings=validity_findings,
         )
 
         coverage, missing = self._score_coverage(text)
@@ -169,15 +295,22 @@ class DecompositionPlugin(BenchmarkTaskPlugin):
             negative_findings=[{"finding": f"missing: {', '.join(missing)}"}] if missing else [],
         )
 
-        declared_edges = graph.value.get("edges", []) if graph.value else []
+        # Bind each task's domain to its own description line: the FIRST line
+        # that mentions the task ID wins, so an appended "Domain mapping"
+        # section cannot re-declare the tasks' domains (the old last-line-wins
+        # binding let a degenerate plan score full marks by mapping the
+        # domains itself).
         domain_by_task: dict[str, str] = {}
+        seen_tasks: set[str] = set()
         for line in text.splitlines():
-            m = re.search(r"task[ _-]?(\d+)", line, re.IGNORECASE)
-            if not m:
-                continue
-            domain = self._domain_of(line)
-            if domain:
-                domain_by_task[m.group(1)] = domain
+            for m in re.finditer(_TASK_ID_RE, line, re.IGNORECASE):
+                task_id = m.group(1)
+                if task_id in seen_tasks:
+                    continue
+                seen_tasks.add(task_id)
+                domain = self._domain_of(line)
+                if domain:
+                    domain_by_task[task_id] = domain
         domain_edges = set()
         for src, dst in declared_edges:
             ds, dd = domain_by_task.get(src), domain_by_task.get(dst)
@@ -185,37 +318,80 @@ class DecompositionPlugin(BenchmarkTaskPlugin):
                 domain_edges.add((ds, dd))
         correct = sum(1 for e in _REQUIRED_EDGES if e in domain_edges)
         reversed_edges = sorted(domain_edges & _FORBIDDEN_EDGES)
-        edge_points = 6.0 * correct / len(_REQUIRED_EDGES)
-        if reversed_edges:
-            # A reversed dependency is a substantive correctness error over and
-            # above a missing edge; cap the criterion at half marks.
-            edge_points = min(edge_points, 3.0)
+        # Each required edge earns one third of the criterion; every declared
+        # forbidden (reversed) edge is penalized individually at the same
+        # weight, and the total penalty is capped by the criterion maximum.
+        per_edge = 6.0 / len(_REQUIRED_EDGES)
+        edge_points = max(0.0, per_edge * (correct - len(reversed_edges)))
         findings = []
         for e in _REQUIRED_EDGES:
             if e not in domain_edges:
                 findings.append(f"missing dependency {e[0]} -> {e[1]}")
+        # e is the declared (wrong) edge "e[0] depends on e[1]"; name that
+        # direction, matching the arrow convention of the missing findings.
         for e in reversed_edges:
-            findings.append(f"reversed dependency {e[1]} -> {e[0]}")
+            findings.append(f"reversed dependency {e[0]} -> {e[1]}")
         rubric.add_criterion(
             "Semantic dependency direction", 6.0, edge_points,
             negative_findings=[{"finding": f} for f in findings] if findings else [],
         )
 
         has_parallel = bool(re.search(r"parallel", text, re.IGNORECASE))
+        has_independence = bool(re.search(_INDEPENDENCE_RE, text, re.IGNORECASE))
         has_sequential = bool(re.search(r"sequential|must run (one )?after", text, re.IGNORECASE))
+        parallel_ok = has_parallel and has_independence
+        parallel_points = (
+            2.0 if (parallel_ok and has_sequential)
+            else 1.0 if (parallel_ok or has_sequential)
+            else 0.0
+        )
+        parallel_findings = []
+        if not has_parallel:
+            parallel_findings.append("parallel stages not identified")
+        elif not has_independence:
+            parallel_findings.append(
+                "parallel stages named but not justified by independence "
+                "(e.g. 'independent', 'no dependency')"
+            )
+        if not has_sequential:
+            parallel_findings.append("sequential stages not identified")
         rubric.add_criterion(
-            "Parallelization reasoning", 2.0, 2.0 if has_parallel and has_sequential else 1.0 if has_parallel or has_sequential else 0.0,
-            negative_findings=[] if has_parallel and has_sequential else [{"finding": "parallel vs sequential stages not both identified"}],
+            "Parallelization reasoning", 2.0, parallel_points,
+            negative_findings=[{"finding": f} for f in parallel_findings] if parallel_findings else [],
         )
 
         rationale_hits = sum(bool(re.search(p, text, re.IGNORECASE)) for p in (
             r"data flows?|data flow", r"prerequisite|pre-requisite", r"depends on|dependency",
             r"order|before|after|first|then",
         ))
-        rationale_points = 2.0 if rationale_hits >= 2 else (1.0 if rationale_hits == 1 else 0.0)
+        # The rationale must reference the plan's specific tasks — by task ID
+        # ("Task 1 before Task 3") or by named deliverable ("ingestion",
+        # "enrichment") — so ordering vocabulary alone cannot earn it.
+        rationale_lines = [
+            line for line in text.splitlines()
+            if re.search(r"rationale", line, re.IGNORECASE)
+        ]
+        rationale_scope = "\n".join(rationale_lines) if rationale_lines else text
+        rationale_specific = bool(
+            re.search(_TASK_ID_RE, rationale_scope, re.IGNORECASE)
+            or re.search(_RATIONALE_DOMAIN_RE, rationale_scope, re.IGNORECASE)
+        )
+        rationale_points = (
+            2.0 if (rationale_specific and rationale_hits >= 2)
+            else 1.0 if (rationale_specific and rationale_hits == 1)
+            else 0.0
+        )
+        if rationale_points:
+            rationale_findings = []
+        elif not rationale_specific:
+            rationale_findings = [
+                {"finding": "ordering rationale does not reference specific tasks (IDs or named deliverables)"}
+            ]
+        else:
+            rationale_findings = [{"finding": "no explicit ordering rationale"}]
         rubric.add_criterion(
             "Ordering rationale", 2.0, rationale_points,
-            negative_findings=[] if rationale_points else [{"finding": "no explicit ordering rationale"}],
+            negative_findings=rationale_findings,
         )
 
         return rubric.results()

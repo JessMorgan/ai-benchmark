@@ -11,6 +11,7 @@ from plugins.challenges.data_transformation import (
 )
 from plugins.challenges.debug_consistency import DebugConsistencyPlugin
 from plugins.challenges.debug_traversal import DebugTraversalPlugin
+from plugins.challenges.decomposition import DecompositionPlugin
 from plugins.challenges.error_recovery import ErrorRecoveryPlugin
 from plugins.challenges.event_processor import EventProcessorPlugin
 from plugins.challenges.instruction_following import InstructionFollowingPlugin
@@ -556,6 +557,156 @@ def test_debug_traversal_early_exit_does_not_pass_execution_gate():
     fix = next(item for item in result.rubric if item["name"] == "Proposed fix / corrected code")
     assert fix["earned"] == 0.0
     assert any("withheld" in finding["finding"] for finding in fix["negative_findings"])
+def test_decomposition_appended_domain_mapping_cannot_override_task_domains():
+    # Measured pre-fix: this degenerate plan scored 20/20 because the appended
+    # "Domain mapping" section re-declared every task ID and the last-line-wins
+    # domain_by_task binding let it override the tasks' own descriptions.
+    response = """Task 1: set up the project and define the data schema
+Task 2 [DEPENDS_ON: 1]: implement the core processing loop
+Task 3 [DEPENDS_ON: 2]: add the detection logic
+Task 4 [DEPENDS_ON: 3]: wire up the user-facing output
+Task 5 [DEPENDS_ON: 2]: produce the final output
+Task 6: add dashboards
+Domain mapping:
+Task 1: ingestion
+Task 2: enrich
+Task 3: anomaly
+Task 4: alert
+Task 5: report
+Task 6: observe
+Parallel stages: 4, 5 and 6 in parallel.
+Sequential stages: 1 then 2 then 3.
+Ordering rationale: data flow and prerequisite order.
+"""
+    result = DecompositionPlugin().evaluate(response)
+    direction = next(c for c in result.rubric if c["name"] == "Semantic dependency direction")
+    assert direction["earned"] == 0.0
+    assert result.score < 16.0
+
+
+def test_decomposition_domain_of_uses_most_keyword_hits_with_position_tiebreak():
+    # Measured pre-fix: earliest-keyword-wins misclassified a correct line to
+    # the wrong domain (15/20 on a correct plan). Now the domain with the most
+    # distinct keyword hits wins, and ties fall to the earliest first hit.
+    plugin = DecompositionPlugin()
+    assert plugin._domain_of("Task 4: anomaly alerts and real-time feed for operators") == "alert"
+    assert plugin._domain_of("Task 3: anomaly detection over the normalized stream") == "anomaly"
+    assert plugin._domain_of("Task 3: normalized stream for anomaly detection") == "enrich"
+
+
+def test_decomposition_penalizes_every_declared_forbidden_edge():
+    # Measured pre-fix: a reversed plan scored 15-16/20 because any reversed
+    # edge applied a single global half-marks cap (min(points, 3.0)) instead
+    # of penalizing each declared forbidden edge. Two required edges present
+    # plus one declared forbidden edge now earn 2.0, not the old 3.0 cap.
+    response = """Task 1: Accept and buffer log batches over HTTP ingestion
+Task 2 [DEPENDS_ON: 1] [DEPENDS_ON: 3]: GeoIP enrich and normalize each line
+Task 3 [DEPENDS_ON: 1]: anomaly detection over the normalized stream
+Task 4 [DEPENDS_ON: 3]: real-time alert feed for anomalies
+Task 5: nightly aggregate report
+Task 6: export metrics for observability
+Parallel stages: 5 and 6 can run in parallel; they are independent.
+Sequential stages: 1 then 2 then 3 then 4.
+Ordering rationale: Task 1 before Task 2, data flows from ingestion to enrichment.
+"""
+    result = DecompositionPlugin().evaluate(response)
+    direction = next(c for c in result.rubric if c["name"] == "Semantic dependency direction")
+    assert direction["earned"] == 2.0
+
+
+def test_decomposition_parallelization_requires_independence_language():
+    # Bare "parallel" presence (which the prompt itself elicits) no longer
+    # earns the full criterion: the plan must justify the parallel stages
+    # with independence language.
+    bare = """Task 1: Accept and buffer log batches over HTTP ingestion
+Task 2 [DEPENDS_ON: 1]: GeoIP enrich and normalize each line
+Task 3 [DEPENDS_ON: 2]: anomaly detection over the normalized stream
+Task 4 [DEPENDS_ON: 3]: real-time alert feed for anomalies
+Task 5 [DEPENDS_ON: 2]: nightly aggregate report
+Task 6: export metrics for observability
+Parallel stages: 4, 5 and 6.
+Sequential stages: 1 then 2 then 3.
+Ordering rationale: Task 1 before Task 2, data flows from ingestion to enrichment.
+"""
+    result = DecompositionPlugin().evaluate(bare)
+    parallel = next(c for c in result.rubric if c["name"] == "Parallelization reasoning")
+    assert parallel["earned"] == 1.0
+    justified = bare.replace(
+        "Parallel stages: 4, 5 and 6.",
+        "Parallel stages: 4, 5 and 6 are independent and can run in parallel.",
+    )
+    result = DecompositionPlugin().evaluate(justified)
+    parallel = next(c for c in result.rubric if c["name"] == "Parallelization reasoning")
+    assert parallel["earned"] == 2.0
+
+
+def test_decomposition_rationale_requires_task_references():
+    # Ordering vocabulary alone (data flow, prerequisite, order, before...)
+    # with no reference to the plan's specific tasks earns no rationale
+    # points.
+    response = """Task 1: Accept and buffer log batches over HTTP ingestion
+Task 2 [DEPENDS_ON: 1]: GeoIP enrich and normalize each line
+Task 3 [DEPENDS_ON: 2]: anomaly detection over the normalized stream
+Task 4 [DEPENDS_ON: 3]: real-time alert feed for anomalies
+Task 5 [DEPENDS_ON: 2]: nightly aggregate report
+Task 6: export metrics for observability
+Parallel stages: 4, 5 and 6 are independent and can run in parallel.
+Sequential stages: 1 then 2 then 3.
+Ordering rationale: data flow, prerequisite, depends on, order, before, after, first, then.
+"""
+    result = DecompositionPlugin().evaluate(response)
+    rationale = next(c for c in result.rubric if c["name"] == "Ordering rationale")
+    assert rationale["earned"] == 0.0
+
+
+def test_decomposition_accepts_t_style_task_ids():
+    # Measured pre-fix: a correct plan named T1..T6 scored 10/20 because the
+    # task-ID regex and the shared graph parser only recognized "Task N", so
+    # the graph validity and semantic direction criteria both dead-ended at 0.
+    response = """T1: Accept and buffer log batches over HTTP ingestion
+T2 [DEPENDS_ON: T1]: GeoIP enrich and normalize each line
+T3 [DEPENDS_ON: T2]: anomaly detection over the normalized stream
+T4 [DEPENDS_ON: T3]: real-time alert feed for anomalies
+T5 [DEPENDS_ON: T2]: nightly aggregate report
+T6: export metrics for observability
+Parallel stages: T4, T5 and T6 can run in parallel; they are independent.
+Sequential stages: T1 then T2 then T3 then T4.
+Ordering rationale: T1 before T2 because data flows from ingestion to enrichment.
+"""
+    result = DecompositionPlugin().evaluate(response)
+    assert result.score == 20.0
+
+
+def test_decomposition_geo_and_feed_keywords_are_word_bounded():
+    # The boundary-less "geo"/"feed" keywords matched inside longer words
+    # ("geography", "feedback"), crediting the wrong domains.
+    plugin = DecompositionPlugin()
+    assert plugin._domain_of("Task 4: track user geography and location") is None
+    assert plugin._domain_of("Task 5: gather operator feedback") is None
+    # Legitimate uses still resolve.
+    assert plugin._domain_of("Task 2: GeoIP enrich each line") == "enrich"
+    assert plugin._domain_of("Task 4: real-time alert feed for anomalies") == "alert"
+
+
+def test_decomposition_reversed_edge_finding_reads_declared_direction():
+    # The diagnostic must name the declared (wrong) edge direction, not the
+    # correct one: declaring "ingestion depends on enrich" is reported as
+    # "reversed dependency ingestion -> enrich", matching the arrow
+    # convention of the "missing dependency" findings.
+    response = """Task 1: Accept and buffer log batches over HTTP ingestion
+Task 2: GeoIP enrich and normalize each line
+Task 3: anomaly detection over the normalized stream
+Task 4: real-time alert feed for anomalies
+Task 5: nightly aggregate report
+Task 6: export metrics for observability
+Dependencies: Task 1 [DEPENDS_ON: 2]
+"""
+    result = DecompositionPlugin().evaluate(response)
+    direction = next(c for c in result.rubric if c["name"] == "Semantic dependency direction")
+    assert any(
+        "reversed dependency ingestion -> enrich" in f["finding"]
+        for f in direction["negative_findings"]
+    )
 
 
 def test_instruction_following_wrong_tie_break_does_not_pass():
