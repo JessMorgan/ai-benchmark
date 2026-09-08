@@ -204,7 +204,11 @@ class OrchestrationPlugin(BenchmarkTaskPlugin):
             lines = blocks.get(task_id, [])
             if not lines or not any(re.search(r"parallel|sequential", line, re.IGNORECASE) for line in lines):
                 labels_ok = False
-            if any(re.search(r"parallel", line, re.IGNORECASE) and re.search(r"sequential", line, re.IGNORECASE) for line in lines):
+            # Contradiction is judged across the whole task block (union of
+            # labels), matching parse_workflow_graph's per-task label check
+            # instead of only flagging lines that carry both words.
+            joined = " ".join(lines)
+            if re.search(r"parallel", joined, re.IGNORECASE) and re.search(r"sequential", joined, re.IGNORECASE):
                 labels_ok = False
         rubric.add_criterion("Parallel vs sequential logic", 4.0, 4.0 if labels_ok else 0.0, negative_findings=[] if labels_ok else [{"finding": "each task needs one non-contradictory execution label"}])
         trace_ok = True

@@ -1326,6 +1326,28 @@ Task 5 init running complete."""
     assert result.score < 16.0
 
 
+def test_orchestration_flags_cross_line_label_contradiction():
+    # Measured pre-fix: criterion 3 only flagged lines carrying both
+    # "parallel" and "sequential", so a cross-line contradiction in one
+    # task's block passed even though parse_workflow_graph flags the same
+    # task as labeled both ways.
+    response = """Task 1 [PARALLEL] process logs.
+Task 2 [PARALLEL] perform GeoIP lookup.
+Task 3 [SEQUENTIAL] anomaly detection.
+Task 4 [SEQUENTIAL] generate the PDF report.
+Task 4 actually runs in parallel with task 3.
+Task 2 [DEPENDS_ON: task 1]
+Task 3 [DEPENDS_ON: task 2]
+Task 4 [DEPENDS_ON: task 3]
+Task 1 init running complete.
+Task 2 init running complete.
+Task 3 init running complete.
+Task 4 init running complete."""
+    result = OrchestrationPlugin().evaluate(response)
+    labels = next(item for item in result.rubric if item["name"] == "Parallel vs sequential logic")
+    assert labels["earned"] == 0.0
+
+
 def test_prd_content_in_wrong_heading_does_not_earn_local_credit():
     response = """## Notes
 Executive Summary FlowState. Problem pain. Goals 25%. Persona 1 and Persona 2.
