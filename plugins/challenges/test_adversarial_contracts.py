@@ -1301,6 +1301,31 @@ def test_orchestration_accepts_numbered_list_task_declarations():
     assert OrchestrationPlugin().score(response) == 16.0
 
 
+def test_orchestration_penalizes_more_than_four_declared_tasks():
+    # Measured pre-fix: the extra Task 5 was ignored by the
+    # min(4.0, len(declared_ids)) credit, so this response scored 16/16
+    # despite the prompt requiring exactly four tasks.
+    response = """Task 1 [PARALLEL] process logs.
+Task 2 [PARALLEL] perform GeoIP lookup.
+Task 3 [SEQUENTIAL] anomaly detection.
+Task 4 [SEQUENTIAL] generate the PDF report.
+Task 5 [SEQUENTIAL] send the report by email.
+Task 2 [DEPENDS_ON: task 1]
+Task 3 [DEPENDS_ON: task 2]
+Task 4 [DEPENDS_ON: task 3]
+Task 5 [DEPENDS_ON: task 4]
+Task 1 init running complete.
+Task 2 init running complete.
+Task 3 init running complete.
+Task 4 init running complete.
+Task 5 init running complete."""
+    result = OrchestrationPlugin().evaluate(response)
+    breakdown = next(item for item in result.rubric if item["name"] == "Task breakdown presence")
+    assert breakdown["earned"] < 4.0
+    assert any(finding["finding"] == "declares more than four tasks" for finding in breakdown["negative_findings"])
+    assert result.score < 16.0
+
+
 def test_prd_content_in_wrong_heading_does_not_earn_local_credit():
     response = """## Notes
 Executive Summary FlowState. Problem pain. Goals 25%. Persona 1 and Persona 2.
