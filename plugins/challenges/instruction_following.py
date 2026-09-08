@@ -48,7 +48,7 @@ class InstructionFollowingPlugin(BenchmarkTaskPlugin):
         val = global_config.get("instruction_following_temperature")
         return float(val) if isinstance(val, (int, float)) else None
 
-    _ORDER_RE = re.compile(r"^ORDER (T-\d{2}) \| CUSTOMER ([A-Z]+) \| TOTAL (\d+\.\d{2})$")
+    _ORDER_RE = re.compile(r"^ORDER ([Tt]-\d{2}) \| CUSTOMER ([A-Z]+) \| TOTAL (\d+\.\d{2})$")
     _EXPECTED = (
         ("T-02", "JULES", "120.00"),
         ("T-05", "NOOR", "120.00"),
@@ -67,10 +67,16 @@ class InstructionFollowingPlugin(BenchmarkTaskPlugin):
         parsed = [match.groups() for match in records if match]
         expected_ids = {record[0] for record in self._EXPECTED}
         parsed_ids = {record[0] for record in parsed}
+        # IF-3: case-normalize ID membership for the filter criterion only, so a
+        # case error in a task ID (e.g. t-05) is still recognized as the right
+        # order here; the order and transformed criteria keep the raw IDs and
+        # still penalize the case error.
+        filter_expected_ids = {order_id.upper() for order_id in expected_ids}
+        filter_parsed_ids = {order_id.upper() for order_id in parsed_ids}
         filter_score = 0.0
-        if parsed_ids == expected_ids and len(parsed) == 4:
+        if filter_parsed_ids == filter_expected_ids and len(parsed) == 4:
             filter_score = 4.0
-        elif parsed_ids <= expected_ids and parsed_ids:
+        elif filter_parsed_ids <= filter_expected_ids and filter_parsed_ids:
             filter_score = 2.0
         rubric = Rubric(self.max_score)
         rubric.add_criterion(

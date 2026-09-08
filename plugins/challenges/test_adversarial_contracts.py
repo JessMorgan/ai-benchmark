@@ -960,6 +960,26 @@ def test_instruction_following_summary_requires_at_least_one_order_line():
     assert result.score < 5.0
 
 
+def test_instruction_following_case_error_in_id_does_not_double_penalty_filter():
+    # IF-3: a case error in a task ID (t-05 vs T-05) must not cascade into a
+    # double-penalty in the "All filters applied" criterion. The filter
+    # criterion case-normalizes ID membership, so all four IDs are recognized;
+    # the order/transformed criteria keep the raw IDs and still penalize the
+    # case error. Pre-fix the lowercase line failed the ORDER regex entirely,
+    # dropping the filter to 2.0 and marking the line forbidden (discipline 0).
+    response = """ORDER T-02 | CUSTOMER JULES | TOTAL 120.00
+ORDER t-05 | CUSTOMER NOOR | TOTAL 120.00
+ORDER T-08 | CUSTOMER ZARA | TOTAL 99.90
+ORDER T-09 | CUSTOMER RAVI | TOTAL 65.00
+[SUMMARY] count=4; total=404.90; top_order=T-02"""
+    result = InstructionFollowingPlugin().evaluate(response)
+    filter_item = next(item for item in result.rubric if item["name"] == "All filters applied")
+    assert filter_item["earned"] == 4.0
+    # The case error is still penalized in the order criterion (raw IDs).
+    order_item = next(item for item in result.rubric if item["name"] == "Sort and tie-break order")
+    assert order_item["earned"] == 0.0
+
+
 def test_reasoning_rejects_the_old_p4_answer():
     response = """1. The time chain places Search at 09:30.
 2. Ben owns Search.
