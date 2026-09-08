@@ -111,20 +111,35 @@ class MultiTurnConversationPlugin(BenchmarkTaskPlugin):
             {"start": "09:00", "duration_minutes": 25, "music": False, "calendar_event": True, "notification_minutes": None},
             {"start": "09:00", "duration_minutes": 50, "music": False, "calendar_event": True, "notification_minutes": 5},
         ]
+        # Per-turn label expectation: Turn 1 must not carry the deep-work
+        # label yet; Turns 2 and 3 must carry it.
+        label_required = [False, True, True]
         state_values: list[dict[str, Any]] = []
         for state in states:
             if isinstance(state, dict):
                 state_values.append(state)
         transition_hits = 0
-        for state, target in zip(state_values, expected, strict=False):
-            transition_hits += sum(state.get(key) == value for key, value in target.items())
-        rubric.add_criterion("Requested state values", 5.0, 5.0 * transition_hits / 15.0)
+        for state, target, require_label in zip(state_values, expected, label_required, strict=False):
+            hits = sum(state.get(key) == value for key, value in target.items())
+            labels = state.get("labels")
+            if isinstance(labels, list) and ("deep-work" in labels) is require_label:
+                hits += 1
+            transition_hits += hits
+        rubric.add_criterion(
+            "Requested state values", 5.0, 5.0 * transition_hits / 18.0,
+            negative_findings=[] if transition_hits == 18 else [
+                {"finding": "each turn must carry its own expected state, not the final state"}
+            ],
+        )
         preserved = (
             len(state_values) == 3
             and state_values[0].get("start") == state_values[1].get("start") == state_values[2].get("start") == "09:00"
             and state_values[0].get("calendar_event") is state_values[1].get("calendar_event") is state_values[2].get("calendar_event") is True
+            and state_values[0].get("music") is True
             and state_values[1].get("music") is False
             and state_values[2].get("music") is False
+            and isinstance(state_values[0].get("labels"), list)
+            and "deep-work" not in state_values[0].get("labels", [])
             and "deep-work" in state_values[1].get("labels", [])
             and "deep-work" in state_values[2].get("labels", [])
         )
