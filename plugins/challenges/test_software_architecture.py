@@ -261,67 +261,12 @@ class TestSoftwareArchitectureScoring(unittest.TestCase):
         self.assertLess(score, 15.0)
 
     def test_full_response_scores_high(self):
-        text = (
-            "## Executive Summary\n\n"
-            "FlowState will use an event-driven microservices architecture deployed on AWS, "
-            "with a React/Flutter frontend, Python/FastAPI backend services, PostgreSQL for relational data, "
-            "Redis for caching, and Kafka for event streaming.\n\n"
-            "## Requirements Summary\n\n"
-            "Functional: time-blocking, focus music, AI planning, calendar integration, push notifications, analytics.\n"
-            "Non-functional: support 1M DAU, real-time sync, <2s latency, 99.9% uptime.\n\n"
-            "## Architecture Style\n\n"
-            "Event-driven microservices. This enables independent scaling of the AI scheduler, music service, and analytics.\n\n"
-            "## Component Description\n\n"
-            "```\n"
-            "[Client Apps] -> [API Gateway] -> [Auth Service]\n"
-            "                 -> [Calendar Service] -> [Google/Outlook APIs]\n"
-            "                 -> [Music Service] -> [Spotify/Apple Music APIs]\n"
-            "                 -> [AI Planning Service] -> [ML Pipeline]\n"
-            "                 -> [Analytics Service] -> [Data Warehouse]\n"
-            "                 -> [Notification Service] -> [Push Gateway]\n"
-            "```\n\n"
-            "## Data Model\n\n"
-            "- User(id, email, oauth_provider)\n"
-            "- Session(id, user_id, start_time, end_time, focus_score)\n"
-            "- CalendarEvent(id, user_id, external_id, start_time, end_time)\n"
-            "- Playlist(id, user_id, tracks, energy_level)\n"
-            "- Schedule(id, user_id, date, blocks)\n\n"
-            "## API Design\n\n"
-            "REST API v1:\n"
-            "- GET /api/v1/sessions — list focus sessions\n"
-            "- POST /api/v1/sessions — start a focus session\n"
-            "- GET /api/v1/calendar/events — list calendar events\n"
-            "- POST /api/v1/plan — generate AI schedule\n"
-            "- GET /api/v1/analytics — productivity trends\n\n"
-            "## Technology Stack\n\n"
-            "- Backend: Python, FastAPI, Celery\n"
-            "- Frontend: React, Flutter\n"
-            "- Databases: PostgreSQL, Redis, ClickHouse\n"
-            "- Messaging: Kafka\n"
-            "- Infrastructure: AWS, Docker, Kubernetes, Terraform\n\n"
-            "## Deployment Architecture\n\n"
-            "- CI/CD: GitHub Actions -> Docker build -> EKS deployment\n"
-            "- Observability: Prometheus, Grafana, ELK\n"
-            "- CDN: CloudFront for static assets\n\n"
-            "## Security Considerations\n\n"
-            "- OAuth2 / OIDC via Google and Microsoft\n"
-            "- JWT access tokens with short expiry\n"
-            "- TLS 1.3 for all traffic\n"
-            "- RBAC for admin endpoints\n"
-            "- Encryption at rest for PII\n\n"
-            "## Scalability & Performance\n\n"
-            "- Redis caching for hot data\n"
-            "- Read replicas for PostgreSQL\n"
-            "- Horizontal pod autoscaling on EKS\n"
-            "- Kafka for async event processing\n"
-            "- Rate limiting at API gateway\n\n"
-            "## Trade-offs & Decisions\n\n"
-            "Microservices add operational complexity but allow independent scaling of AI and music services. "
-            "PostgreSQL chosen over NoSQL for strong consistency of scheduling data.\n"
-        )
-        score = self.plugin.score(text)
+        # A prompt-conformant correct response (all 14 scored sections, real
+        # content) reaches the full 20 now that the API sub-weight is 1.5 and
+        # the criteria maxima sum to a reachable 20.
+        score = self.plugin.score(CORRECT_RESPONSE)
         self.assertGreater(score, 0.0)
-        self.assertLess(score, self.plugin.max_score)
+        self.assertEqual(score, 20.0)
 
     def test_excellent_response_scores_near_max(self):
         text = (
