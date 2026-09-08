@@ -363,6 +363,27 @@ def test_decomposition_geo_and_feed_keywords_are_word_bounded():
     assert plugin._domain_of("Task 4: real-time alert feed for anomalies") == "alert"
 
 
+def test_decomposition_reversed_edge_finding_reads_declared_direction():
+    # The diagnostic must name the declared (wrong) edge direction, not the
+    # correct one: declaring "ingestion depends on enrich" is reported as
+    # "reversed dependency ingestion -> enrich", matching the arrow
+    # convention of the "missing dependency" findings.
+    response = """Task 1: Accept and buffer log batches over HTTP ingestion
+Task 2: GeoIP enrich and normalize each line
+Task 3: anomaly detection over the normalized stream
+Task 4: real-time alert feed for anomalies
+Task 5: nightly aggregate report
+Task 6: export metrics for observability
+Dependencies: Task 1 [DEPENDS_ON: 2]
+"""
+    result = DecompositionPlugin().evaluate(response)
+    direction = next(c for c in result.rubric if c["name"] == "Semantic dependency direction")
+    assert any(
+        "reversed dependency ingestion -> enrich" in f["finding"]
+        for f in direction["negative_findings"]
+    )
+
+
 def test_instruction_following_wrong_tie_break_does_not_pass():
     response = """ORDER T-05 | CUSTOMER NOOR | TOTAL 120.00
 ORDER T-02 | CUSTOMER JULES | TOTAL 120.00

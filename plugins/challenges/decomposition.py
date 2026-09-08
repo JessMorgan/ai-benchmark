@@ -325,8 +325,10 @@ class DecompositionPlugin(BenchmarkTaskPlugin):
         for e in _REQUIRED_EDGES:
             if e not in domain_edges:
                 findings.append(f"missing dependency {e[0]} -> {e[1]}")
+        # e is the declared (wrong) edge "e[0] depends on e[1]"; name that
+        # direction, matching the arrow convention of the missing findings.
         for e in reversed_edges:
-            findings.append(f"reversed dependency {e[1]} -> {e[0]}")
+            findings.append(f"reversed dependency {e[0]} -> {e[1]}")
         rubric.add_criterion(
             "Semantic dependency direction", 6.0, edge_points,
             negative_findings=[{"finding": f} for f in findings] if findings else [],
