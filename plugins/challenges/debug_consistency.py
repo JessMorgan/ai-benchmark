@@ -5,7 +5,7 @@ import re
 
 from benchmark.plugin import BenchmarkTaskPlugin, EvaluationResult
 from benchmark.types import ConfigMap
-from plugins.challenges._analysis import first_section, markdown_sections
+from plugins.challenges._analysis import first_section, markdown_sections, section_has_content
 from plugins.challenges._rubric import Rubric
 
 
@@ -111,7 +111,14 @@ class DebugConsistencyPlugin(BenchmarkTaskPlugin):
         rubric.add_criterion("Evidence request", 3.0, 3.0 if evidence_ok else 0.0)
         recommendation_ok = bool(recommendation and re.search(r"(?:do not|not enough|collect|reproduce|instrument|verify)", recommendation.body, re.IGNORECASE))
         rubric.add_criterion("Actionable recommendation", 2.0, 2.0 if recommendation_ok else 0.0)
-        rubric.add_criterion("Required report structure", 2.0, float(sum(section is not None for section in (reproduction, consistency, diagnosis, evidence, recommendation)) >= 5) * 2.0)
+        # Each section needs content beyond the heading: heading presence
+        # alone no longer earns the criterion (measured: five empty
+        # headings earned the full 2/2).
+        structure_ok = all(
+            section_has_content(section)
+            for section in (reproduction, consistency, diagnosis, evidence, recommendation)
+        )
+        rubric.add_criterion("Required report structure", 2.0, 2.0 if structure_ok else 0.0)
         return rubric.results()
 
     def score(self, response_text: str) -> float:

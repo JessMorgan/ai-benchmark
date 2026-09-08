@@ -373,6 +373,39 @@ Verify the fix and patch the comparison.
     assert evidence["earned"] == 3.0, f"Expected 3.0 (trace reference), got {evidence['earned']}"
 
 
+def test_debug_consistency_structure_requires_nonempty_bodies():
+    # Measured pre-fix (DC-5): the structure criterion credited heading
+    # presence alone, so five empty headings earned the full 2.0. After the
+    # fix each section must have content beyond the heading.
+    response = """## Reproduction
+## Consistency Check
+## Diagnosis
+## Evidence Needed
+## Recommendation
+"""
+    result = DebugConsistencyPlugin().evaluate(response)
+    structure = next(item for item in result.rubric if item["name"] == "Required report structure")
+    assert structure["earned"] == 0.0, f"Expected 0.0 (empty bodies), got {structure['earned']}"
+
+
+def test_debug_consistency_structure_with_bodies_earns_full():
+    # Five sections with substantive bodies must still earn the criterion.
+    response = """## Reproduction
+Running find_duplicate_users with the supplied input returns ['abc'].
+## Consistency Check
+The code is correct and the report is not reproducible.
+## Diagnosis
+There is no bug in the code.
+## Evidence Needed
+If the report persists, collect the actual output (expected ['abc']) and the exact input.
+## Recommendation
+Do not patch the code; verify by reproducing the input first.
+"""
+    result = DebugConsistencyPlugin().evaluate(response)
+    structure = next(item for item in result.rubric if item["name"] == "Required report structure")
+    assert structure["earned"] == 2.0, f"Expected 2.0 (non-empty bodies), got {structure['earned']}"
+
+
 def test_debug_traversal_requires_executable_threshold_fix():
     response = """## Root Cause
 The threshold should be at least two.
