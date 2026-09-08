@@ -1297,6 +1297,231 @@ Task 1 init running complete."""
     assert OrchestrationPlugin().score(response) < 10.0
 
 
+def test_orchestration_scales_breakdown_by_operation_coverage():
+    # Measured pre-fix: this zero-operation keyword response scored 16/16
+    # because the fallback credit min(4.0, len(declared_ids)) ignored the
+    # operation count entirely.
+    response = """Task 1 [PARALLEL]
+Task 2 [PARALLEL]
+Task 3 [SEQUENTIAL]
+Task 4 [SEQUENTIAL]
+Task 2 [DEPENDS_ON: task 1]
+Task 3 [DEPENDS_ON: task 2]
+Task 4 [DEPENDS_ON: task 3]
+Task 1 init running complete.
+Task 2 init running complete.
+Task 3 init running complete.
+Task 4 init running complete."""
+    result = OrchestrationPlugin().evaluate(response)
+    breakdown = next(item for item in result.rubric if item["name"] == "Task breakdown presence")
+    assert breakdown["earned"] == 0.0
+    assert result.score < 16.0
+
+
+def test_orchestration_partial_operation_coverage_earns_partial_breakdown():
+    response = """Task 1 [PARALLEL] process logs.
+Task 2 [PARALLEL] perform GeoIP lookup.
+Task 3 [SEQUENTIAL]
+Task 4 [SEQUENTIAL]
+Task 2 [DEPENDS_ON: task 1]
+Task 3 [DEPENDS_ON: task 2]
+Task 4 [DEPENDS_ON: task 3]
+Task 1 init running complete.
+Task 2 init running complete.
+Task 3 init running complete.
+Task 4 init running complete."""
+    result = OrchestrationPlugin().evaluate(response)
+    breakdown = next(item for item in result.rubric if item["name"] == "Task breakdown presence")
+    assert breakdown["earned"] == 2.0
+
+
+def test_orchestration_accepts_numbered_list_task_declarations():
+    # Measured pre-fix: this numbered-list response scored 0.0/16 because
+    # only "task"/"step"-prefixed lines were recognized as task
+    # declarations, although the prompt never mandates that prefix.
+    response = """1. Process 1TB server logs (parallel)
+2. GeoIP lookup (sequential) [DEPENDS_ON: 1]
+3. Anomaly detection (sequential) [DEPENDS_ON: 2]
+4. Generate PDF report (sequential) [DEPENDS_ON: 3]
+1: init running complete
+2: init running complete
+3: init running complete
+4: init running complete"""
+    assert OrchestrationPlugin().score(response) == 16.0
+
+
+def test_orchestration_penalizes_more_than_four_declared_tasks():
+    # Measured pre-fix: the extra Task 5 was ignored by the
+    # min(4.0, len(declared_ids)) credit, so this response scored 16/16
+    # despite the prompt requiring exactly four tasks.
+    response = """Task 1 [PARALLEL] process logs.
+Task 2 [PARALLEL] perform GeoIP lookup.
+Task 3 [SEQUENTIAL] anomaly detection.
+Task 4 [SEQUENTIAL] generate the PDF report.
+Task 5 [SEQUENTIAL] send the report by email.
+Task 2 [DEPENDS_ON: task 1]
+Task 3 [DEPENDS_ON: task 2]
+Task 4 [DEPENDS_ON: task 3]
+Task 5 [DEPENDS_ON: task 4]
+Task 1 init running complete.
+Task 2 init running complete.
+Task 3 init running complete.
+Task 4 init running complete.
+Task 5 init running complete."""
+    result = OrchestrationPlugin().evaluate(response)
+    breakdown = next(item for item in result.rubric if item["name"] == "Task breakdown presence")
+    assert breakdown["earned"] < 4.0
+    assert any(finding["finding"] == "declares more than four tasks" for finding in breakdown["negative_findings"])
+    assert result.score < 16.0
+
+
+def test_orchestration_flags_cross_line_label_contradiction():
+    # Measured pre-fix: criterion 3 only flagged lines carrying both
+    # "parallel" and "sequential", so a cross-line contradiction in one
+    # task's block passed even though parse_workflow_graph flags the same
+    # task as labeled both ways.
+    response = """Task 1 [PARALLEL] process logs.
+Task 2 [PARALLEL] perform GeoIP lookup.
+Task 3 [SEQUENTIAL] anomaly detection.
+Task 4 [SEQUENTIAL] generate the PDF report.
+Task 4 actually runs in parallel with task 3.
+Task 2 [DEPENDS_ON: task 1]
+Task 3 [DEPENDS_ON: task 2]
+Task 4 [DEPENDS_ON: task 3]
+Task 1 init running complete.
+Task 2 init running complete.
+Task 3 init running complete.
+Task 4 init running complete."""
+    result = OrchestrationPlugin().evaluate(response)
+    labels = next(item for item in result.rubric if item["name"] == "Parallel vs sequential logic")
+    assert labels["earned"] == 0.0
+
+
+def test_orchestration_edge_partial_credit_requires_valid_graph():
+    # Measured pre-fix: a cyclic (invalid) graph with edges still earned
+    # the 2.0 partial credit because only the full-credit branch required
+    # graph.valid.
+    response = """Task 1 [PARALLEL] process logs.
+Task 2 [PARALLEL] perform GeoIP lookup.
+Task 3 [SEQUENTIAL] anomaly detection.
+Task 4 [SEQUENTIAL] generate the PDF report.
+Task 2 [DEPENDS_ON: task 3]
+Task 3 [DEPENDS_ON: task 2]
+Task 1 init running complete.
+Task 2 init running complete.
+Task 3 init running complete.
+Task 4 init running complete."""
+    result = OrchestrationPlugin().evaluate(response)
+    tagging = next(item for item in result.rubric if item["name"] == "Explicit dependency tagging")
+    assert tagging["earned"] == 0.0
+
+
+def test_orchestration_numbered_list_cycle_earns_no_tagging_credit():
+    # The local numbered-list graph pass must apply the same validity
+    # rules as the shared parser: a cyclic numbered plan earns no
+    # dependency-tagging credit.
+    response = """1. Process 1TB server logs (parallel)
+2. GeoIP lookup (sequential) [DEPENDS_ON: 3]
+3. Anomaly detection (sequential) [DEPENDS_ON: 2]
+4. Generate PDF report (sequential) [DEPENDS_ON: 1]
+1: init running complete
+2: init running complete
+3: init running complete
+4: init running complete"""
+    result = OrchestrationPlugin().evaluate(response)
+    tagging = next(item for item in result.rubric if item["name"] == "Explicit dependency tagging")
+    assert tagging["earned"] == 0.0
+    assert result.score < 16.0
+
+
+def test_orchestration_numbered_list_prose_dependencies():
+    # Plain-language dependencies between numbered tasks ("2. ... depends
+    # on 1") are as explicit as bracket tags.
+    response = """1. Process 1TB server logs (parallel)
+2. GeoIP lookup (sequential) depends on 1
+3. Anomaly detection (sequential) depends on 2
+4. Generate PDF report (sequential) depends on 3
+1: init running complete
+2: init running complete
+3: init running complete
+4: init running complete"""
+    assert OrchestrationPlugin().score(response) == 16.0
+
+
+def test_orchestration_numbered_plan_with_task_prefixed_trace():
+    # A numbered plan whose trace lines use the "Task N" prefix must not be
+    # hijacked by the shared parser (which sees the task IDs but no edges,
+    # because its bracket tags only bind to task/step mentions): the local
+    # numbered pass binds the DEPENDS_ON brackets and the plan scores 16/16.
+    # Measured against the state just before the fallback-gate fix:
+    # this response scored 12.0/16 (breakdown 4.0, tags 0.0, labels 4.0,
+    # trace 4.0); the original pre-OR-1 code scored it 8.0.
+    response = """1. Process 1TB server logs (parallel)
+2. GeoIP lookup (sequential) [DEPENDS_ON: 1]
+3. Anomaly detection (sequential) [DEPENDS_ON: 2]
+4. Generate PDF report (sequential) [DEPENDS_ON: 3]
+Task 1 init running complete
+Task 2 init running complete
+Task 3 init running complete
+Task 4 init running complete"""
+    assert OrchestrationPlugin().score(response) == 16.0
+
+
+def test_orchestration_numbered_plan_with_task_prefixed_brackets():
+    # The prompt's canonical bracket format is "[DEPENDS_ON: task_id]", and
+    # models routinely write the ID with its "task" prefix. Pre-fix,
+    # _task_blocks bound each numbered declaration line to the task ID
+    # inside its own bracket (the first "task N" mention on the line), so
+    # this fully valid plan scored 11.0/16: breakdown 3.0 (task 2's
+    # operation counted under block 1) and labels 0.0 (block 1 held both
+    # "parallel" and "sequential" -> false contradiction).
+    response = """1. Process 1TB server logs (parallel)
+2. GeoIP lookup (sequential) [DEPENDS_ON: task 1]
+3. Anomaly detection (sequential) [DEPENDS_ON: task 2]
+4. Generate PDF report (sequential) [DEPENDS_ON: task 3]
+1: init running complete
+2: init running complete
+3: init running complete
+4: init running complete"""
+    assert OrchestrationPlugin().score(response) == 16.0
+
+
+def test_orchestration_label_contradiction_costs_the_same_in_both_formats():
+    # A task labeled both parallel and sequential must cost the same in
+    # numbered format as in task/step format: the local graph pass applies
+    # the same label check as parse_workflow_graph, so both formats lose
+    # the tagging and label criteria (8.0/16 each) instead of the numbered
+    # format escaping with 12.0/16.
+    task_step = """Task 1 [PARALLEL] process 1TB server logs.
+Task 2 [PARALLEL] perform GeoIP lookup.
+Task 3 [SEQUENTIAL] run anomaly detection.
+Task 4 [SEQUENTIAL] generate the PDF report.
+Task 4 actually runs in parallel with task 3.
+Task 2 [DEPENDS_ON: task 1]
+Task 3 [DEPENDS_ON: task 2]
+Task 4 [DEPENDS_ON: task 3]
+Task 1 init running complete.
+Task 2 init running complete.
+Task 3 init running complete.
+Task 4 init running complete."""
+    numbered = """1. Process 1TB server logs (parallel)
+2. GeoIP lookup (parallel) [DEPENDS_ON: task 1]
+3. Anomaly detection (sequential) [DEPENDS_ON: task 2]
+4. Generate PDF report (sequential) [DEPENDS_ON: task 3]
+4 actually runs in parallel with 3.
+1: init running complete
+2: init running complete
+3: init running complete
+4: init running complete"""
+    for response in (task_step, numbered):
+        result = OrchestrationPlugin().evaluate(response)
+        tagging = next(item for item in result.rubric if item["name"] == "Explicit dependency tagging")
+        labels = next(item for item in result.rubric if item["name"] == "Parallel vs sequential logic")
+        assert tagging["earned"] == 0.0
+        assert labels["earned"] == 0.0
+    assert OrchestrationPlugin().score(task_step) == OrchestrationPlugin().score(numbered)
+
+
 def test_prd_content_in_wrong_heading_does_not_earn_local_credit():
     response = """## Notes
 Executive Summary FlowState. Problem pain. Goals 25%. Persona 1 and Persona 2.
