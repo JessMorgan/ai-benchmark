@@ -170,8 +170,13 @@ class ErrorRecoveryPlugin(BenchmarkTaskPlugin):
             negative_findings=[{"finding": f"stub definition: {name}"} for name in stubs],
         )
 
+        # The prompt labels the demo scenarios "all-success", "partial-failure",
+        # and "all-failure"; accept hyphen/underscore separators and the noun
+        # forms (success/failure) in addition to the verb forms (succeed/fail).
         demo_markers = sum(bool(re.search(pattern, text, re.IGNORECASE)) for pattern in (
-            r"all\s+(?:providers\s+)?succeed", r"one|partial|fallback", r"all\s+(?:providers\s+)?fail",
+            r"all[\s\-_]+(?:providers[\s\-_]+)?(?:succeed|success)",
+            r"one|partial|fallback",
+            r"all[\s\-_]+(?:providers[\s\-_]+)?fail(?:ure|s|ed)?",
         ))
         rubric.add_criterion(
             "Demo scenarios", 1.0, 1.0 * demo_markers / 3.0)

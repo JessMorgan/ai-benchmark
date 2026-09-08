@@ -1554,6 +1554,47 @@ def test_error_recovery_module_level_demo_network_call_is_blocked_not_hanging():
     assert "network access is disabled in the benchmark sandbox" not in base_behavioral[0]["evidence"][0]["output"]
 
 
+def _demo_scenario_response(labels: str) -> str:
+    # A minimal response whose demo() docstring carries the given scenario
+    # labels; the "Demo scenarios" criterion is text-based, so this isolates
+    # the marker regex from the execution/behavioral criteria.
+    return (
+        "class AllProvidersFailedError(Exception):\n    pass\n"
+        "class WeatherClient:\n    async def fetch(self, provider, city):\n        return {}\n"
+        "async def get_weather_resilient(city: str, client: WeatherClient) -> dict:\n    return {}\n"
+        # No ``-> None`` hint: the pre-existing partial marker ``one`` would
+        # otherwise match the "one" inside "None" and mask the negative case.
+        f"async def demo():\n    \"\"\"Demo: {labels}.\"\"\"\n"
+    )
+
+
+def test_error_recovery_hyphenated_demo_labels_earn_full_demo_credit():
+    # Measured pre-fix (ER-4): the prompt tells responses to show
+    # "all-success, partial-failure, and all-failure" scenarios, but the
+    # success/failure marker regexes required whitespace + verb forms
+    # (succeed/fail), so a response using the prompt's own hyphenated noun
+    # labels earned only the partial marker (1/3, stored as 0.3 after the
+    # rubric's 1-decimal rounding) instead of 1.0.
+    result = ErrorRecoveryPlugin().evaluate(_demo_scenario_response("all-success, partial-failure, all-failure"))
+    demo = next(item for item in result.rubric if item["name"] == "Demo scenarios")
+    assert demo["earned"] == 1.0
+
+
+def test_error_recovery_whitespace_demo_labels_still_earn_full_demo_credit():
+    # Positive control: the original whitespace + verb-form labels must keep
+    # earning full credit (no regression from the hyphenated extension).
+    result = ErrorRecoveryPlugin().evaluate(_demo_scenario_response("all succeed, partial, all fail"))
+    demo = next(item for item in result.rubric if item["name"] == "Demo scenarios")
+    assert demo["earned"] == 1.0
+
+
+def test_error_recovery_no_demo_labels_earn_no_demo_credit():
+    # Negative control: a demo with none of the scenario labels earns 0.
+    result = ErrorRecoveryPlugin().evaluate(_demo_scenario_response("happy path only"))
+    demo = next(item for item in result.rubric if item["name"] == "Demo scenarios")
+    assert demo["earned"] == 0.0
+
+
 @pytest.mark.parametrize("plugin", [ErrorRecoveryPlugin, EventProcessorPlugin])
 def test_executable_plugins_do_not_credit_stub_sources(plugin):
     assert plugin().score("class Placeholder:\n    pass") < 12.0
