@@ -343,7 +343,21 @@ class DataTransformationPlugin(BenchmarkTaskPlugin):
         actual_ranks: list[Any] = [record.get("rank") for record in actual_records if isinstance(record, dict)]
         expected_order = [record["order_id"] for record in expected_records]  # type: ignore[index]
         order_matches = sum(left == right for left, right in zip(actual_order, expected_order, strict=False))
-        rank_matches = sum(rank == index for index, rank in enumerate(actual_ranks, 1))
+        # Rank credit is per-record: a record earns it only when the rank it
+        # emitted matches that record's own expected position, so a
+        # schema-valid set of records carrying ranks 1-5 in the wrong order
+        # no longer earns the full rank sub-credit. Each expected position is
+        # claimed at most once so duplicate order_ids cannot double-credit.
+        expected_positions = {order_id: index for index, order_id in enumerate(expected_order, 1)}
+        claimed_positions: set[int] = set()
+        rank_matches = 0
+        for record in actual_records:
+            if not isinstance(record, dict):
+                continue
+            position = expected_positions.get(str(record.get("order_id")))
+            if position is not None and position not in claimed_positions and record.get("rank") == position:
+                rank_matches += 1
+                claimed_positions.add(position)
         sorting_earned = 1.5 * order_matches / len(expected_order) + 1.5 * rank_matches / len(expected_order)
         self._criterion(
             rubric,

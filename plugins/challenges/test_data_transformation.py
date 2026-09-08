@@ -49,3 +49,29 @@ def test_dx1_correct_response_summary_still_scores_full():
     result = DataTransformationPlugin().evaluate(json.dumps(_expected_payload()))
     assert result.score == 22.0
     assert _summary_criterion(result)["earned"] == 3.0
+
+
+def _sorting_criterion(result) -> dict:
+    return next(item for item in result.rubric if item["name"] == "Sorting and ranking")
+
+
+def test_dx2_reversed_records_with_positional_ranks_scores_lower():
+    # Measured pre-fix: a reversed-order response scored 20.8/22 — the rank
+    # sub-credit was position-based (rank at position i == i), so any
+    # schema-valid set of 5 records carrying ranks 1-5 earned the full 1.5
+    # regardless of which record sat at which position.
+    payload = _expected_payload()
+    payload["records"] = list(reversed(payload["records"]))
+    for index, record in enumerate(payload["records"], 1):
+        record["rank"] = index
+    result = DataTransformationPlugin().evaluate(json.dumps(payload))
+    assert _sorting_criterion(result)["earned"] < 1.8
+    assert result.score < 19.8
+
+
+def test_dx2_correct_response_keeps_full_sorting_credit():
+    # Invariant: a correct response (each record at its expected position
+    # with its own rank) keeps the full 3.0 sorting credit and 22/22.
+    result = DataTransformationPlugin().evaluate(json.dumps(_expected_payload()))
+    assert _sorting_criterion(result)["earned"] == 3.0
+    assert result.score == 22.0
