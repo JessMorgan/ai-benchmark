@@ -12,7 +12,7 @@ from plugins.challenges.data_transformation import (
 from plugins.challenges.debug_consistency import DebugConsistencyPlugin
 from plugins.challenges.debug_traversal import DebugTraversalPlugin
 from plugins.challenges.decomposition import DecompositionPlugin
-from plugins.challenges.error_recovery import ErrorRecoveryPlugin
+from plugins.challenges.error_recovery import _CONCEPT_PATTERNS, ErrorRecoveryPlugin
 from plugins.challenges.event_processor import EventProcessorPlugin
 from plugins.challenges.instruction_following import InstructionFollowingPlugin
 from plugins.challenges.long_context import LongContextPlugin
@@ -1485,6 +1485,42 @@ def test_error_recovery_no_executable_source_records_four_zero_mode_criteria():
         assert item["earned"] == 0.0
         assert any("no executable source" in finding["finding"] for finding in item["negative_findings"])
     assert result.score == 0.0
+
+
+def test_error_recovery_concept_regex_covers_ensure_future_and_bare_gather():
+    # Measured pre-fix (ER-2): concurrent implementations using ensure_future
+    # or a bare gather (``from asyncio import gather``) were lexically
+    # penalized — the concept regex only matched asyncio.-prefixed forms.
+    pattern = _CONCEPT_PATTERNS["concurrent provider calls"]
+    assert re.search(pattern, "from asyncio import gather\nawait gather(*tasks)", re.IGNORECASE)
+    assert re.search(pattern, "from asyncio import ensure_future\nensure_future(attempt())", re.IGNORECASE)
+    # The old asyncio.-prefixed forms must still match.
+    assert re.search(pattern, "asyncio.gather(*tasks)", re.IGNORECASE)
+    assert re.search(pattern, "asyncio.ensure_future(attempt())", re.IGNORECASE)
+    # A non-concurrent mention of the word must not match.
+    assert not re.search(pattern, "the providers gather their data sequentially", re.IGNORECASE)
+
+
+def test_error_recovery_gather_only_concurrency_earns_full_recovery_design():
+    # A response that imports gather bare (from asyncio import gather) must
+    # earn the full Recovery design criterion (5/5 concepts), not 4 of 5.
+    response = (
+        "from asyncio import gather\n"
+        "import logging\n"
+        "logger = logging.getLogger()\n"
+        "class AllProvidersFailedError(Exception):\n    pass\n"
+        "class WeatherClient:\n    async def fetch(self, provider: str, city: str) -> dict:\n        ...\n"
+        "async def get_weather_resilient(city: str, client: WeatherClient) -> dict:\n"
+        '    """Try providers with a timeout; treat a malformed error payload as failure."""\n'
+        "    try:\n"
+        '        return await gather(client.fetch("WeatherAPI", city))\n'
+        "    except Exception:\n"
+        '        raise AllProvidersFailedError("fallback exhausted")\n'
+        "async def demo() -> None:\n    ...\n"
+    )
+    result = ErrorRecoveryPlugin().evaluate(response)
+    design = next(item for item in result.rubric if item["name"] == "Recovery design")
+    assert design["earned"] == 2.0
 
 
 @pytest.mark.parametrize("plugin", [ErrorRecoveryPlugin, EventProcessorPlugin])

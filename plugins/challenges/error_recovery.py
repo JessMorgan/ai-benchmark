@@ -23,6 +23,17 @@ _BEHAVIORAL_MODES: tuple[tuple[str, str], ...] = (
 
 _MODE_RESULT_RE = re.compile(r"MODE_RESULT (?P<mode>[A-Za-z0-9-]+) (?P<result>PASS|FAIL)(?P<detail>.*)")
 
+# Lexical concept patterns for the "Recovery design" criterion. The
+# concurrent pattern accepts bare gather/ensure_future calls (from-asyncio
+# import style), not only the asyncio.-prefixed forms.
+_CONCEPT_PATTERNS: dict[str, str] = {
+    "concurrent provider calls": r"asyncio\.(?:gather|create_task|as_completed|ensure_future)|\b(?:gather|ensure_future)\s*\(|TaskGroup",
+    "fallback/error handling": r"try\s*:|except\s+|fallback|next provider",
+    "timeouts": r"wait_for|timeout",
+    "error payload validation": r"(?:error\s*['\"]?\s*:|error.*payload|malformed|schema)",
+    "logging": r"logging|logger\.(?:error|warning|exception)",
+}
+
 
 class ErrorRecoveryPlugin(BenchmarkTaskPlugin):
     @property
@@ -126,13 +137,7 @@ class ErrorRecoveryPlugin(BenchmarkTaskPlugin):
             ])
         rubric.add_criterion("Typed injectable signatures", 2.0, 2.0 * signature_hits / 4.0)
 
-        concepts = {
-            "concurrent provider calls": r"asyncio\.(?:gather|create_task|as_completed)|TaskGroup",
-            "fallback/error handling": r"try\s*:|except\s+|fallback|next provider",
-            "timeouts": r"wait_for|timeout",
-            "error payload validation": r"(?:error\s*['\"]?\s*:|error.*payload|malformed|schema)",
-            "logging": r"logging|logger\.(?:error|warning|exception)",
-        }
+        concepts = _CONCEPT_PATTERNS
         concept_hits = sum(bool(re.search(pattern, text, re.IGNORECASE)) for pattern in concepts.values())
         rubric.add_criterion(
             "Recovery design", 2.0, 2.0 * concept_hits / len(concepts),
