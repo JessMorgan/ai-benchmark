@@ -32,7 +32,7 @@ Purpose: generate tomorrow's schedule.
 +--------------------------+
 Note: tapping Apply writes the schedule.
 ## Settings
-Purpose: configure music and notifications.
+Purpose: configure app settings for music and notifications.
 +--------------------------+
 | [Toggle] Notifications   |
 | [Button] Connect         |
@@ -84,7 +84,9 @@ def test_empty_and_whitespace_score_zero():
 
 
 def test_complete_distinct_wireframes_score_high():
-    assert WireframesPlugin().score(full_response()) >= 18.0
+    # Box-drawing evidence lifts the correct response to 20/20; 19 is the
+    # HIGH floor, strictly above the pre-fix 18/20 ceiling.
+    assert WireframesPlugin().score(full_response()) >= 19.0
 
 
 def test_correct_wireframe_scores_higher_than_keyword_soup():
