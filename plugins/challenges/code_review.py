@@ -183,7 +183,7 @@ class CodeReviewPlugin(BenchmarkTaskPlugin):
             ),
             (
                 "Unused imports", 2.0,
-                ((r"unused|not used|remove",), (r"os|time|import",)),
+                ((r"unused|not used|remove",), (r"\bos\b|\btime\b|import",)),
                 (r"\bare used\b", r"both (are )?used", r"\bno unused\b", r"used elsewhere", r"imports? are used"),
             ),
         ]
@@ -202,7 +202,7 @@ class CodeReviewPlugin(BenchmarkTaskPlugin):
                 negative_findings=[] if matched else [{"finding": "no independent finding with both the defect and its remediation"}],
             )
 
-        remediation_terms = (r"use", r"replace", r"close", r"context manager", r"is none", r"parameterize", r"inject", r"try", r"except", r"remove", r"validate", r"sanitize")
+        remediation_terms = (r"\buse\b", r"replace", r"close", r"context manager", r"is none", r"parameterize", r"inject", r"try", r"except", r"remove", r"validate", r"sanitize")
         actionable = sum(
             bool(re.search(term, finding, re.IGNORECASE))
             for finding in matched_findings

@@ -156,6 +156,27 @@ def test_code_review_accepts_unicode_bullets_and_top_level_json_array():
     assert CodeReviewPlugin().score(array_response) >= 13.0
 
 
+def test_code_review_short_keywords_require_word_boundaries():
+    # Measured pre-fix (CR-6): the boundary-less use/os/time keywords
+    # matched inside longer words — "closed" satisfied the unused-imports
+    # defect via "os" (2.0 pre-fix), and "user"/"uses" satisfied the "use"
+    # remediation term (1.0 pre-fix).
+    plugin = CodeReviewPlugin()
+    in_word_os = '{"issues": [{"description": "the unused variable is closed without cleanup"}]}'
+    result = plugin.evaluate(in_word_os)
+    unused = next(item for item in result.rubric if item["name"] == "Unused imports")
+    assert unused["earned"] == 0.0
+    in_word_use = '{"issues": [{"description": "the user_id check uses == None"}]}'
+    result = plugin.evaluate(in_word_use)
+    actionable = next(item for item in result.rubric if item["name"] == "Actionable / concrete fixes")
+    assert actionable["earned"] == 0.0
+    # Legitimate standalone keywords must still be credited.
+    legitimate = '{"issues": [{"description": "the os and time imports are unused; remove them"}]}'
+    result = plugin.evaluate(legitimate)
+    unused = next(item for item in result.rubric if item["name"] == "Unused imports")
+    assert unused["earned"] == 2.0
+
+
 def test_debug_consistency_rejects_a_patch_for_a_reproducible_report():
     response = """## Reproduction
 The output is ['abc'].
