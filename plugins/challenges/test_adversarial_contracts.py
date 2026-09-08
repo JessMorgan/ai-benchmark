@@ -1404,7 +1404,9 @@ def test_orchestration_numbered_plan_with_task_prefixed_trace():
     # hijacked by the shared parser (which sees the task IDs but no edges,
     # because its bracket tags only bind to task/step mentions): the local
     # numbered pass binds the DEPENDS_ON brackets and the plan scores 16/16.
-    # Measured pre-fix: this response scored 12.0/16.
+    # Measured against the state just before the fallback-gate fix:
+    # this response scored 12.0/16 (breakdown 4.0, tags 0.0, labels 4.0,
+    # trace 4.0); the original pre-OR-1 code scored it 8.0.
     response = """1. Process 1TB server logs (parallel)
 2. GeoIP lookup (sequential) [DEPENDS_ON: 1]
 3. Anomaly detection (sequential) [DEPENDS_ON: 2]

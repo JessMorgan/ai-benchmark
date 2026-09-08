@@ -47,7 +47,7 @@ class OrchestrationPlugin(BenchmarkTaskPlugin):
 
     @property
     def version(self) -> str:
-        return "1.2.0"
+        return "1.2.1"
 
     @property
     def name(self) -> str:
@@ -172,8 +172,17 @@ class OrchestrationPlugin(BenchmarkTaskPlugin):
             # that numbers its tasks ("1. ...", "2) ...") needs a local pass.
             local_tasks, edges = self._numbered_task_ids_and_edges(text)
             problems = self._graph_problems(local_tasks, edges)
+            if (
+                len(shared_tasks) >= 2
+                and problems == ["fewer than two task IDs found", "no dependency edges found"]
+            ):
+                # The shared parser saw task/step IDs but no edges: the local
+                # pass's "fewer than two task IDs" reflects its numbered-list
+                # blind spot, not the response's content — the real problem
+                # is the missing dependencies.
+                problems = ["no dependency edges found"]
             valid = not problems
-            validity_findings = [] if valid else [{"finding": f"invalid graph: {'; '.join(problems)}"}]
+            validity_findings = [] if valid else [{"finding": f"invalid graph: {'; '.join(problems) or 'no edges'}"}]
         blocks = _task_blocks(text)
         declared_ids = set(blocks)
         covered_ids = declared_ids & set(_REQUIRED_TASK_IDS)
