@@ -1367,6 +1367,38 @@ Task 4 init running complete."""
     assert tagging["earned"] == 0.0
 
 
+def test_orchestration_numbered_list_cycle_earns_no_tagging_credit():
+    # The local numbered-list graph pass must apply the same validity
+    # rules as the shared parser: a cyclic numbered plan earns no
+    # dependency-tagging credit.
+    response = """1. Process 1TB server logs (parallel)
+2. GeoIP lookup (sequential) [DEPENDS_ON: 3]
+3. Anomaly detection (sequential) [DEPENDS_ON: 2]
+4. Generate PDF report (sequential) [DEPENDS_ON: 1]
+1: init running complete
+2: init running complete
+3: init running complete
+4: init running complete"""
+    result = OrchestrationPlugin().evaluate(response)
+    tagging = next(item for item in result.rubric if item["name"] == "Explicit dependency tagging")
+    assert tagging["earned"] == 0.0
+    assert result.score < 16.0
+
+
+def test_orchestration_numbered_list_prose_dependencies():
+    # Plain-language dependencies between numbered tasks ("2. ... depends
+    # on 1") are as explicit as bracket tags.
+    response = """1. Process 1TB server logs (parallel)
+2. GeoIP lookup (sequential) depends on 1
+3. Anomaly detection (sequential) depends on 2
+4. Generate PDF report (sequential) depends on 3
+1: init running complete
+2: init running complete
+3: init running complete
+4: init running complete"""
+    assert OrchestrationPlugin().score(response) == 16.0
+
+
 def test_prd_content_in_wrong_heading_does_not_earn_local_credit():
     response = """## Notes
 Executive Summary FlowState. Problem pain. Goals 25%. Persona 1 and Persona 2.
