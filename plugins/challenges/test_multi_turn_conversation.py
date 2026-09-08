@@ -117,3 +117,22 @@ def test_multi_turn_accepts_five_minute_paraphrase():
     )
     response = build_response(TURN_1, TURN_2, TURN_3, paraphrase_summary)
     assert MultiTurnConversationPlugin().score(response) == 20.0
+
+
+def test_multi_turn_broken_turn2_keeps_index_alignment():
+    # Measured: a broken Turn-2 JSON dropped out of the value zip, so the
+    # correct Turn 3 was graded against Turn 2's expected state (25
+    # minutes, no notification) and earned only 2.8/5 of "Requested state
+    # values". Turn slots must be graded by index, not by position among
+    # the parseable states.
+    response = (
+        "## Turn 1\n```json\n" + json.dumps(TURN_1) + "\n```\n"
+        "## Turn 2\n```json\n{\"start\": \"09:00\", broken\n```\n"
+        "## Turn 3\n```json\n" + json.dumps(TURN_3) + "\n```\n"
+        "## State Summary\n" + CORRECT_SUMMARY + "\n"
+    )
+    result = MultiTurnConversationPlugin().evaluate(response)
+    values_criterion = next(
+        item for item in result.rubric if item["name"] == "Requested state values"
+    )
+    assert values_criterion["earned"] == 3.3

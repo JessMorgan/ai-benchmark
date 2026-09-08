@@ -122,15 +122,16 @@ class MultiTurnConversationPlugin(BenchmarkTaskPlugin):
         # Per-turn label expectation: Turn 1 must not carry the deep-work
         # label yet; Turns 2 and 3 must carry it.
         label_required = [False, True, True]
-        state_values: list[dict[str, Any]] = []
-        for state in states:
-            if isinstance(state, dict):
-                state_values.append(state)
+        # Grade by turn index: a broken intermediate turn must not shift a
+        # later turn against the wrong expected state.
         transition_hits = 0
-        for state, target, require_label in zip(state_values, expected, label_required, strict=False):
+        for index, state in enumerate(states):
+            if not isinstance(state, dict):
+                continue
+            target = expected[index]
             hits = sum(state.get(key) == value for key, value in target.items())
             labels = state.get("labels")
-            if isinstance(labels, list) and ("deep-work" in labels) is require_label:
+            if isinstance(labels, list) and ("deep-work" in labels) is label_required[index]:
                 hits += 1
             transition_hits += hits
         rubric.add_criterion(
@@ -139,17 +140,20 @@ class MultiTurnConversationPlugin(BenchmarkTaskPlugin):
                 {"finding": "each turn must carry its own expected state, not the final state"}
             ],
         )
+        first, second, third = states
         preserved = (
-            len(state_values) == 3
-            and state_values[0].get("start") == state_values[1].get("start") == state_values[2].get("start") == "09:00"
-            and state_values[0].get("calendar_event") is state_values[1].get("calendar_event") is state_values[2].get("calendar_event") is True
-            and state_values[0].get("music") is True
-            and state_values[1].get("music") is False
-            and state_values[2].get("music") is False
-            and isinstance(state_values[0].get("labels"), list)
-            and "deep-work" not in state_values[0].get("labels", [])
-            and "deep-work" in state_values[1].get("labels", [])
-            and "deep-work" in state_values[2].get("labels", [])
+            isinstance(first, dict)
+            and isinstance(second, dict)
+            and isinstance(third, dict)
+            and first.get("start") == second.get("start") == third.get("start") == "09:00"
+            and first.get("calendar_event") is second.get("calendar_event") is third.get("calendar_event") is True
+            and first.get("music") is True
+            and second.get("music") is False
+            and third.get("music") is False
+            and isinstance(first.get("labels"), list)
+            and "deep-work" not in first.get("labels", [])
+            and "deep-work" in second.get("labels", [])
+            and "deep-work" in third.get("labels", [])
         )
         rubric.add_criterion("State preservation and updates", 5.0, 5.0 if preserved else 0.0,
                              negative_findings=[] if preserved else [{"finding": "later turns must preserve prior state while applying only requested changes"}])
