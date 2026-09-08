@@ -74,6 +74,10 @@ _INDEPENDENCE_RE = (
 # task IDs (each names one task of the reference decomposition).
 _RATIONALE_DOMAIN_RE = r"ingest|enrich|normaliz|anomal|alert|report|metric|observ"
 
+# Task IDs in the candidate's own naming: "Task 1" / "task-1" as well as the
+# compact "T1" form. The judge must not require a specific naming scheme.
+_TASK_ID_RE = r"\b(?:task[ _-]?|t[ _-]?)(\d+)\b"
+
 
 class DecompositionPlugin(BenchmarkTaskPlugin):
     @property
@@ -170,6 +174,91 @@ class DecompositionPlugin(BenchmarkTaskPlugin):
         missing = [f"{d} ({_REFERENCE_DOMAINS[d][1]})" for d in _REFERENCE_DOMAINS if d not in found]
         return covered / total, missing
 
+    def _task_ids_and_edges(self, text: str) -> tuple[set[str], list[tuple[str, str]]]:
+        """Task IDs and dependency edges, accepting both ``Task N`` and ``T<N>``.
+
+        The shared ``parse_workflow_graph`` only recognizes ``task``/``step``
+        IDs; this local pass is the fallback for plans that name their tasks
+        ``T1``, ``T2``, ... (the judge must not require a specific naming
+        scheme).
+        """
+        id_matches = list(re.finditer(_TASK_ID_RE, text, re.IGNORECASE))
+        bracket_matches = list(
+            re.finditer(r"\[DEPENDS_ON\s*:\s*(?:task|t)?[ _-]?(\d+)\]", text, re.IGNORECASE)
+        )
+        edges: list[tuple[str, str]] = []
+        referenced_positions: set[int] = set()
+        for dependency in bracket_matches:
+            current = [
+                item.group(1)
+                for item in id_matches
+                if item.start() < dependency.start()
+                and not any(
+                    reference.start() <= item.start() < reference.end()
+                    for reference in bracket_matches
+                )
+            ]
+            if current:
+                edges.append((current[-1], dependency.group(1)))
+            referenced_positions.update(
+                item.start()
+                for item in id_matches
+                if dependency.start() <= item.start() < dependency.end()
+            )
+        for match in re.finditer(
+            rf"{_TASK_ID_RE}\s+(?:depends on|requires|after)\s+(?:task|t)[ _-]?(\d+)",
+            text,
+            re.IGNORECASE,
+        ):
+            edges.append((match.group(1), match.group(2)))
+        for match in re.finditer(
+            rf"{_TASK_ID_RE}\s*-->?\s*(?:task|t)[ _-]?(\d+)",
+            text,
+            re.IGNORECASE,
+        ):
+            edges.append((match.group(1), match.group(2)))
+        task_ids = {
+            match.group(1)
+            for match in id_matches
+            if match.start() not in referenced_positions
+        }
+        return task_ids, list(dict.fromkeys(edges))
+
+    @staticmethod
+    def _graph_problems(task_ids: set[str], edges: list[tuple[str, str]]) -> list[str]:
+        """Structural problems of a task graph (empty list = valid)."""
+        problems: list[str] = []
+        if len(task_ids) < 2:
+            problems.append("fewer than two task IDs found")
+        if not edges:
+            problems.append("no dependency edges found")
+        for source, target in edges:
+            if source not in task_ids or target not in task_ids:
+                problems.append(f"dependency references unknown task {target}")
+        if problems:
+            return problems
+        adjacency: dict[str, set[str]] = {task_id: set() for task_id in task_ids}
+        for source, target in edges:
+            adjacency[source].add(target)
+        visiting: set[str] = set()
+        visited: set[str] = set()
+
+        def visit(node: str) -> None:
+            if node in visiting:
+                problems.append("dependency graph contains a cycle")
+                return
+            if node in visited:
+                return
+            visiting.add(node)
+            for child in adjacency.get(node, ()):
+                visit(child)
+            visiting.remove(node)
+            visited.add(node)
+
+        for task_id in adjacency:
+            visit(task_id)
+        return problems
+
     def evaluate(self, response_text: str) -> EvaluationResult:
         rubric = Rubric(self.max_score)
         if not response_text or not response_text.strip():
@@ -179,11 +268,22 @@ class DecompositionPlugin(BenchmarkTaskPlugin):
         # 1. Structural graph validity (parse; reject cycles/unknown refs).
         graph = parse_workflow_graph(text)
         rubric.record_validation(graph)
-        valid = graph.valid and len(graph.value.get("edges", [])) >= 1
+        shared_tasks = graph.value.get("tasks", set()) if graph.value else set()
+        if len(shared_tasks) >= 2:
+            declared_edges = graph.value.get("edges", [])
+            valid = graph.valid and len(declared_edges) >= 1
+            validity_findings = [] if valid else [{"finding": f"invalid graph: {'; '.join(graph.errors) or 'no edges'}"}]
+        else:
+            # The shared parser only recognizes "Task N"/"Step N" IDs; a plan
+            # that names its tasks "T1", "T2", ... needs a local T-aware parse.
+            local_tasks, declared_edges = self._task_ids_and_edges(text)
+            problems = self._graph_problems(local_tasks, declared_edges)
+            valid = not problems
+            validity_findings = [] if valid else [{"finding": f"invalid graph: {'; '.join(problems)}"}]
         rubric.add_criterion(
             "Dependency graph validity", 4.0,
             4.0 if valid else 0.0,
-            negative_findings=[] if valid else [{"finding": f"invalid graph: {'; '.join(graph.errors) or 'no edges'}"}],
+            negative_findings=validity_findings,
         )
 
         coverage, missing = self._score_coverage(text)
@@ -193,7 +293,6 @@ class DecompositionPlugin(BenchmarkTaskPlugin):
             negative_findings=[{"finding": f"missing: {', '.join(missing)}"}] if missing else [],
         )
 
-        declared_edges = graph.value.get("edges", []) if graph.value else []
         # Bind each task's domain to its own description line: the FIRST line
         # that mentions the task ID wins, so an appended "Domain mapping"
         # section cannot re-declare the tasks' domains (the old last-line-wins
@@ -202,7 +301,7 @@ class DecompositionPlugin(BenchmarkTaskPlugin):
         domain_by_task: dict[str, str] = {}
         seen_tasks: set[str] = set()
         for line in text.splitlines():
-            for m in re.finditer(r"task[ _-]?(\d+)", line, re.IGNORECASE):
+            for m in re.finditer(_TASK_ID_RE, line, re.IGNORECASE):
                 task_id = m.group(1)
                 if task_id in seen_tasks:
                     continue
@@ -270,7 +369,7 @@ class DecompositionPlugin(BenchmarkTaskPlugin):
         ]
         rationale_scope = "\n".join(rationale_lines) if rationale_lines else text
         rationale_specific = bool(
-            re.search(r"task[ _-]?(\d+)", rationale_scope, re.IGNORECASE)
+            re.search(_TASK_ID_RE, rationale_scope, re.IGNORECASE)
             or re.search(_RATIONALE_DOMAIN_RE, rationale_scope, re.IGNORECASE)
         )
         rationale_points = (

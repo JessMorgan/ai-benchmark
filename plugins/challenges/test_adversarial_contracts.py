@@ -334,6 +334,24 @@ Ordering rationale: data flow, prerequisite, depends on, order, before, after, f
     assert rationale["earned"] == 0.0
 
 
+def test_decomposition_accepts_t_style_task_ids():
+    # Measured pre-fix: a correct plan named T1..T6 scored 10/20 because the
+    # task-ID regex and the shared graph parser only recognized "Task N", so
+    # the graph validity and semantic direction criteria both dead-ended at 0.
+    response = """T1: Accept and buffer log batches over HTTP ingestion
+T2 [DEPENDS_ON: T1]: GeoIP enrich and normalize each line
+T3 [DEPENDS_ON: T2]: anomaly detection over the normalized stream
+T4 [DEPENDS_ON: T3]: real-time alert feed for anomalies
+T5 [DEPENDS_ON: T2]: nightly aggregate report
+T6: export metrics for observability
+Parallel stages: T4, T5 and T6 can run in parallel; they are independent.
+Sequential stages: T1 then T2 then T3 then T4.
+Ordering rationale: T1 before T2 because data flows from ingestion to enrichment.
+"""
+    result = DecompositionPlugin().evaluate(response)
+    assert result.score == 20.0
+
+
 def test_instruction_following_wrong_tie_break_does_not_pass():
     response = """ORDER T-05 | CUSTOMER NOOR | TOTAL 120.00
 ORDER T-02 | CUSTOMER JULES | TOTAL 120.00
