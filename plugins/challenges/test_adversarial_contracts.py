@@ -269,6 +269,26 @@ def test_decomposition_domain_of_uses_most_keyword_hits_with_position_tiebreak()
     assert plugin._domain_of("Task 3: normalized stream for anomaly detection") == "enrich"
 
 
+def test_decomposition_penalizes_every_declared_forbidden_edge():
+    # Measured pre-fix: a reversed plan scored 15-16/20 because any reversed
+    # edge applied a single global half-marks cap (min(points, 3.0)) instead
+    # of penalizing each declared forbidden edge. Two required edges present
+    # plus one declared forbidden edge now earn 2.0, not the old 3.0 cap.
+    response = """Task 1: Accept and buffer log batches over HTTP ingestion
+Task 2 [DEPENDS_ON: 1] [DEPENDS_ON: 3]: GeoIP enrich and normalize each line
+Task 3 [DEPENDS_ON: 1]: anomaly detection over the normalized stream
+Task 4 [DEPENDS_ON: 3]: real-time alert feed for anomalies
+Task 5: nightly aggregate report
+Task 6: export metrics for observability
+Parallel stages: 5 and 6 can run in parallel; they are independent.
+Sequential stages: 1 then 2 then 3 then 4.
+Ordering rationale: Task 1 before Task 2, data flows from ingestion to enrichment.
+"""
+    result = DecompositionPlugin().evaluate(response)
+    direction = next(c for c in result.rubric if c["name"] == "Semantic dependency direction")
+    assert direction["earned"] == 2.0
+
+
 def test_instruction_following_wrong_tie_break_does_not_pass():
     response = """ORDER T-05 | CUSTOMER NOOR | TOTAL 120.00
 ORDER T-02 | CUSTOMER JULES | TOTAL 120.00

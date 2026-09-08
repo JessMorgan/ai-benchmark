@@ -206,11 +206,11 @@ class DecompositionPlugin(BenchmarkTaskPlugin):
                 domain_edges.add((ds, dd))
         correct = sum(1 for e in _REQUIRED_EDGES if e in domain_edges)
         reversed_edges = sorted(domain_edges & _FORBIDDEN_EDGES)
-        edge_points = 6.0 * correct / len(_REQUIRED_EDGES)
-        if reversed_edges:
-            # A reversed dependency is a substantive correctness error over and
-            # above a missing edge; cap the criterion at half marks.
-            edge_points = min(edge_points, 3.0)
+        # Each required edge earns one third of the criterion; every declared
+        # forbidden (reversed) edge is penalized individually at the same
+        # weight, and the total penalty is capped by the criterion maximum.
+        per_edge = 6.0 / len(_REQUIRED_EDGES)
+        edge_points = max(0.0, per_edge * (correct - len(reversed_edges)))
         findings = []
         for e in _REQUIRED_EDGES:
             if e not in domain_edges:
