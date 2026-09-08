@@ -85,7 +85,7 @@ class MoEDensePlugin(BenchmarkTaskPlugin):
         rubric.add_criterion("Load-balancing loss", 3.0, 3.0 if load_ok else 0.0)
         training_hits = sum(bool(re.search(pattern, (training.body if training else ""), re.IGNORECASE)) for pattern in (r"token.?drop", r"expert.?collapse|instab|capacity"))
         rubric.add_criterion("Training challenges", 2.0, float(training_hits))
-        inference_hits = sum(bool(re.search(pattern, (inference.body if inference else ""), re.IGNORECASE)) for pattern in (r"memory|bandwidth|parallel|latency|throughput|compute"))
+        inference_hits = sum(bool(re.search(pattern, (inference.body if inference else ""), re.IGNORECASE)) for pattern in (r"memory|bandwidth|parallel|latency|throughput|compute",))
         rubric.add_criterion("Inference implications", 2.0, min(2.0, float(inference_hits)))
         benchmark_text = benchmarks.body if benchmarks else ""
         advantage_pairs = len(re.findall(r"(?:moe|mixture.of.experts).{0,150}(?:outperform|better|advantage|wins).{0,150}(?:dense|task|model)", benchmark_text, re.IGNORECASE))

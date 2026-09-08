@@ -260,6 +260,24 @@ def test_moe_document_keywords_without_local_sections_score_low():
     assert MoEDensePlugin().score(response) < 10.0
 
 
+def test_moe_empty_inference_section_earns_no_inference_points():
+    # The inference pattern tuple must be a real tuple. Without the trailing
+    # comma it iterates the pattern string per character, and the ``|``
+    # characters match the empty string, so an empty inference section body
+    # still earned the full 2.0 inference points (5 pipe hits).
+    response = (
+        "## Gating\ntop-k softmax router g = softmax(Wx).\n"
+        "## Load Balancing\nauxiliary loss L = f_i p_i = 0.5.\n"
+        "## Training\nexpert collapse and token drop.\n"
+        "## Inference\n\n"
+        "## Benchmarks\nMoE outperforms dense on MMLU.\n"
+        "## References\nShazeer 2017 and Mixtral 8x7B.\n"
+    )
+    result = MoEDensePlugin().evaluate(response)
+    inference = next(item for item in result.rubric if item["name"] == "Inference implications")
+    assert inference["earned"] == 0.0
+
+
 def test_multi_step_requires_one_function_per_block():
     response = """```python
 def greet_user(name: str) -> str: return f'Hello, {name}! Welcome.'
