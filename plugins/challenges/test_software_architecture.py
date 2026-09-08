@@ -3,6 +3,168 @@ import unittest
 
 from plugins import discover_plugins
 
+# Prompt-conformant correct response: every section the rubric scores, with
+# real content, a markdown-table endpoint list, a workload estimate, genuine
+# failure handling, and a component diagram with arrows pointing at named
+# components.
+CORRECT_RESPONSE = """## Executive Summary
+
+FlowState will be built as an event-driven microservices platform. An API Gateway
+routes traffic to bounded contexts (Auth, Calendar, Music, AI Planner, Analytics,
+Notifications). Real-time sync uses WebSockets; calendar conflicts are resolved
+with CRDTs.
+
+## Requirements Summary
+
+Support web, iOS, and Android clients, calendar OAuth, AI planning, focus music,
+push notifications, analytics, and 1M DAU with sub-2s latency.
+
+## Architecture Style
+
+Event-driven microservices with independently scalable bounded contexts behind an
+API gateway. Each service owns its data and communicates over an event bus.
+
+## Component Diagram / Description
+
+```mermaid
+graph TD
+  A[Client Apps] --> B[API Gateway]
+  B --> C[Auth Service]
+  B --> D[Calendar Service]
+  B --> E[Music Service]
+  B --> F[AI Planner Service]
+  B --> G[Analytics Service]
+  B --> H[Notification Service]
+```
+
+Each service exposes a narrow REST API and publishes domain events to Kafka.
+
+## Data Model
+
+Relational data (users, sessions, schedules) lives in PostgreSQL with read replicas.
+Time-series focus metrics and event streams go to a columnar store. Sharding by
+user_id partitions data, and Redis provides read-aside caching with TTL.
+
+## API Design
+
+| Method | Endpoint | Purpose |
+|---|---|---|
+| GET | /api/v1/sessions | List focus sessions |
+| POST | /api/v1/sessions | Start a focus session |
+| GET | /api/v1/calendar/events | List calendar events |
+| POST | /api/v1/plan | Generate AI schedule |
+| GET | /api/v1/analytics | Productivity trends |
+
+## Technology Stack
+
+Python, FastAPI, Celery, PostgreSQL, Redis, ClickHouse, Kafka, Docker, Kubernetes.
+
+## Deployment Architecture
+
+AWS multi-region Kubernetes deployment with a CDN in front of static assets and
+managed Kafka workers for async processing.
+
+## Real-Time Sync & Communication
+
+WebSockets push live focus sessions to clients. Calendar updates use CRDTs for
+offline-first conflict resolution with last-write-wins fallback. Kafka acts as the
+event bus for async processing across services.
+
+## Resiliency & Failure Modes
+
+Circuit breakers protect downstream calendar and music APIs. Failed Kafka messages
+go to a dead-letter queue. Exponential backoff with jitter retries transient errors,
+and services fail over across regions on outage.
+
+## Security Considerations
+
+OAuth2/OIDC with refresh-token rotation, rate limiting and a WAF at the API gateway,
+encryption at rest for PII, and GDPR-compliant data retention.
+
+## Scalability & Performance
+
+At 1M DAU we estimate ~2,300 concurrent users and ~1,150 RPS at peak. Kubernetes
+HPA scales pods horizontally. A CDN (CloudFront) serves static assets from edge
+locations and read replicas absorb analytics read load.
+
+## Trade-offs & Decisions
+
+Microservices add operational complexity but allow independent scaling and failure
+isolation. PostgreSQL chosen over NoSQL for strong consistency of scheduling data.
+
+## Observability & SLOs
+
+OpenTelemetry tracing, Prometheus metrics, and Grafana dashboards. SLO: 99.9%
+availability with an error budget, p99 latency under 200 ms.
+"""
+
+# Keyword-stuffing / degenerate response: every heading is present, but each
+# section is a dump of rubric keywords. It uses table endpoints, only
+# "multi-region" in the resiliency section (no real failure handling), bare
+# arrows in the architecture section, and no workload estimate.
+STUFFED_RESPONSE = """## Executive Summary
+
+FlowState architecture microservices event-driven serverless api gateway component.
+
+## Requirements Summary
+
+web iOS Android OAuth realtime sync AI planning music notifications analytics 1M DAU.
+
+## Architecture Style
+
+microservices modular monolith event-driven serverless api gateway service component ->
+
+## Component Diagram / Description
+
+service component -> -> -> responsibilities of each service component.
+
+## Data Model
+
+postgres sql relational nosql document columnar mongodb dynamodb time-series entity user
+session schedule shard replica partition cache redis ttl.
+
+## API Design
+
+| GET | /api/v1/sessions | x |
+| POST | /api/v1/sessions | x |
+| GET | /api/v1/calendar/events | x |
+
+## Technology Stack
+
+Python FastAPI PostgreSQL Redis Kafka Docker Kubernetes.
+
+## Deployment Architecture
+
+Docker containers on AWS multi-region kubernetes cdn edge load balancer.
+
+## Real-Time Sync & Communication
+
+websocket sse grpc polling sync crdt conflict offline eventual last-write kafka queue
+broker pub-sub event bus.
+
+## Resiliency & Failure Modes
+
+multi-region deployment for availability.
+
+## Security Considerations
+
+oauth oidc mfa refresh token authorization rate limit waf ddos throttl pii gdpr
+encryption kms secret.
+
+## Scalability & Performance
+
+1M DAU million users. cdn edge multi-region load balancer.
+
+## Trade-offs & Decisions
+
+trade-offs of microservices versus modular monolith.
+
+## Observability & SLOs
+
+opentelemetry tracing prometheus metrics logging monitoring slo sli sla error budget
+99.9% availability.
+"""
+
 
 class TestSoftwareArchitectureScoring(unittest.TestCase):
     @classmethod
@@ -11,6 +173,21 @@ class TestSoftwareArchitectureScoring(unittest.TestCase):
 
     def test_empty_response_scores_zero(self):
         self.assertEqual(self.plugin.score(""), 0.0)
+
+    def test_prompt_includes_scored_headings(self):
+        # The rubric awards points for Real-Time Sync, Resiliency, and
+        # Observability sections, so the prompt must request them; otherwise a
+        # prompt-conformant response is penalized for omitting scored sections.
+        prompt = self.plugin.get_prompt()
+        self.assertIn("Real-Time Sync", prompt)
+        self.assertIn("Resiliency", prompt)
+        self.assertIn("Observability", prompt)
+
+    def test_prompt_conformant_correct_beats_stuffed(self):
+        correct = self.plugin.score(CORRECT_RESPONSE)
+        stuffed = self.plugin.score(STUFFED_RESPONSE)
+        self.assertGreaterEqual(correct, 15.0)
+        self.assertLess(stuffed, correct)
 
     def test_partial_response_scores(self):
         text = (

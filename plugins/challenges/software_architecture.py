@@ -33,8 +33,9 @@ class SoftwareArchitecturePlugin(BenchmarkTaskPlugin):
     def get_prompt(self) -> str:
         return (
             "Produce a FlowState architecture document with headings Executive Summary, Requirements Summary, "
-            "Architecture Style, Component Diagram / Description, Data Model, API Design, Technology Stack, "
-            "Deployment Architecture, Security Considerations, Scalability & Performance, Trade-offs & Decisions. "
+            "Architecture Style, Component Diagram / Description, Real-Time Sync & Communication, Data Model, "
+            "API Design, Technology Stack, Deployment Architecture, Resiliency & Failure Modes, "
+            "Security Considerations, Scalability & Performance, Trade-offs & Decisions, Observability & SLOs. "
             "The design supports web/iOS/Android, calendar OAuth, realtime sync, AI planning, music, notifications, "
             "analytics, and 1M DAU. Include concrete entities/endpoints, capacity numbers, failure handling, and rationale."
         )
