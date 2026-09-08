@@ -189,6 +189,23 @@ class TestSoftwareArchitectureScoring(unittest.TestCase):
         self.assertGreaterEqual(correct, 15.0)
         self.assertLess(stuffed, correct)
 
+    def test_table_endpoints_are_counted(self):
+        # Markdown-table endpoint rows ("| GET | /api/... |") must count toward
+        # the API sub-score; the Data Model section is deliberately empty of
+        # data keywords so only the API sub-part can contribute.
+        text = (
+            "## Data Model\n\n"
+            "A blank section with no storage keywords.\n\n"
+            "## API Design\n\n"
+            "| Method | Endpoint |\n"
+            "|---|---|\n"
+            "| GET | /api/v1/sessions |\n"
+            "| POST | /api/v1/sessions |\n"
+            "| GET | /api/v1/calendar/events |\n"
+        )
+        rubric = {c["name"]: c for c in self.plugin.evaluate(text).rubric}
+        self.assertGreaterEqual(rubric["Data Modeling & API Design"]["earned"], 1.0)
+
     def test_partial_response_scores(self):
         text = (
             "## Executive Summary\n\n"

@@ -95,7 +95,7 @@ class SoftwareArchitecturePlugin(BenchmarkTaskPlugin):
         arch_hits = sum(bool(re.search(pattern, architecture, re.IGNORECASE)) for pattern in (r"microservices|modular monolith|event.?driven|serverless", r"api gateway|service|component", r"```(?:mermaid|plantuml)|graph TD|->|responsibilit",))
         rubric.add_criterion("Architecture & Patterns", 2.5, min(2.5, float(arch_hits)))
         data_hits = sum(bool(re.search(pattern, data, re.IGNORECASE)) for pattern in (r"postgres|sql|relational", r"nosql|document|columnar|mongodb|dynamodb|time.?series", r"entity|user|session|schedule", r"shard|replica|partition|cache|redis|ttl"))
-        endpoint_count = len(re.findall(r"\b(?:GET|POST|PUT|PATCH|DELETE)\s+/\S+", api, re.IGNORECASE))
+        endpoint_count = len(re.findall(r"\b(?:GET|POST|PUT|PATCH|DELETE)\s*\|?\s*/\S+", api, re.IGNORECASE))
         data_score = min(1.5, data_hits * 0.375) + min(1.0, endpoint_count / 3.0)
         rubric.add_criterion("Data Modeling & API Design", 2.5, data_score)
         realtime_hits = sum(bool(re.search(pattern, realtime, re.IGNORECASE)) for pattern in (r"websocket|sse|grpc|polling|sync", r"crdt|conflict|offline|eventual|last.?write", r"kafka|queue|broker|pub.?sub|event bus"))
