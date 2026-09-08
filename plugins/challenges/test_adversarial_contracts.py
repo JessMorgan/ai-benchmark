@@ -294,6 +294,51 @@ def test_moe_references_count_distinct_casefolded_names_and_arxiv_ids():
     assert refs2["earned"] == 2.0
 
 
+def test_moe_benchmark_pairs_require_dense_and_dedupe():
+    # A MoE-advantage pair must name a dense model (the trailing alternative
+    # task/model alone no longer counts), and repeating an identical pair
+    # sentence must not inflate the pair count. Measured gaming hit 17/17.
+    filler = "x" * 160
+    no_dense_bench = (
+        "MoE is better for the task on MMLU. " + filler +
+        " MoE is better for the task on coding. " + filler +
+        " dense is better for the task. " + filler +
+        " dense is better for the model."
+    )
+    response = (
+        "## Gating\ntop-k softmax router g = softmax(Wx).\n"
+        "## Load Balancing\nauxiliary loss L = f_i p_i = 0.5.\n"
+        "## Training\nexpert collapse and token drop.\n"
+        "## Inference\nmemory bandwidth latency.\n"
+        "## Benchmarks\n" + no_dense_bench + "\n"
+        "## References\nShazeer 2017 and Mixtral 8x7B.\n"
+    )
+    bench = next(
+        item for item in MoEDensePlugin().evaluate(response).rubric
+        if item["name"] == "Benchmarks/comparison"
+    )
+    assert bench["earned"] < 2.0
+    # The same MoE-vs-dense sentence repeated (spaced) counts once, not twice,
+    # while two distinct pairs sharing the prefix up to "dense" still count twice.
+    from plugins.challenges.moe_dense import _distinct_pattern_hits
+    pair_pattern = r"(?:moe|mixture.of.experts).{0,150}(?:outperform|better|advantage|wins).{0,150}dense"
+    repeated = _distinct_pattern_hits(
+        "MoE outperforms dense on MMLU. " + filler + " MoE outperforms dense on MMLU.",
+        pair_pattern,
+    )
+    assert repeated == 1
+    distinct = _distinct_pattern_hits(
+        "MoE outperforms dense on MMLU. " + filler + " MoE outperforms dense on GSM8K.",
+        pair_pattern,
+    )
+    assert distinct == 2
+    # Newline-separated identical pairs must dedupe: the terminator char must
+    # not leak into the dedup key, or a "\n"-terminated occurrence keys with a
+    # trailing space and escapes dedup against the end-of-text occurrence.
+    newline_repeat = "MoE outperforms dense on MMLU\nMoE outperforms dense on MMLU"
+    assert _distinct_pattern_hits(newline_repeat, pair_pattern) == 1
+
+
 def test_multi_step_requires_one_function_per_block():
     response = """```python
 def greet_user(name: str) -> str: return f'Hello, {name}! Welcome.'
