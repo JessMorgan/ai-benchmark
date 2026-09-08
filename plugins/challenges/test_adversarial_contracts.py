@@ -259,6 +259,16 @@ Ordering rationale: data flow and prerequisite order.
     assert result.score < 16.0
 
 
+def test_decomposition_domain_of_uses_most_keyword_hits_with_position_tiebreak():
+    # Measured pre-fix: earliest-keyword-wins misclassified a correct line to
+    # the wrong domain (15/20 on a correct plan). Now the domain with the most
+    # distinct keyword hits wins, and ties fall to the earliest first hit.
+    plugin = DecompositionPlugin()
+    assert plugin._domain_of("Task 4: anomaly alerts and real-time feed for operators") == "alert"
+    assert plugin._domain_of("Task 3: anomaly detection over the normalized stream") == "anomaly"
+    assert plugin._domain_of("Task 3: normalized stream for anomaly detection") == "enrich"
+
+
 def test_instruction_following_wrong_tie_break_does_not_pass():
     response = """ORDER T-05 | CUSTOMER NOOR | TOTAL 120.00
 ORDER T-02 | CUSTOMER JULES | TOTAL 120.00

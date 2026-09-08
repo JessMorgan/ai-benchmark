@@ -43,9 +43,10 @@ ever sees enriched, normalized data; the nightly report is computed from the
 stored normalized logs, not from the live stream.
 """
 
-# Reference: which deliverable domains the plan should cover. Keywords are
-# ordered most-specific-first so a line like "anomaly detection over normalized
-# stream" resolves to the anomaly domain rather than the enrichment domain.
+# Reference: which deliverable domains the plan should cover. A line resolves
+# to the domain with the most distinct keyword hits (ties: earliest first hit),
+# so "anomaly alerts and real-time feed" resolves to the alert domain even
+# though "anomaly" appears first.
 _REFERENCE_DOMAINS = {
     "ingestion": (("ingest", "buffer", "collect", "receive", "http"), "accept/buffer log batches durably"),
     "enrich": (("geoip", "enrich", "normaliz", "geo"), "normalize + GeoIP enrich each line"),
@@ -130,13 +131,25 @@ class DecompositionPlugin(BenchmarkTaskPlugin):
         )
 
     def _domain_of(self, line: str) -> str | None:
-        best: tuple[str | None, int] = (None, len(line) + 1)
+        """Return the deliverable domain a line describes.
+
+        The domain with the most distinct keyword hits wins; ties fall to the
+        domain whose first hit appears earliest in the line.
+        """
+        best_domain: str | None = None
+        best_hits = 0
+        best_pos = len(line) + 1
         for domain, (keywords, _label) in _REFERENCE_DOMAINS.items():
+            hits = 0
+            first_pos = len(line) + 1
             for keyword in keywords:
                 pos = re.search(keyword, line, re.IGNORECASE)
-                if pos and pos.start() < best[1]:
-                    best = (domain, pos.start())
-        return best[0]
+                if pos:
+                    hits += 1
+                    first_pos = min(first_pos, pos.start())
+            if hits > best_hits or (hits == best_hits and hits and first_pos < best_pos):
+                best_domain, best_hits, best_pos = domain, hits, first_pos
+        return best_domain
 
     def _score_coverage(self, text: str) -> tuple[float, list[str]]:
         found = {self._domain_of(line) for line in text.splitlines()}
