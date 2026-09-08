@@ -5,7 +5,7 @@ import re
 
 from benchmark.plugin import BenchmarkTaskPlugin, EvaluationResult
 from benchmark.types import ConfigMap
-from plugins.challenges._analysis import first_section, markdown_sections
+from plugins.challenges._analysis import first_section, markdown_sections, section_has_content
 from plugins.challenges._rubric import Rubric
 
 
@@ -16,7 +16,7 @@ class DebugConsistencyPlugin(BenchmarkTaskPlugin):
 
     @property
     def version(self) -> str:
-        return "0.1.0"
+        return "0.2.0"
 
     @property
     def name(self) -> str:
@@ -67,24 +67,58 @@ class DebugConsistencyPlugin(BenchmarkTaskPlugin):
         diagnosis = first_section(text, ["Diagnosis"])
         evidence = first_section(text, ["Evidence Needed"])
         recommendation = first_section(text, ["Recommendation"])
+        # The positive trace must be present: the actual output ['abc'].
+        # The old blanket `empty|\[\]` negation zeroed a correct answer that
+        # quoted the report's claimed `[]` output (measured: 16/20).
         reproduction_ok = bool(
             reproduction
-            and re.search(r"abc", reproduction.body, re.IGNORECASE)
-            and re.search(r"(?:\[?['\"]?abc['\"]?\]?|list)", reproduction.body, re.IGNORECASE)
-            and not re.search(r"(?:empty|\[\])", reproduction.body, re.IGNORECASE)
+            and re.search(r"\babc\b", reproduction.body, re.IGNORECASE)
+            and re.search(r"\[\s*['\"]?abc['\"]?\s*\]", reproduction.body, re.IGNORECASE)
         )
         rubric.add_criterion("Reproduction trace", 4.0, 4.0 if reproduction_ok else 0.0,
                              negative_findings=[] if reproduction_ok else [{"finding": "trace the supplied input to ['abc']"}])
-        consistency_ok = bool(consistency and re.search(r"(?:returns?\s*\[?['\"]?abc|not\s+reproduc|correct|consistent|does\s+not\s+follow|no\s+bug)", consistency.body, re.IGNORECASE))
+        # Word-bounded, direction-aware: the positive forms must match as
+        # whole words so the negated forms (`incorrect`, `inconsistent`) do
+        # not earn the criterion (measured: a hallucinated-bug answer scored
+        # 20/20 because `correct|consistent` matched inside them).
+        consistency_ok = bool(consistency and re.search(r"(?:returns?\s*\[?\s*['\"]?abc\b|not\s+reproduc|\bcorrect\b|\bconsistent\b|does\s+not\s+follow|no\s+bug)", consistency.body, re.IGNORECASE))
         rubric.add_criterion("Consistency conclusion", 5.0, 5.0 if consistency_ok else 0.0,
                              negative_findings=[] if consistency_ok else [{"finding": "must conclude that the supplied code returns abc twice as a duplicate"}])
-        diagnosis_ok = bool(diagnosis and re.search(r"(?:no\s+(?:code\s+)?bug|inconsistent|cannot\s+confirm|report|environment|input)", diagnosis.body, re.IGNORECASE))
+        # Specific positive no-bug signals only: generic words (`report`,
+        # `environment`, `input`) earned the criterion for a hallucinated
+        # diagnosis (measured: full 4/4 for a hallucination).
+        diagnosis_ok = bool(diagnosis and re.search(
+            r"(?:no\s+(?:\w+\s+){0,2}bug|no\s+(?:\w+\s+){0,2}(?:defect|issue|problem|fault)|not\s+a\s+bug|"
+            r"not\s+(?:be\s+)?reproduc|cannot\s+(?:be\s+)?reproduc|could\s+not\s+(?:be\s+)?reproduc|"
+            r"does\s+not\s+(?:be\s+)?reproduc|unreproducible|cannot\s+(?:be\s+)?confirm|"
+            r"could\s+not\s+(?:be\s+)?confirm|behaves?\s+as\s+(?:specif|document|intend|expect)|"
+            r"works?\s+(?:correctly|as\s+(?:intended|expected|specified))|functions?\s+correctly|"
+            r"(?:code|implementation|function|logic)\s+(?:is|works|behaves|runs|executes)\s+correct|"
+            r"correct\s+(?:behavior|behaviour|output|implementation)|"
+            r"report\s+(?:is\s+|appears\s+to\s+be\s+|seems\s+to\s+be\s+)?(?:incorrect|wrong|invalid|unfounded|false|not\s+(?:be\s+)?reproduc)|"
+            r"false\s+report)",
+            diagnosis.body, re.IGNORECASE,
+        ))
         rubric.add_criterion("Non-hallucinated diagnosis", 4.0, 4.0 if diagnosis_ok else 0.0)
-        evidence_ok = bool(evidence and re.search(r"(?:stack|version|actual|input|log|repro|environment|trace)", evidence.body, re.IGNORECASE))
+        # The evidence request must reference the actual trace/output
+        # (abc / ['abc']), not just generic evidence keywords (measured:
+        # bare `log`/`stack`/`environment` keywords earned the full 3/3).
+        evidence_ok = bool(
+            evidence
+            and re.search(r"(?:stack|version|actual|input|log|repro|environment|trace)", evidence.body, re.IGNORECASE)
+            and re.search(r"\babc\b|\[\s*['\"]?abc['\"]?\s*\]", evidence.body, re.IGNORECASE)
+        )
         rubric.add_criterion("Evidence request", 3.0, 3.0 if evidence_ok else 0.0)
         recommendation_ok = bool(recommendation and re.search(r"(?:do not|not enough|collect|reproduce|instrument|verify)", recommendation.body, re.IGNORECASE))
         rubric.add_criterion("Actionable recommendation", 2.0, 2.0 if recommendation_ok else 0.0)
-        rubric.add_criterion("Required report structure", 2.0, float(sum(section is not None for section in (reproduction, consistency, diagnosis, evidence, recommendation)) >= 5) * 2.0)
+        # Each section needs content beyond the heading: heading presence
+        # alone no longer earns the criterion (measured: five empty
+        # headings earned the full 2/2).
+        structure_ok = all(
+            section_has_content(section)
+            for section in (reproduction, consistency, diagnosis, evidence, recommendation)
+        )
+        rubric.add_criterion("Required report structure", 2.0, 2.0 if structure_ok else 0.0)
         return rubric.results()
 
     def score(self, response_text: str) -> float:

@@ -264,7 +264,7 @@ Plugins are discovered automatically from `plugins/challenges/`. Each plugin is 
 | ID | Name | Version | Max score | Streaming |
 |---|---|---:|---:|---|
 | `code-review` | Code Review | 1.2.0 | 15 | Yes |
-| `debug-consistency` | Debug Report Consistency | 0.1.0 | 20 | Yes |
+| `debug-consistency` | Debug Report Consistency | 0.2.0 | 20 | Yes |
 | `debug-traversal` | Debug Traversal | 1.3.0 | 20 | Yes |
 | `decomposition` | Design-Doc Decomposition | 0.2.0 | 20 | Yes |
 | `error-recovery` | Error Recovery | 1.4.0 | 20 | Yes |

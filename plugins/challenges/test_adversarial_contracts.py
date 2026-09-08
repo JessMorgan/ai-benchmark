@@ -214,6 +214,219 @@ Patch the comparison.
     assert DebugConsistencyPlugin().score(response) < 15.0
 
 
+def test_debug_consistency_negated_forms_do_not_earn_consistency():
+    # Measured pre-fix (DC-1): the boundary-less `correct|consistent`
+    # alternatives matched `incorrect`/`inconsistent`, so a hallucinated-bug
+    # answer's consistency section earned the full 5.0 criterion (20/20 total).
+    response = """## Reproduction
+Running find_duplicate_users with the supplied input returns ['abc'].
+## Consistency Check
+The code is incorrect and inconsistent with the specification.
+## Diagnosis
+There is a bug in the comparison logic.
+## Evidence Needed
+Collect logs, stack traces, and environment details.
+## Recommendation
+Verify the fix and patch the comparison.
+"""
+    result = DebugConsistencyPlugin().evaluate(response)
+    consistency = next(item for item in result.rubric if item["name"] == "Consistency conclusion")
+    assert consistency["earned"] == 0.0, f"Expected 0.0 (negated forms), got {consistency['earned']}"
+
+
+def test_debug_consistency_correct_conclusion_earns_consistency():
+    # The positive direction must still be credited: a correct conclusion
+    # (code is correct / report not reproducible) earns the full criterion.
+    response = """## Reproduction
+Running find_duplicate_users with the supplied input returns ['abc'].
+## Consistency Check
+The code is correct and the report is not reproducible.
+## Diagnosis
+There is no bug in the code.
+## Evidence Needed
+Collect logs, stack traces, and environment details.
+## Recommendation
+Verify the fix and patch the comparison.
+"""
+    result = DebugConsistencyPlugin().evaluate(response)
+    consistency = next(item for item in result.rubric if item["name"] == "Consistency conclusion")
+    assert consistency["earned"] == 5.0, f"Expected 5.0 (positive signal), got {consistency['earned']}"
+
+
+def test_debug_consistency_generic_words_do_not_earn_diagnosis():
+    # Measured pre-fix (DC-2): the diagnosis criterion matched generic words
+    # (`report`, `environment`, `input`), so a hallucinated diagnosis that
+    # merely mentioned "the report" and "the input" earned the full 4.0.
+    response = """## Reproduction
+Running find_duplicate_users with the supplied input returns ['abc'].
+## Consistency Check
+The code is correct and the report is not reproducible.
+## Diagnosis
+There is a bug; the report describes the input and environment.
+## Evidence Needed
+Collect logs, stack traces, and environment details.
+## Recommendation
+Verify the fix and patch the comparison.
+"""
+    result = DebugConsistencyPlugin().evaluate(response)
+    diagnosis = next(item for item in result.rubric if item["name"] == "Non-hallucinated diagnosis")
+    assert diagnosis["earned"] == 0.0, f"Expected 0.0 (generic words), got {diagnosis['earned']}"
+
+
+def test_debug_consistency_positive_no_bug_signals_earn_diagnosis():
+    # Specific positive signals that the code works correctly must still be
+    # credited: no bug / cannot reproduce / behaves as specified.
+    response = """## Reproduction
+Running find_duplicate_users with the supplied input returns ['abc'].
+## Consistency Check
+The code is correct and the report is not reproducible.
+## Diagnosis
+There is no bug; the failure cannot be reproduced and the code behaves as specified.
+## Evidence Needed
+Collect logs, stack traces, and environment details.
+## Recommendation
+Verify the fix and patch the comparison.
+"""
+    result = DebugConsistencyPlugin().evaluate(response)
+    diagnosis = next(item for item in result.rubric if item["name"] == "Non-hallucinated diagnosis")
+    assert diagnosis["earned"] == 4.0, f"Expected 4.0 (positive signals), got {diagnosis['earned']}"
+
+
+def test_debug_consistency_modified_no_bug_phrasing_earns_diagnosis():
+    # A no-bug signal with modifier words ("no demonstrated code bug") is a
+    # legitimate positive signal and must be credited, not just the bare
+    # "no bug" form.
+    response = """## Reproduction
+Running find_duplicate_users with the supplied input returns ['abc'].
+## Consistency Check
+The code is correct and the report is not reproducible.
+## Diagnosis
+There is no demonstrated code bug; the report and supplied behavior are inconsistent.
+## Evidence Needed
+If the report persists, collect the actual output (expected ['abc']) and the exact input.
+## Recommendation
+Verify the fix and patch the comparison.
+"""
+    result = DebugConsistencyPlugin().evaluate(response)
+    diagnosis = next(item for item in result.rubric if item["name"] == "Non-hallucinated diagnosis")
+    assert diagnosis["earned"] == 4.0, f"Expected 4.0 (modified no-bug phrasing), got {diagnosis['earned']}"
+
+
+def test_debug_consistency_reproduction_requires_the_positive_trace():
+    # Measured pre-fix (DC-3): a correct answer that quoted the report's
+    # claimed `[]` output lost the 4.0 reproduction criterion (16/20 total)
+    # because the blanket `empty|\[\]` negation matched the quoted claim.
+    # After the fix the criterion requires the positive trace (the actual
+    # output ['abc']) and ignores quoted claims.
+    response = """## Reproduction
+The report claims the output is []. Tracing the code, counts is {'abc': 2},
+so the function returns ['abc'].
+## Consistency Check
+The code is correct and the report is not reproducible.
+## Diagnosis
+There is no bug in the code.
+## Evidence Needed
+Collect logs, stack traces, and environment details.
+## Recommendation
+Verify the fix and patch the comparison.
+"""
+    result = DebugConsistencyPlugin().evaluate(response)
+    reproduction = next(item for item in result.rubric if item["name"] == "Reproduction trace")
+    assert reproduction["earned"] == 4.0, f"Expected 4.0 (positive trace present), got {reproduction['earned']}"
+
+
+def test_debug_consistency_empty_output_claim_earns_no_reproduction():
+    # A hallucinated trace that reports the (wrong) empty output must not
+    # earn the criterion: the positive trace ['abc'] is absent.
+    response = """## Reproduction
+Running the code with the input produces an empty list.
+## Consistency Check
+The code is incorrect and inconsistent with the specification.
+## Diagnosis
+There is a bug in the comparison logic.
+## Evidence Needed
+Collect logs, stack traces, and environment details.
+## Recommendation
+Verify the fix and patch the comparison.
+"""
+    result = DebugConsistencyPlugin().evaluate(response)
+    reproduction = next(item for item in result.rubric if item["name"] == "Reproduction trace")
+    assert reproduction["earned"] == 0.0, f"Expected 0.0 (no positive trace), got {reproduction['earned']}"
+
+
+def test_debug_consistency_evidence_requires_a_trace_reference():
+    # Measured pre-fix (DC-4): the evidence criterion credited generic
+    # keywords (`log`, `stack`, `environment`) with no reference to the
+    # actual trace/output. After the fix the evidence section must also
+    # reference the actual output (abc / ['abc']).
+    response = """## Reproduction
+Running find_duplicate_users with the supplied input returns ['abc'].
+## Consistency Check
+The code is correct and the report is not reproducible.
+## Diagnosis
+There is no bug in the code.
+## Evidence Needed
+Collect logs, stack traces, and environment details.
+## Recommendation
+Verify the fix and patch the comparison.
+"""
+    result = DebugConsistencyPlugin().evaluate(response)
+    evidence = next(item for item in result.rubric if item["name"] == "Evidence request")
+    assert evidence["earned"] == 0.0, f"Expected 0.0 (no trace reference), got {evidence['earned']}"
+
+
+def test_debug_consistency_evidence_with_trace_reference_earns_full():
+    # An evidence request that references the actual output must still be
+    # credited in full.
+    response = """## Reproduction
+Running find_duplicate_users with the supplied input returns ['abc'].
+## Consistency Check
+The code is correct and the report is not reproducible.
+## Diagnosis
+There is no bug in the code.
+## Evidence Needed
+If the report persists, collect the actual output (expected ['abc']) and the exact input.
+## Recommendation
+Verify the fix and patch the comparison.
+"""
+    result = DebugConsistencyPlugin().evaluate(response)
+    evidence = next(item for item in result.rubric if item["name"] == "Evidence request")
+    assert evidence["earned"] == 3.0, f"Expected 3.0 (trace reference), got {evidence['earned']}"
+
+
+def test_debug_consistency_structure_requires_nonempty_bodies():
+    # Measured pre-fix (DC-5): the structure criterion credited heading
+    # presence alone, so five empty headings earned the full 2.0. After the
+    # fix each section must have content beyond the heading.
+    response = """## Reproduction
+## Consistency Check
+## Diagnosis
+## Evidence Needed
+## Recommendation
+"""
+    result = DebugConsistencyPlugin().evaluate(response)
+    structure = next(item for item in result.rubric if item["name"] == "Required report structure")
+    assert structure["earned"] == 0.0, f"Expected 0.0 (empty bodies), got {structure['earned']}"
+
+
+def test_debug_consistency_structure_with_bodies_earns_full():
+    # Five sections with substantive bodies must still earn the criterion.
+    response = """## Reproduction
+Running find_duplicate_users with the supplied input returns ['abc'].
+## Consistency Check
+The code is correct and the report is not reproducible.
+## Diagnosis
+There is no bug in the code.
+## Evidence Needed
+If the report persists, collect the actual output (expected ['abc']) and the exact input.
+## Recommendation
+Do not patch the code; verify by reproducing the input first.
+"""
+    result = DebugConsistencyPlugin().evaluate(response)
+    structure = next(item for item in result.rubric if item["name"] == "Required report structure")
+    assert structure["earned"] == 2.0, f"Expected 2.0 (non-empty bodies), got {structure['earned']}"
+
+
 def test_debug_traversal_requires_executable_threshold_fix():
     response = """## Root Cause
 The threshold should be at least two.

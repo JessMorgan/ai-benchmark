@@ -154,7 +154,7 @@ The runtime inventory below matches `uv run ai-benchmark --list-plugins`:
 | ID | Version | Max | Stream |
 |---|---:|---:|---|
 | `code-review` | 1.2.0 | 15 | Yes |
-| `debug-consistency` | 0.1.0 | 20 | Yes |
+| `debug-consistency` | 0.2.0 | 20 | Yes |
 | `debug-traversal` | 1.3.0 | 20 | Yes |
 | `decomposition` | 0.2.0 | 20 | Yes |
 | `error-recovery` | 1.4.0 | 20 | Yes |
