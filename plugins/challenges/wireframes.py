@@ -17,7 +17,7 @@ class WireframesPlugin(BenchmarkTaskPlugin):
 
     @property
     def version(self) -> str:
-        return "1.0.0"
+        return "1.1.0"
 
     @property
     def name(self) -> str:
@@ -45,6 +45,21 @@ class WireframesPlugin(BenchmarkTaskPlugin):
         return float(val) if isinstance(val, (int, float)) else None
 
     @staticmethod
+    def _has_visual_evidence(body: str) -> bool:
+        """Whether a screen body shows a wireframe diagram.
+
+        Position words (word-bounded, so "stops" is not "top") count only
+        alongside structural content; box-drawing or structural lines
+        (``+---+``, ``|  |``, ``─``, ``│``, ``┌``, ``└``) count as diagram
+        evidence on their own.
+        """
+        if re.search(r"\+[-=]{2,}\+|\|[^|\n]+\||[─│┌└┐┘├┤┬┴]", body):
+            return True
+        structure = re.search(r"```|[┌┐└┘├┤┬┴│─]|\[[^\]]+\]", body)
+        position = re.search(r"\b(?:top|bottom|header|footer|left|right|middle|position)\b", body, re.IGNORECASE)
+        return bool(structure and position)
+
+    @staticmethod
     def _screen_name(heading: str) -> str | None:
         normalized = normalize_heading(heading)
         for name in ("dashboard", "focus session", "calendar integration", "ai planning", "settings"):
@@ -67,10 +82,9 @@ class WireframesPlugin(BenchmarkTaskPlugin):
             return rubric.results()
         sections = markdown_sections(text)
         screens = [(self._screen_name(section.heading), section) for section in sections]
-        screens = [(name, section) for name, section in screens if name]
+        named: list[tuple[str, Any]] = [(name, section) for name, section in screens if name]
         unique: dict[str, Any] = {}
-        for name, section in screens:
-            assert name is not None
+        for name, section in named:
             unique.setdefault(name, section)
         screen_count = len(unique)
         rubric.record_validation(type("Validation", (), {
@@ -80,19 +94,39 @@ class WireframesPlugin(BenchmarkTaskPlugin):
         })())
         rubric.add_criterion("Multiple screens present", 3.0, 3.0 if screen_count >= 4 else screen_count * 0.75)
         purpose_count = sum(bool(re.search(r"purpose|goal|shows|used to", section.body, re.IGNORECASE)) for section in unique.values())
-        rubric.add_criterion("Screen names and purposes", 3.0, 3.0 if screen_count >= 4 and purpose_count == screen_count else min(3.0, purpose_count * 0.75))
-        visual_count = sum(bool(re.search(r"```|[┌┐└┘├┤┬┴│─]|\[[^\]]+\]", section.body)) and bool(re.search(r"top|bottom|header|footer|left|right|middle|position", section.body, re.IGNORECASE)) for section in unique.values())
-        rubric.add_criterion("Visual/structural wireframe", 4.0, 4.0 if screen_count and visual_count == screen_count else min(4.0, visual_count))
-        component_count = sum(bool(re.search(r"button|card|list|nav|menu|tab|modal|input|icon|timer|slider|toggle", section.body, re.IGNORECASE)) for section in unique.values())
+        if screen_count >= 4 and purpose_count == screen_count:
+            purpose_score = 3.0
+        elif screen_count:
+            purpose_score = 3.0 * min(purpose_count / screen_count, screen_count / 4.0)
+        else:
+            purpose_score = 0.0
+        rubric.add_criterion("Screen names and purposes", 3.0, purpose_score)
+        visual_count = sum(self._has_visual_evidence(section.body) for section in unique.values())
+        if screen_count and visual_count == screen_count:
+            visual_score = 4.0
+        elif screen_count:
+            visual_score = 4.0 * visual_count / screen_count
+        else:
+            visual_score = 0.0
+        rubric.add_criterion("Visual/structural wireframe", 4.0, visual_score)
+        component_count = sum(bool(re.search(r"\b(?:button|card|list|nav|menu|tab|modal|input|icon|timer|slider|toggle)\b", section.body, re.IGNORECASE)) for section in unique.values())
         rubric.add_criterion("Key UI components", 4.0, 4.0 if screen_count >= 4 and component_count >= 4 else min(4.0, component_count))
-        edges = re.findall(r"([A-Za-z][A-Za-z ]{1,30})\s*(?:->|→|=>)\s*([A-Za-z][A-Za-z ]{1,30})", text)
+        raw_edges = re.findall(r"([A-Za-z][A-Za-z ]{1,30})\s*(?:->|→|=>)\s*([A-Za-z][A-Za-z ]{1,30})", text)
         known = set(unique)
-        valid_edges = [(left.strip().lower(), right.strip().lower()) for left, right in edges if any(name in left.lower() for name in known) and any(name in right.lower() for name in known)]
-        rubric.add_criterion("Navigation flows", 3.0, 3.0 if len(valid_edges) >= 3 else float(len(valid_edges)))
+        distinct_edges: set[tuple[str, str]] = set()
+        for left, right in raw_edges:
+            norm_left = left.strip().lower()
+            norm_right = right.strip().lower()
+            if norm_left == norm_right:
+                continue  # self-loop: an edge from a component to itself earns nothing
+            if any(name in norm_left for name in known) and any(name in norm_right for name in known):
+                distinct_edges.add((norm_left, norm_right))
+        edge_count = len(distinct_edges)
+        rubric.add_criterion("Navigation flows", 3.0, 3.0 if edge_count >= 3 else float(edge_count))
         notes = sum(bool(re.search(r"annotation|note:|interaction|on tap|on click|when user|behavior", section.body, re.IGNORECASE)) for section in unique.values())
         rubric.add_criterion("Annotations and interaction notes", 2.0, 2.0 if notes >= 2 else float(notes))
         screen_text = " ".join(section.body for section in unique.values())
-        feature_hits = sum(bool(re.search(pattern, screen_text, re.IGNORECASE)) for pattern in (r"focus", r"calendar", r"music", r"schedule|planning", r"timer|session", r"settings"))
+        feature_hits = sum(bool(re.search(pattern, screen_text, re.IGNORECASE)) for pattern in (r"focus", r"calendar", r"schedule|planning", r"timer|session", r"settings"))
         rubric.add_criterion("Coverage of PRD features", 1.0, 1.0 if feature_hits >= 5 else 0.5 if feature_hits >= 3 else 0.0)
         return rubric.results()
 
