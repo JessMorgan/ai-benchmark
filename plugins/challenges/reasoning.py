@@ -111,9 +111,28 @@ class ReasoningPlugin(BenchmarkTaskPlugin):
         if not self._has(text, r"(?:Search|09:30).{0,40}P5|P5.{0,40}(?:Search|09:30)"):
             priorities = max(0, priorities - 1)
         rubric.add_criterion("Priority-chain deductions", 2.0, gated(float(priorities) * 2.0 / 3.0, 1.0))
-        search_times = re.findall(r"(?i)\bSearch\s+is\s+at\s+(\d{2}:\d{2})", text)
-        final_service = re.search(r"(?im)^\s*FAILED_SERVICE:\s*(\S+)", text)
-        wrong = any(value != "09:30" for value in search_times) or bool(final_service and final_service.group(1).lower() != "search")
+        # The puzzle has a unique solution, so any service/time pair that
+        # disagrees with it (or a final TIME that disagrees with the final
+        # FAILED_SERVICE) is a contradiction.
+        solution_times = {
+            "profile": "09:00",
+            "auth": "09:15",
+            "search": "09:30",
+            "upload": "09:45",
+            "billing": "10:00",
+            "notifications": "10:15",
+        }
+        pairs = re.findall(
+            r"(?i)\b(Profile|Auth|Search|Upload|Billing|Notifications)\s*(?:is\s+at|at|@|:)?\s*(\d{2}:\d{2})",
+            text,
+        )
+        wrong = any(solution_times[service.lower()] != time for service, time in pairs)
+        service_values = re.findall(r"(?im)^\s*FAILED_SERVICE:\s*(\S+)", text)
+        time_values = re.findall(r"(?im)^\s*TIME:\s*(\d{2}:\d{2})", text)
+        if service_values and time_values:
+            failed = service_values[-1].strip().lower()
+            if failed in solution_times and time_values[-1] != solution_times[failed]:
+                wrong = True
         if wrong:
             rubric.penalize_criterion("Derived time assignments", 1.0, "response contains a contradictory service/time assignment")
         return rubric.results()

@@ -1090,6 +1090,40 @@ TIME: 09:30
     assert time_item["earned"] == 3.0
 
 
+def test_reasoning_penalizes_contradictory_service_time_pairs():
+    # RE-4: the contradiction detector only recognized the literal phrasing
+    # "Search is at HH:MM" (plus the FAILED_SERVICE field), so a wrong
+    # assignment phrased as "Search at 09:45" escaped it. All service/time
+    # pairs are now extracted and compared against the unique solution.
+    response = """1. Auth is immediately before Search, Profile is before Auth, Upload is after Search, and Billing is after Upload but before Notifications.
+2. Therefore Profile is at 09:00, Auth is at 09:15, Search at 09:45, Upload is at 09:30, Billing is at 10:00, and Notifications is at 10:15.
+3. Ben owned Search, Eli owned Upload, and Ana owned Notifications at 10:15.
+4. Auth is P1, Notifications is P2, and Upload has higher priority than Search, which has higher priority than Billing; therefore Search is P5.
+FAILED_SERVICE: Search
+OWNER: Ben
+PRIORITY: P5
+TIME: 09:30"""
+    result = ReasoningPlugin().evaluate(response)
+    assignments = next(item for item in result.rubric if item["name"] == "Derived time assignments")
+    assert any("contradictory" in finding["finding"] for finding in assignments["negative_findings"])
+    assert assignments["earned"] < 3.0
+
+
+def test_reasoning_penalizes_final_time_field_that_disagrees_with_failed_service():
+    # RE-4: the TIME field is compared against the unique solution time of
+    # the last FAILED_SERVICE, so "FAILED_SERVICE: Search" plus
+    # "TIME: 09:45" is a contradiction even with no service/time pair in
+    # the prose.
+    response = """1. Auth is immediately before Search, Profile is before Auth, Upload is after Search, and Billing is after Upload but before Notifications.
+FAILED_SERVICE: Search
+OWNER: Ben
+PRIORITY: P5
+TIME: 09:45"""
+    result = ReasoningPlugin().evaluate(response)
+    assignments = next(item for item in result.rubric if item["name"] == "Derived time assignments")
+    assert any("contradictory" in finding["finding"] for finding in assignments["negative_findings"])
+
+
 def test_long_context_requires_the_joined_evidence_chain():
     response = "INCIDENT: I-17\nOWNER: Omar\nESCALATION CHANNEL: PagerDuty\nEVIDENCE: F02\nREASONING: I guessed this."
     assert LongContextPlugin().score(response) < 15.0
