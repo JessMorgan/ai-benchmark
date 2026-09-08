@@ -101,6 +101,17 @@ class ErrorRecoveryPlugin(BenchmarkTaskPlugin):
         return {node.name for node in ast.walk(tree) if isinstance(node, ast.ClassDef)}
 
     @staticmethod
+    def _annotation_name(node: ast.expr | None) -> str | None:
+        # String-literal forward references (``client: "WeatherClient"``) parse
+        # as a string Constant, not a Name; accept both so either form earns
+        # the signature credit.
+        if isinstance(node, ast.Name):
+            return node.id
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            return node.value
+        return None
+
+    @staticmethod
     def _mode_results(output: str) -> dict[str, tuple[bool, str]]:
         # The harness runs after the response source, so the LAST marker per
         # mode is the harness's own verdict; markers a response prints at
@@ -144,8 +155,7 @@ class ErrorRecoveryPlugin(BenchmarkTaskPlugin):
                 gr is not None
                 and [arg.arg for arg in gr.args.args] == ["city", "client"]
                 and all(
-                    isinstance(arg.annotation, ast.Name)
-                    and arg.annotation.id == expected
+                    self._annotation_name(arg.annotation) == expected
                     for arg, expected in zip(gr.args.args, ("str", "WeatherClient"), strict=False)
                 )
             )

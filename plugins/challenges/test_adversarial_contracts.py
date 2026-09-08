@@ -1595,6 +1595,43 @@ def test_error_recovery_no_demo_labels_earn_no_demo_credit():
     assert demo["earned"] == 0.0
 
 
+def _signature_response(client_annotation: str) -> str:
+    # A minimal response with all four signature hits; only the client
+    # annotation form varies.
+    return (
+        "class AllProvidersFailedError(Exception):\n    pass\n"
+        "class WeatherClient:\n    async def fetch(self, provider, city):\n        return {}\n"
+        f"async def get_weather_resilient(city: str, client: {client_annotation}) -> dict:\n    return {{}}\n"
+        "async def demo():\n    ...\n"
+    )
+
+
+def test_error_recovery_string_literal_forward_ref_earns_full_signature_credit():
+    # Measured pre-fix (ER-5): a string-literal forward reference
+    # (``client: "WeatherClient"``) parsed as a string Constant, not a Name,
+    # so the signature check (isinstance(annotation, ast.Name)) failed and the
+    # response lost the gr_sig hit (3/4 = 1.5 instead of 2.0).
+    result = ErrorRecoveryPlugin().evaluate(_signature_response('"WeatherClient"'))
+    sig = next(item for item in result.rubric if item["name"] == "Typed injectable signatures")
+    assert sig["earned"] == 2.0
+
+
+def test_error_recovery_name_annotation_still_earns_full_signature_credit():
+    # Positive control: a plain Name annotation must keep earning full credit.
+    result = ErrorRecoveryPlugin().evaluate(_signature_response("WeatherClient"))
+    sig = next(item for item in result.rubric if item["name"] == "Typed injectable signatures")
+    assert sig["earned"] == 2.0
+
+
+@pytest.mark.parametrize("annotation", ["int", '"int"'])
+def test_error_recovery_wrong_annotation_loses_signature_credit(annotation):
+    # Negative control: a wrong annotation type must not earn the gr_sig hit.
+    # The string form (``"int"``) exercises the new string-Constant branch.
+    result = ErrorRecoveryPlugin().evaluate(_signature_response(annotation))
+    sig = next(item for item in result.rubric if item["name"] == "Typed injectable signatures")
+    assert sig["earned"] == 1.5
+
+
 @pytest.mark.parametrize("plugin", [ErrorRecoveryPlugin, EventProcessorPlugin])
 def test_executable_plugins_do_not_credit_stub_sources(plugin):
     assert plugin().score("class Placeholder:\n    pass") < 12.0
