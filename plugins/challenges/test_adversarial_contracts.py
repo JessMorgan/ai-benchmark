@@ -1348,6 +1348,25 @@ Task 4 init running complete."""
     assert labels["earned"] == 0.0
 
 
+def test_orchestration_edge_partial_credit_requires_valid_graph():
+    # Measured pre-fix: a cyclic (invalid) graph with edges still earned
+    # the 2.0 partial credit because only the full-credit branch required
+    # graph.valid.
+    response = """Task 1 [PARALLEL] process logs.
+Task 2 [PARALLEL] perform GeoIP lookup.
+Task 3 [SEQUENTIAL] anomaly detection.
+Task 4 [SEQUENTIAL] generate the PDF report.
+Task 2 [DEPENDS_ON: task 3]
+Task 3 [DEPENDS_ON: task 2]
+Task 1 init running complete.
+Task 2 init running complete.
+Task 3 init running complete.
+Task 4 init running complete."""
+    result = OrchestrationPlugin().evaluate(response)
+    tagging = next(item for item in result.rubric if item["name"] == "Explicit dependency tagging")
+    assert tagging["earned"] == 0.0
+
+
 def test_prd_content_in_wrong_heading_does_not_earn_local_credit():
     response = """## Notes
 Executive Summary FlowState. Problem pain. Goals 25%. Persona 1 and Persona 2.

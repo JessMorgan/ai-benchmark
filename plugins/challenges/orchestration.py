@@ -196,7 +196,7 @@ class OrchestrationPlugin(BenchmarkTaskPlugin):
             rubric.penalize_criterion("Task breakdown presence", 2.0, "declares more than four tasks")
         rubric.add_criterion(
             "Explicit dependency tagging", 4.0,
-            4.0 if valid and len(edges) >= 3 else (2.0 if edges else 0.0),
+            4.0 if valid and len(edges) >= 3 else (2.0 if valid and edges else 0.0),
             negative_findings=validity_findings,
         )
         labels_ok = True
