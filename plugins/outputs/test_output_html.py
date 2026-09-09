@@ -65,6 +65,24 @@ class TestHTMLOutputPlugin(unittest.TestCase):
         self.assertNotIn("<script>alert(1)</script>", html)
         self.assertIn("&lt;script&gt;", html)
 
+    def test_gen_html_fail_badge_truncates_before_escaping(self):
+        """The error badge truncates to 50 chars BEFORE escaping so a
+        special character at the boundary cannot split an HTML entity
+        (e.g. ``&amp;`` cut to ``&am``)."""
+        results = [dict(self.sample_results[1])]
+        results[0]["error"] = "a" * 49 + "&b"
+        html = self.plugin.generate(results, self.plugins)
+        self.assertIn("a" * 49 + "&amp;", html)
+        self.assertNotIn("a" * 49 + "&am\"", html)
+
+    def test_gen_html_judge_columns_enabled_by_judge_status(self):
+        """judge_enabled uses the shared _judge_enabled detection: a
+        judge_status value alone enables the judge columns."""
+        results = [dict(self.sample_results[0])]
+        results[0]["judge_status"] = "completed"
+        html = self.plugin.generate(results, self.plugins)
+        self.assertIn("Judge (0–100)", html)
+
     def test_gen_html_includes_session_seed(self):
         html = self.plugin.generate(self.sample_results, self.plugins, session_seed=12345)
         self.assertIn("12345", html)

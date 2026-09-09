@@ -9,6 +9,7 @@ import jinja2
 from benchmark.outputs import (
     _judge_consensus_by_contract,
     _judge_criteria,
+    _judge_enabled,
     _numeric_score,
     _plugin_token_counts,
     _plugin_total_score,
@@ -60,12 +61,7 @@ class HTMLOutputPlugin(BenchmarkOutputPlugin):
         session_seed: int | None = None,
     ) -> str | None:
         ok = [r for r in results if r["status"] == "ok"]
-        judge_enabled = any(
-            r.get("judge_models")
-            or r.get("judge_model")
-            or any(key.endswith(("_judge_score", "_judge_error")) for key in r)
-            for r in results
-        )
+        judge_enabled = _judge_enabled(results)
         rows = []
         for r in results:
             cls = "ok" if r["status"] == "ok" else "fail"
@@ -117,7 +113,7 @@ class HTMLOutputPlugin(BenchmarkOutputPlugin):
             if r["status"] == "ok":
                 cells += '<td class="ok-badge">✅</td>'
             else:
-                err = html_lib.escape(str(r.get('error') or '?'))[:50]
+                err = html_lib.escape(str(r.get('error') or '?')[:50])
                 cells += f'<td class="fail-badge" title="{err}">❌ {err}</td>'
             rows.append((cls, cells))
 

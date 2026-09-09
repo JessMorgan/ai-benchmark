@@ -66,7 +66,9 @@ def _pearson(left: list[float], right: list[float]) -> float | None:
     )
 
 
-def _valid_votes_by_judge(latest: dict[tuple[str, str], dict[str, Any]]) -> dict[str, dict[tuple[str, str, str], dict[str, Any]]]:
+def _valid_votes_by_judge(
+    latest: dict[tuple[str, str], dict[str, Any]],
+) -> tuple[list[str], dict[str, dict[tuple[str, str, str], dict[str, Any]]], dict[str, int]]:
     """Return valid votes keyed by judge and cell identity."""
     by_judge: dict[str, dict[tuple[str, str, str], dict[str, Any]]] = defaultdict(dict)
     failed: dict[str, int] = defaultdict(int)
@@ -87,7 +89,7 @@ def _valid_votes_by_judge(latest: dict[tuple[str, str], dict[str, Any]]) -> dict
                     by_judge[judge][cell] = vote
                 else:
                     failed[judge] += 1
-    return plugin_ids, by_judge, failed  # type: ignore[return-value]
+    return plugin_ids, by_judge, failed
 
 
 def judge_statistics(data: dict[str, Any]) -> dict[str, Any]:
@@ -96,12 +98,12 @@ def judge_statistics(data: dict[str, Any]) -> dict[str, Any]:
     plugin_ids, by_judge, failed = _valid_votes_by_judge(latest)
     per_judge = []
     for model in sorted(set(by_judge) | set(failed)):
-        votes = list(by_judge.get(model, {}).values())  # type: ignore[attr-defined]
+        votes = list(by_judge.get(model, {}).values())
         scores = [vote["score"] for vote in votes]
         conviction = [JUDGE_CONFIDENCE_WEIGHTS[vote["confidence"]] * 100 for vote in votes]
         deterministic: list[float] = []
         judged: list[float] = []
-        for (state_key, runner, plugin_id), vote in by_judge.get(model, {}).items():  # type: ignore[attr-defined]
+        for (state_key, runner, plugin_id), vote in by_judge.get(model, {}).items():
             score = latest[(state_key, runner)].get(f"{plugin_id}_score")
             if isinstance(score, (int, float)) and not isinstance(score, bool):
                 deterministic.append(float(score))
@@ -120,7 +122,7 @@ def judge_statistics(data: dict[str, Any]) -> dict[str, Any]:
             "valid_votes": len(votes),
             "criteria": criterion_count,
             "criteria_status_counts": criterion_status_counts,
-            "failed_attempts": failed.get(model, 0),  # type: ignore[attr-defined]
+            "failed_attempts": failed.get(model, 0),
             "mean_score": _mean_or_none(scores),
             "sample_sd": _sample_sd(scores),
             "mean_conviction": _mean_or_none(conviction),
@@ -136,9 +138,9 @@ def judge_statistics(data: dict[str, Any]) -> dict[str, Any]:
     judges = sorted(by_judge)
     for index, first in enumerate(judges):
         for second in judges[index + 1:]:
-            overlap = set(by_judge[first]) & set(by_judge[second])  # type: ignore[index]
+            overlap = set(by_judge[first]) & set(by_judge[second])
             differences = [
-                abs(by_judge[first][cell]["score"] - by_judge[second][cell]["score"])  # type: ignore[index,operator]
+                abs(by_judge[first][cell]["score"] - by_judge[second][cell]["score"])
                 for cell in overlap
             ]
             if differences:

@@ -5,6 +5,7 @@ from typing import Any
 from benchmark.outputs import (
     _judge_consensus_by_contract,
     _judge_criteria,
+    _judge_enabled,
     _numeric_score,
     _plugin_token_counts,
     _plugin_total_score,
@@ -85,13 +86,7 @@ class PDFOutputPlugin(BenchmarkOutputPlugin):
         if has_runner:
             col_w = [28, 12, 9]
             headers = ["Model", "Runner", "Load"]
-        judge_enabled = any(
-            r.get("judge_models")
-            or r.get("judge_model") is not None
-            or r.get("judge_status") not in (None, "disabled")
-            or any(key.endswith(("_judge_score", "_judge_error")) for key in r)
-            for r in results
-        )
+        judge_enabled = _judge_enabled(results)
         for p in active_plugins:
             # Keep the token columns narrow (6 units) so the extra
             # thinking/content/total columns don't widen the already

@@ -5,6 +5,7 @@ from typing import Any
 from benchmark.outputs import (
     _judge_consensus_by_contract,
     _judge_criteria,
+    _judge_enabled,
     _numeric_score,
     _plugin_token_counts,
     _plugin_total_score,
@@ -45,13 +46,7 @@ class MarkdownOutputPlugin(BenchmarkOutputPlugin):
         session_seed: int | None = None,
     ) -> str | None:
         ok = [r for r in results if r["status"] == "ok"]
-        judge_enabled = any(
-            r.get("judge_models")
-            or r.get("judge_model") is not None
-            or r.get("judge_status") not in (None, "disabled")
-            or any(key.endswith(("_judge_score", "_judge_error")) for key in r)
-            for r in results
-        )
+        judge_enabled = _judge_enabled(results)
         plugin_names = " | ".join(f"**{p.name}**" for p in active_plugins)
         seed_line = f"**Seed:** {session_seed}" if session_seed is not None else ""
         lines = [
@@ -69,15 +64,12 @@ class MarkdownOutputPlugin(BenchmarkOutputPlugin):
         ])
 
         has_runner = any(r.get("runner") for r in results)
-        header = "| # | Model | Runner |"
+        header = "| # | Model |"
+        if has_runner:
+            header += " Runner |"
         if judge_enabled:
             header += " Judge Models | Judge Status |"
-        header += " Load (s) |" if has_runner else "| # | Model |"
-        if not has_runner:
-            if judge_enabled:
-                header = "| # | Model | Judge Models | Judge Status | Load (s) |"
-            else:
-                header = "| # | Model | Load (s) |"
+        header += " Load (s) |"
         for p in active_plugins:
             header += (f" {p.name} Resp (s) | {p.name} TPS | {p.name} Think Tok | "
                        f"{p.name} Cont Tok | {p.name} Total Tok | {p.name} Score (0–100) |")
