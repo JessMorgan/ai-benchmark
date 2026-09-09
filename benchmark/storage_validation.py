@@ -38,12 +38,26 @@ def compare_read_models(
     left: Iterable[dict[str, Any]], right: Iterable[dict[str, Any]],
 ) -> ValidationReport:
     """Compare current result rows while ignoring presentation-only fields."""
+    # Model-level presentation-only fields that legitimately differ between
+    # the JSON and SQLite read models.
     ignored = {
         "timestamp", "total_time", "ttft", "session_seed", "judge_status",
-        "judge_models", "is_agent", "p_judge_models", "p_judge_consensus_by_contract",
-        "p_judge_selected_contract", "p_judge_queued", "p_attempt_count",
-        "p_plugin_version", "p_rubric", "p_diagnostics", "p_retry_reason",
+        "judge_models", "is_agent",
     }
+    # Per-plugin presentation-only fields are keyed by plugin id
+    # (e.g. ``code-review_rubric``), so match them by suffix. A literal
+    # ``p_`` prefix only matched the plugin id used by the parity test
+    # fixtures and never a real plugin id.
+    ignored_suffixes = (
+        "_judge_models", "_judge_consensus_by_contract",
+        "_judge_selected_contract", "_judge_queued", "_attempt_count",
+        "_plugin_version", "_rubric", "_diagnostics", "_retry_reason",
+        "_retry_reasons",
+    )
+
+    def _ignored(key: str) -> bool:
+        return key in ignored or key.endswith(ignored_suffixes)
+
     left_rows = _index(left)
     right_rows = _index(right)
     differences: list[ValidationDifference] = []
@@ -57,12 +71,12 @@ def compare_read_models(
         left_row = {
             key: _canonical_value(key, value)
             for key, value in left_rows[identity].items()
-            if key not in ignored
+            if not _ignored(key)
         }
         right_row = {
             key: _canonical_value(key, value)
             for key, value in right_rows[identity].items()
-            if key not in ignored
+            if not _ignored(key)
         }
         for key in sorted(set(left_row) | set(right_row)):
             left_value = _comparison_value(key, left_row.get(key))
