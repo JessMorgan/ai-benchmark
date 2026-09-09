@@ -8,6 +8,7 @@ from __future__ import annotations
 import copy
 import json
 import os
+import re
 import shutil
 import tempfile
 import threading
@@ -207,7 +208,7 @@ def _scan_model_info(raw: bytes, object_start: int) -> dict[str, dict[str, Any]]
                 try:
                     value = json.loads(span)
                     prefix = raw[max(object_start, value_start - 512) : value_start]
-                    key_match = list(__import__("re").finditer(
+                    key_match = list(re.finditer(
                         rb'"((?:\\.|[^"\\])*)"\s*:\s*$', prefix
                     ))
                     if key_match:
@@ -885,11 +886,6 @@ class BenchmarkState:
                     for s in scores
                 ):
                     info["status"] = "completed"
-                elif scores and any(
-                    isinstance(s, (int, float)) and not isinstance(s, bool)
-                    for s in scores
-                ):
-                    info["status"] = "pending"
                 else:
                     info["status"] = "pending"
 
@@ -1050,6 +1046,8 @@ class BenchmarkState:
                 self._apply_journal_event_locked(event)
                 self._journal_sequence = sequence
                 applied += 1
+            if applied:
+                self._mark_changed()
         return applied
 
     def _apply_journal_event_locked(self, event: dict[str, Any]) -> None:
