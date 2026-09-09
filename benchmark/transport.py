@@ -643,6 +643,19 @@ def _is_guard_abort(error: str | None) -> bool:
     return "budget exceeded" in lowered or "repetition detected" in lowered
 
 
+def _is_exhausted_429(error: str | None) -> bool:
+    """Recognize an HTTP 429 that exhausted its transport-level retries.
+
+    ``http._post_request_context`` surfaces an exhausted 429 as
+    ``"HTTP 429: ..."`` once its backoff budget is spent (immediately when
+    a source sets ``max_429_retries: 0``). A second logical attempt would
+    just hit the same rate limit, so it is terminal here. Mirrors
+    ``judging._is_exhausted_429``; transport cannot import it directly
+    because judging imports transport.
+    """
+    return isinstance(error, str) and error.lstrip().startswith("HTTP 429:")
+
+
 def _retry_plan(
     result: TransportResult,
     *,
@@ -656,8 +669,9 @@ def _retry_plan(
     next_alteration = "none"
     instruction = ""
     reason: str | None = None
-    if _is_guard_abort(result.error):
-        # Terminal regardless of policy: a retry would just re-hit the guard.
+    if _is_guard_abort(result.error) or _is_exhausted_429(result.error):
+        # Terminal regardless of policy: a retry would just re-hit the
+        # guard or the same rate limit.
         return next_alteration, instruction, reason
     if (
         (nature == "transport_error" and retry_policy.retry_on_transport_error)

@@ -58,6 +58,18 @@ class TestTransportRetry(unittest.TestCase):
                 self.assertEqual(execution.retry_reasons, [])
                 self.assertEqual(execution.attempts[0].result.response_nature, expected_nature)
 
+    def test_429_exhausted_does_not_logically_retry(self):
+        # A 429 that exhausted its transport-level retries is surfaced as
+        # "HTTP 429: ..." and must be terminal at the logical level: a
+        # second logical attempt would just hit the same rate limit.
+        responses = [StreamResult("", "", None, 1.0, "HTTP 429: rate limit exceeded (retries exhausted)", None, {})]
+        with mock.patch("benchmark.transport.stream_request", side_effect=responses) as request:
+            execution = execute_task(self._request(), retry_policy=BENCHMARK_RETRY_POLICY, base_prompt="base prompt")
+        self.assertEqual(execution.attempt_count, 1)
+        request.assert_called_once()
+        self.assertEqual(execution.retry_reasons, [])
+        self.assertEqual(execution.attempts[0].result.response_nature, "transport_error")
+
     def test_transport_error_retry_keeps_prompt_unchanged(self):
         responses = [StreamResult("", "", None, 1.0, "connection refused", None, {}), StreamResult("answer", "", 1.0, 2.0, None, "stop", {})]
         with mock.patch("benchmark.transport.stream_request", side_effect=responses):
