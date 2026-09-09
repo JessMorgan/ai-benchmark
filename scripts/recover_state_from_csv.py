@@ -16,6 +16,7 @@ import shutil
 import tempfile
 
 from benchmark.configuration import load_config, resolve_targets
+from benchmark.scheduling import _runner_state_key
 from benchmark.state import BenchmarkState
 from plugins import discover_plugins
 
@@ -124,7 +125,7 @@ def reconstruct_run_state(run_dir, *, apply=False):
     for row in rows:
         model = row["Model"]
         runner = row["Runner"]
-        state_key = model if runner == "http" else f"{model} [opencode]"
+        state_key = _runner_state_key(model, runner)
         if state_key in state_models:
             continue
         target = configured_targets.get(model)
@@ -141,7 +142,7 @@ def reconstruct_run_state(run_dir, *, apply=False):
     for row in rows:
         model = row["Model"]
         runner = row["Runner"]
-        state_key = model if runner == "http" else f"{model} [opencode]"
+        state_key = _runner_state_key(model, runner)
         info = state._model_info[state_key]
         ok = row["Status"] == "OK"
         error = row["Error"] or None
@@ -223,8 +224,7 @@ def reconstruct_run_state(run_dir, *, apply=False):
             reconstructed = json.load(handle)
         expected_ids = {
             (
-                row["Model"] if row["Runner"] == "http"
-                else f"{row['Model']} [opencode]",
+                _runner_state_key(row["Model"], row["Runner"]),
                 row["Runner"],
             )
             for row in rows
@@ -241,7 +241,7 @@ def reconstruct_run_state(run_dir, *, apply=False):
         }
         score_mismatches = []
         for row in rows:
-            key = row["Model"] if row["Runner"] == "http" else f"{row['Model']} [opencode]"
+            key = _runner_state_key(row["Model"], row["Runner"])
             result = by_id[(key, row["Runner"])]
             for pid, column in score_columns.items():
                 expected = "fail" if row[column] == "fail" else _number(row[column])

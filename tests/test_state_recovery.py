@@ -139,6 +139,70 @@ class TestStateRecovery(unittest.TestCase):
         self.assertFalse(_judge_complete(["judge-a", "judge-b"], votes, None))
         self.assertTrue(_judge_complete(["judge-a", "judge-b"], votes, 75))
 
+    def _make_runner_run(self, tmpdir, runner, model="model-a"):
+        """Create a single-row run for the given runner."""
+        run_dir = os.path.join(tmpdir, f"{runner}-run")
+        os.makedirs(run_dir)
+        with open(os.path.join(run_dir, "benchmark-config.yml"), "w", encoding="utf-8") as handle:
+            handle.write(
+                "sources:\n"
+                "  Local:\n"
+                "    api_url: http://127.0.0.1:1/chat/completions\n"
+                "    headers: {}\n"
+                "models:\n"
+                f"  {model}: Local\n"
+            )
+        fields = [
+            "Model", "Runner", "Source", "TTFT_s", "Total", "Time_s", "Status", "Error",
+            "code-review_Score_15", "code-review_Response_s", "code-review_Thinking_Tokens",
+            "code-review_Content_Tokens", "code-review_Total_Tokens", "code-review_TPS",
+            "code-review_Empty_Reason",
+        ]
+        with open(os.path.join(run_dir, "results.csv"), "w", newline="", encoding="utf-8") as handle:
+            writer = csv.DictWriter(handle, fieldnames=fields)
+            writer.writeheader()
+            writer.writerow({
+                "Model": model, "Runner": runner, "Source": "Local",
+                "TTFT_s": "0.1", "Total": "1.0", "Time_s": "1.0",
+                "Status": "OK", "Error": "",
+                "code-review_Score_15": "10", "code-review_Response_s": "0.5",
+                "code-review_Thinking_Tokens": "0", "code-review_Content_Tokens": "10",
+                "code-review_Total_Tokens": "10", "code-review_TPS": "20",
+                "code-review_Empty_Reason": "",
+            })
+        return run_dir
+
+    def test_pi_state_key_recovery(self):
+        """Pi-runner rows recover to the ``[pi]`` key family, not ``[opencode]``.
+
+        Regression: the recovery script once hard-coded ``[opencode]`` for every
+        non-HTTP runner, so a ``pi`` leg was mislabeled as ``model [opencode]``
+        and the recovered state was unusable for pi runs.
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            run_dir = self._make_runner_run(tmpdir, "pi")
+            report, reconstructed = reconstruct_run_state(run_dir)
+            self.assertEqual(report["rows"], 1)
+            self.assertEqual(report["models"], 1)
+            self.assertTrue(report["identities_match"])
+            self.assertEqual(report["score_mismatches"], 0)
+            results = reconstructed["results"]
+            self.assertEqual(len(results), 1)
+            self.assertEqual(results[0]["state_key"], "model-a [pi]")
+            self.assertEqual(results[0]["runner"], "pi")
+            self.assertIn("model-a [pi]", reconstructed["model_info"])
+            self.assertNotIn("model-a [opencode]", reconstructed["model_info"])
+
+    def test_opencode_state_key_recovery(self):
+        """OpenCode-runner rows still recover to the ``[opencode]`` key family."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            run_dir = self._make_runner_run(tmpdir, "opencode")
+            _report, reconstructed = reconstruct_run_state(run_dir)
+            results = reconstructed["results"]
+            self.assertEqual(results[0]["state_key"], "model-a [opencode]")
+            self.assertEqual(results[0]["runner"], "opencode")
+            self.assertIn("model-a [opencode]", reconstructed["model_info"])
+
 
 if __name__ == "__main__":
     unittest.main()
