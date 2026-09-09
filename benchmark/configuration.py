@@ -88,7 +88,7 @@ def load_dotenv_file(path: str | None = None) -> bool:
 
 def load_config(path: str) -> Any:
     """Load benchmark config from a JSON or YAML file. Returns the full config dict."""
-    with open(path) as f:
+    with open(path, encoding="utf-8") as f:
         if path.lower().endswith((".yaml", ".yml")):
             data = yaml.safe_load(f)
             if data is None:
