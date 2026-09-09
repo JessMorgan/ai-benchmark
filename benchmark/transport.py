@@ -34,9 +34,12 @@ from .transport_options import (
     PiTransportOptions,
 )
 
-# Default generation budget for benchmark tasks when no explicit max_tokens
-# can be parsed. Deliberately separate from the judge default so benchmark
-# tasks never fall back to the (smaller) judging budget.
+# Fallback for the benchmark retry-guidance budget math (the 75% reported
+# split in ``_retry_prompt_alteration``) when a request's max_tokens cannot
+# be parsed as an int. Benchmark tasks always carry an explicit, validated
+# max_tokens, so this only guards the defensive parse; it is deliberately
+# separate from the judge default so benchmark retry guidance never falls
+# back to the (smaller) judging budget.
 BENCHMARK_DEFAULT_MAX_TOKENS = 16384
 
 
@@ -627,6 +630,32 @@ def _execute_opencode(request: OpenCodeRequest, *, run_process_fn: Any = None) -
     )
 
 
+def _is_guard_abort(error: str | None) -> bool:
+    """Recognize a live-stream guard abort produced by ``http._StreamGuards``.
+
+    The guard aborts a streaming leg the moment content or thinking exceeds
+    its token budget or falls into a dense echo loop, with one of four fixed
+    error strings (see ``_StreamGuards.check`` in ``benchmark/http.py``). A
+    second same-budget generation hits the same guard and aborts again, so
+    these errors are terminal for the logical retry engine.
+    """
+    lowered = str(error or "").lower()
+    return "budget exceeded" in lowered or "repetition detected" in lowered
+
+
+def _is_exhausted_429(error: str | None) -> bool:
+    """Recognize an HTTP 429 that exhausted its transport-level retries.
+
+    ``http._post_request_context`` surfaces an exhausted 429 as
+    ``"HTTP 429: ..."`` once its backoff budget is spent (immediately when
+    a source sets ``max_429_retries: 0``). A second logical attempt would
+    just hit the same rate limit, so it is terminal here. Mirrors
+    ``judging._is_exhausted_429``; transport cannot import it directly
+    because judging imports transport.
+    """
+    return isinstance(error, str) and error.lstrip().startswith("HTTP 429:")
+
+
 def _retry_plan(
     result: TransportResult,
     *,
@@ -640,6 +669,10 @@ def _retry_plan(
     next_alteration = "none"
     instruction = ""
     reason: str | None = None
+    if _is_guard_abort(result.error) or _is_exhausted_429(result.error):
+        # Terminal regardless of policy: a retry would just re-hit the
+        # guard or the same rate limit.
+        return next_alteration, instruction, reason
     if (
         (nature == "transport_error" and retry_policy.retry_on_transport_error)
         or (nature == "timeout" and retry_policy.retry_on_timeout)
@@ -686,7 +719,7 @@ def _execute_pi(request: PiRequest) -> TransportResult:
         pi_config=pi_options.config,
         node=pi_options.node or PI_DEFAULT_NODE,
         worker=pi_options.worker,
-        output_dir=None,
+        output_dir=pi_options.output_dir,
         target_key=pi_options.target_key or request.common.source,
         plugin_id=pi_options.plugin_id or request.common.pid or "plugin",
         stop_event=request.common.stop_event,

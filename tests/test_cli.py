@@ -2447,7 +2447,7 @@ class TestTokenLimitRetry(unittest.TestCase):
         }
         state = self.module.BenchmarkState({"dummy-model": "Local"}, [plugin.id])
         truncated = StreamResult("", "thinking... " * 5000, 1.0, 1.5, None, "length", {})
-        retry = StreamResult("A real answer after a bigger budget.", "thinking...", 1.5, 2.5, None, "stop", {})
+        retry = StreamResult("A real answer after a same-budget retry.", "thinking...", 1.5, 2.5, None, "stop", {})
         captured = []
         prompts = []
 

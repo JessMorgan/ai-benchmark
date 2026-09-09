@@ -37,6 +37,7 @@ class PiTransportOptions:
     node: str | None = None
     worker: str | None = None
     config: dict[str, Any] | None = None
+    output_dir: str | None = None
     target_key: str | None = None
     plugin_id: str | None = None
 

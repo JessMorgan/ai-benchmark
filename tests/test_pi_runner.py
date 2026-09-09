@@ -154,6 +154,42 @@ class TestPiTransport(unittest.TestCase):
         self.assertEqual(result.runner_metadata["requested_tools"], ["read"])
         self.assertTrue(result.runner_metadata["tool_called"])
 
+    def test_pi_transport_forwards_output_dir_for_debug_logs(self):
+        # The transport must plumb PiTransportOptions.output_dir through to
+        # the Pi runner so --debug-logs transcripts are actually written
+        # (previously the transport hardcoded output_dir=None).
+        process_result = PiProcessResult(
+            text="answer",
+            think_text="",
+            stderr="",
+            elapsed=1.0,
+            error=None,
+            returncode=0,
+            finish_reason="stop",
+            usage={},
+            tool_called=False,
+            tools=(),
+            requested_tools=(),
+            permissions={},
+            provider="local",
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            request = PiRequest(
+                GenerationFields(
+                    prompt="prompt",
+                    max_tokens=32,
+                    source_config={"Local": {"api_url": "http://localhost/v1"}},
+                    api_model="model",
+                    source="Local",
+                    timeout=5,
+                ),
+                PiTransportOptions(config={"tools": ["read"]}, output_dir=tmpdir),
+            )
+            with mock.patch("benchmark.transport.run_pi_process", return_value=process_result) as run:
+                execute_transport(request)
+            run.assert_called_once()
+            self.assertEqual(run.call_args.kwargs["output_dir"], tmpdir)
+
 
 class TestPiConfigurationAndSelection(unittest.TestCase):
     def test_pi_config_is_validated_and_preserved(self):

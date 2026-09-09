@@ -416,9 +416,11 @@ class TestCoreHelpers:
         assert result["permissions"] == {"read": "allow"}
 
 
-class TestCoreSchemaClassification:
+class TestSchemaRequestMetadata:
+    """Pin the production classifier in benchmark.task_execution."""
+
     def test_schema_request_metadata_not_requested(self) -> None:
-        from benchmark.core import _schema_request_metadata
+        from benchmark.task_execution import _schema_request_metadata
 
         plugin = MagicMock()
         plugin.get_response_schema.return_value = None
@@ -426,7 +428,7 @@ class TestCoreSchemaClassification:
         assert result["schema_request_status"] == "schema_not_requested"
 
     def test_schema_request_metadata_not_applied(self) -> None:
-        from benchmark.core import _schema_request_metadata
+        from benchmark.task_execution import _schema_request_metadata
 
         plugin = MagicMock()
         plugin.get_response_schema.return_value = {"type": "object"}
@@ -436,7 +438,7 @@ class TestCoreSchemaClassification:
         assert result["schema_request_status"] == "schema_not_applied_by_runner"
 
     def test_schema_request_metadata_fallback_valid(self) -> None:
-        from benchmark.core import _schema_request_metadata
+        from benchmark.task_execution import _schema_request_metadata
 
         plugin = MagicMock()
         plugin.get_response_schema.return_value = {"type": "object"}
@@ -446,7 +448,7 @@ class TestCoreSchemaClassification:
         assert result["schema_request_status"] == "schema_fallback_json_object_valid"
 
     def test_schema_request_metadata_fallback_invalid(self) -> None:
-        from benchmark.core import _schema_request_metadata
+        from benchmark.task_execution import _schema_request_metadata
 
         plugin = MagicMock()
         plugin.get_response_schema.return_value = {"type": "object"}
@@ -456,16 +458,18 @@ class TestCoreSchemaClassification:
         assert result["schema_request_status"] == "schema_fallback_json_object_invalid"
 
     def test_schema_request_metadata_fallback_unknown(self) -> None:
-        from benchmark.core import _schema_request_metadata
+        # Production classifies a fallback with unknown validity and no error
+        # as schema_accepted_unknown (there is no fallback-unknown status).
+        from benchmark.task_execution import _schema_request_metadata
 
         plugin = MagicMock()
         plugin.get_response_schema.return_value = {"type": "object"}
         result = _schema_request_metadata(
             plugin, {}, schema_fallback_used=True, response_schema_valid=None)
-        assert result["schema_request_status"] == "schema_fallback_json_object_unknown"
+        assert result["schema_request_status"] == "schema_accepted_unknown"
 
     def test_schema_request_metadata_fallback_failed(self) -> None:
-        from benchmark.core import _schema_request_metadata
+        from benchmark.task_execution import _schema_request_metadata
 
         plugin = MagicMock()
         plugin.get_response_schema.return_value = {"type": "object"}
@@ -474,7 +478,7 @@ class TestCoreSchemaClassification:
         assert result["schema_request_status"] == "schema_fallback_json_object_failed"
 
     def test_schema_request_metadata_accepted_valid(self) -> None:
-        from benchmark.core import _schema_request_metadata
+        from benchmark.task_execution import _schema_request_metadata
 
         plugin = MagicMock()
         plugin.get_response_schema.return_value = {"type": "object"}
@@ -484,7 +488,7 @@ class TestCoreSchemaClassification:
         assert result["schema_request_status"] == "schema_accepted_valid"
 
     def test_schema_request_metadata_accepted_invalid(self) -> None:
-        from benchmark.core import _schema_request_metadata
+        from benchmark.task_execution import _schema_request_metadata
 
         plugin = MagicMock()
         plugin.get_response_schema.return_value = {"type": "object"}
@@ -493,7 +497,7 @@ class TestCoreSchemaClassification:
         assert result["schema_request_status"] == "schema_accepted_invalid"
 
     def test_schema_request_metadata_accepted_unknown(self) -> None:
-        from benchmark.core import _schema_request_metadata
+        from benchmark.task_execution import _schema_request_metadata
 
         plugin = MagicMock()
         plugin.get_response_schema.return_value = {"type": "object"}
@@ -501,26 +505,28 @@ class TestCoreSchemaClassification:
             plugin, {}, response_schema_valid=None)
         assert result["schema_request_status"] == "schema_accepted_unknown"
 
-    def test_schema_request_metadata_rejected(self) -> None:
-        from benchmark.core import _schema_request_metadata
+    def test_schema_request_metadata_http400_schema_error_is_transport_error(self) -> None:
+        # Production does not special-case HTTP 400/422 schema rejections;
+        # any non-fallback error is a transport error.
+        from benchmark.task_execution import _schema_request_metadata
 
         plugin = MagicMock()
         plugin.get_response_schema.return_value = {"type": "object"}
         result = _schema_request_metadata(
             plugin, {}, error="HTTP 400 schema rejected")
-        assert result["schema_request_status"] == "schema_rejected"
+        assert result["schema_request_status"] == "schema_transport_error"
 
-    def test_schema_request_metadata_accepted_invalid_error(self) -> None:
-        from benchmark.core import _schema_request_metadata
+    def test_schema_request_metadata_invalid_completion_error_is_transport_error(self) -> None:
+        from benchmark.task_execution import _schema_request_metadata
 
         plugin = MagicMock()
         plugin.get_response_schema.return_value = {"type": "object"}
         result = _schema_request_metadata(
             plugin, {}, error="invalid completion response")
-        assert result["schema_request_status"] == "schema_accepted_invalid"
+        assert result["schema_request_status"] == "schema_transport_error"
 
     def test_schema_request_metadata_transport_error(self) -> None:
-        from benchmark.core import _schema_request_metadata
+        from benchmark.task_execution import _schema_request_metadata
 
         plugin = MagicMock()
         plugin.get_response_schema.return_value = {"type": "object"}
