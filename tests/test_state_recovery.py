@@ -1,5 +1,7 @@
 """Tests for explicit CSV-based benchmark state recovery."""
+import contextlib
 import csv
+import io
 import json
 import os
 import tempfile
@@ -202,6 +204,42 @@ class TestStateRecovery(unittest.TestCase):
             self.assertEqual(results[0]["state_key"], "model-a [opencode]")
             self.assertEqual(results[0]["runner"], "opencode")
             self.assertIn("model-a [opencode]", reconstructed["model_info"])
+
+    def test_config_path_read_from_run_info(self):
+        """The config capsule filename is read from run-info.json metadata.
+
+        Regression: the recovery script once hard-coded ``benchmark-config.yml``,
+        so a run whose operator used a differently-named config file could not
+        be recovered.
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            run_dir = self._make_runner_run(tmpdir, "http", model="model-a")
+            os.remove(os.path.join(run_dir, "benchmark-config.yml"))
+            with open(os.path.join(run_dir, "my-config.json"), "w", encoding="utf-8") as handle:
+                json.dump({
+                    "sources": {"Local": {
+                        "api_url": "http://127.0.0.1:1/chat/completions",
+                        "headers": {},
+                    }},
+                    "models": {"model-a": "Local"},
+                }, handle)
+            with open(os.path.join(run_dir, "run-info.json"), "w", encoding="utf-8") as handle:
+                json.dump({"config_file": "/operator/path/my-config.json"}, handle)
+            report, _reconstructed = reconstruct_run_state(run_dir)
+            self.assertEqual(report["rows"], 1)
+            self.assertTrue(report["identities_match"])
+            self.assertEqual(report["score_mismatches"], 0)
+
+    def test_config_path_falls_back_to_default_with_warning(self):
+        """A missing run-info.json config path falls back to the default name."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            run_dir = self._make_runner_run(tmpdir, "http", model="model-a")
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                report, _reconstructed = reconstruct_run_state(run_dir)
+            self.assertEqual(report["rows"], 1)
+            self.assertTrue(report["identities_match"])
+            self.assertIn("benchmark-config.yml", stderr.getvalue())
 
 
 if __name__ == "__main__":
