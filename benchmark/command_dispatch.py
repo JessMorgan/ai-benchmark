@@ -9,7 +9,11 @@ from typing import Any
 
 from benchmark.cli_parser import generate_shell_completion
 from benchmark.commands import check_sqlite, generate_reports, list_plugins
-from benchmark.configuration import dump_default_config, generate_config_from_api, load_config
+from benchmark.configuration import (
+    dump_default_config,
+    generate_config_from_api,
+    load_config_raw,
+)
 from benchmark.judge_analysis import write_disagreement_queue
 from plugins import discover_plugins
 
@@ -75,7 +79,7 @@ def dispatch_early_command(args: Any) -> bool:
         if ext not in (".json", ".yaml", ".yml"):
             print(f"❌ Unsupported config format: {ext}. Use .json, .yaml, or .yml.", file=sys.stderr)
             raise SystemExit(1)
-        cfg = load_config(args.convert_config)
+        cfg = load_config_raw(args.convert_config)
         if ext in (".yaml", ".yml"):
             print(json.dumps(cfg, indent=2))
         else:

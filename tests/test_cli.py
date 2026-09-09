@@ -221,7 +221,9 @@ class TestCLIArgs(unittest.TestCase):
         self.assertFalse(report["scores_affected"])
         self.assertEqual(report["results"][0]["status"], "schema_not_supported_by_source")
 
-    def test_convert_config_loads_dotenv_from_cwd(self):
+    def test_convert_config_does_not_expand_env_vars(self):
+        # --convert-config must print the file verbatim: expanding ${VAR}
+        # would leak credentials (e.g. API keys) to stdout.
         project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         launcher = os.path.join(project_root, "ai-benchmark.py")
         with tempfile.TemporaryDirectory() as tmp:
@@ -240,8 +242,8 @@ class TestCLIArgs(unittest.TestCase):
                 env=env,
             )
         self.assertEqual(result.returncode, 0)
-        self.assertIn("hello-from-env", result.stdout)
-        self.assertNotIn("${MY_SECRET}", result.stdout)
+        self.assertIn("${MY_SECRET}", result.stdout)
+        self.assertNotIn("hello-from-env", result.stdout)
 
     def test_help_and_completion_expose_no_preload(self):
         result = subprocess.run(
