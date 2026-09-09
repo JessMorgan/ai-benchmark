@@ -275,7 +275,6 @@ class SQLiteRunStore:
         self.identity: RunIdentity | None = None
         self._metadata: dict[str, Any] = {}
         self._results: dict[tuple[Any, Any], dict[str, Any]] = {}
-        self._connection: sqlite3.Connection | None = None
         self.benchmark: SQLiteBenchmarkStore | None = None
         self.judges: SQLiteJudgeStore | None = None
         self._revision_id: int | None = None
@@ -398,10 +397,9 @@ class SQLiteRunStore:
         # dedicated connection at startup, after ``prepare_run`` has flushed
         # the writer, so no writer work is in flight.
         self.flush(timeout=30)
-        from ..sqlite_schema import configure_connection, connect_database
+        from ..sqlite_schema import connect_database
         connection = connect_database(self.path)
         try:
-            configure_connection(connection)
             store = SQLiteContinuationStore(connection)
             self._revision_id = store.create_continuation(
                 self.identity.run_id,
@@ -748,9 +746,6 @@ class SQLiteRunStore:
         self.writer.flush(timeout=timeout)
 
     def close(self, timeout: float | None = None) -> bool:
-        if self._connection is not None:
-            self._connection.close()
-            self._connection = None
         return cast(bool, self.writer.close(timeout=timeout))  # type: ignore[redundant-cast]
 
 
