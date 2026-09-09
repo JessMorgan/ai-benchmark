@@ -12,18 +12,18 @@ The CSV output plugin generates a `results.csv` file containing the raw benchmar
 
 ## Output Columns
 
-Columns are emitted in this order: `Model`, `Runner`, `Source`, `TTFT_s`,
-then — when judging is enabled — `Judge_Models` and `Judge_Status`, then the
-per-plugin block for each active plugin, and finally the overall columns.
+Columns are emitted in this order: `Model`, `Runner`, `Source`, then — when
+judging is enabled — `Judge_Models` and `Judge_Status`, then `TTFT_s`, then
+the per-plugin block for each active plugin, and finally the overall columns.
 
 | Column | Description |
 |---|---|
 | `Model` | Model name |
 | `Runner` | Runner that produced the row (`http`, `opencode`, or `pi`) |
 | `Source` | Source identifier |
-| `TTFT_s` | Time to first token (seconds) |
 | `Judge_Models` | Comma-separated judge model list (judge runs only) |
 | `Judge_Status` | Judge status for the row (judge runs only) |
+| `TTFT_s` | Time to first token (seconds) |
 | `<plugin>_Response_s` | Response time per plugin (seconds) |
 | `<plugin>_Thinking_Tokens` | Thinking/reasoning tokens per plugin |
 | `<plugin>_Content_Tokens` | Content (final answer) tokens per plugin |
