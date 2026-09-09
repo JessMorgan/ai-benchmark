@@ -1,12 +1,12 @@
 """Backend-neutral persistence façade for benchmark runs."""
 from __future__ import annotations
 
+import concurrent.futures
 import hashlib
 import json
 import os
 import sqlite3
 from collections.abc import Callable, Iterable
-from concurrent.futures import Future
 from dataclasses import dataclass
 from typing import Any, NoReturn, Protocol, cast, runtime_checkable
 
@@ -418,7 +418,7 @@ class SQLiteRunStore:
             connection.close()
 
     def _connection_operation(self, operation: Any) -> Any:
-        future = cast(Future[Any], self.writer.submit(operation))  # type: ignore[redundant-cast]
+        future = cast(concurrent.futures.Future[Any], self.writer.submit(operation))  # type: ignore[redundant-cast]
         return future.result(timeout=30)
 
     def prepare_run(self, targets: Iterable[TargetRecord],
@@ -637,16 +637,16 @@ class SQLiteRunStore:
         self._connection_operation(operation)
         self._contract_records[plugin_id] = spec
 
-    def _submit_async(self, operation: Callable[[Any], Any]) -> Future[Any]:
+    def _submit_async(self, operation: Callable[[Any], Any]) -> concurrent.futures.Future[Any]:
         """Queue an operation without blocking the caller.
 
         The writer already reports commit failures through ``failure_callback``
         and ``writer.failures``; retrieving the future's exception here merely
         prevents an un-retrieved-exception warning when the future is collected.
         """
-        future = cast(Future[Any], self.writer.submit(operation))  # type: ignore[redundant-cast]
+        future = cast(concurrent.futures.Future[Any], self.writer.submit(operation))  # type: ignore[redundant-cast]
 
-        def _consume(done: Future[Any]) -> None:
+        def _consume(done: concurrent.futures.Future[Any]) -> None:
             try:
                 done.exception()
             except Exception:  # noqa: BLE001, S110 - already reported by the writer
@@ -655,9 +655,9 @@ class SQLiteRunStore:
         future.add_done_callback(_consume)
         return future
 
-    def submit(self, operation: Callable[[Any], Any]) -> Future[Any]:
-        """Submit a normalized SQLite operation to the background writer."""
-        return cast(Future[Any], self.writer.submit(operation))  # type: ignore[redundant-cast]
+    def submit(self, operation: Callable[[Any], Any]) -> concurrent.futures.Future[Any]:
+        """Queue a normalized SQLite operation to the background writer."""
+        return cast(concurrent.futures.Future[Any], self.writer.submit(operation))  # type: ignore[redundant-cast]
 
     def record_result(self, result: dict[str, Any]) -> None:
         key = (result.get("state_key", result.get("model")), result.get("runner", "http"))
@@ -713,7 +713,7 @@ class SQLiteRunStore:
         del path, plugin_versions, raise_on_error
         try:
             self.writer.flush(timeout=10)
-        except (OSError, RuntimeError, TimeoutError):
+        except concurrent.futures.TimeoutError:
             return False
         return not bool(self.writer.failures)
 
