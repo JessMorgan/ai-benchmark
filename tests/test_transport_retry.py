@@ -38,6 +38,26 @@ class TestTransportRetry(unittest.TestCase):
         self.assertIn("RETRY GUIDANCE", execution.attempts[1].request_prompt)
         self.assertEqual(request.call_count, 2)
 
+    def test_budget_abort_does_not_retry(self):
+        # Live-stream guard aborts (content/thinking budget exceeded, dense
+        # repetition) are terminal: a second same-budget generation hits the
+        # same guard and aborts again, so no logical retry is scheduled.
+        guard_aborts = (
+            ("Content budget exceeded (16385 tokens)", "token_limit"),
+            ("Thinking budget exceeded (32769 tokens)", "token_limit"),
+            ("Repetition detected in content — stream aborted", "repetition_abort"),
+            ("Repetition detected in thinking — stream aborted", "repetition_abort"),
+        )
+        for error, expected_nature in guard_aborts:
+            with self.subTest(error=error):
+                responses = [StreamResult("partial", "", 1.0, 2.0, error, None, {})]
+                with mock.patch("benchmark.transport.stream_request", side_effect=responses) as request:
+                    execution = execute_task(self._request(), retry_policy=BENCHMARK_RETRY_POLICY, base_prompt="base prompt")
+                self.assertEqual(execution.attempt_count, 1)
+                request.assert_called_once()
+                self.assertEqual(execution.retry_reasons, [])
+                self.assertEqual(execution.attempts[0].result.response_nature, expected_nature)
+
     def test_transport_error_retry_keeps_prompt_unchanged(self):
         responses = [StreamResult("", "", None, 1.0, "connection refused", None, {}), StreamResult("answer", "", 1.0, 2.0, None, "stop", {})]
         with mock.patch("benchmark.transport.stream_request", side_effect=responses):

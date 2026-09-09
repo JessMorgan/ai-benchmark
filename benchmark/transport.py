@@ -34,9 +34,12 @@ from .transport_options import (
     PiTransportOptions,
 )
 
-# Default generation budget for benchmark tasks when no explicit max_tokens
-# can be parsed. Deliberately separate from the judge default so benchmark
-# tasks never fall back to the (smaller) judging budget.
+# Fallback for the benchmark retry-guidance budget math (the 75% reported
+# split in ``_retry_prompt_alteration``) when a request's max_tokens cannot
+# be parsed as an int. Benchmark tasks always carry an explicit, validated
+# max_tokens, so this only guards the defensive parse; it is deliberately
+# separate from the judge default so benchmark retry guidance never falls
+# back to the (smaller) judging budget.
 BENCHMARK_DEFAULT_MAX_TOKENS = 16384
 
 
@@ -627,6 +630,19 @@ def _execute_opencode(request: OpenCodeRequest, *, run_process_fn: Any = None) -
     )
 
 
+def _is_guard_abort(error: str | None) -> bool:
+    """Recognize a live-stream guard abort produced by ``http._StreamGuards``.
+
+    The guard aborts a streaming leg the moment content or thinking exceeds
+    its token budget or falls into a dense echo loop, with one of four fixed
+    error strings (see ``_StreamGuards.check`` in ``benchmark/http.py``). A
+    second same-budget generation hits the same guard and aborts again, so
+    these errors are terminal for the logical retry engine.
+    """
+    lowered = str(error or "").lower()
+    return "budget exceeded" in lowered or "repetition detected" in lowered
+
+
 def _retry_plan(
     result: TransportResult,
     *,
@@ -640,6 +656,9 @@ def _retry_plan(
     next_alteration = "none"
     instruction = ""
     reason: str | None = None
+    if _is_guard_abort(result.error):
+        # Terminal regardless of policy: a retry would just re-hit the guard.
+        return next_alteration, instruction, reason
     if (
         (nature == "transport_error" and retry_policy.retry_on_transport_error)
         or (nature == "timeout" and retry_policy.retry_on_timeout)
