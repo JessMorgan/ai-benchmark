@@ -174,7 +174,7 @@ To enumerate the site's model slugs and emit a ready-to-run config, run
 ## CLI Reference
 
 ```
-aio-benchmark [options]           # installed console script
+ai-benchmark [options]            # installed console script
 python ai-benchmark.py [options]  # repository launcher
 ```
 
@@ -197,7 +197,8 @@ python ai-benchmark.py [options]  # repository launcher
 | `--plugins-blacklist ID [ID ...]` | Run all plugins except these |
 | `--no-rerun-failed` | Keep failed models failed on resume |
 | `--seed INT` | Fixed random seed for all API requests |
-| `--runner {http,opencode,both}` | Select the existing HTTP runner (default), the OpenCode runner, or both (per-target OpenCode→HTTP pipeline) |
+| `--runner {http,opencode,pi,both}` | Select the HTTP runner (default), OpenCode, Pi, or the per-target OpenCode→HTTP pipeline |
+| `--runners RUNNERS` | Run an explicit comma-separated set of runners (e.g. `http,pi`); `--runner both` remains the legacy OpenCode→HTTP pipeline |
 | `--no-preload` | Disable configured source preload probes |
 | `--retry-on-429 / --no-retry-on-429` | Enable or disable default HTTP 429 backoff |
 | `--retry-on-timeout / --no-retry-on-timeout` | Retry requests that hit the timeout deadline (default: terminal) |
@@ -205,11 +206,18 @@ python ai-benchmark.py [options]  # repository launcher
 | `--storage {json,sqlite}` | Select run storage; SQLite is the default, JSON remains an explicit compatibility fallback |
 | `--storage-profile {compact,debug,portable}` | Select artifact policy; compact omits full successful transcripts |
 | `--debug-logs` | Retain redacted full request/response and runner diagnostics as append-only gzip logs |
+| `--output-format FORMAT [...]` | Generate one or more reports (`csv`, `md`, `html`, `pdf`); omit to generate no reports |
+| `--generate-reports PATH` | Generate selected reports from an existing run directory or `benchmark_state.json` without running models |
+| `--revision N` | Report a specific SQLite revision number or ID (default: current revision) |
 | `--import-to-sqlite STATE_JSON` | Convert a legacy JSON state file without modifying the source |
+| `--sqlite-output PATH` | SQLite output path for `--import-to-sqlite` (default: `run.sqlite3` beside the JSON) |
+| `--overwrite-sqlite` | Allow `--import-to-sqlite` to replace an existing SQLite output file |
 | `--import-debug-logs` | Include legacy `.log`/`.log.gz` files during JSON-to-SQLite conversion |
 | `--measure-storage` | Print a reproducible synthetic JSON/SQLite size and persistence-latency baseline |
 | `--compare-storage JSON SQLITE` | Compare current JSON and SQLite read models without writing either backend |
 | `--check-sqlite PATH` | Run read-only SQLite integrity checks |
+| `--schema-sentinel` | Run the non-scoring schema compatibility probe for every configured model and print JSON |
+| `--pi-probe` | Run the non-scoring Pi worker/provider compatibility probe and print JSON |
 | `--judge-models MODEL [...]` | Run confidence-weighted semantic judging |
 | `--build-judge-queue STATE_FILE` | Build a ranked judge-disagreement queue |
 | `--judge-queue-output PATH` | Choose the judge queue output path |
@@ -247,15 +255,15 @@ After completion the output directory contains:
 
 | File | Format |
 |---|---|
-| `results.md` | Markdown report |
-| `results.csv` | CSV data |
-| `results.html` | HTML report |
-| `results.pdf` | PDF report (requires `fpdf2`) |
+| `results.md` / `results.csv` / `results.html` / `results.pdf` | Reports for the formats passed to `--output-format` (default: no reports are generated; PDF requires `fpdf2`) |
 | `run.sqlite3` | Authoritative normalized run store for new runs |
-| `logs/*.log.gz` | Redacted append-only debug logs when debug logging is enabled |
-| `responses/` | Per-(model, plugin) directories with prompts, final responses, reasoning sidecars, and metadata when `--save-responses` is enabled |
+| `results.journal.jsonl` | Append-only result/judge event journal used for crash recovery |
 | `benchmark_state.json` | Legacy JSON resume state when `--storage json` is selected |
 | `run-info.json` | Run metadata, concurrency/preload data, and HTTP 429 backoff statistics |
+| `<config basename>` | Copy of the input config persisted as a time capsule under its original filename |
+| `judge-inputs/` | Retained judge input sidecars when `--judge-models` is used |
+| `logs/*.log.gz` | Redacted append-only debug logs when debug logging is enabled |
+| `responses/` | Per-(model, plugin) directories with prompts, final responses, reasoning sidecars, and metadata when `--save-responses` is enabled |
 
 ## Plugins
 

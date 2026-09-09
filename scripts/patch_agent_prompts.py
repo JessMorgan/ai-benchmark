@@ -204,6 +204,13 @@ NEW_ARCH_METHODOLOGY_API = (
 
 
 def main() -> int:
+    if not CONFIG.is_file():
+        print(
+            f"ERROR: target agent file {CONFIG} does not exist; run this "
+            "migration from the directory containing benchmark-agents.yml",
+            file=sys.stderr,
+        )
+        return 1
     src = CONFIG.read_text(encoding="utf-8")
 
     if OLD_PM_PROMPT not in src:

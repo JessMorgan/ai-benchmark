@@ -118,7 +118,7 @@ polls it and rebuilds its frame only when something displayed changed
 
 - `results.md`, `results.csv`, `results.html`, `results.pdf` — final reports.
 - `benchmark_state.json` — resume state. State flushes at most every
-  `flush_interval_seconds` (default 60 s) or `flush_votes` (default 10)
+  `flush_interval_seconds` (default 120 s) or `flush_votes` (default 50)
   completed changes (judge votes + benchmark tasks). The flush runs on a
   dedicated background thread and compacts the append-only
   `results.journal.jsonl`; journal events newer than the saved
@@ -273,10 +273,14 @@ and the OpenCode runner are exempt (the kwargs default off).
    `status="completed"`. The `purge-results` skill
    (`.agents/skills/purge-results/SKILL.md`) automates this. Never delete
    anything under `responses/` — regenerated on next run.
-3. **Output_Tokens == 0 means EMPTY response.** `count_tokens(text) = max(0, len(text)/4)`
-   returns 0 when `text` is empty. Zero-token entries in `results.csv`
-   are uniformly 0-byte `.txt` files — model timed out or connection dropped
-   silent (no streaming heartbeat reached).
+3. **Content_Tokens == 0 means no final content.** `count_tokens(text) = max(0, len(text)/4)`
+   returns 0 when `text` is empty. Zero-content-token entries in `results.csv`
+   are uniformly 0-byte `content.txt` files — either the model timed out or
+   the connection dropped silent (no streaming heartbeat reached), or the
+   response was thinking-only: empty content with non-empty reasoning and
+   `finish_reason != "length"`, classified `thinking-only` by
+   `classify_empty_reason` (`benchmark/response_classification.py`). Read
+   `{pid}_Empty_Reason` to tell the cases apart.
 4. **HTTP 429 cleanup-before-sleep invariant.** `_post_request_context`
    cancels the watchdog timer, drops from `_active_requests`, and closes
    `resp` before the interruptible `stop_event.wait(delay)`. Don't reorder —
@@ -288,19 +292,32 @@ and the OpenCode runner are exempt (the kwargs default off).
    `data-transformation`. Cross-plugin
    contract tests pin the inventory and native scales; public results are
    normalized once to percentage-v1.
-6. **Thinking-truncation auto-escalation.** `_run_plugin_task` in
-   `benchmark/core.py` auto-retries once with a doubled `max_tokens` budget
-   when a streaming HTTP leg classifies as `thinking-truncation` (empty
-   content, large `reasoning_content`, `finish_reason="length"`). The retry
-   is capped at 131072 and only fires for HTTP streaming plugins. Regression
-   in `tests/test_cli.py::TestThinkingAutoEscalation`.
+6. **Token-limit responses get one same-budget retry with prompt guidance.**
+   The old thinking-truncation auto-escalation (one retry with a doubled
+   `max_tokens`, capped at 131072) is gone. Now any `token_limit` response —
+   including the thinking-truncation signature (empty content, non-empty
+   reasoning, `finish_reason="length"`, classified `thinking-truncation` by
+   `classify_empty_reason`) — gets one retry at the same budget
+   (`RetryPolicy.max_attempts = 2` in `benchmark/transport.py`), with a
+   `RETRY GUIDANCE` instruction appended to the prompt
+   (`_retry_prompt_alteration`): `thinking_50_percent` when reasoning used
+   ≥80% of the budget, `thinking_30_percent` when >50%, otherwise
+   `response_under_budget`; repetition aborts get `avoid_repetition`. Guard
+   aborts and exhausted 429s are terminal and never retry. The retry engine
+   is transport-level (all runners), policy resolved per source via
+   `resolve_retry_policy`. Regressions in
+   `tests/test_cli.py::TestTokenLimitRetry` and
+   `tests/test_cli.py::TestEmptyReasonClassification`.
 7. **Judge votes read back from SQLite must use the canonical keys.** The
    live judge path and the TUI footer seed per-judge progress from
    `{plugin_id}_judge_votes` dicts keyed by `model` and `judge_contract_id`
-   (`judge_vote_identity` in `benchmark/core.py`). `SQLiteReportSource._attach_judges`
-   must alias the raw columns (`judge_model`/`contract_id`) to those names;
-   the raw names make every resumed judge show `0✅0❌0Σ` in the footer even
-   though the votes are durable ("judge results wiped" on continue).
+   (`judge_vote_identity` in `benchmark/judging.py`). The SQLite report
+   source aliases the raw columns (`judge_model`/`contract_id`) to those
+   names in the bulk revision-load SQL (`c.judge_model AS model,
+   c.contract_id AS judge_contract_id` in
+   `benchmark/persistence/sqlite_reports.py`); emitting the raw names makes
+   every resumed judge show `0✅0❌0Σ` in the footer even though the votes
+   are durable ("judge results wiped" on continue).
    Regression in `tests/test_sqlite_reports.py::TestSQLiteReports::test_judge_votes_attach_with_canonical_keys`.
 8. **Quit-hang: close the post-`close_active_requests` race.** `close_active_requests()`
    only closes responses registered when the quit lands; a request whose
