@@ -5,6 +5,7 @@ from typing import Any
 from benchmark.outputs import (
     _judge_consensus_by_contract,
     _judge_criteria,
+    _judge_enabled,
     _numeric_score,
     _plugin_token_counts,
     _plugin_total_score,
@@ -45,13 +46,7 @@ class MarkdownOutputPlugin(BenchmarkOutputPlugin):
         session_seed: int | None = None,
     ) -> str | None:
         ok = [r for r in results if r["status"] == "ok"]
-        judge_enabled = any(
-            r.get("judge_models")
-            or r.get("judge_model") is not None
-            or r.get("judge_status") not in (None, "disabled")
-            or any(key.endswith(("_judge_score", "_judge_error")) for key in r)
-            for r in results
-        )
+        judge_enabled = _judge_enabled(results)
         plugin_names = " | ".join(f"**{p.name}**" for p in active_plugins)
         seed_line = f"**Seed:** {session_seed}" if session_seed is not None else ""
         lines = [
@@ -69,15 +64,12 @@ class MarkdownOutputPlugin(BenchmarkOutputPlugin):
         ])
 
         has_runner = any(r.get("runner") for r in results)
-        header = "| # | Model | Runner |"
+        header = "| # | Model |"
+        if has_runner:
+            header += " Runner |"
         if judge_enabled:
             header += " Judge Models | Judge Status |"
-        header += " Load (s) |" if has_runner else "| # | Model |"
-        if not has_runner:
-            if judge_enabled:
-                header = "| # | Model | Judge Models | Judge Status | Load (s) |"
-            else:
-                header = "| # | Model | Load (s) |"
+        header += " Load (s) |"
         for p in active_plugins:
             header += (f" {p.name} Resp (s) | {p.name} TPS | {p.name} Think Tok | "
                        f"{p.name} Cont Tok | {p.name} Total Tok | {p.name} Score (0–100) |")
@@ -160,36 +152,6 @@ class MarkdownOutputPlugin(BenchmarkOutputPlugin):
                 tot = _plugin_total_score(r, active_plugins)
                 overall = r.get("overall_score_100", tot)
                 lines.append(f"| {i} | {r['model']} | {overall if overall is not None else '-'} |")
-
-        lines.extend(["", "---", "## 📐 Scoring Rubric", ""])
-        for p in active_plugins:
-            lines.extend([
-                f"### {p.name} (native rubric)",
-                "| Criterion | Max | Description |",
-                "|---|---|---|",
-            ])
-            if p.id == "rate-limiter":
-                lines.extend([
-                    "| Interface design | 3 | ABC/Protocol, clean allow_request/get_usage_stats |",
-                    "| Token Bucket | 4 | Class, refill logic, consume logic |",
-                    "| Sliding Window | 3 | Class, timestamp tracking, pruning |",
-                    "| Thread safety | 3 | Locking, minimal contention |",
-                    "| Cleanup | 2 | Stale entry eviction |",
-                    "| Type hints | 2 | Parameter & return annotations |",
-                    "| Docstrings | 2 | Comprehensive documentation |",
-                    "| Error handling | 1 | Input validation, exceptions |",
-                ])
-            elif p.id == "moe-dense":
-                lines.extend([
-                    "| Both architectures covered | 2 | Explicitly discusses MoE and dense |",
-                    "| Gating/routing mechanism | 2.5 | Top-k routing, softmax gating equations |",
-                    "| Load-balancing loss | 2.5 | Auxiliary loss formulation |",
-                    "| Training challenges | 2 | Token dropping, expert collapse, etc. |",
-                    "| Inference implications | 2 | Memory bandwidth, expert parallelism |",
-                    "| Specific benchmarks | 2 | MMLU, GSM8K, etc. with comparisons |",
-                    "| Paper references | 2 | Specific papers, technical reports |",
-                    "| Quantitative trade-offs | 1 | Concrete measurements comparing MoE and dense |",
-                ])
 
         has_rubric = any(isinstance(r.get(f"{p.id}_rubric"), list) and r.get(f"{p.id}_rubric") for p in active_plugins for r in results)
         if has_rubric:

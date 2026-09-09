@@ -61,6 +61,15 @@ class TestMarkdownOutputPlugin(unittest.TestCase):
         self.assertIn("Interface design", md)
         self.assertIn("Token Bucket", md)
 
+    def test_gen_markdown_omits_stale_hardcoded_rubric_table(self):
+        """The hardcoded per-plugin max-score rubric table was stale
+        (e.g. moe-dense summed to 16 while the plugin max is 17); scores
+        come from plugin metadata, so the report must not duplicate them."""
+        md = self.plugin.generate(self.sample_results, self.plugins)
+        self.assertNotIn("## 📐 Scoring Rubric", md)
+        self.assertNotIn("ABC/Protocol", md)
+        self.assertNotIn("Top-k routing", md)
+
     def test_gen_markdown_includes_response_links_with_output_dir(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = self.plugin.generate(self.sample_results, self.plugins, output_dir=tmp)

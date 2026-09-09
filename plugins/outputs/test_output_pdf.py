@@ -3,7 +3,7 @@ import tempfile
 import unittest
 
 from plugins import discover_plugins
-from plugins.outputs.output_pdf import PDFOutputPlugin
+from plugins.outputs.output_pdf import PDFOutputPlugin, _pdf_safe
 
 
 class TestPDFOutputPlugin(unittest.TestCase):
@@ -43,6 +43,27 @@ class TestPDFOutputPlugin(unittest.TestCase):
                 "total_time": 5.0,
             },
         ]
+
+    def test_pdf_safe_replaces_non_latin1_characters(self):
+        """The built-in latin-1 font cannot encode CJK/emoji; _pdf_safe
+        must replace them with visible ``?`` placeholders instead of
+        letting fpdf2 drop them silently."""
+        self.assertEqual(_pdf_safe("plain ascii"), "plain ascii")
+        self.assertEqual(_pdf_safe("模型"), "??")
+        self.assertEqual(_pdf_safe("rocket 🚀"), "rocket ?")
+        self.assertEqual(_pdf_safe("café"), "café")
+        self.assertEqual(_pdf_safe(123), "123")
+
+    def test_gen_pdf_with_cjk_emoji_model_name(self):
+        """A CJK/emoji model name must not crash PDF generation; the
+        built-in font renders it as visible ``?`` placeholders."""
+        results = [dict(self.sample_results[0])]
+        results[0]["model"] = "模型-🚀-model"
+        with tempfile.TemporaryDirectory() as tmpdir:
+            pdf_path = self.plugin.generate(results, self.plugins, tmpdir)
+            self.assertIsNotNone(pdf_path)
+            self.assertTrue(os.path.exists(pdf_path))
+            self.assertGreater(os.path.getsize(pdf_path), 0)
 
     def test_gen_pdf_includes_rubric_breakdown(self):
         with tempfile.TemporaryDirectory() as tmpdir:
