@@ -239,7 +239,54 @@ class TestStateRecovery(unittest.TestCase):
                 report, _reconstructed = reconstruct_run_state(run_dir)
             self.assertEqual(report["rows"], 1)
             self.assertTrue(report["identities_match"])
-            self.assertIn("benchmark-config.yml", stderr.getvalue())
+            self.assertIn("falling back to the default config name", stderr.getvalue())
+
+    def test_invalid_utf8_run_info_falls_back_with_warning(self):
+        """A run-info.json truncated mid-multibyte must not crash recovery.
+
+        Regression: a run-info.json cut mid-UTF-8 sequence raised
+        UnicodeDecodeError, which was not caught, so the recovery tool
+        crashed with a traceback instead of falling back with a warning.
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            run_dir = self._make_runner_run(tmpdir, "http", model="model-a")
+            with open(os.path.join(run_dir, "run-info.json"), "wb") as handle:
+                # Valid JSON prefix cut mid-emoji (U+1F600 is a 4-byte
+                # sequence; the trailing 3 bytes are an invalid prefix).
+                handle.write(b'{"config_file": "my-config.json", "note": "\xf0\x9f\x98')
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                report, _reconstructed = reconstruct_run_state(run_dir)
+            self.assertEqual(report["rows"], 1)
+            self.assertTrue(report["identities_match"])
+            self.assertEqual(report["score_mismatches"], 0)
+            self.assertIn("falling back to the default config name", stderr.getvalue())
+
+    def test_config_path_falls_back_to_json_default(self):
+        """A .json config with no run-info.json recovers via the .json file.
+
+        Regression: the fallback once hard-coded ``benchmark-config.yml``, so a
+        hard-crashed run (run-info.json never written) whose operator used the
+        default ``.json`` config failed with FileNotFoundError.
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            run_dir = self._make_runner_run(tmpdir, "http", model="model-a")
+            os.remove(os.path.join(run_dir, "benchmark-config.yml"))
+            with open(os.path.join(run_dir, "benchmark-config.json"), "w", encoding="utf-8") as handle:
+                json.dump({
+                    "sources": {"Local": {
+                        "api_url": "http://127.0.0.1:1/chat/completions",
+                        "headers": {},
+                    }},
+                    "models": {"model-a": "Local"},
+                }, handle)
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                report, _reconstructed = reconstruct_run_state(run_dir)
+            self.assertEqual(report["rows"], 1)
+            self.assertTrue(report["identities_match"])
+            self.assertEqual(report["score_mismatches"], 0)
+            self.assertIn("falling back to the default config name", stderr.getvalue())
 
 
 if __name__ == "__main__":

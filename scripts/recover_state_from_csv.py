@@ -82,26 +82,36 @@ def _resolve_config_path(run_dir):
 
     The CLI copies the operator's config into the run directory under its
     original basename, so the capsule is not always ``benchmark-config.yml``.
-    Prefer the ``config_file`` recorded in ``run-info.json`` and fall back to
-    the default name with a warning when the metadata is absent or lacks it.
+    Prefer the ``config_file`` recorded in ``run-info.json`` and, when the
+    metadata is absent, unreadable, or lacks the key, fall back to the first
+    existing default name (``benchmark-config.json``, then ``.yaml``, then
+    ``.yml``) with a warning. A truncated or non-UTF-8 ``run-info.json`` is
+    treated as unreadable rather than fatal.
     """
-    default_name = "benchmark-config.yml"
+    default_names = (
+        "benchmark-config.json", "benchmark-config.yaml", "benchmark-config.yml",
+    )
     run_info_path = os.path.join(run_dir, "run-info.json")
     if os.path.isfile(run_info_path):
         try:
             with open(run_info_path, encoding="utf-8") as handle:
                 run_info = json.load(handle)
-        except (OSError, json.JSONDecodeError):
+        except (OSError, json.JSONDecodeError, TypeError, UnicodeDecodeError):
             run_info = {}
         recorded = run_info.get("config_file")
         if isinstance(recorded, str) and recorded.strip():
             return os.path.join(run_dir, os.path.basename(recorded))
     print(
-        f"⚠️  run-info.json does not record a config path; "
-        f"falling back to {default_name}",
+        "⚠️  run-info.json does not record a config path; "
+        "falling back to the default config name "
+        "(benchmark-config.json, then .yaml, then .yml)",
         file=sys.stderr,
     )
-    return os.path.join(run_dir, default_name)
+    for name in default_names:
+        candidate = os.path.join(run_dir, name)
+        if os.path.isfile(candidate):
+            return candidate
+    return os.path.join(run_dir, default_names[-1])
 
 
 def reconstruct_run_state(run_dir, *, apply=False):
