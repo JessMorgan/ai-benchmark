@@ -13,6 +13,17 @@ from benchmark.outputs import (
 from benchmark.plugin import BenchmarkOutputPlugin
 
 
+def _pdf_safe(value: Any) -> str:
+    """Render a value for the built-in latin-1 PDF font.
+
+    The core Helvetica font cannot encode CJK, emoji, or other
+    non-latin-1 characters and fpdf2 would drop them silently. Replace
+    them with ``?`` so the loss is visible in the report instead of
+    invisible.
+    """
+    return str(value).encode("latin-1", "replace").decode("latin-1")
+
+
 def _atomic_write_pdf(path: str, pdf: Any) -> None:
     import tempfile
     fd, temporary = tempfile.mkstemp(prefix=f".{os.path.basename(path)}.", dir=os.path.dirname(path) or ".")
@@ -131,7 +142,7 @@ class PDFOutputPlugin(BenchmarkOutputPlugin):
             else:
                 vals.extend([str(overall if overall is not None else "-"), str(scored_plugins), "FAIL"])
             for i, v in enumerate(vals):
-                pdf.cell(col_w[i], 4, v, border=1, align="C")
+                pdf.cell(col_w[i], 4, _pdf_safe(v), border=1, align="C")
             pdf.ln()
 
         pdf.ln(4)
@@ -142,14 +153,14 @@ class PDFOutputPlugin(BenchmarkOutputPlugin):
             pdf.cell(0, 5, "Fastest TTFT:", new_x="LMARGIN", new_y="NEXT")
             pdf.set_font("Helvetica", "", 7)
             for i, r in enumerate(sorted(ok, key=lambda x: (x['ttft'] if isinstance(x['ttft'], (int, float)) else 999))[:5], 1):
-                pdf.cell(0, 4, f"  {i}. {r['model'][:50]}  --  {r['ttft']}s", new_x="LMARGIN", new_y="NEXT")
+                pdf.cell(0, 4, _pdf_safe(f"  {i}. {r['model'][:50]}  --  {r['ttft']}s"), new_x="LMARGIN", new_y="NEXT")
             for p in active_plugins:
                 pdf.ln(2)
                 pdf.set_font("Helvetica", "B", 8)
                 pdf.cell(0, 5, f"Best {p.name}:", new_x="LMARGIN", new_y="NEXT")
                 pdf.set_font("Helvetica", "", 7)
                 for i, r in enumerate(sorted(ok, key=lambda x: _numeric_score(x, p.id), reverse=True)[:5], 1):
-                    pdf.cell(0, 4, f"  {i}. {r['model'][:50]}  --  {r.get(f'{p.id}_score', '-')}/100", new_x="LMARGIN", new_y="NEXT")
+                    pdf.cell(0, 4, _pdf_safe(f"  {i}. {r['model'][:50]}  --  {r.get(f'{p.id}_score', '-')}/100"), new_x="LMARGIN", new_y="NEXT")
 
         has_judge_criteria = any(
             _judge_criteria(r, p.id)
@@ -177,7 +188,7 @@ class PDFOutputPlugin(BenchmarkOutputPlugin):
                                 f"Criterion: {item.get('criterion', '-')}\n"
                                 f"Evidence: {item.get('evidence', '-')}"
                             )
-                            pdf.multi_cell(0, 4, text, new_x="LMARGIN", new_y="NEXT")
+                            pdf.multi_cell(0, 4, _pdf_safe(text), new_x="LMARGIN", new_y="NEXT")
                             pdf.ln(1)
             if any(_judge_consensus_by_contract(r, p.id) for r in results for p in active_plugins):
                 pdf.set_font("Helvetica", "B", 8)
@@ -188,10 +199,12 @@ class PDFOutputPlugin(BenchmarkOutputPlugin):
                         for contract_id, consensus in _judge_consensus_by_contract(r, p.id).items():
                             pdf.cell(
                                 0, 4,
-                                f"{r.get('model', '-')} / {p.name} / {contract_id}: "
-                                f"{consensus.get('score', '-')} "
-                                f"({consensus.get('confidence', '-')}, "
-                                f"{consensus.get('valid_judges', 0)}/{consensus.get('attempts', 0)})",
+                                _pdf_safe(
+                                    f"{r.get('model', '-')} / {p.name} / {contract_id}: "
+                                    f"{consensus.get('score', '-')} "
+                                    f"({consensus.get('confidence', '-')}, "
+                                    f"{consensus.get('valid_judges', 0)}/{consensus.get('attempts', 0)})"
+                                ),
                                 new_x="LMARGIN", new_y="NEXT",
                             )
 
@@ -209,10 +222,10 @@ class PDFOutputPlugin(BenchmarkOutputPlugin):
                     if not isinstance(rubric, list) or not rubric:
                         continue
                     pdf.set_font("Helvetica", "B", 8)
-                    pdf.cell(0, 5, f"{p.name} -- {r['model']}", new_x="LMARGIN", new_y="NEXT")
+                    pdf.cell(0, 5, _pdf_safe(f"{p.name} -- {r['model']}"), new_x="LMARGIN", new_y="NEXT")
                     pdf.set_font("Helvetica", "", 7)
                     for item in rubric:
-                        pdf.cell(0, 4, f"  {item['name']}: {item.get('points', '-')} / {item.get('total', '-')}", new_x="LMARGIN", new_y="NEXT")
+                        pdf.cell(0, 4, _pdf_safe(f"  {item['name']}: {item.get('points', '-')} / {item.get('total', '-')}"), new_x="LMARGIN", new_y="NEXT")
                     pdf.ln(1)
 
         os.makedirs(output_dir, exist_ok=True)
