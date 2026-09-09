@@ -2035,6 +2035,7 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
                 os.path.join(opencode_output_dir, "opencode.generated.json"),
                 timeout=timeout,
                 max_tokens=max_tokens,
+                cli_max_tokens=args.max_tokens,
                 benchmark_config=cfg,
                 plugin_temperatures=cfg.get("plugin_temperatures"),
             )
@@ -2405,6 +2406,7 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
                     os.path.join(opencode_output_dir, "opencode.generated.json"),
                     timeout=timeout,
                     max_tokens=max_tokens,
+                    cli_max_tokens=args.max_tokens,
                     benchmark_config=cfg,
                     plugin_temperatures=cfg.get("plugin_temperatures"),
                 )
