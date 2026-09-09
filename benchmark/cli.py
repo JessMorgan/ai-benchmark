@@ -2042,9 +2042,13 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
     interrupted = False
     reset_429_stats()
 
+    cli_args = dict(vars(args))
+    if cli_args.get("api_key") is not None:
+        cli_args["api_key"] = "<redacted>"
+
     run_info = {
         "config_file": config_path,
-        "cli_args": vars(args),
+        "cli_args": cli_args,
         "output_dir": output_dir,
         "run_id": run_id,
         "revision_id": revision_id,

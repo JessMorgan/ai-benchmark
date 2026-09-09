@@ -1963,10 +1963,37 @@ class TestRunInfo(unittest.TestCase):
             self.assertEqual(run_info["total_targets"], 0)
             self.assertEqual(run_info["completed_targets"], 0)
             self.assertIn("cli_args", run_info)
+            # --api-key was not passed: the value stays null (redaction only
+            # applies to a key that was actually supplied).
+            self.assertIsNone(run_info["cli_args"]["api_key"])
             self.assertIn("start_time", run_info)
             self.assertIn("end_time", run_info)
             self.assertIsNotNone(run_info["end_time"])
             self.assertIn("session_seed", run_info)
+
+    def test_run_info_redacts_api_key(self):
+        """--api-key must not be persisted in plaintext to run-info.json."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_path = os.path.join(tmpdir, "config.yaml")
+            output_dir = os.path.join(tmpdir, "output")
+            with open(config_path, "w") as f:
+                f.write(f"output_dir: {output_dir}\n")
+
+            result = subprocess.run(
+                [sys.executable, "ai-benchmark.py", "--config", config_path,
+                 "--api-key", "test-secret-key"],
+                capture_output=True,
+                text=True, check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+            run_info_path = os.path.join(output_dir, "run-info.json")
+            self.assertTrue(os.path.isfile(run_info_path))
+            with open(run_info_path, encoding="utf-8") as f:
+                run_info = json.load(f)
+
+            self.assertEqual(run_info["cli_args"]["api_key"], "<redacted>")
+            self.assertNotIn("test-secret-key", json.dumps(run_info))
 
     def test_write_run_info_persists_status(self):
         """_write_run_info persists the supplied status to run-info.json."""
