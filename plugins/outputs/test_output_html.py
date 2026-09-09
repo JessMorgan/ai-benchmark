@@ -48,6 +48,23 @@ class TestHTMLOutputPlugin(unittest.TestCase):
         html = self.plugin.generate(self.sample_results, self.plugins)
         self.assertIn("test-model", html)
 
+    def test_gen_html_escapes_model_name_with_html_special_chars(self):
+        """A model name containing <, >, & must be HTML-escaped so it
+        cannot break the page or inject markup."""
+        results = [dict(self.sample_results[0])]
+        results[0]["model"] = "a<b>&c"
+        html = self.plugin.generate(results, self.plugins)
+        self.assertNotIn("a<b>&c", html)
+        self.assertIn("a&lt;b&gt;&amp;c", html)
+
+    def test_gen_html_escapes_error_message(self):
+        """Error messages must be HTML-escaped in the fail badge."""
+        results = [dict(self.sample_results[1])]
+        results[0]["error"] = "boom <script>alert(1)</script>"
+        html = self.plugin.generate(results, self.plugins)
+        self.assertNotIn("<script>alert(1)</script>", html)
+        self.assertIn("&lt;script&gt;", html)
+
     def test_gen_html_includes_session_seed(self):
         html = self.plugin.generate(self.sample_results, self.plugins, session_seed=12345)
         self.assertIn("12345", html)

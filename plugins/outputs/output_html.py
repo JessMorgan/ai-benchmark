@@ -72,28 +72,28 @@ class HTMLOutputPlugin(BenchmarkOutputPlugin):
             tot = _plugin_total_score(r, active_plugins)
             m = "str" if r.get('stream_ok') else "ns"
             runner = r.get("runner", "http")
-            cells = (f'<td>{r["model"]}</td>'
+            cells = (f'<td>{html_lib.escape(str(r["model"]))}</td>'
                      f'<td>{html_lib.escape(str(runner))}</td>'
-                     f'<td>{r.get("ttft") or "-"}</td>')
+                     f'<td>{html_lib.escape(str(r.get("ttft") or "-"))}</td>')
             for p in active_plugins:
-                score_val = r.get(f"{p.id}_score", "-")
+                score_val = html_lib.escape(str(r.get(f"{p.id}_score", "-")))
                 if output_dir:
                     runner_prefix = f"{runner}/" if runner in ("http", "opencode", "pi") else ""
                     rel_path = f"{runner_prefix}responses/{sanitize_filename(r['model'])}/{sanitize_filename(p.id)}/response.txt"
                     score_cell = f'<a href="{rel_path}">{score_val}</a>'
                 else:
-                    score_cell = f"{score_val}"
+                    score_cell = score_val
                 empty_reason = r.get(f"{p.id}_empty_reason", "")
                 empty_cell = f'<td class="empty-reason" title="{html_lib.escape(str(empty_reason))}">{html_lib.escape(str(empty_reason))}</td>' if empty_reason else "<td></td>"
                 thinking, content, total = _plugin_token_counts(r, p.id)
                 judge_score = r.get(f"{p.id}_judge_score", "-")
                 judge_confidence = r.get(f"{p.id}_judge_confidence", "-")
                 judge_error = r.get(f"{p.id}_judge_error", "")
-                cells += (f'<td>{r.get(f"{p.id}_response_time", "-")}</td>'
-                          f'<td>{r.get(f"{p.id}_tps", "-")}</td>'
-                          f'<td>{thinking}</td>'
-                          f'<td>{content}</td>'
-                          f'<td><strong>{total}</strong></td>'
+                cells += (f'<td>{html_lib.escape(str(r.get(f"{p.id}_response_time", "-")))}</td>'
+                          f'<td>{html_lib.escape(str(r.get(f"{p.id}_tps", "-")))}</td>'
+                          f'<td>{html_lib.escape(str(thinking))}</td>'
+                          f'<td>{html_lib.escape(str(content))}</td>'
+                          f'<td><strong>{html_lib.escape(str(total))}</strong></td>'
                           f'<td><strong>{score_cell}</strong></td>')
                 if judge_enabled:
                     cells += (f'<td class="judge-score">{html_lib.escape(str(judge_score))}</td>'
@@ -102,7 +102,7 @@ class HTMLOutputPlugin(BenchmarkOutputPlugin):
                               f'<td class="judge-votes">{len(r.get(f"{p.id}_judge_votes", []))}</td>')
                 cells += empty_cell
                 cells += (
-                    f'<td>{r.get(f"{p.id}_attempt_count", "-")}</td>'
+                    f'<td>{html_lib.escape(str(r.get(f"{p.id}_attempt_count", "-")))}</td>'
                     f'<td>{html_lib.escape(", ".join(r.get(f"{p.id}_retry_reasons", []) or []) or "-")}</td>'
                     f'<td>{html_lib.escape(str(r.get(f"{p.id}_prompt_altered", "-")))}</td>'
                     f'<td>{html_lib.escape(str(r.get(f"{p.id}_response_nature", "-")))}</td>'
@@ -111,9 +111,9 @@ class HTMLOutputPlugin(BenchmarkOutputPlugin):
             overall = r.get("overall_score_100", tot)
             scored_plugins = r.get("overall_scored_plugins", _scored_plugin_count(r, active_plugins))
             total_time = r.get('total_time')
-            cells += (f'<td><strong>{overall if overall is not None else "-"}</strong></td>'
-                      f'<td>{scored_plugins}</td>'
-                      f'<td>{total_time if total_time is not None else "-"}s</td><td>{m}</td>')
+            cells += (f'<td><strong>{html_lib.escape(str(overall if overall is not None else "-"))}</strong></td>'
+                      f'<td>{html_lib.escape(str(scored_plugins))}</td>'
+                      f'<td>{html_lib.escape(str(total_time if total_time is not None else "-"))}s</td><td>{m}</td>')
             if r["status"] == "ok":
                 cells += '<td class="ok-badge">✅</td>'
             else:
@@ -126,7 +126,7 @@ class HTMLOutputPlugin(BenchmarkOutputPlugin):
             sorted(ok, key=_ttft_sort_key)[:10], 1
         ):
             ttft = r.get('ttft')
-            ttft_rows.append((i, r["model"], ttft if ttft is not None else "-"))
+            ttft_rows.append((i, html_lib.escape(str(r["model"])), html_lib.escape(str(ttft if ttft is not None else "-"))))
 
         leaderboards = []
         for p in active_plugins:
@@ -134,7 +134,7 @@ class HTMLOutputPlugin(BenchmarkOutputPlugin):
             for i, r in enumerate(
                 sorted(ok, key=lambda x: float(_numeric_score(x, p.id)), reverse=True)[:10], 1
             ):
-                lb_rows.append((i, r["model"], r.get(f"{p.id}_score", "-")))
+                lb_rows.append((i, html_lib.escape(str(r["model"])), html_lib.escape(str(r.get(f"{p.id}_score", "-")))))
             leaderboards.append((p.name, lb_rows))
 
         rubric_html = ""
@@ -151,7 +151,7 @@ class HTMLOutputPlugin(BenchmarkOutputPlugin):
                     rubric_html += f"<h3>{html_lib.escape(p.name)} — {html_lib.escape(r['model'])}</h3>\n"
                     rubric_html += '<table><tr><th>Criterion</th><th>Points</th><th>Total</th></tr>\n'
                     for item in rubric:
-                        rubric_html += f"<tr><td>{html_lib.escape(str(item['name']))}</td><td>{item.get('points', '-')}</td><td>{item.get('total', '-')}</td></tr>\n"
+                        rubric_html += f"<tr><td>{html_lib.escape(str(item['name']))}</td><td>{html_lib.escape(str(item.get('points', '-')))}</td><td>{html_lib.escape(str(item.get('total', '-')))}</td></tr>\n"
                     rubric_html += "</table>\n"
 
         judge_criteria_html = ""
