@@ -13,9 +13,11 @@ import json
 import os
 import re
 import shutil
+import sys
 import tempfile
 
 from benchmark.configuration import load_config, resolve_targets
+from benchmark.scheduling import _runner_state_key
 from benchmark.state import BenchmarkState
 from plugins import discover_plugins
 
@@ -75,6 +77,43 @@ def _judge_complete(judge_models, votes, aggregate_score):
     )
 
 
+def _resolve_config_path(run_dir):
+    """Resolve the config capsule path recorded for a run directory.
+
+    The CLI copies the operator's config into the run directory under its
+    original basename, so the capsule is not always ``benchmark-config.yml``.
+    Prefer the ``config_file`` recorded in ``run-info.json`` and, when the
+    metadata is absent, unreadable, or lacks the key, fall back to the first
+    existing default name (``benchmark-config.json``, then ``.yaml``, then
+    ``.yml``) with a warning. A truncated or non-UTF-8 ``run-info.json`` is
+    treated as unreadable rather than fatal.
+    """
+    default_names = (
+        "benchmark-config.json", "benchmark-config.yaml", "benchmark-config.yml",
+    )
+    run_info_path = os.path.join(run_dir, "run-info.json")
+    if os.path.isfile(run_info_path):
+        try:
+            with open(run_info_path, encoding="utf-8") as handle:
+                run_info = json.load(handle)
+        except (OSError, json.JSONDecodeError, TypeError, UnicodeDecodeError):
+            run_info = {}
+        recorded = run_info.get("config_file")
+        if isinstance(recorded, str) and recorded.strip():
+            return os.path.join(run_dir, os.path.basename(recorded))
+    print(
+        "⚠️  run-info.json does not record a config path; "
+        "falling back to the default config name "
+        "(benchmark-config.json, then .yaml, then .yml)",
+        file=sys.stderr,
+    )
+    for name in default_names:
+        candidate = os.path.join(run_dir, name)
+        if os.path.isfile(candidate):
+            return candidate
+    return os.path.join(run_dir, default_names[-1])
+
+
 def reconstruct_run_state(run_dir, *, apply=False):
     """Reconstruct ``benchmark_state.json`` from ``results.csv``.
 
@@ -85,9 +124,11 @@ def reconstruct_run_state(run_dir, *, apply=False):
     """
     state_path = os.path.join(run_dir, "benchmark_state.json")
     csv_path = os.path.join(run_dir, "results.csv")
-    config_path = os.path.join(run_dir, "benchmark-config.yml")
+    config_path = _resolve_config_path(run_dir)
     if not os.path.isfile(csv_path) or not os.path.isfile(config_path):
-        raise FileNotFoundError("run must contain results.csv and benchmark-config.yml")
+        raise FileNotFoundError(
+            f"run must contain results.csv and {os.path.basename(config_path)}"
+        )
     if apply and not os.path.isfile(state_path):
         raise FileNotFoundError(state_path)
 
@@ -124,7 +165,7 @@ def reconstruct_run_state(run_dir, *, apply=False):
     for row in rows:
         model = row["Model"]
         runner = row["Runner"]
-        state_key = model if runner == "http" else f"{model} [opencode]"
+        state_key = _runner_state_key(model, runner)
         if state_key in state_models:
             continue
         target = configured_targets.get(model)
@@ -141,7 +182,7 @@ def reconstruct_run_state(run_dir, *, apply=False):
     for row in rows:
         model = row["Model"]
         runner = row["Runner"]
-        state_key = model if runner == "http" else f"{model} [opencode]"
+        state_key = _runner_state_key(model, runner)
         info = state._model_info[state_key]
         ok = row["Status"] == "OK"
         error = row["Error"] or None
@@ -223,8 +264,7 @@ def reconstruct_run_state(run_dir, *, apply=False):
             reconstructed = json.load(handle)
         expected_ids = {
             (
-                row["Model"] if row["Runner"] == "http"
-                else f"{row['Model']} [opencode]",
+                _runner_state_key(row["Model"], row["Runner"]),
                 row["Runner"],
             )
             for row in rows
@@ -241,7 +281,7 @@ def reconstruct_run_state(run_dir, *, apply=False):
         }
         score_mismatches = []
         for row in rows:
-            key = row["Model"] if row["Runner"] == "http" else f"{row['Model']} [opencode]"
+            key = _runner_state_key(row["Model"], row["Runner"])
             result = by_id[(key, row["Runner"])]
             for pid, column in score_columns.items():
                 expected = "fail" if row[column] == "fail" else _number(row[column])
