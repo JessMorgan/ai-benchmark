@@ -18,6 +18,7 @@ from benchmark.cli import (
     _BackgroundFlusher,
     _BenchmarkTUIApp,
     _FlushGate,
+    _effective_target_max_tokens,
 )
 from benchmark.completions import build_parser
 from benchmark.http import NonStreamResult, StreamResult
@@ -2939,6 +2940,25 @@ class TestTUIAdaptiveRefresh(unittest.TestCase):
 
     def test_refresh_capped_at_two_fps(self):
         self.assertEqual(_TUI_REFRESH_SECONDS, 0.5)
+
+
+class TestEffectiveTargetMaxTokens(unittest.TestCase):
+    def test_cli_flag_beats_per_target_config(self):
+        """An explicit --max-tokens flag must override the per-target value."""
+        self.assertEqual(
+            _effective_target_max_tokens(1000, {"max_tokens": 8192}, 16384), 1000)
+
+    def test_per_target_beats_global_without_cli_flag(self):
+        self.assertEqual(
+            _effective_target_max_tokens(None, {"max_tokens": 8192}, 16384), 8192)
+
+    def test_global_used_when_nothing_else_set(self):
+        self.assertEqual(
+            _effective_target_max_tokens(None, {}, 16384), 16384)
+
+    def test_per_target_none_falls_back_to_global(self):
+        self.assertEqual(
+            _effective_target_max_tokens(None, {"max_tokens": None}, 16384), 16384)
 
 
 if __name__ == "__main__":

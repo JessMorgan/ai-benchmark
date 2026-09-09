@@ -293,6 +293,17 @@ def _inject_429_stats(run_info):
     return run_info
 
 
+def _effective_target_max_tokens(cli_max_tokens, target_info, global_max_tokens):
+    """Resolve the max_tokens budget for one target.
+
+    An explicit ``--max-tokens`` CLI flag beats the per-target config value;
+    otherwise the per-target scalar beats the global config value.
+    """
+    if cli_max_tokens is not None:
+        return cli_max_tokens
+    return target_info.get("max_tokens") or global_max_tokens
+
+
 def _char_display_width(char):
     """Return a conservative terminal-column width for one character.
 
@@ -2610,8 +2621,8 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
             if phase_runner == "opencode":
                 mapped = opencode_model_name(target_info["source"], target_info["api_model"])
                 agent_id = opencode_agent_ids.get(model_name)
-            # Per-target scalar ``max_tokens`` beats the global config/CLI value.
-            effective_max_tokens = target_info.get("max_tokens") or max_tokens
+            effective_max_tokens = _effective_target_max_tokens(
+                args.max_tokens, target_info, max_tokens)
             run_model(state_key, target_info["source"], state, model_active_plugins,
                       source_config, timeout, effective_max_tokens, phase_output_dir,
                       session_seed=session_seed, global_cfg=cfg, stop_event=stop_event,
