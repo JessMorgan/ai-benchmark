@@ -1288,6 +1288,12 @@ class BenchmarkState:
 
         Judge updates are independent of benchmark completion and therefore
         must not append a second benchmark result row or change its status.
+
+        Incoming ``votes`` are merged into the stored versioned vote list
+        atomically under the state lock. Each judge worker hands in a
+        snapshot taken at a different point in time, so a wholesale
+        last-writer-wins replacement of ``{pid}_judge_votes`` would drop
+        the vote of whichever concurrent worker wrote first.
         """
         fields: dict[str, Any] = {
             f"{plugin_id}_judge_score": score,
@@ -1302,8 +1308,6 @@ class BenchmarkState:
             fields[f"{plugin_id}_judge_selected_contract"] = selected_contract
         if input_sha256 is not None:
             fields[f"{plugin_id}_judge_input_sha256"] = input_sha256
-        if votes is not None:
-            fields[f"{plugin_id}_judge_votes"] = votes
         if status is not None:
             fields["judge_status"] = status
         if complete is not None:
@@ -1312,6 +1316,9 @@ class BenchmarkState:
                 fields[f"{plugin_id}_judge_queued"] = False
         with self._lock:
             self._mark_changed()
+            if votes is not None:
+                fields[f"{plugin_id}_judge_votes"] = self._merge_judge_votes_locked(
+                    state_key, runner, f"{plugin_id}_judge_votes", votes)
             if state_key in self._model_info:
                 self._model_info[state_key].update(fields)
             for result in reversed(self.results):
@@ -1332,6 +1339,44 @@ class BenchmarkState:
                     for key, value in fields.items()
                 },
             )
+
+    def _merge_judge_votes_locked(
+        self, state_key: str, runner: str, vote_key: str,
+        incoming: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Merge incoming judge votes into the stored versioned vote list.
+
+        Called with ``self._lock`` held so the read-modify-write of
+        ``{pid}_judge_votes`` is atomic: concurrent ``update_judge_result``
+        calls for the same (model, plugin) each merge against the list
+        currently stored instead of replacing it, so no vote is lost. The
+        existing list is the union of the latest committed result row and
+        the live ``model_info`` row, mirroring how the judge coordinator
+        reads existing votes; identities are deduplicated with the live
+        row winning, matching the coordinator's read order.
+        """
+        from .judging import judge_vote_identity, merge_judge_vote
+        existing: list[dict[str, Any]] = []
+        for result in reversed(self.results):
+            result_key = result.get("state_key", result.get("model"))
+            if result_key == state_key and result.get("runner", "http") == runner:
+                raw = result.get(vote_key)
+                if isinstance(raw, list):
+                    existing.extend(v for v in raw if isinstance(v, dict) and v.get("model"))
+                break
+        info = self._model_info.get(state_key)
+        if isinstance(info, dict):
+            raw = info.get(vote_key)
+            if isinstance(raw, list):
+                existing.extend(v for v in raw if isinstance(v, dict) and v.get("model"))
+        by_identity: dict[tuple[Any, Any], dict[str, Any]] = {}
+        for vote in existing:
+            by_identity[judge_vote_identity(vote)] = vote
+        merged = list(by_identity.values())
+        for vote in incoming:
+            if isinstance(vote, dict) and vote.get("model"):
+                merged = merge_judge_vote(merged, vote)
+        return merged
 
     def set_judge_models(self, judge_models: list[str] | None) -> None:
         """Refresh the active judge identities on live and persisted rows."""

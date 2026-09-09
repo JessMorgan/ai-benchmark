@@ -38,7 +38,15 @@ class SQLiteReportSource:
     def load_results(
         self, *, revision: int | None = None, run_id: str | None = None,
         include_reused: bool = False,
+        active_judge_contracts: dict[str, str] | None = None,
     ) -> tuple[list[dict[str, Any]], list[str], int | None, int]:
+        """Materialize report rows for one revision.
+
+        ``active_judge_contracts`` (plugin id -> contract id) mirrors the
+        live judge path's contract selection so the read-back projects the
+        same contract a running benchmark would select. When omitted, the
+        read-back falls back to selecting the strongest stored contract.
+        """
         revision_id = self._resolve_revision(revision, run_id=run_id)
         revision_row = self.connection.execute(
             "SELECT session_seed FROM run_revisions WHERE revision_id = ?",
@@ -152,7 +160,7 @@ class SQLiteReportSource:
             if isinstance(runtime_json, dict):
                 result.update(runtime_json)
             self._attach_model_level(result, revision_id, bulk)
-            self._attach_judges(result, revision_id, bulk)
+            self._attach_judges(result, revision_id, bulk, active_judge_contracts)
             self._attach_attempt_meta(result, revision_id, bulk)
             result.pop("_target_instance_id", None)
             first_tok_time = None
@@ -314,7 +322,8 @@ class SQLiteReportSource:
                 result[f"{pid}_retry_reasons"] = retry_reasons
 
     def _attach_judges(self, result: dict[str, Any], revision_id: int,
-                       bulk: dict[str, Any]) -> None:
+                       bulk: dict[str, Any],
+                       active_judge_contracts: dict[str, str] | None = None) -> None:
         del revision_id
         target_id = result.get("_target_instance_id")
         if target_id is None:
@@ -337,35 +346,48 @@ class SQLiteReportSource:
             result[f"{pid}_judge_models"] = [vote["model"] for vote in votes]
             # Rebuild the flat projection and per-contract consensus from the
             # stored votes, mirroring the legacy in-memory judge path.
-            self._attach_judge_projection(result, pid, vote_dicts)
+            self._attach_judge_projection(result, pid, vote_dicts, active_judge_contracts)
 
     def _attach_judge_projection(
-        self, result: dict[str, Any], pid: str, votes: list[dict[str, Any]]
+        self, result: dict[str, Any], pid: str, votes: list[dict[str, Any]],
+        active_judge_contracts: dict[str, str] | None = None,
     ) -> None:
         """Rebuild the flat judge projection from stored votes.
 
         The legacy JSON path stored ``{pid}_judge_confidence``, ``{pid}_judge_consensus_by_contract``
         and the selected-contract projection alongside the votes. SQLite keeps
-        only the vote rows, so recompute the consensus per contract and pick
-        the strongest contract as the projected one.
+        only the vote rows, so recompute the consensus per contract and
+        project the contract the live judge path would select.
         """
         from ..judging import confidence_weighted_consensus_by_contract
 
         consensus_by_contract = confidence_weighted_consensus_by_contract(votes)
         if consensus_by_contract:
             result[f"{pid}_judge_consensus_by_contract"] = consensus_by_contract
-        # Pick the contract with the most valid judges; ties break on score.
-        best_contract = None
-        best_valid = -1
-        best_score = -1.0
-        for contract_id, consensus in consensus_by_contract.items():
-            valid = int(consensus.get("valid_judges") or 0)
-            score = consensus.get("score")
-            score_value = float(score) if isinstance(score, (int, float)) else -1.0
-            if valid > best_valid or (valid == best_valid and score_value > best_score):
-                best_contract = contract_id
-                best_valid = valid
-                best_score = score_value
+        # Match the live judge path, which always projects the currently
+        # active plugin's contract: a strength-based pick here could select
+        # a stale contract and make resume discard the live projection.
+        configured_contract = (active_judge_contracts or {}).get(pid)
+        best_contract = (
+            configured_contract
+            if configured_contract is not None
+            and configured_contract in consensus_by_contract
+            else None
+        )
+        if best_contract is None:
+            # Fallback: strongest stored contract (valid judges, then
+            # score); sorted order keeps full ties independent of read order.
+            best_valid = -1
+            best_score = -1.0
+            for contract_id in sorted(consensus_by_contract):
+                consensus = consensus_by_contract[contract_id]
+                valid = int(consensus.get("valid_judges") or 0)
+                score = consensus.get("score")
+                score_value = float(score) if isinstance(score, (int, float)) else -1.0
+                if valid > best_valid or (valid == best_valid and score_value > best_score):
+                    best_contract = contract_id
+                    best_valid = valid
+                    best_score = score_value
         if best_contract is not None:
             consensus = consensus_by_contract[best_contract]
             result[f"{pid}_judge_selected_contract"] = best_contract
