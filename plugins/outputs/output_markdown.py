@@ -161,36 +161,6 @@ class MarkdownOutputPlugin(BenchmarkOutputPlugin):
                 overall = r.get("overall_score_100", tot)
                 lines.append(f"| {i} | {r['model']} | {overall if overall is not None else '-'} |")
 
-        lines.extend(["", "---", "## 📐 Scoring Rubric", ""])
-        for p in active_plugins:
-            lines.extend([
-                f"### {p.name} (native rubric)",
-                "| Criterion | Max | Description |",
-                "|---|---|---|",
-            ])
-            if p.id == "rate-limiter":
-                lines.extend([
-                    "| Interface design | 3 | ABC/Protocol, clean allow_request/get_usage_stats |",
-                    "| Token Bucket | 4 | Class, refill logic, consume logic |",
-                    "| Sliding Window | 3 | Class, timestamp tracking, pruning |",
-                    "| Thread safety | 3 | Locking, minimal contention |",
-                    "| Cleanup | 2 | Stale entry eviction |",
-                    "| Type hints | 2 | Parameter & return annotations |",
-                    "| Docstrings | 2 | Comprehensive documentation |",
-                    "| Error handling | 1 | Input validation, exceptions |",
-                ])
-            elif p.id == "moe-dense":
-                lines.extend([
-                    "| Both architectures covered | 2 | Explicitly discusses MoE and dense |",
-                    "| Gating/routing mechanism | 2.5 | Top-k routing, softmax gating equations |",
-                    "| Load-balancing loss | 2.5 | Auxiliary loss formulation |",
-                    "| Training challenges | 2 | Token dropping, expert collapse, etc. |",
-                    "| Inference implications | 2 | Memory bandwidth, expert parallelism |",
-                    "| Specific benchmarks | 2 | MMLU, GSM8K, etc. with comparisons |",
-                    "| Paper references | 2 | Specific papers, technical reports |",
-                    "| Quantitative trade-offs | 1 | Concrete measurements comparing MoE and dense |",
-                ])
-
         has_rubric = any(isinstance(r.get(f"{p.id}_rubric"), list) and r.get(f"{p.id}_rubric") for p in active_plugins for r in results)
         if has_rubric:
             lines.extend(["", "---", "## 🔍 Detailed Rubric Breakdown", ""])
