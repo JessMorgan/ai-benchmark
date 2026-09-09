@@ -146,7 +146,11 @@ class SQLiteReportSource:
                     result[f"{prefix}{suffix}"] = bool(value) if suffix in {
                         "truncated", "truncated_due_to_time", "stream_ok", "repeating",
                     } else value
-            if attempt["error"] is not None or attempt["score"] is None:
+            # A graded attempt is complete even when it carries a diagnostic
+            # error; only an ungraded attempt marks the model row as errored.
+            # This mirrors the JSON resume gate, which reuses any numeric
+            # score regardless of the per-plugin error field.
+            if attempt["score"] is None:
                 result["status"] = "error"
             rubric = self._json_load(attempt["rubric_json"])
             if rubric is not None:

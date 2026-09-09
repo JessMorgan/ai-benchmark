@@ -1,9 +1,11 @@
 """Tests for the backend-neutral storage façade."""
+import concurrent.futures
 import os
 import random
 import sqlite3
 import tempfile
 import unittest
+from unittest import mock
 
 from benchmark.runtime_records import (
     BenchmarkAttemptRecord,
@@ -44,6 +46,22 @@ class TestRunStoreContract(unittest.TestCase):
                 "ok",
             )
             self.assertTrue(store.close(timeout=2))
+
+    def test_sqlite_save_snapshot_swallows_only_flush_timeout(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = SQLiteRunStore(os.path.join(tmp, "run.sqlite3"), flush_interval=0.01)
+            store.start_run(RunIdentity("run", 1), source="test")
+            self.addCleanup(lambda: store.close(timeout=2))
+            with mock.patch.object(
+                store.writer, "flush",
+                side_effect=concurrent.futures.TimeoutError(),
+            ):
+                self.assertFalse(store.save_snapshot())
+            with mock.patch.object(
+                store.writer, "flush", side_effect=RuntimeError("writer closed"),
+            ):
+                with self.assertRaises(RuntimeError):
+                    store.save_snapshot()
 
     def test_sqlite_facade_latest_results_reads_normalized_tables(self):
         with tempfile.TemporaryDirectory() as tmp:

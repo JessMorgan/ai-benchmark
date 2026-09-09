@@ -8,7 +8,7 @@ from typing import Any
 from benchmark.outputs import save_outputs
 from benchmark.persistence.sqlite_integrity import check_integrity
 from benchmark.persistence.sqlite_reports import SQLiteReportSource, sqlite_path_from_report_path
-from benchmark.persistence.storage import JsonReportSource, latest_result_rows
+from benchmark.persistence.storage import JsonReportSource, project_result_rows
 from plugins import discover_plugins
 
 
@@ -25,8 +25,10 @@ def generate_reports(path: str, output_formats: list[str], revision: int | None 
             output_dir = path if os.path.isdir(path) else os.path.dirname(path) or "."
         else:
             output_dir = path if os.path.isdir(path) else os.path.dirname(path) or "."
-            results, active_ids, seed = JsonReportSource().load_results(path)
-            results = latest_result_rows(results)
+            results, active_ids, seed, model_info = JsonReportSource().load_results(path)
+            # Recover per-plugin values a cancellation row would otherwise
+            # erase, matching the SQLite projection path.
+            results = project_result_rows(results, active_ids, model_info)
         plugins = [p for p in discover_plugins() if p.id in active_ids]
         missing = set(active_ids) - {p.id for p in plugins}
         if missing:

@@ -25,12 +25,14 @@ class TestJsonReportSource:
             "results": [{"model": "a", "http_score": 5}],
             "active_plugins": ["http"],
             "session_seed": 42,
+            "model_info": {"a": {"http_score": 5}},
         }
         (tmp_path / "benchmark_state.json").write_text(json.dumps(state))
-        results, plugins, seed = JsonReportSource().load_results(str(tmp_path))
+        results, plugins, seed, model_info = JsonReportSource().load_results(str(tmp_path))
         assert len(results) == 1
         assert plugins == ["http"]
         assert seed == 42
+        assert model_info == {"a": {"http_score": 5}}
 
     def test_load_results_from_file(self, tmp_path: Path) -> None:
         from benchmark.storage import JsonReportSource
@@ -38,9 +40,10 @@ class TestJsonReportSource:
         state: dict[str, Any] = {"results": [], "active_plugins": []}
         path = tmp_path / "state.json"
         path.write_text(json.dumps(state))
-        results, plugins, seed = JsonReportSource().load_results(str(path))
+        results, plugins, seed, model_info = JsonReportSource().load_results(str(path))
         assert results == []
         assert seed is None
+        assert model_info == {}
 
     def test_load_results_rejects_sqlite(self, tmp_path: Path) -> None:
         from benchmark.storage import JsonReportSource

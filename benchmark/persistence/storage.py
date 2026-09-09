@@ -1,12 +1,12 @@
 """Backend-neutral persistence façade for benchmark runs."""
 from __future__ import annotations
 
+import concurrent.futures
 import hashlib
 import json
 import os
 import sqlite3
 from collections.abc import Callable, Iterable
-from concurrent.futures import Future
 from dataclasses import dataclass
 from typing import Any, NoReturn, Protocol, cast, runtime_checkable
 
@@ -275,7 +275,6 @@ class SQLiteRunStore:
         self.identity: RunIdentity | None = None
         self._metadata: dict[str, Any] = {}
         self._results: dict[tuple[Any, Any], dict[str, Any]] = {}
-        self._connection: sqlite3.Connection | None = None
         self.benchmark: SQLiteBenchmarkStore | None = None
         self.judges: SQLiteJudgeStore | None = None
         self._revision_id: int | None = None
@@ -398,10 +397,9 @@ class SQLiteRunStore:
         # dedicated connection at startup, after ``prepare_run`` has flushed
         # the writer, so no writer work is in flight.
         self.flush(timeout=30)
-        from ..sqlite_schema import configure_connection, connect_database
+        from ..sqlite_schema import connect_database
         connection = connect_database(self.path)
         try:
-            configure_connection(connection)
             store = SQLiteContinuationStore(connection)
             self._revision_id = store.create_continuation(
                 self.identity.run_id,
@@ -418,7 +416,7 @@ class SQLiteRunStore:
             connection.close()
 
     def _connection_operation(self, operation: Any) -> Any:
-        future = cast(Future[Any], self.writer.submit(operation))  # type: ignore[redundant-cast]
+        future = cast(concurrent.futures.Future[Any], self.writer.submit(operation))  # type: ignore[redundant-cast]
         return future.result(timeout=30)
 
     def prepare_run(self, targets: Iterable[TargetRecord],
@@ -637,16 +635,16 @@ class SQLiteRunStore:
         self._connection_operation(operation)
         self._contract_records[plugin_id] = spec
 
-    def _submit_async(self, operation: Callable[[Any], Any]) -> Future[Any]:
+    def _submit_async(self, operation: Callable[[Any], Any]) -> concurrent.futures.Future[Any]:
         """Queue an operation without blocking the caller.
 
         The writer already reports commit failures through ``failure_callback``
         and ``writer.failures``; retrieving the future's exception here merely
         prevents an un-retrieved-exception warning when the future is collected.
         """
-        future = cast(Future[Any], self.writer.submit(operation))  # type: ignore[redundant-cast]
+        future = cast(concurrent.futures.Future[Any], self.writer.submit(operation))  # type: ignore[redundant-cast]
 
-        def _consume(done: Future[Any]) -> None:
+        def _consume(done: concurrent.futures.Future[Any]) -> None:
             try:
                 done.exception()
             except Exception:  # noqa: BLE001, S110 - already reported by the writer
@@ -655,9 +653,9 @@ class SQLiteRunStore:
         future.add_done_callback(_consume)
         return future
 
-    def submit(self, operation: Callable[[Any], Any]) -> Future[Any]:
-        """Submit a normalized SQLite operation to the background writer."""
-        return cast(Future[Any], self.writer.submit(operation))  # type: ignore[redundant-cast]
+    def submit(self, operation: Callable[[Any], Any]) -> concurrent.futures.Future[Any]:
+        """Queue a normalized SQLite operation to the background writer."""
+        return cast(concurrent.futures.Future[Any], self.writer.submit(operation))  # type: ignore[redundant-cast]
 
     def record_result(self, result: dict[str, Any]) -> None:
         key = (result.get("state_key", result.get("model")), result.get("runner", "http"))
@@ -713,7 +711,7 @@ class SQLiteRunStore:
         del path, plugin_versions, raise_on_error
         try:
             self.writer.flush(timeout=10)
-        except (OSError, RuntimeError, TimeoutError):
+        except concurrent.futures.TimeoutError:
             return False
         return not bool(self.writer.failures)
 
@@ -755,16 +753,15 @@ class SQLiteRunStore:
         self.writer.flush(timeout=timeout)
 
     def close(self, timeout: float | None = None) -> bool:
-        if self._connection is not None:
-            self._connection.close()
-            self._connection = None
         return cast(bool, self.writer.close(timeout=timeout))  # type: ignore[redundant-cast]
 
 
 class JsonReportSource:
     """Read the legacy JSON state format for report-only generation."""
 
-    def load_results(self, path: str) -> tuple[list[dict[str, Any]], list[str], int | None]:
+    def load_results(
+        self, path: str,
+    ) -> tuple[list[dict[str, Any]], list[str], int | None, dict[str, Any]]:
         state_path = path
         if os.path.isdir(path):
             state_path = os.path.join(path, "benchmark_state.json")
@@ -780,7 +777,10 @@ class JsonReportSource:
             isinstance(plugin_id, str) for plugin_id in active_plugins
         ):
             raise TypeError(f"{state_path} contains invalid active_plugins metadata")
-        return results, active_plugins, data.get("session_seed")
+        model_info = data.get("model_info") or {}
+        if not isinstance(model_info, dict):
+            raise TypeError(f"{state_path} contains invalid model_info metadata")
+        return results, active_plugins, data.get("session_seed"), model_info
 
 
 class JsonPayloadStore:

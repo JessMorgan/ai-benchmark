@@ -57,7 +57,7 @@ class OrchestrationCompareStorageTest(unittest.TestCase):
                         return_value=report) as cmp, \
              mock.patch("benchmark.orchestration.latest_result_rows",
                         side_effect=lambda r: r):
-            jsrc.return_value.load_results.return_value = ([], [], 1)
+            jsrc.return_value.load_results.return_value = ([], [], 1, {})
             ssrc.open.return_value.load_results.return_value = ([], [], 1, None)
             with mock.patch("sys.stdout"):
                 with self.assertRaises(SystemExit) as ctx:
@@ -73,7 +73,7 @@ class OrchestrationCompareStorageTest(unittest.TestCase):
              mock.patch("benchmark.orchestration.SQLiteReportSource") as ssrc, \
              mock.patch("benchmark.storage_validation.compare_read_models",
                         return_value=report):
-            jsrc.return_value.load_results.return_value = ([], [], 1)
+            jsrc.return_value.load_results.return_value = ([], [], 1, {})
             ssrc.open.return_value.load_results.return_value = ([], [], 1, None)
             with mock.patch("sys.stdout"):
                 with self.assertRaises(SystemExit) as ctx:

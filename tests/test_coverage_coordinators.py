@@ -6,6 +6,7 @@ config dumping/conversion) and raises ``SystemExit`` to halt the process after
 each.  ``benchmark/shutdown_coordinator.py`` drains persistence during
 shutdown.  These tests drive every branch without starting a benchmark run.
 """
+import csv
 import json
 import os
 import sqlite3
@@ -277,6 +278,26 @@ class CommandsModuleTest(unittest.TestCase):
                 }, handle)
             lines = generate_reports(tmp, ["csv"])
         self.assertTrue(any("results.csv" in line for line in lines))
+
+    def test_generate_reports_json_recovers_cancelled_plugin(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state = os.path.join(tmp, "benchmark_state.json")
+            with open(state, "w", encoding="utf-8") as handle:
+                json.dump({
+                    "active_plugins": ["rate-limiter"],
+                    "session_seed": 7,
+                    "results": [
+                        {"model": "demo", "runner": "http", "status": "ok",
+                         "rate-limiter_score": 10},
+                        {"model": "demo", "runner": "http", "status": "error",
+                         "rate-limiter_score": "fail"},
+                    ],
+                }, handle)
+            generate_reports(tmp, ["csv"])
+            with open(os.path.join(tmp, "results.csv"),
+                      encoding="utf-8", newline="") as handle:
+                row = next(csv.DictReader(handle))
+        self.assertEqual(row["rate-limiter_Score_100"], "10")
 
     def test_generate_reports_missing_plugin_raises(self):
         with tempfile.TemporaryDirectory() as tmp:
