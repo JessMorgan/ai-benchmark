@@ -1822,8 +1822,9 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
                        stdin=sys.stdin, timeout=1, check=False)
     except (OSError, subprocess.TimeoutExpired):
         pass
-    sys.stderr.write('\033[2J\033[H')
-    sys.stderr.flush()
+    if sys.stderr.isatty():
+        sys.stderr.write('\033[2J\033[H')
+        sys.stderr.flush()
 
     parser = build_parser()
     args = parser.parse_args()
@@ -2109,6 +2110,10 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
             "per_model": {},
         },
     }
+
+    # Default before the try so the finally's close_run_store never touches
+    # an unbound name if the run aborts before the config-driven value below.
+    shutdown_timeout = PERSISTENCE_SHUTDOWN_TIMEOUT
 
     try:
         if args.restart:
@@ -2665,7 +2670,7 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
             nonlocal worker_errors
             with errors_lock:
                 worker_errors += 1
-            print(f"\\n❌ Worker exception ({model_name}, {phase_runner}): "
+            print(f"\n❌ Worker exception ({model_name}, {phase_runner}): "
                   f"{type(exc).__name__}: {exc}", file=sys.stderr)
 
         def run_single_runner_phase(phase_runner):
@@ -2712,7 +2717,7 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
                 interrupted = True
                 run_info["status"] = "interrupted"
                 stop_event.set()
-                print("\\n\\n⚠️  Ctrl+C — saving state and shutting down...", file=sys.stderr)
+                print("\n\n⚠️  Ctrl+C — saving state and shutting down...", file=sys.stderr)
                 close_active_requests()
                 stop_judge_workers()
                 for thread in phase_threads:
@@ -2752,7 +2757,7 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
                     interrupted = True
                     run_info["status"] = "interrupted"
                     stop_event.set()
-                    print("\\n\\n⚠️  Ctrl+C — saving state and shutting down...", file=sys.stderr)
+                    print("\n\n⚠️  Ctrl+C — saving state and shutting down...", file=sys.stderr)
                     close_active_requests()
                     stop_judge_workers()
                     for thread in pipeline_threads:

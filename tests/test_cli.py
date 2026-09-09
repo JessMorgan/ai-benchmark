@@ -1,4 +1,5 @@
 """Tests for CLI argument handling and plugin execution modes."""
+import ast
 import concurrent.futures
 import importlib.util
 import json
@@ -9,6 +10,7 @@ import tempfile
 import threading
 import time
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 from typing import ClassVar
 from unittest import mock
@@ -2959,6 +2961,58 @@ class TestEffectiveTargetMaxTokens(unittest.TestCase):
     def test_per_target_none_falls_back_to_global(self):
         self.assertEqual(
             _effective_target_max_tokens(None, {"max_tokens": None}, 16384), 16384)
+
+
+class TestOperatorOutputHygiene(unittest.TestCase):
+    """Operator-facing output must stay clean when piped or captured."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls._cli_source = Path("benchmark/cli.py").read_text(encoding="utf-8")
+
+    def test_no_double_escaped_newlines_in_cli_source(self):
+        """A double-escaped newline (\\n in source) prints a literal ``\\n``
+        to the operator instead of a real line break."""
+        self.assertNotIn("\\\\n", self._cli_source)
+
+    def test_clear_screen_escape_gated_on_tty(self):
+        """The clear-screen escape must not leak into captured (non-tty)
+        stderr, e.g. when the run is piped to a log file."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_path = os.path.join(tmpdir, "config.yaml")
+            output_dir = os.path.join(tmpdir, "output")
+            with open(config_path, "w") as f:
+                f.write(f"output_dir: {output_dir}\n")
+
+            result = subprocess.run(
+                [sys.executable, "ai-benchmark.py", "--config", config_path],
+                capture_output=True,
+                text=True, check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertNotIn("\x1b[2J", result.stderr)
+
+    def test_shutdown_timeout_initialized_before_main_try(self):
+        """The early-exit finally closes the run store with shutdown_timeout;
+        it must be initialized before the main try block so an abort between
+        state creation and the config-driven assignment cannot leave it
+        unbound."""
+        tree = ast.parse(self._cli_source)
+        fn = next(n for n in ast.walk(tree)
+                  if isinstance(n, ast.FunctionDef) and n.name == "_run_benchmark")
+        main_try = next(
+            n for n in ast.walk(fn)
+            if isinstance(n, ast.Try) and n.finalbody
+            and "close_run_store" in ast.dump(n)
+        )
+        assignments = [
+            n for n in ast.walk(fn)
+            if isinstance(n, ast.Assign)
+            and any(isinstance(t, ast.Name) and t.id == "shutdown_timeout"
+                    for t in n.targets)
+        ]
+        self.assertTrue(assignments)
+        self.assertLess(min(a.lineno for a in assignments), main_try.lineno)
 
 
 if __name__ == "__main__":
