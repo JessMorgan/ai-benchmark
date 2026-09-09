@@ -19,8 +19,8 @@ from benchmark.cli import (
     _TUI_REFRESH_SECONDS,
     _BackgroundFlusher,
     _BenchmarkTUIApp,
-    _FlushGate,
     _effective_target_max_tokens,
+    _FlushGate,
 )
 from benchmark.completions import build_parser
 from benchmark.http import NonStreamResult, StreamResult
