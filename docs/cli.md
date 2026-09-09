@@ -45,7 +45,12 @@ ignored, and real environment variables take precedence over file values. See
 | `--storage {json,sqlite}` | Select the run backend; SQLite is the default and JSON is an explicit fallback |
 | `--storage-profile {compact,debug,portable}` | Select compact, debug, or portable artifact policy |
 | `--debug-logs` | Retain redacted full diagnostics as concatenated-member gzip logs |
+| `--output-format FORMAT [...]` | Generate one or more reports (`csv`, `md`, `html`, `pdf`); omit to generate no reports |
+| `--generate-reports PATH` | Generate selected reports from an existing run directory or `benchmark_state.json` without running models |
+| `--revision N` | Report a specific SQLite revision number or ID (default: current revision) |
 | `--import-to-sqlite STATE_JSON` | Convert a legacy JSON state file to SQLite without modifying the source |
+| `--sqlite-output PATH` | SQLite output path for `--import-to-sqlite` (default: `run.sqlite3` beside the JSON) |
+| `--overwrite-sqlite` | Allow `--import-to-sqlite` to replace an existing SQLite output file |
 | `--import-debug-logs` | Include legacy log files during JSON-to-SQLite conversion |
 | `--measure-storage` | Measure a synthetic JSON/SQLite size and persistence-latency baseline |
 | `--compare-storage JSON SQLITE` | Compare current JSON and SQLite read models without mutation |
