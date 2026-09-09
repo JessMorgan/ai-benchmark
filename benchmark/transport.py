@@ -719,7 +719,7 @@ def _execute_pi(request: PiRequest) -> TransportResult:
         pi_config=pi_options.config,
         node=pi_options.node or PI_DEFAULT_NODE,
         worker=pi_options.worker,
-        output_dir=None,
+        output_dir=pi_options.output_dir,
         target_key=pi_options.target_key or request.common.source,
         plugin_id=pi_options.plugin_id or request.common.pid or "plugin",
         stop_event=request.common.stop_event,
