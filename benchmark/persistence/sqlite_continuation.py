@@ -672,10 +672,15 @@ class SQLiteContinuationStore:
         return cell_id
 
     def _selection(self, revision_id: int, cell_id: int) -> tuple[int, bool] | None:
+        # A numeric score means the cell was graded and is complete, even when
+        # the attempt carries a diagnostic error (e.g. a content-budget abort
+        # that retained and scored the partial response) or a failed status.
+        # Only an abandoned attempt is not done. This mirrors should_run_cell
+        # and the JSON resume gate, which reuse any numeric score.
         row = self.connection.execute(
             """
-            SELECT s.attempt_id, (a.score IS NOT NULL AND a.error IS NULL
-                                  AND a.status NOT IN ('abandoned', 'failed'))
+            SELECT s.attempt_id, (a.score IS NOT NULL
+                                  AND a.status NOT IN ('abandoned'))
             FROM benchmark_selections s
             JOIN benchmark_attempts a ON a.attempt_id = s.attempt_id
             WHERE s.revision_id = ? AND s.cell_id = ?

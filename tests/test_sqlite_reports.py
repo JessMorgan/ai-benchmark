@@ -59,6 +59,25 @@ class TestSQLiteReports(unittest.TestCase):
         self.assertEqual(rows[0]["rate-limiter_response_time"], 2.4)
         self.assertEqual(rows[0]["rate-limiter_gen_time"], 1.8)
 
+    def test_scored_errored_attempt_projects_completed_status(self):
+        self.store.record_attempt(
+            self.revision, self.cell,
+            {
+                "attempt_number": 1, "content": "partial", "score": 9,
+                "error": "Content budget exceeded (16384 tokens)",
+                "status": "failed",
+            },
+            selected=True,
+        )
+        source = SQLiteReportSource.open(self.path)
+        self.addCleanup(source.close)
+        rows, _plugins, _seed, _revision = source.load_results()
+        self.assertEqual(rows[0]["status"], "ok")
+        self.assertEqual(rows[0]["rate-limiter_score"], 9)
+        self.assertEqual(
+            rows[0]["rate-limiter_error"], "Content budget exceeded (16384 tokens)",
+        )
+
     def test_inactive_target_and_plugin_memberships_are_not_materialized(self):
         """Current report rows must honor active revision membership."""
         inactive_target = self.store.register_target(

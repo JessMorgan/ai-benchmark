@@ -193,6 +193,50 @@ class TestSQLiteContinuation(unittest.TestCase):
         )
         self.assertEqual(summary2.scheduled_cells, 1)
 
+    def test_scored_errored_attempt_is_reused_on_continuation(self):
+        self.benchmark.register_plugin(
+            "errored-plugin", "1.0.0", name="Errored", max_score=20,
+            supports_streaming=True,
+        )
+        self.benchmark.activate_plugin(self.revision, "errored-plugin", "1.0.0")
+        errored_cell = self.benchmark.ensure_cell(
+            self.revision, self.target, "errored-plugin", "1.0.0",
+        )
+        attempt = self.benchmark.record_attempt(
+            self.revision, errored_cell,
+            {
+                "attempt_number": 1,
+                "score": 9,
+                "error": "Content budget exceeded (16384 tokens)",
+                "status": "failed",
+            },
+            selected=True,
+        )
+        summary = self._continuation(
+            plugins=[self.plugin, PluginSpec("errored-plugin", "1.0.0", "Errored", 20, True)],
+        )
+        # A graded attempt with a diagnostic error is complete: the
+        # continuation reuses it instead of scheduling a re-run.
+        self.assertEqual(summary.reused_cells, 2)
+        self.assertEqual(summary.scheduled_cells, 0)
+        new_cell = self.connection.execute(
+            "SELECT cell_id FROM cells WHERE target_instance_id = ? AND plugin_id = 'errored-plugin'",
+            (self.target,),
+        ).fetchone()[0]
+        selected = self.connection.execute(
+            "SELECT attempt_id FROM benchmark_selections WHERE revision_id = ? AND cell_id = ?",
+            (summary.revision_id, new_cell),
+        ).fetchone()
+        self.assertEqual(selected[0], attempt)
+        self.assertFalse(self.benchmark.should_run_cell(summary.revision_id, new_cell))
+        self.assertEqual(
+            self.connection.execute(
+                "SELECT status FROM revision_cells WHERE revision_id = ? AND cell_id = ?",
+                (summary.revision_id, new_cell),
+            ).fetchone()[0],
+            "completed",
+        )
+
     def test_stop_marks_only_in_flight_rows_abandoned(self):
         running = self.benchmark.record_attempt(
             self.revision, self.cell,
