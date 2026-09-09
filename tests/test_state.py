@@ -1342,6 +1342,33 @@ os._exit(17)
             )
 
 
+class TestJudgeScoreZero(unittest.TestCase):
+    """A zero judge consensus score is a valid value, not a default."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.module = load_benchmark_module()
+
+    def _state(self):
+        return self.module.BenchmarkState({"model-a": "Source1"}, ["fake"])
+
+    def test_zero_judge_score_carries_into_raw_row(self):
+        # A previous run left a non-zero judge score on the committed row.
+        state = self._state()
+        state.add_result({"model": "model-a", "status": "ok", "fake_judge_score": 8.0})
+        # The judge re-runs and all judges agree on zero before the new row
+        # is appended: core.run_model builds the row from the stale source
+        # row, then publish_result carries live model_info over it.
+        state.update_judge_result(
+            "model-a", "http", "fake", score=0.0,
+            status="complete", complete=True,
+        )
+        state.add_result({"model": "model-a", "status": "ok", "fake_judge_score": 8.0})
+        row = state.latest_results()[0]
+        self.assertEqual(row["fake_judge_score"], 0.0)
+        self.assertEqual(state.snapshot()["model-a"]["fake_judge_score"], 0.0)
+
+
 class TestStateRevision(unittest.TestCase):
     """The mutation counter the adaptive TUI polls to skip idle repaints."""
 

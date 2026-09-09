@@ -8,6 +8,7 @@ from __future__ import annotations
 import copy
 import json
 import os
+import re
 import shutil
 import tempfile
 import threading
@@ -207,7 +208,7 @@ def _scan_model_info(raw: bytes, object_start: int) -> dict[str, dict[str, Any]]
                 try:
                     value = json.loads(span)
                     prefix = raw[max(object_start, value_start - 512) : value_start]
-                    key_match = list(__import__("re").finditer(
+                    key_match = list(re.finditer(
                         rb'"((?:\\.|[^"\\])*)"\s*:\s*$', prefix
                     ))
                     if key_match:
@@ -802,7 +803,9 @@ class BenchmarkState:
             # Default-initialized fields do not replace meaningful values
             # already carried by an older result row. Conversely, a live
             # judge update must win over a stale row value before append.
-            if value not in (None, False, [], ""):
+            # Identity/emptiness checks, not truthiness: a legitimate zero
+            # judge score must win over a stale row value (0.0 == False).
+            if value is not None and value is not False and value != [] and value != "":
                 result[key] = value
             else:
                 result.setdefault(key, value)
@@ -883,11 +886,6 @@ class BenchmarkState:
                     for s in scores
                 ):
                     info["status"] = "completed"
-                elif scores and any(
-                    isinstance(s, (int, float)) and not isinstance(s, bool)
-                    for s in scores
-                ):
-                    info["status"] = "pending"
                 else:
                     info["status"] = "pending"
 
@@ -1024,17 +1022,32 @@ class BenchmarkState:
         return data
 
     def replay_journal_tail(self, path: str | None) -> int:
-        """Apply journal events newer than the loaded state snapshot."""
+        """Apply journal events newer than the loaded state snapshot.
+
+        Legacy lines without a sequence number (see
+        ``replay_journal_events``) are skipped rather than applied: without
+        a sequence we cannot tell whether the event is already included in
+        the snapshot, and applying it would duplicate the result. The
+        trade-off is deliberately conservative -- no duplicates over bounded
+        loss: a seq-less event written after the snapshot is never replayed.
+        ``compact_journal`` mirrors this by retaining seq-less lines instead
+        of removing them.
+        """
         events = self.replay_journal_events(path)
         applied = 0
         with self._lock:
             for event in events:
                 sequence = event.get("seq")
+                # Seq-less legacy lines are skipped, not just unsequenced:
+                # they may already be in the snapshot, and replaying them
+                # would duplicate results (no duplicates > bounded loss).
                 if not isinstance(sequence, int) or sequence <= self._journal_sequence:
                     continue
                 self._apply_journal_event_locked(event)
                 self._journal_sequence = sequence
                 applied += 1
+            if applied:
+                self._mark_changed()
         return applied
 
     def _apply_journal_event_locked(self, event: dict[str, Any]) -> None:
@@ -1089,6 +1102,9 @@ class BenchmarkState:
                             retained.append(line)
                             continue
                         sequence = event.get("seq") if isinstance(event, dict) else None
+                        # Seq-less legacy lines are retained, not compacted:
+                        # replay_journal_tail skips them, so removing them
+                        # here would drop events that were never applied.
                         if isinstance(sequence, int) and sequence <= compact_through:
                             continue
                         retained.append(line)
