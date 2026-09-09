@@ -285,6 +285,11 @@ def request(cfg: Any, model: str, prompt: str, *, timeout: float, stop_event: th
     the worker subprocess; the answer is buffered (no per-token streaming), and
     an optional ``system_prompt`` is folded into the prompt by the worker.
     """
+    # ``timeout=0`` would be forwarded to the worker as "no deadline", leaving a
+    # hung browser turn unbounded. The CLI always passes a positive timeout, but
+    # the adapter defends against zero/negative values up front.
+    if timeout <= 0:
+        raise ValueError("ChatPlayground request timeout must be a positive number of seconds")
     if stop_event is not None and stop_event.is_set():
         return "", "ChatPlayground request cancelled", 0.0
     started = time.time()

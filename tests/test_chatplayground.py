@@ -290,6 +290,16 @@ class TestWorkerSubprocess(unittest.TestCase):
         self.assertIsNone(error)
         self.assertEqual(text, "timeout=10")
 
+    def test_zero_timeout_rejected(self):
+        # Regression: ``timeout=0`` meant "no deadline" to the worker, so a hung
+        # browser process blocked forever. The adapter must reject a
+        # non-positive timeout up front (before any worker is spawned).
+        with self.assertRaises(ValueError):
+            cp.request(_cfg(), "gpt-5.6-terra", "hi", timeout=0)
+        # A negative timeout is equally invalid.
+        with self.assertRaises(ValueError):
+            cp.request(_cfg(), "gpt-5.6-terra", "hi", timeout=-5)
+
     def test_worker_crash_is_surfaced_and_next_request_recovers(self):
         crash_script = _write_fake_worker(_CRASH_WORKER)
         healthy_script = _write_fake_worker(_HEALTHY_WORKER)
