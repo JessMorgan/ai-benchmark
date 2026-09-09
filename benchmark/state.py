@@ -802,7 +802,9 @@ class BenchmarkState:
             # Default-initialized fields do not replace meaningful values
             # already carried by an older result row. Conversely, a live
             # judge update must win over a stale row value before append.
-            if value not in (None, False, [], ""):
+            # Identity/emptiness checks, not truthiness: a legitimate zero
+            # judge score must win over a stale row value (0.0 == False).
+            if value is not None and value is not False and value != [] and value != "":
                 result[key] = value
             else:
                 result.setdefault(key, value)
