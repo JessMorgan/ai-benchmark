@@ -6,6 +6,7 @@ page that records the calls the worker makes. The worker's JSON-lines protocol
 dispatch (``handle``) is tested with mocked browser operations.
 """
 
+import faulthandler
 import io
 import json
 import unittest
@@ -308,6 +309,23 @@ class TestMainLoop(unittest.TestCase):
         self.assertFalse(lines[1]["ok"])
         self.assertIn("unknown op", lines[1]["error"])
         close.assert_called_once()
+
+    def test_main_enables_faulthandler(self):
+        # Regression (AGENTS.md gotcha 9): the worker enables faulthandler at
+        # startup so a native crash (Playwright/greenlet/Chromium segfault)
+        # dumps the Python stack to the parent's captured stderr instead of a
+        # bare "Segmentation fault". Verify main() actually turns it on.
+        faulthandler.disable()
+        try:
+            with (
+                mock.patch("sys.stdin", io.StringIO("")),
+                mock.patch("sys.stdout", io.StringIO()),
+                mock.patch.object(cpw, "_close_session"),
+            ):
+                cpw.main()
+            self.assertTrue(faulthandler.is_enabled())
+        finally:
+            faulthandler.enable()
 
 
 if __name__ == "__main__":

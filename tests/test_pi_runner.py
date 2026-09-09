@@ -104,6 +104,32 @@ class TestPiAdapter(unittest.TestCase):
                 iter_log_members(os.path.join(tmpdir, "logs", "model", "test.stderr.txt.gz"))
             ))
 
+    def test_finish_tools_string_is_not_iterated_per_character(self):
+        # Only a list ``tools`` payload is accepted; a string must not be
+        # iterated character by character into the result.
+        events = "".join(
+            json.dumps({"protocol": "pi-worker-v1", "event": event, "attempt": 1, "data": data})
+            + "\n"
+            for event, data in (
+                ("text_delta", {"text": "answer"}),
+                ("finish", {"finish_reason": "stop", "tools": "read"}),
+            )
+        )
+        fake = _FakeProcess(events)
+        with mock.patch("benchmark.pi.resolve_pi_worker", return_value=("node", "/tmp/worker.mjs")), \
+                mock.patch("benchmark.pi.subprocess.Popen", return_value=fake):
+            result = run_process(
+                "prompt",
+                source_config={"Local": {"api_url": "http://localhost:11434/v1/chat/completions"}},
+                source="Local",
+                api_model="model",
+                max_tokens=32,
+                timeout=2,
+                target_key="model",
+                plugin_id="test",
+            )
+        self.assertEqual(result.tools, ())
+
     def test_compact_pi_run_does_not_write_transcripts(self):
         fake = _FakeProcess("", "")
         with tempfile.TemporaryDirectory() as tmpdir, \

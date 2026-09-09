@@ -566,8 +566,11 @@ def _provider_options(source_cfg: Mapping[str, Any]) -> dict[str, Any]:
     # timeout is injected by generate_config() when available. The separate
     # per-source ``opencode_timeout`` setting controls the subprocess
     # inactivity guard, not this provider request timeout.
+    #
+    # Per-source ``timeout`` is in seconds; OpenCode provider options take
+    # milliseconds (cf. ``timeout * 1000`` in generate_config()).
     if "timeout" in source_cfg:
-        options["timeout"] = source_cfg["timeout"]
+        options["timeout"] = source_cfg["timeout"] * 1000
     return options
 
 

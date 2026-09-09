@@ -323,8 +323,6 @@ def run_process(
             try:
                 kind, line = events.get(timeout=0.1)
             except Empty:
-                if process.poll() is not None and not open_streams:
-                    break
                 continue
             if line is None:
                 open_streams.discard(kind)
@@ -363,10 +361,9 @@ def run_process(
                 finish_reason = data.get("finish_reason")
                 truncated = bool(data.get("truncated", finish_reason == "length"))
                 tool_called = bool(data.get("tool_called", tool_called))
-                actual_tools = tuple(str(value) for value in data.get("tools", []) or [])
-                provider = data.get("provider")
                 if isinstance(data.get("tools"), list):
                     actual_tools = tuple(str(value) for value in data["tools"])
+                provider = data.get("provider")
                 if isinstance(data.get("usage"), dict):
                     usage = data["usage"]
             elif event_type == "error":
