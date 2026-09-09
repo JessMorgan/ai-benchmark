@@ -40,6 +40,26 @@ class TestConfiguration(unittest.TestCase):
         self.assertEqual(config.source_config()["Local"]["max_429_retries"], 0)
         self.assertEqual(config.source_config()["Local"]["plugin_thread_limit"], 2)
 
+    def test_plugin_temperature_override_writes_underscore_key(self):
+        """--plugin-temperature must land on the underscore key plugins read.
+
+        The CLI flag carries the hyphenated plugin id (``rate-limiter``), but a
+        plugin's ``get_temperature`` reads the underscore form
+        (``rate_limiter_temperature``). Writing the hyphenated key would be
+        silently ignored by every plugin.
+        """
+        args = argparse.Namespace(
+            plugin_temperature=["rate-limiter=0.4"],
+        )
+        config = Configuration.from_mapping({
+            "sources": {"Local": {}},
+            "models": {"demo": "Local"},
+        }, args)
+        # The canonical raw key the plugin reads is the underscore form.
+        self.assertEqual(config.value("rate_limiter_temperature"), 0.4)
+        # The hyphenated key must NOT be written (it is unreadable by plugins).
+        self.assertNotIn("rate-limiter_temperature", config.raw)
+
     def test_timeout_retry_defaults_terminal_and_configurable(self):
         """Timeouts are terminal by default; config and CLI can opt in."""
         # No flag, no config key: terminal (key absent -> resolve as False).

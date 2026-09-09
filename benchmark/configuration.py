@@ -609,7 +609,10 @@ class Configuration:
             if not separator:
                 raise ValueError(f"Invalid --plugin-temperature value: {item}")
             try:
-                raw[f"{plugin}_temperature"] = float(value)
+                # Plugins read the underscore form (``rate_limiter_temperature``);
+                # the CLI flag carries the hyphenated id, so normalize. Mirrors
+                # ``cli._apply_temperature_overrides``.
+                raw[f"{plugin.replace('-', '_')}_temperature"] = float(value)
             except ValueError as exc:
                 raise ValueError(f"Invalid plugin temperature: {item}") from exc
 
