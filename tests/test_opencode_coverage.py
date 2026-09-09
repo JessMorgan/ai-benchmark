@@ -363,13 +363,13 @@ class TestProviderOptions(unittest.TestCase):
         self.assertNotIn("apiKey", options)
         self.assertEqual(options["headers"]["Authorization"], "Basic abc")
 
-    def test_timeout_option_passthrough(self):
+    def test_timeout_option_converted_to_milliseconds(self):
         options = _provider_options({
             "api_url": "http://x/v1/completions",
             "headers": {},
             "timeout": 30,
         })
-        self.assertEqual(options["timeout"], 30)
+        self.assertEqual(options["timeout"], 30000)
         self.assertIn("baseURL", options)
 
 
