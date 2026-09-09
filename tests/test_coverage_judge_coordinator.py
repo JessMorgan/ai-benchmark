@@ -454,6 +454,66 @@ class JudgeCoordinatorProcessJudgeJobTest(unittest.TestCase):
         state.start_judge_activity.assert_not_called()
 
 
+class JudgeCoordinatorConcurrentVotesTest(unittest.TestCase):
+    def test_concurrent_votes_not_lost(self):
+        """Concurrent judge votes for the same (model, plugin) must not be lost.
+
+        Two judge workers finishing at once each hand ``update_judge_result``
+        a vote snapshot taken at a different point in time. The
+        ``{pid}_judge_votes`` read-modify-write is serialized under the
+        state lock, so both votes must survive instead of the last writer
+        replacing the whole list and dropping the other worker's vote.
+        """
+        from benchmark.state import BenchmarkState
+
+        state = BenchmarkState(
+            {"m1": {"source": "Local", "api_model": "m1"}}, ["p1"],
+        )
+        state.add_result({
+            "model": "m1", "state_key": "m1", "runner": "http",
+            "status": "ok", "p1_score": 18,
+        })
+        barrier = threading.Barrier(2)
+
+        def write_vote(judge_name: str, score: int) -> None:
+            vote = {
+                "model": judge_name,
+                "judge_contract_id": "c1",
+                "score": score,
+                "confidence": "high",
+                "rationale": f"rationale-{judge_name}",
+                "criteria": [],
+                "error": None,
+            }
+            barrier.wait()
+            state.update_judge_result(
+                "m1", "http", "p1",
+                score=score, confidence="high",
+                rationale=f"rationale-{judge_name}", criteria=[],
+                selected_contract="c1", votes=[vote],
+                status="running", complete=False,
+            )
+
+        threads = [
+            threading.Thread(target=write_vote, args=("judgeA", 90)),
+            threading.Thread(target=write_vote, args=("judgeB", 80)),
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        latest = {
+            (row.get("state_key", row.get("model")), row.get("runner", "http")): row
+            for row in state.latest_results()
+        }
+        votes = latest[("m1", "http")]["p1_judge_votes"]
+        self.assertEqual(
+            {vote["model"] for vote in votes}, {"judgeA", "judgeB"})
+        self.assertEqual(
+            {vote["model"] for vote in state.snapshot()["m1"]["p1_judge_votes"]},
+            {"judgeA", "judgeB"})
+
+
 class JudgeCoordinatorRecordFailureTest(unittest.TestCase):
     def test_record_judge_failure(self):
         state = mock.Mock()
