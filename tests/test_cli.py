@@ -2131,6 +2131,58 @@ class TestPerPluginTemperature(unittest.TestCase):
         self.assertEqual(plugin_temperatures["rate-limiter"], 0.3)
 
 
+class TestTemperatureEndToEnd(unittest.TestCase):
+    """The CLI temperature flags must reach the request body.
+
+    Regression: the flags were merged into ``cfg["plugin_temperatures"]`` but
+    never written to the canonical raw key a plugin's ``get_temperature``
+    reads, so global, per-plugin, and config-template values all yielded
+    ``None`` at the request body.
+    """
+
+    def _request_body(self, cfg, global_temp=None, plugin_temps=None):
+        from benchmark.cli import _apply_temperature_overrides
+        plugins = [p for p in discover_plugins() if p.id == "rate-limiter"]
+        self.assertTrue(plugins)
+        _apply_temperature_overrides(cfg, plugins, global_temp, plugin_temps)
+        captured = {}
+
+        def fake_post(url, **kwargs):
+            captured["body"] = kwargs.get("json")
+            return MockResponse()
+
+        state = BenchmarkState({"dummy-model": "Local"}, [p.id for p in plugins])
+        source_config = {
+            "Local": {"api_url": "http://localhost:11434/chat/completions", "headers": {}}
+        }
+        with mock.patch("requests.post", side_effect=fake_post):
+            load_benchmark_module()._run_plugin_task(
+                "dummy-model", "dummy-model", "Local", plugins[0], source_config,
+                timeout=1, max_tokens=100, session_seed=12345,
+                log_file=None, global_cfg=cfg, state=state,
+            )
+        return captured["body"]
+
+    def test_temperature_reaches_request_body(self):
+        body = self._request_body({}, global_temp=0.5)
+        self.assertEqual(body.get("temperature"), 0.5)
+        body = self._request_body({}, plugin_temps=["rate-limiter=0.9"])
+        self.assertEqual(body.get("temperature"), 0.9)
+        body = self._request_body({"rate-limiter_temperature": 0.3})
+        self.assertEqual(body.get("temperature"), 0.3)
+
+    def test_unknown_plugin_temperature_id_is_rejected(self):
+        from benchmark.cli import _apply_temperature_overrides
+        plugins = [p for p in discover_plugins() if p.id == "rate-limiter"]
+        with self.assertRaises(ValueError):
+            _apply_temperature_overrides({}, plugins, None, ["not-a-plugin=0.5"])
+
+    def test_malformed_plugin_temperature_is_rejected(self):
+        from benchmark.cli import _apply_temperature_overrides
+        plugins = [p for p in discover_plugins() if p.id == "rate-limiter"]
+        with self.assertRaises(ValueError):
+            _apply_temperature_overrides({}, plugins, None, ["rate-limiter=abc"])
+
 
 class TestCLIRetryOn429(unittest.TestCase):
     """Tests for the --retry-on-429 / --no-retry-on-429 CLI flag pair

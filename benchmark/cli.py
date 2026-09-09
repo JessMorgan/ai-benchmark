@@ -1747,6 +1747,48 @@ def _enable_faulthandler() -> None:
         faulthandler.register(signal.SIGUSR1)
 
 
+def _apply_temperature_overrides(cfg, active_plugins, default_temperature,
+                                 plugin_temperature_overrides):
+    """Merge config + CLI temperature overrides into the canonical raw keys.
+
+    ``default_temperature`` is the global ``--temperature`` value (or ``None``);
+    ``plugin_temperature_overrides`` is the ``--plugin-temperature`` ``id=value``
+    list. The effective value for each active plugin is written to the raw key
+    the plugin reads (``<id with underscores>_temperature``) and the merged
+    mapping is stored under ``cfg["plugin_temperatures"]``.
+
+    Raises ``ValueError`` for a malformed item or an unknown plugin id.
+    """
+    plugin_temperatures = parse_plugin_temperatures(cfg)
+    if default_temperature is not None:
+        for plugin in active_plugins:
+            plugin_temperatures[plugin.id] = default_temperature
+    active_ids = {plugin.id for plugin in active_plugins}
+    for item in plugin_temperature_overrides or []:
+        if "=" not in item:
+            raise ValueError(
+                f"Invalid --plugin-temperature value: {item}. Expected id=value."
+            )
+        pid, temp_str = item.split("=", 1)
+        if pid not in active_ids:
+            raise ValueError(
+                f"Unknown plugin for --plugin-temperature: {pid}. "
+                f"Active plugins: {', '.join(sorted(active_ids))}"
+            )
+        try:
+            plugin_temperatures[pid] = float(temp_str)
+        except ValueError:
+            raise ValueError(f"Invalid temperature for {pid}: {temp_str}") from None
+    cfg["plugin_temperatures"] = plugin_temperatures
+    # Write the effective value back to the canonical raw key each active
+    # plugin actually reads; the ``plugin_temperatures`` dict alone is never
+    # consumed by a plugin's ``get_temperature``.
+    for pid in active_ids:
+        if pid in plugin_temperatures:
+            cfg[f"{pid.replace('-', '_')}_temperature"] = plugin_temperatures[pid]
+    return plugin_temperatures
+
+
 def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orchestrator (no unit tests)
     """Run the full benchmark (setup, orchestration, and final output).
 
@@ -1912,23 +1954,14 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
         sys.exit(1)
 
     # Per-plugin temperatures: CLI overrides config. Config keys may use either
-    # hyphen or underscore, e.g. "rate-limiter_temperature" or "rate_servererature".
-    plugin_temperatures = parse_plugin_temperatures(cfg)
-    if args.temperature is not None:
-        for plugin in active_plugins:
-            plugin_temperatures[plugin.id] = args.temperature
-    if args.plugin_temperature:
-        for item in args.plugin_temperature:
-            if "=" not in item:
-                print(f"❌ Invalid --plugin-temperature value: {item}. Expected id=value.", file=sys.stderr)
-                sys.exit(1)
-            pid, temp_str = item.split("=", 1)
-            try:
-                plugin_temperatures[pid] = float(temp_str)
-            except ValueError:
-                print(f"❌ Invalid temperature for {pid}: {temp_str}", file=sys.stderr)
-                sys.exit(1)
-    cfg["plugin_temperatures"] = plugin_temperatures
+    # hyphen or underscore, e.g. "rate-limiter_temperature" or "rate_limiter_temperature".
+    try:
+        _apply_temperature_overrides(
+            cfg, active_plugins, args.temperature, args.plugin_temperature,
+        )
+    except ValueError as exc:
+        print(f"❌ {exc}", file=sys.stderr)
+        sys.exit(1)
 
     # Apply per-source plugin_thread_limit defaults and validate the separate
     # model-level source slots. The latter has no unlimited/zero meaning.
