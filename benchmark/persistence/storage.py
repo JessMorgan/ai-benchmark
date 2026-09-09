@@ -757,7 +757,9 @@ class SQLiteRunStore:
 class JsonReportSource:
     """Read the legacy JSON state format for report-only generation."""
 
-    def load_results(self, path: str) -> tuple[list[dict[str, Any]], list[str], int | None]:
+    def load_results(
+        self, path: str,
+    ) -> tuple[list[dict[str, Any]], list[str], int | None, dict[str, Any]]:
         state_path = path
         if os.path.isdir(path):
             state_path = os.path.join(path, "benchmark_state.json")
@@ -773,7 +775,10 @@ class JsonReportSource:
             isinstance(plugin_id, str) for plugin_id in active_plugins
         ):
             raise TypeError(f"{state_path} contains invalid active_plugins metadata")
-        return results, active_plugins, data.get("session_seed")
+        model_info = data.get("model_info") or {}
+        if not isinstance(model_info, dict):
+            raise TypeError(f"{state_path} contains invalid model_info metadata")
+        return results, active_plugins, data.get("session_seed"), model_info
 
 
 class JsonPayloadStore:

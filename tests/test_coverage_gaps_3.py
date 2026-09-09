@@ -630,8 +630,9 @@ class TestStorageMore:
         }
         path = tmp_path / "state.json"
         path.write_text(json.dumps(state))
-        results, plugins, seed = JsonReportSource().load_results(str(path))
+        results, plugins, seed, model_info = JsonReportSource().load_results(str(path))
         assert seed == 99
+        assert model_info == {}
 
     def test_latest_result_rows_dedup(self) -> None:
         from benchmark.storage import latest_result_rows

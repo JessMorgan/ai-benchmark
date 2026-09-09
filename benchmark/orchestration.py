@@ -51,7 +51,7 @@ def _handle_early_command_exits(args: Any, cfg: dict[str, Any] | None) -> None:
         json_path, sqlite_path = args.compare_storage
         source = None
         try:
-            json_results, _plugins, _seed = JsonReportSource().load_results(
+            json_results, _plugins, _seed, _model_info = JsonReportSource().load_results(
                 json_path,
             )
             source = SQLiteReportSource.open(sqlite_path)
