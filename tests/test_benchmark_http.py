@@ -21,6 +21,7 @@ from benchmark.http import (
     nonstream_request,
     stream_request,
 )
+from benchmark.logs import redact_log_text
 
 
 class TestBuildCurlCmd(unittest.TestCase):
@@ -68,6 +69,31 @@ class TestBuildCurlCmd(unittest.TestCase):
         )
         payload = shlex.split(command)[shlex.split(command).index("-d") + 1]
         self.assertEqual(json.loads(payload), request_body)
+
+    def test_bearer_token_redacted_in_curl(self):
+        """The Bearer token VALUE in a curl command must not reach the log.
+
+        Regression: ``redact_log_text`` redacted the ``Authorization:`` header
+        name and the ``Bearer`` scheme keyword, but the command-redaction pass
+        only swallowed the first token after ``Authorization:`` (the ``Bearer``
+        keyword), so the actual credential (``Bearer sk-...``) leaked into
+        debug log output. The token value itself must be masked.
+        """
+        token = "sk-test-abc123secret"
+        command = build_curl_cmd(
+            model="gpt-4", prompt="hi", max_tokens=2048, stream=True,
+            api_url="https://api.example.com/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json",
+            },
+        )
+        self.assertIn(f"Bearer {token}", command)  # pre-redaction sanity
+
+        redacted, changed = redact_log_text(command)
+        self.assertTrue(changed)
+        self.assertNotIn(token, redacted)
+        self.assertIn("[REDACTED]", redacted)
 
 
 class TestStreamGuards(unittest.TestCase):

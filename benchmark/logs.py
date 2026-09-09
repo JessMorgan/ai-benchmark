@@ -45,6 +45,14 @@ _JSON_REDACTION_RE = re.compile(
 _COMMAND_REDACTION_RE = re.compile(
     r'''(?i)((?:authorization|api[-_]?key|cookie|set-cookie|password|secret)\s*:\s*)[^\s'"}]+'''
 )
+# Bearer token values. The command pass above only swallows the first token
+# after ``Authorization:`` (the ``Bearer`` scheme keyword), leaving the
+# credential (``Bearer sk-...``) in curl command bodies. This masks the value
+# itself. It must run before the command pass so the value is still adjacent
+# to the ``Bearer`` keyword when matched.
+_BEARER_REDACTION_RE = re.compile(
+    r'''(?i)\b(bearer\s+)[^\s'"}]+'''
+)
 
 
 def _path_lock(path: str) -> threading.RLock:
@@ -57,8 +65,9 @@ def redact_log_text(text: str) -> tuple[str, bool]:
     """Redact credential-like headers and JSON fields before compression."""
     redacted, line_count = _REDACTION_RE.subn(r"\1[REDACTED]", text)
     redacted, json_count = _JSON_REDACTION_RE.subn(r"\1[REDACTED]\2", redacted)
+    redacted, bearer_count = _BEARER_REDACTION_RE.subn(r"\1[REDACTED]", redacted)
     redacted, command_count = _COMMAND_REDACTION_RE.subn(r"\1[REDACTED]", redacted)
-    return redacted, bool(line_count or json_count or command_count)
+    return redacted, bool(line_count or json_count or bearer_count or command_count)
 
 
 def _normalise_data(data: str | bytes, redact: bool) -> tuple[bytes, bool]:
