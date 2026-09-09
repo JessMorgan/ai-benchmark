@@ -602,6 +602,7 @@ def generate_config(
     *,
     timeout: float | None = None,
     max_tokens: int | None = None,
+    cli_max_tokens: int | None = None,
     benchmark_config: Mapping[str, Any] | None = None,
     plugin_temperatures: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -611,12 +612,23 @@ def generate_config(
     ``source`` and ``api_model`` and may contain ``system_prompt`` and
     ``is_agent``.  The returned config is also written as an exact artifact;
     callers should treat it as credential-bearing data.
+
+    ``max_tokens`` is the global budget and ``cli_max_tokens`` is the explicit
+    ``--max-tokens`` CLI flag (``None`` when the flag was not passed).  The
+    per-target output budget follows the same precedence as the http/pi
+    dispatch (``cli._effective_target_max_tokens``): the CLI flag beats a
+    per-target ``max_tokens``, which beats the global budget.
     """
     if (max_tokens is not None
             and (isinstance(max_tokens, bool)
                  or not isinstance(max_tokens, int)
                  or max_tokens <= 0)):
         raise ValueError("max_tokens must be a positive integer scalar")
+    if (cli_max_tokens is not None
+            and (isinstance(cli_max_tokens, bool)
+                 or not isinstance(cli_max_tokens, int)
+                 or cli_max_tokens <= 0)):
+        raise ValueError("cli_max_tokens must be a positive integer scalar")
 
     providers: dict[str, Any] = {}
     agents: dict[str, Any] = {}
@@ -649,7 +661,6 @@ def generate_config(
         model_options: dict[str, Any] = {"name": api_model}
         # OpenCode requires both ``context`` and ``output`` inside ``limit``;
         # writing only ``output`` makes the whole config fail validation.
-        # Per-target scalar ``max_tokens`` beats the global budget.
         per_target_max_tokens = info.get("max_tokens")
         if (per_target_max_tokens is not None
                 and (isinstance(per_target_max_tokens, bool)
@@ -658,7 +669,13 @@ def generate_config(
             raise ValueError(
                 f"Target {target_key!r} max_tokens must be a positive integer scalar"
             )
-        effective_max_tokens = per_target_max_tokens or max_tokens or 16384
+        # Precedence matches cli._effective_target_max_tokens: an explicit
+        # --max-tokens CLI flag beats the per-target scalar, which beats the
+        # global budget.
+        if cli_max_tokens is not None:
+            effective_max_tokens = cli_max_tokens
+        else:
+            effective_max_tokens = per_target_max_tokens or max_tokens or 16384
         model_options["limit"] = {
             "context": _model_context_limit(api_model),
             "output": int(effective_max_tokens),

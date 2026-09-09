@@ -88,7 +88,7 @@ def load_dotenv_file(path: str | None = None) -> bool:
 
 def load_config(path: str) -> Any:
     """Load benchmark config from a JSON or YAML file. Returns the full config dict."""
-    with open(path) as f:
+    with open(path, encoding="utf-8") as f:
         if path.lower().endswith((".yaml", ".yml")):
             data = yaml.safe_load(f)
             if data is None:
@@ -115,6 +115,22 @@ def load_config(path: str) -> Any:
             + ", ".join(legacy_paths)
             + ". Use scalar max_tokens instead."
         )
+    return data
+
+
+def load_config_raw(path: str) -> Any:
+    """Load a config file verbatim, without env-var expansion or validation.
+
+    Used by ``--convert-config`` so ``${VAR}`` values (e.g. API keys) are
+    preserved as written instead of being expanded and printed to stdout.
+    """
+    with open(path, encoding="utf-8") as f:
+        if path.lower().endswith((".yaml", ".yml")):
+            data = yaml.safe_load(f)
+            if data is None:
+                raise ValueError(f"YAML config file is empty: {path}")
+        else:
+            data = json.load(f)
     return data
 
 
@@ -593,7 +609,10 @@ class Configuration:
             if not separator:
                 raise ValueError(f"Invalid --plugin-temperature value: {item}")
             try:
-                raw[f"{plugin}_temperature"] = float(value)
+                # Plugins read the underscore form (``rate_limiter_temperature``);
+                # the CLI flag carries the hyphenated id, so normalize. Mirrors
+                # ``cli._apply_temperature_overrides``.
+                raw[f"{plugin.replace('-', '_')}_temperature"] = float(value)
             except ValueError as exc:
                 raise ValueError(f"Invalid plugin temperature: {item}") from exc
 

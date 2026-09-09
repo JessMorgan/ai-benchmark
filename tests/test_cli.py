@@ -1,4 +1,5 @@
 """Tests for CLI argument handling and plugin execution modes."""
+import ast
 import concurrent.futures
 import importlib.util
 import json
@@ -9,6 +10,7 @@ import tempfile
 import threading
 import time
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 from typing import ClassVar
 from unittest import mock
@@ -18,6 +20,7 @@ from benchmark.cli import (
     _BackgroundFlusher,
     _BenchmarkTUIApp,
     _FlushGate,
+    _effective_target_max_tokens,
 )
 from benchmark.completions import build_parser
 from benchmark.http import NonStreamResult, StreamResult
@@ -221,7 +224,9 @@ class TestCLIArgs(unittest.TestCase):
         self.assertFalse(report["scores_affected"])
         self.assertEqual(report["results"][0]["status"], "schema_not_supported_by_source")
 
-    def test_convert_config_loads_dotenv_from_cwd(self):
+    def test_convert_config_does_not_expand_env_vars(self):
+        # --convert-config must print the file verbatim: expanding ${VAR}
+        # would leak credentials (e.g. API keys) to stdout.
         project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         launcher = os.path.join(project_root, "ai-benchmark.py")
         with tempfile.TemporaryDirectory() as tmp:
@@ -240,8 +245,8 @@ class TestCLIArgs(unittest.TestCase):
                 env=env,
             )
         self.assertEqual(result.returncode, 0)
-        self.assertIn("hello-from-env", result.stdout)
-        self.assertNotIn("${MY_SECRET}", result.stdout)
+        self.assertIn("${MY_SECRET}", result.stdout)
+        self.assertNotIn("hello-from-env", result.stdout)
 
     def test_help_and_completion_expose_no_preload(self):
         result = subprocess.run(
@@ -1961,10 +1966,37 @@ class TestRunInfo(unittest.TestCase):
             self.assertEqual(run_info["total_targets"], 0)
             self.assertEqual(run_info["completed_targets"], 0)
             self.assertIn("cli_args", run_info)
+            # --api-key was not passed: the value stays null (redaction only
+            # applies to a key that was actually supplied).
+            self.assertIsNone(run_info["cli_args"]["api_key"])
             self.assertIn("start_time", run_info)
             self.assertIn("end_time", run_info)
             self.assertIsNotNone(run_info["end_time"])
             self.assertIn("session_seed", run_info)
+
+    def test_run_info_redacts_api_key(self):
+        """--api-key must not be persisted in plaintext to run-info.json."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_path = os.path.join(tmpdir, "config.yaml")
+            output_dir = os.path.join(tmpdir, "output")
+            with open(config_path, "w") as f:
+                f.write(f"output_dir: {output_dir}\n")
+
+            result = subprocess.run(
+                [sys.executable, "ai-benchmark.py", "--config", config_path,
+                 "--api-key", "test-secret-key"],
+                capture_output=True,
+                text=True, check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+            run_info_path = os.path.join(output_dir, "run-info.json")
+            self.assertTrue(os.path.isfile(run_info_path))
+            with open(run_info_path, encoding="utf-8") as f:
+                run_info = json.load(f)
+
+            self.assertEqual(run_info["cli_args"]["api_key"], "<redacted>")
+            self.assertNotIn("test-secret-key", json.dumps(run_info))
 
     def test_write_run_info_persists_status(self):
         """_write_run_info persists the supplied status to run-info.json."""
@@ -2130,6 +2162,58 @@ class TestPerPluginTemperature(unittest.TestCase):
         plugin_temperatures["rate-limiter"] = 0.3
         self.assertEqual(plugin_temperatures["rate-limiter"], 0.3)
 
+
+class TestTemperatureEndToEnd(unittest.TestCase):
+    """The CLI temperature flags must reach the request body.
+
+    Regression: the flags were merged into ``cfg["plugin_temperatures"]`` but
+    never written to the canonical raw key a plugin's ``get_temperature``
+    reads, so global, per-plugin, and config-template values all yielded
+    ``None`` at the request body.
+    """
+
+    def _request_body(self, cfg, global_temp=None, plugin_temps=None):
+        from benchmark.cli import _apply_temperature_overrides
+        plugins = [p for p in discover_plugins() if p.id == "rate-limiter"]
+        self.assertTrue(plugins)
+        _apply_temperature_overrides(cfg, plugins, global_temp, plugin_temps)
+        captured = {}
+
+        def fake_post(url, **kwargs):
+            captured["body"] = kwargs.get("json")
+            return MockResponse()
+
+        state = BenchmarkState({"dummy-model": "Local"}, [p.id for p in plugins])
+        source_config = {
+            "Local": {"api_url": "http://localhost:11434/chat/completions", "headers": {}}
+        }
+        with mock.patch("requests.post", side_effect=fake_post):
+            load_benchmark_module()._run_plugin_task(
+                "dummy-model", "dummy-model", "Local", plugins[0], source_config,
+                timeout=1, max_tokens=100, session_seed=12345,
+                log_file=None, global_cfg=cfg, state=state,
+            )
+        return captured["body"]
+
+    def test_temperature_reaches_request_body(self):
+        body = self._request_body({}, global_temp=0.5)
+        self.assertEqual(body.get("temperature"), 0.5)
+        body = self._request_body({}, plugin_temps=["rate-limiter=0.9"])
+        self.assertEqual(body.get("temperature"), 0.9)
+        body = self._request_body({"rate-limiter_temperature": 0.3})
+        self.assertEqual(body.get("temperature"), 0.3)
+
+    def test_unknown_plugin_temperature_id_is_rejected(self):
+        from benchmark.cli import _apply_temperature_overrides
+        plugins = [p for p in discover_plugins() if p.id == "rate-limiter"]
+        with self.assertRaises(ValueError):
+            _apply_temperature_overrides({}, plugins, None, ["not-a-plugin=0.5"])
+
+    def test_malformed_plugin_temperature_is_rejected(self):
+        from benchmark.cli import _apply_temperature_overrides
+        plugins = [p for p in discover_plugins() if p.id == "rate-limiter"]
+        with self.assertRaises(ValueError):
+            _apply_temperature_overrides({}, plugins, None, ["rate-limiter=abc"])
 
 
 class TestCLIRetryOn429(unittest.TestCase):
@@ -2858,6 +2942,77 @@ class TestTUIAdaptiveRefresh(unittest.TestCase):
 
     def test_refresh_capped_at_two_fps(self):
         self.assertEqual(_TUI_REFRESH_SECONDS, 0.5)
+
+
+class TestEffectiveTargetMaxTokens(unittest.TestCase):
+    def test_cli_flag_beats_per_target_config(self):
+        """An explicit --max-tokens flag must override the per-target value."""
+        self.assertEqual(
+            _effective_target_max_tokens(1000, {"max_tokens": 8192}, 16384), 1000)
+
+    def test_per_target_beats_global_without_cli_flag(self):
+        self.assertEqual(
+            _effective_target_max_tokens(None, {"max_tokens": 8192}, 16384), 8192)
+
+    def test_global_used_when_nothing_else_set(self):
+        self.assertEqual(
+            _effective_target_max_tokens(None, {}, 16384), 16384)
+
+    def test_per_target_none_falls_back_to_global(self):
+        self.assertEqual(
+            _effective_target_max_tokens(None, {"max_tokens": None}, 16384), 16384)
+
+
+class TestOperatorOutputHygiene(unittest.TestCase):
+    """Operator-facing output must stay clean when piped or captured."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls._cli_source = Path("benchmark/cli.py").read_text(encoding="utf-8")
+
+    def test_no_double_escaped_newlines_in_cli_source(self):
+        """A double-escaped newline (\\n in source) prints a literal ``\\n``
+        to the operator instead of a real line break."""
+        self.assertNotIn("\\\\n", self._cli_source)
+
+    def test_clear_screen_escape_gated_on_tty(self):
+        """The clear-screen escape must not leak into captured (non-tty)
+        stderr, e.g. when the run is piped to a log file."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_path = os.path.join(tmpdir, "config.yaml")
+            output_dir = os.path.join(tmpdir, "output")
+            with open(config_path, "w") as f:
+                f.write(f"output_dir: {output_dir}\n")
+
+            result = subprocess.run(
+                [sys.executable, "ai-benchmark.py", "--config", config_path],
+                capture_output=True,
+                text=True, check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertNotIn("\x1b[2J", result.stderr)
+
+    def test_shutdown_timeout_initialized_before_main_try(self):
+        """The early-exit finally closes the run store with shutdown_timeout;
+        it must be initialized before the main try block so an abort between
+        state creation and the config-driven assignment cannot leave it
+        unbound."""
+        tree = ast.parse(self._cli_source)
+        fn = next(n for n in ast.walk(tree)
+                  if isinstance(n, ast.FunctionDef) and n.name == "_run_benchmark")
+        main_try = next(
+            n for n in ast.walk(fn)
+            if isinstance(n, ast.Try) and n.finalbody
+            and "close_run_store" in ast.dump(n)
+        )
+        assignments = [
+            n for n in ast.walk(fn)
+            if isinstance(n, ast.Assign)
+            and any(isinstance(t, ast.Name) and t.id == "shutdown_timeout"
+                    for t in n.targets)
+        ]
+        self.assertTrue(assignments)
+        self.assertLess(min(a.lineno for a in assignments), main_try.lineno)
 
 
 if __name__ == "__main__":

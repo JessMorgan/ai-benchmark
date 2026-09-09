@@ -205,7 +205,7 @@ class DispatchEarlyCommandMiscTest(unittest.TestCase):
             with open(cfg, "w", encoding="utf-8") as handle:
                 handle.write("sources: {}\n")
             args.convert_config = cfg
-            with mock.patch("benchmark.command_dispatch.load_config",
+            with mock.patch("benchmark.command_dispatch.load_config_raw",
                             return_value={"sources": {}}):
                 with mock.patch("sys.stdout") as stdout:
                     with self.assertRaises(SystemExit) as ctx:
@@ -220,7 +220,7 @@ class DispatchEarlyCommandMiscTest(unittest.TestCase):
             with open(cfg, "w", encoding="utf-8") as handle:
                 json.dump({"sources": {}}, handle)
             args.convert_config = cfg
-            with mock.patch("benchmark.command_dispatch.load_config",
+            with mock.patch("benchmark.command_dispatch.load_config_raw",
                             return_value={"sources": {}}):
                 with mock.patch("sys.stdout") as stdout:
                     with self.assertRaises(SystemExit) as ctx:

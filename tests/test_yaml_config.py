@@ -3,6 +3,7 @@ import json
 import os
 import tempfile
 import unittest
+from unittest import mock
 
 from benchmark.configuration import load_config
 
@@ -66,6 +67,27 @@ class TestLoadConfigYAML(unittest.TestCase):
             self.assertEqual(cfg["models"]["model-a"], "Local")
             self.assertEqual(cfg["agents"]["agent-a"]["model"], "gpt-4")
             self.assertEqual(cfg["agents"]["agent-a"]["system_prompt"], "You are a coder.")
+
+    def test_load_config_opens_with_explicit_utf8(self):
+        """load_config must pin UTF-8 so config loading is locale-independent."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, "config.yaml")
+            with open(path, "w", encoding="utf-8") as f:
+                f.write("output_dir: results\n")
+
+            encodings = []
+            real_open = open
+
+            def spy_open(file, *args, **kwargs):
+                if str(file) == path:
+                    encodings.append(kwargs.get("encoding"))
+                return real_open(file, *args, **kwargs)
+
+            with mock.patch("builtins.open", side_effect=spy_open):
+                cfg = load_config(path)
+
+        self.assertEqual(cfg["output_dir"], "results")
+        self.assertEqual(encodings, ["utf-8"])
 
 
 if __name__ == "__main__":

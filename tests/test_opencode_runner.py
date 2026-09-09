@@ -195,6 +195,38 @@ class TestOpenCodeConfig(unittest.TestCase):
             self.assertEqual(limits["thinker-model"], 32768)
             self.assertEqual(limits["plain-model"], 100)
 
+    def test_model_limit_cli_max_tokens_beats_per_target(self):
+        """--max-tokens beats a per-target max_tokens (CLI > per-target >
+        global), matching cli._effective_target_max_tokens. The opencode leg
+        previously resolved ``per_target or global`` and let per-target win."""
+        targets = {
+            "thinker": {
+                "source": "Local Server",
+                "api_model": "thinker-model",
+                "is_agent": False,
+                "max_tokens": 32768,
+            },
+            "plain": {
+                "source": "Local Server",
+                "api_model": "plain-model",
+                "is_agent": False,
+                "max_tokens": None,
+            },
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, "opencode.generated.json")
+            generate_config(self.sources, targets, path, max_tokens=100,
+                             cli_max_tokens=1000)
+            with open(path, encoding="utf-8") as handle:
+                on_disk = json.load(handle)
+            limits = {
+                name: model["limit"]["output"]
+                for provider in on_disk["provider"].values()
+                for name, model in provider["models"].items()
+            }
+            self.assertEqual(limits["thinker-model"], 1000)
+            self.assertEqual(limits["plain-model"], 1000)
+
     def test_model_context_limit_infers_suffix(self):
         self.assertEqual(_model_context_limit("qwen3.6:27b-128k"), 131072)
         self.assertEqual(_model_context_limit("nemotron-3-nano:30b-1m"), 1048576)

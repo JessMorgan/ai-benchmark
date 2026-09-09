@@ -293,6 +293,17 @@ def _inject_429_stats(run_info):
     return run_info
 
 
+def _effective_target_max_tokens(cli_max_tokens, target_info, global_max_tokens):
+    """Resolve the max_tokens budget for one target.
+
+    An explicit ``--max-tokens`` CLI flag beats the per-target config value;
+    otherwise the per-target scalar beats the global config value.
+    """
+    if cli_max_tokens is not None:
+        return cli_max_tokens
+    return target_info.get("max_tokens") or global_max_tokens
+
+
 def _char_display_width(char):
     """Return a conservative terminal-column width for one character.
 
@@ -1747,6 +1758,48 @@ def _enable_faulthandler() -> None:
         faulthandler.register(signal.SIGUSR1)
 
 
+def _apply_temperature_overrides(cfg, active_plugins, default_temperature,
+                                 plugin_temperature_overrides):
+    """Merge config + CLI temperature overrides into the canonical raw keys.
+
+    ``default_temperature`` is the global ``--temperature`` value (or ``None``);
+    ``plugin_temperature_overrides`` is the ``--plugin-temperature`` ``id=value``
+    list. The effective value for each active plugin is written to the raw key
+    the plugin reads (``<id with underscores>_temperature``) and the merged
+    mapping is stored under ``cfg["plugin_temperatures"]``.
+
+    Raises ``ValueError`` for a malformed item or an unknown plugin id.
+    """
+    plugin_temperatures = parse_plugin_temperatures(cfg)
+    if default_temperature is not None:
+        for plugin in active_plugins:
+            plugin_temperatures[plugin.id] = default_temperature
+    active_ids = {plugin.id for plugin in active_plugins}
+    for item in plugin_temperature_overrides or []:
+        if "=" not in item:
+            raise ValueError(
+                f"Invalid --plugin-temperature value: {item}. Expected id=value."
+            )
+        pid, temp_str = item.split("=", 1)
+        if pid not in active_ids:
+            raise ValueError(
+                f"Unknown plugin for --plugin-temperature: {pid}. "
+                f"Active plugins: {', '.join(sorted(active_ids))}"
+            )
+        try:
+            plugin_temperatures[pid] = float(temp_str)
+        except ValueError:
+            raise ValueError(f"Invalid temperature for {pid}: {temp_str}") from None
+    cfg["plugin_temperatures"] = plugin_temperatures
+    # Write the effective value back to the canonical raw key each active
+    # plugin actually reads; the ``plugin_temperatures`` dict alone is never
+    # consumed by a plugin's ``get_temperature``.
+    for pid in active_ids:
+        if pid in plugin_temperatures:
+            cfg[f"{pid.replace('-', '_')}_temperature"] = plugin_temperatures[pid]
+    return plugin_temperatures
+
+
 def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orchestrator (no unit tests)
     """Run the full benchmark (setup, orchestration, and final output).
 
@@ -1769,8 +1822,9 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
                        stdin=sys.stdin, timeout=1, check=False)
     except (OSError, subprocess.TimeoutExpired):
         pass
-    sys.stderr.write('\033[2J\033[H')
-    sys.stderr.flush()
+    if sys.stderr.isatty():
+        sys.stderr.write('\033[2J\033[H')
+        sys.stderr.flush()
 
     parser = build_parser()
     args = parser.parse_args()
@@ -1912,23 +1966,14 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
         sys.exit(1)
 
     # Per-plugin temperatures: CLI overrides config. Config keys may use either
-    # hyphen or underscore, e.g. "rate-limiter_temperature" or "rate_servererature".
-    plugin_temperatures = parse_plugin_temperatures(cfg)
-    if args.temperature is not None:
-        for plugin in active_plugins:
-            plugin_temperatures[plugin.id] = args.temperature
-    if args.plugin_temperature:
-        for item in args.plugin_temperature:
-            if "=" not in item:
-                print(f"❌ Invalid --plugin-temperature value: {item}. Expected id=value.", file=sys.stderr)
-                sys.exit(1)
-            pid, temp_str = item.split("=", 1)
-            try:
-                plugin_temperatures[pid] = float(temp_str)
-            except ValueError:
-                print(f"❌ Invalid temperature for {pid}: {temp_str}", file=sys.stderr)
-                sys.exit(1)
-    cfg["plugin_temperatures"] = plugin_temperatures
+    # hyphen or underscore, e.g. "rate-limiter_temperature" or "rate_limiter_temperature".
+    try:
+        _apply_temperature_overrides(
+            cfg, active_plugins, args.temperature, args.plugin_temperature,
+        )
+    except ValueError as exc:
+        print(f"❌ {exc}", file=sys.stderr)
+        sys.exit(1)
 
     # Apply per-source plugin_thread_limit defaults and validate the separate
     # model-level source slots. The latter has no unlimited/zero meaning.
@@ -1990,6 +2035,7 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
                 os.path.join(opencode_output_dir, "opencode.generated.json"),
                 timeout=timeout,
                 max_tokens=max_tokens,
+                cli_max_tokens=args.max_tokens,
                 benchmark_config=cfg,
                 plugin_temperatures=cfg.get("plugin_temperatures"),
             )
@@ -2009,9 +2055,13 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
     interrupted = False
     reset_429_stats()
 
+    cli_args = dict(vars(args))
+    if cli_args.get("api_key") is not None:
+        cli_args["api_key"] = "<redacted>"
+
     run_info = {
         "config_file": config_path,
-        "cli_args": vars(args),
+        "cli_args": cli_args,
         "output_dir": output_dir,
         "run_id": run_id,
         "revision_id": revision_id,
@@ -2061,6 +2111,10 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
             "per_model": {},
         },
     }
+
+    # Default before the try so the finally's close_run_store never touches
+    # an unbound name if the run aborts before the config-driven value below.
+    shutdown_timeout = PERSISTENCE_SHUTDOWN_TIMEOUT
 
     try:
         if args.restart:
@@ -2357,6 +2411,7 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
                     os.path.join(opencode_output_dir, "opencode.generated.json"),
                     timeout=timeout,
                     max_tokens=max_tokens,
+                    cli_max_tokens=args.max_tokens,
                     benchmark_config=cfg,
                     plugin_temperatures=cfg.get("plugin_temperatures"),
                 )
@@ -2578,8 +2633,8 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
             if phase_runner == "opencode":
                 mapped = opencode_model_name(target_info["source"], target_info["api_model"])
                 agent_id = opencode_agent_ids.get(model_name)
-            # Per-target scalar ``max_tokens`` beats the global config/CLI value.
-            effective_max_tokens = target_info.get("max_tokens") or max_tokens
+            effective_max_tokens = _effective_target_max_tokens(
+                args.max_tokens, target_info, max_tokens)
             run_model(state_key, target_info["source"], state, model_active_plugins,
                       source_config, timeout, effective_max_tokens, phase_output_dir,
                       session_seed=session_seed, global_cfg=cfg, stop_event=stop_event,
@@ -2622,7 +2677,7 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
             nonlocal worker_errors
             with errors_lock:
                 worker_errors += 1
-            print(f"\\n❌ Worker exception ({model_name}, {phase_runner}): "
+            print(f"\n❌ Worker exception ({model_name}, {phase_runner}): "
                   f"{type(exc).__name__}: {exc}", file=sys.stderr)
 
         def run_single_runner_phase(phase_runner):
@@ -2669,7 +2724,7 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
                 interrupted = True
                 run_info["status"] = "interrupted"
                 stop_event.set()
-                print("\\n\\n⚠️  Ctrl+C — saving state and shutting down...", file=sys.stderr)
+                print("\n\n⚠️  Ctrl+C — saving state and shutting down...", file=sys.stderr)
                 close_active_requests()
                 stop_judge_workers()
                 for thread in phase_threads:
@@ -2709,7 +2764,7 @@ def _run_benchmark(tui_handoff=None):  # pragma: no cover - live benchmark orche
                     interrupted = True
                     run_info["status"] = "interrupted"
                     stop_event.set()
-                    print("\\n\\n⚠️  Ctrl+C — saving state and shutting down...", file=sys.stderr)
+                    print("\n\n⚠️  Ctrl+C — saving state and shutting down...", file=sys.stderr)
                     close_active_requests()
                     stop_judge_workers()
                     for thread in pipeline_threads:
