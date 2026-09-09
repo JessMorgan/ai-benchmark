@@ -27,6 +27,7 @@ from .request_models import (
     PiRequest,
     TransportRequest,
 )
+from .response_classification import classify_empty_reason
 from .transport_options import (
     HTTPTransportOptions,
     OpenCodeTransportOptions,
@@ -192,22 +193,6 @@ class StreamingTaskExecution:
         self._stop_event.set()
         if self.next_attempt is not None:
             self.next_attempt.cancel()
-
-
-def classify_empty_reason(text: str, think_text: str = "", finish_reason: str | None = None,
-                          error: str | None = None) -> str | None:
-    """Classify an empty response without conflating it with transport failure."""
-    if text and text.strip():
-        return None
-    if error:
-        return "error"
-    if think_text and finish_reason == "length":
-        return "thinking-truncation"
-    if think_text:
-        return "thinking-only"
-    if finish_reason == "length":
-        return "max-tokens"
-    return "empty"
 
 
 def is_repeating(text: str, min_seq: int = 80, repeats: int = 3) -> bool:
