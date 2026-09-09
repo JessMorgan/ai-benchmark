@@ -717,12 +717,18 @@ class SQLiteRunStore:
             return False
         return not bool(self.writer.failures)
 
-    def latest_results(self) -> list[dict[str, Any]]:
+    def latest_results(
+        self, *, active_judge_contracts: dict[str, str] | None = None,
+    ) -> list[dict[str, Any]]:
         """Return the authoritative read model for the current revision.
 
         Reads the normalized SQLite tables rather than the in-memory cache so
         resume and report generation observe durable state. The writer is
         flushed first so queued attempt/vote writes are visible.
+
+        ``active_judge_contracts`` (plugin id -> contract id) mirrors the
+        live judge path's contract selection so the read-back projects the
+        same contract a running benchmark would select.
         """
         self.flush(timeout=30)
         if self._revision_id is None:
@@ -739,6 +745,7 @@ class SQLiteRunStore:
             rows, _active_plugins, _seed, _revision = source.load_results(
                 revision=self._revision_id, run_id=self.identity.run_id,
                 include_reused=True,
+                active_judge_contracts=active_judge_contracts,
             )
             return cast(list[dict[str, Any]], rows)  # type: ignore[redundant-cast]
         finally:

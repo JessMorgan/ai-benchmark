@@ -250,6 +250,91 @@ class TestSQLiteReports(unittest.TestCase):
         votes = row.get("rate-limiter_judge_votes", [])
         self.assertEqual(votes[0]["criteria"][0]["criterion"], "Use headings.")
 
+    def _record_valid_vote(self, judge, revision, cell, judge_name,
+                           contract_id, score):
+        attempt = judge.record_attempt(
+            revision, cell, judge_name, contract_id, {"attempt_number": 1},
+        )
+        vote = judge.record_vote(attempt, {
+            "score": score, "confidence": "high", "rationale": f"r-{judge_name}",
+            "usable": True,
+        })
+        judge.select_vote(revision, cell, judge_name, contract_id, vote)
+
+    def test_judge_selected_contract_prefers_configured_contract(self):
+        """The read-back must project the live path's contract, not the
+        strongest stored one.
+
+        The live judge path always selects the currently active plugin's
+        contract. When an older contract holds more valid judges, a
+        strength-based SQLite selection would project the stale contract and
+        make the resume path discard the live projection.
+        """
+        from benchmark.sqlite_judges import SQLiteJudgeStore
+
+        judge = SQLiteJudgeStore(self.connection)
+        judge.register_judge(self.revision, "judge-a", source="Local")
+        judge.register_judge(self.revision, "judge-b", source="Local")
+        for contract_id in ("contract-old", "contract-new"):
+            judge.register_contract(
+                contract_id, plugin_id="rate-limiter", plugin_version="1.0.0",
+                prompt_version="v1", instructions_version="v1",
+                response_schema_hash="schema-1", contract={"v": 1},
+                contract_hash=f"hash-{contract_id}",
+            )
+            judge.activate_contract(self.revision, "rate-limiter", contract_id)
+        self._record_valid_vote(judge, self.revision, self.cell, "judge-a",
+                                "contract-old", 15)
+        self._record_valid_vote(judge, self.revision, self.cell, "judge-b",
+                                "contract-old", 15)
+        self._record_valid_vote(judge, self.revision, self.cell, "judge-a",
+                                "contract-new", 10)
+
+        source = SQLiteReportSource.open(self.path)
+        self.addCleanup(source.close)
+        rows, _plugins, _seed, _revision = source.load_results()
+        self.assertEqual(
+            rows[0].get("rate-limiter_judge_selected_contract"), "contract-old")
+
+        rows, _plugins, _seed, _revision = source.load_results(
+            active_judge_contracts={"rate-limiter": "contract-new"})
+        self.assertEqual(
+            rows[0].get("rate-limiter_judge_selected_contract"), "contract-new")
+        self.assertEqual(rows[0].get("rate-limiter_judge_score"), 10.0)
+        self.assertEqual(rows[0].get("rate-limiter_judge_rationale"),
+                         "r-judge-a")
+
+    def test_judge_selected_contract_tie_breaks_on_contract_id(self):
+        """A full strength tie must resolve on contract id, not read order.
+
+        judge-a (reading first) votes contract-b and judge-b votes
+        contract-a with equal valid counts and scores; the selection must
+        be contract-a regardless of which contract's vote was read first.
+        """
+        from benchmark.sqlite_judges import SQLiteJudgeStore
+
+        judge = SQLiteJudgeStore(self.connection)
+        judge.register_judge(self.revision, "judge-a", source="Local")
+        judge.register_judge(self.revision, "judge-b", source="Local")
+        for contract_id in ("contract-a", "contract-b"):
+            judge.register_contract(
+                contract_id, plugin_id="rate-limiter", plugin_version="1.0.0",
+                prompt_version="v1", instructions_version="v1",
+                response_schema_hash="schema-1", contract={"v": 1},
+                contract_hash=f"hash-{contract_id}",
+            )
+            judge.activate_contract(self.revision, "rate-limiter", contract_id)
+        self._record_valid_vote(judge, self.revision, self.cell, "judge-a",
+                                "contract-b", 15)
+        self._record_valid_vote(judge, self.revision, self.cell, "judge-b",
+                                "contract-a", 15)
+
+        source = SQLiteReportSource.open(self.path)
+        self.addCleanup(source.close)
+        rows, _plugins, _seed, _revision = source.load_results()
+        self.assertEqual(
+            rows[0].get("rate-limiter_judge_selected_contract"), "contract-a")
+
     def test_attempt_meta_and_model_level_attach(self):
         """Attempt counts/retry reasons and model-level judge identities attach."""
         from benchmark.sqlite_judges import SQLiteJudgeStore
